@@ -42,6 +42,17 @@ fn makeFarPointer(landing_pad_is_double: bool, landing_pad_offset_words: u32, se
     return pointer;
 }
 
+fn makeCapabilityPointer(cap_id: u32) !u64 {
+    if (cap_id >= (@as(u32, 1) << 30)) return error.CapabilityIdTooLarge;
+    return 3 | (@as(u64, cap_id) << 2);
+}
+
+fn decodeCapabilityPointer(pointer_word: u64) !u32 {
+    if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
+    if ((pointer_word >> 32) != 0) return error.InvalidPointer;
+    return @as(u32, @intCast((pointer_word >> 2) & 0x3FFFFFFF));
+}
+
 fn listContentBytes(element_size: u3, element_count: u32) !usize {
     const count = @as(u64, element_count);
     const total: u64 = switch (element_size) {
@@ -213,6 +224,10 @@ pub const InlineCompositeList = struct {
     element_count: u32,
     data_words: u16,
     pointer_words: u16,
+};
+
+pub const Capability = struct {
+    id: u32,
 };
 
 /// Cap'n Proto message reader with full segment support
@@ -977,6 +992,11 @@ pub const StructReader = struct {
         };
     }
 
+    pub fn readCapability(self: StructReader, pointer_index: usize) !Capability {
+        const any = try self.readAnyPointer(pointer_index);
+        return any.getCapability();
+    }
+
     pub fn readData(self: StructReader, pointer_index: usize) ![]const u8 {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 2) return error.InvalidPointer;
@@ -1500,6 +1520,18 @@ pub const PointerListReader = struct {
         return self.message.resolveStructPointer(self.segment_id, ptr.pos, ptr.word);
     }
 
+    pub fn getCapability(self: PointerListReader, index: u32) !Capability {
+        const ptr = try self.readPointer(index);
+        if (ptr.word == 0) return error.InvalidPointer;
+        const any = AnyPointerReader{
+            .message = self.message,
+            .segment_id = self.segment_id,
+            .pointer_pos = ptr.pos,
+            .pointer_word = ptr.word,
+        };
+        return any.getCapability();
+    }
+
     pub fn getData(self: PointerListReader, index: u32) ![]const u8 {
         const list = try self.readList(index);
         if (list.element_size != 2) return error.InvalidPointer;
@@ -1700,6 +1732,13 @@ pub const AnyPointerReader = struct {
             .element_count = list.element_count,
         };
     }
+
+    pub fn getCapability(self: AnyPointerReader) !Capability {
+        if (self.pointer_word == 0) return error.InvalidPointer;
+        const resolved = try self.message.resolvePointer(self.segment_id, self.pointer_pos, self.pointer_word, 8);
+        if (resolved.pointer_word == 0) return error.InvalidPointer;
+        return .{ .id = try decodeCapabilityPointer(resolved.pointer_word) };
+    }
 };
 
 pub const AnyPointerBuilder = struct {
@@ -1730,6 +1769,14 @@ pub const AnyPointerBuilder = struct {
         const segment = &self.builder.segments.items[self.segment_id];
         const slice = segment.items[offset .. offset + data.len];
         std.mem.copyForwards(u8, slice, data);
+    }
+
+    pub fn setCapability(self: AnyPointerBuilder, cap: Capability) !void {
+        if (self.segment_id >= self.builder.segments.items.len) return error.InvalidSegmentId;
+        const segment = &self.builder.segments.items[self.segment_id];
+        if (self.pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+        const pointer_word = try makeCapabilityPointer(cap.id);
+        std.mem.writeInt(u64, segment.items[self.pointer_pos..][0..8], pointer_word, .little);
     }
 
     pub fn initStruct(self: AnyPointerBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
@@ -2628,6 +2675,15 @@ pub const PointerListBuilder = struct {
         std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
     }
 
+    pub fn setCapability(self: PointerListBuilder, index: u32, cap: Capability) !void {
+        if (index >= self.element_count) return error.IndexOutOfBounds;
+        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+        const segment = &self.builder.segments.items[self.segment_id];
+        if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+        const pointer_word = try makeCapabilityPointer(cap.id);
+        std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
+    }
+
     pub fn setText(self: PointerListBuilder, index: u32, value: []const u8) !void {
         return self.setTextInSegment(index, value, self.segment_id);
     }
@@ -3505,6 +3561,10 @@ pub fn cloneAnyPointer(src: AnyPointerReader, dest: AnyPointerBuilder) anyerror!
             try cloneStruct(src_struct, dest_struct);
         },
         1 => try cloneList(src, dest, resolved),
+        3 => {
+            const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
+            try dest.setCapability(.{ .id = cap_id });
+        },
         else => return error.InvalidPointer,
     }
 }

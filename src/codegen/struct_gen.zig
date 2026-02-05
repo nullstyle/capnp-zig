@@ -236,7 +236,17 @@ pub const StructGenerator = struct {
                 }
                 try writer.print("            return try self._reader.readAnyPointer({});\n", .{slot.offset});
             },
-            .interface => try writer.writeAll("            return error.UnsupportedType;\n"),
+            .interface => {
+                if (slot.default_value) |default_value| {
+                    if (self.defaultPointerBytes(default_value)) |bytes| {
+                        const const_name = try self.defaultConstName(field.name);
+                        defer self.allocator.free(const_name);
+                        try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{ slot.offset, const_name });
+                        _ = bytes;
+                    }
+                }
+                try writer.print("            return try self._reader.readAnyPointer({});\n", .{slot.offset});
+            },
         }
 
         try writer.writeAll("        }\n\n");
@@ -678,6 +688,7 @@ pub const StructGenerator = struct {
             .list => |list_info| try self.listReaderTypeString(list_info.element_type.*),
             .@"struct" => try self.allocator.dupe(u8, "message.StructReader"),
             .any_pointer => try self.allocator.dupe(u8, "message.AnyPointerReader"),
+            .interface => try self.allocator.dupe(u8, "message.AnyPointerReader"),
             else => try self.allocator.dupe(u8, "void"),
         };
     }

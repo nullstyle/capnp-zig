@@ -737,6 +737,52 @@ test "MessageBuilder: primitive list with far pointer" {
     try testing.expectEqual(@as(u16, 303), try u16s_reader.get(2));
 }
 
+test "MessageBuilder and Message: capability pointer" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    var any = try struct_builder.getAnyPointer(0);
+    try any.setCapability(.{ .id = 42 });
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const any_reader = try root.readAnyPointer(0);
+    const cap = try any_reader.getCapability();
+    try testing.expectEqual(@as(u32, 42), cap.id);
+
+    const cap2 = try root.readCapability(0);
+    try testing.expectEqual(@as(u32, 42), cap2.id);
+}
+
+test "MessageBuilder and Message: capability pointer list" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    var list = try struct_builder.writePointerList(0, 2);
+    try list.setCapability(0, .{ .id = 1 });
+    try list.setCapability(1, .{ .id = 7 });
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readPointerList(0);
+    const cap0 = try list_reader.getCapability(0);
+    const cap1 = try list_reader.getCapability(1);
+    try testing.expectEqual(@as(u32, 1), cap0.id);
+    try testing.expectEqual(@as(u32, 7), cap1.id);
+}
+
 test "MessageBuilder: packed bytes roundtrip" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();

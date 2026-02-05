@@ -193,8 +193,6 @@ fn pointerShouldEmit(
     const ptr = getPointer(reader, slot.offset) orelse return false;
     if (ptr.word == 0) return false;
 
-    if (slot.type == .interface) return error.UnsupportedType;
-
     if (options.omit_default_pointers) {
         const any = message.AnyPointerReader{
             .message = reader.message,
@@ -272,7 +270,14 @@ fn validateSlot(
         .@"struct" => |struct_info| try validateStructPointer(nodes, reader, slot.offset, struct_info.type_id, options),
         .interface => {
             const ptr = getPointer(reader, slot.offset) orelse return;
-            if (ptr.word != 0) return error.UnsupportedType;
+            if (ptr.word == 0) return;
+            const any = message.AnyPointerReader{
+                .message = reader.message,
+                .segment_id = reader.segment_id,
+                .pointer_pos = ptr.pos,
+                .pointer_word = ptr.word,
+            };
+            _ = try any.getCapability();
         },
         .any_pointer => {
             // No additional schema validation for any pointers.
@@ -421,7 +426,9 @@ fn validatePointerList(
                 try validateListFromAnyPointer(nodes, any, list_info.element_type.*, options);
             },
             .any_pointer => {},
-            .interface => return error.UnsupportedType,
+            .interface => {
+                _ = try any.getCapability();
+            },
             else => {},
         }
     }
@@ -599,7 +606,10 @@ fn canonicalizePointerValue(
         .any_pointer => {
             try message.cloneAnyPointer(src_any, dest_any);
         },
-        .interface => return error.UnsupportedType,
+        .interface => {
+            const cap = try src_any.getCapability();
+            try dest_any.setCapability(cap);
+        },
         else => return error.InvalidPointer,
     }
 }
@@ -808,7 +818,10 @@ fn canonicalizeListFromAnyPointer(
                     .any_pointer => {
                         try message.cloneAnyPointer(src_elem, dest_elem);
                     },
-                    .interface => return error.UnsupportedType,
+                    .interface => {
+                        const cap = try src_elem.getCapability();
+                        try dest_elem.setCapability(cap);
+                    },
                     else => {},
                 }
             }
