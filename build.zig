@@ -57,6 +57,38 @@ pub fn build(b: *std.Build) void {
     const bench_ping_pong_step = b.step("bench-ping-pong", "Run ping-pong benchmark");
     bench_ping_pong_step.dependOn(&run_ping_pong.step);
 
+    const pack_unpack_bench = b.addExecutable(.{
+        .name = "bench-pack-unpack",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/packed_unpacked.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    b.installArtifact(pack_unpack_bench);
+
+    const run_pack = b.addRunArtifact(pack_unpack_bench);
+    run_pack.addArgs(&.{ "--mode", "pack" });
+    if (b.args) |args| {
+        run_pack.addArgs(args);
+    }
+
+    const run_unpack = b.addRunArtifact(pack_unpack_bench);
+    run_unpack.addArgs(&.{ "--mode", "unpack" });
+    if (b.args) |args| {
+        run_unpack.addArgs(args);
+    }
+
+    const bench_pack_step = b.step("bench-packed", "Run packed (packing) benchmark");
+    bench_pack_step.dependOn(&run_pack.step);
+
+    const bench_unpack_step = b.step("bench-unpacked", "Run unpacked (unpacking) benchmark");
+    bench_unpack_step.dependOn(&run_unpack.step);
+
     // Unit tests for main
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -219,6 +251,34 @@ pub fn build(b: *std.Build) void {
 
     const run_capnp_testdata_tests = b.addRunArtifact(capnp_testdata_tests);
 
+    // capnp_test vendor fixtures
+    const capnp_test_vendor_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/capnp_test_vendor_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_capnp_test_vendor_tests = b.addRunArtifact(capnp_test_vendor_tests);
+
+    // Schema validation + canonicalization tests
+    const schema_validation_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/schema_validation_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_schema_validation_tests = b.addRunArtifact(schema_validation_tests);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
@@ -233,6 +293,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_real_world_addressbook_tests.step);
     test_step.dependOn(&run_union_tests.step);
     test_step.dependOn(&run_capnp_testdata_tests.step);
+    test_step.dependOn(&run_capnp_test_vendor_tests.step);
+    test_step.dependOn(&run_schema_validation_tests.step);
 
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
@@ -258,6 +320,12 @@ pub fn build(b: *std.Build) void {
 
     const test_capnp_testdata_step = b.step("test-capnp-testdata", "Run Cap'n Proto official testdata fixtures");
     test_capnp_testdata_step.dependOn(&run_capnp_testdata_tests.step);
+
+    const test_capnp_test_vendor_step = b.step("test-capnp-test-vendor", "Run capnp_test vendor fixtures");
+    test_capnp_test_vendor_step.dependOn(&run_capnp_test_vendor_tests.step);
+
+    const test_schema_validation_step = b.step("test-schema-validation", "Run schema validation + canonicalization tests");
+    test_schema_validation_step.dependOn(&run_schema_validation_tests.step);
 
     // Check step (compile without linking)
     const check = b.addExecutable(.{

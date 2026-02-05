@@ -1736,6 +1736,18 @@ pub const AnyPointerBuilder = struct {
         return self.builder.writeStructPointer(self.segment_id, self.pointer_pos, data_words, pointer_words, self.segment_id);
     }
 
+    pub fn initStructList(self: AnyPointerBuilder, element_count: u32, data_words: u16, pointer_words: u16) !StructListBuilder {
+        return self.builder.writeStructListPointer(
+            self.segment_id,
+            self.pointer_pos,
+            element_count,
+            data_words,
+            pointer_words,
+            self.segment_id,
+            self.segment_id,
+        );
+    }
+
     pub fn initPointerList(self: AnyPointerBuilder, element_count: u32) !PointerListBuilder {
         const offset = try self.builder.writeListPointer(self.segment_id, self.pointer_pos, 6, element_count, self.segment_id);
         return .{
@@ -1749,6 +1761,11 @@ pub const AnyPointerBuilder = struct {
     fn initList(self: AnyPointerBuilder, element_size: u3, element_count: u32) !struct { offset: usize } {
         const offset = try self.builder.writeListPointer(self.segment_id, self.pointer_pos, element_size, element_count, self.segment_id);
         return .{ .offset = offset };
+    }
+
+    pub fn initVoidList(self: AnyPointerBuilder, element_count: u32) !VoidListBuilder {
+        _ = try self.initList(0, element_count);
+        return .{ .element_count = element_count };
     }
 
     pub fn initU8List(self: AnyPointerBuilder, element_count: u32) !U8ListBuilder {
@@ -2094,6 +2111,99 @@ pub const MessageBuilder = struct {
         return list_offset;
     }
 
+    fn writeStructListPointer(
+        self: *MessageBuilder,
+        pointer_segment_id: u32,
+        pointer_pos: usize,
+        element_count: u32,
+        data_words: u16,
+        pointer_words: u16,
+        landing_segment_id: u32,
+        content_segment_id: u32,
+    ) !StructListBuilder {
+        if (element_count > @as(u32, @intCast(std.math.maxInt(i32)))) return error.ElementCountTooLarge;
+
+        const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
+        const total_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
+        if (total_words_u64 > std.math.maxInt(u32)) return error.ListTooLarge;
+        const total_words = @as(u32, @intCast(total_words_u64));
+        const total_bytes = @as(usize, total_words) * 8;
+
+        while (self.segments.items.len <= landing_segment_id or self.segments.items.len <= content_segment_id) {
+            _ = try self.createSegment();
+        }
+
+        if (pointer_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+        const source_segment = &self.segments.items[pointer_segment_id];
+        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+
+        if (landing_segment_id == content_segment_id) {
+            const target_segment = &self.segments.items[landing_segment_id];
+            const landing_pad_pos = if (pointer_segment_id == landing_segment_id) null else target_segment.items.len;
+            if (landing_pad_pos) |_| {
+                try target_segment.appendNTimes(self.allocator, 0, 8);
+            }
+
+            const tag_offset = target_segment.items.len;
+            try target_segment.appendNTimes(self.allocator, 0, 8);
+
+            const elements_offset = target_segment.items.len;
+            try target_segment.appendNTimes(self.allocator, 0, total_bytes);
+
+            const tag_word = makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
+            std.mem.writeInt(u64, target_segment.items[tag_offset..][0..8], tag_word, .little);
+
+            if (pointer_segment_id == landing_segment_id) {
+                const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(tag_offset)) - @as(isize, @intCast(pointer_pos)) - 8, 8)));
+                const list_ptr = makeListPointer(rel_offset, 7, total_words);
+                std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], list_ptr, .little);
+            } else {
+                const landing_pos = landing_pad_pos.?;
+                const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(tag_offset)) - @as(isize, @intCast(landing_pos)) - 8, 8)));
+                const list_ptr = makeListPointer(rel_offset, 7, total_words);
+                std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
+
+                const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
+                std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
+            }
+
+            return StructListBuilder{
+                .builder = self,
+                .segment_id = landing_segment_id,
+                .elements_offset = elements_offset,
+                .element_count = element_count,
+                .data_words = data_words,
+                .pointer_words = pointer_words,
+            };
+        }
+
+        const landing_segment = &self.segments.items[landing_segment_id];
+        const landing_pad_pos = landing_segment.items.len;
+        try landing_segment.appendNTimes(self.allocator, 0, 16);
+
+        const content_segment = &self.segments.items[content_segment_id];
+        const elements_offset = content_segment.items.len;
+        try content_segment.appendNTimes(self.allocator, 0, total_bytes);
+
+        const landing_far = makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
+        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
+
+        const tag_word = makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
+        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
+
+        const far_ptr = makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
+        std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
+
+        return StructListBuilder{
+            .builder = self,
+            .segment_id = content_segment_id,
+            .elements_offset = elements_offset,
+            .element_count = element_count,
+            .data_words = data_words,
+            .pointer_words = pointer_words,
+        };
+    }
+
     pub fn allocateStruct(self: *MessageBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
         // Ensure we have at least one segment
         if (self.segments.items.len == 0) {
@@ -2266,6 +2376,14 @@ pub const TextListBuilder = struct {
         if (index >= self.element_count) return error.IndexOutOfBounds;
         const pointer_pos = self.elements_offset + @as(usize, index) * 8;
         try self.builder.writeTextPointer(self.segment_id, pointer_pos, value, target_segment_id);
+    }
+};
+
+pub const VoidListBuilder = struct {
+    element_count: u32,
+
+    pub fn len(self: VoidListBuilder) u32 {
+        return self.element_count;
     }
 };
 
@@ -2937,6 +3055,30 @@ pub const StructBuilder = struct {
         std.mem.copyForwards(u8, slice, data);
     }
 
+    pub fn writeVoidList(self: StructBuilder, pointer_index: usize, element_count: u32) !VoidListBuilder {
+        return self.writeVoidListInSegment(pointer_index, element_count, self.segment_id);
+    }
+
+    pub fn writeVoidListInSegment(
+        self: StructBuilder,
+        pointer_index: usize,
+        element_count: u32,
+        target_segment_id: u32,
+    ) !VoidListBuilder {
+        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
+
+        while (self.builder.segments.items.len <= target_segment_id) {
+            _ = try self.builder.createSegment();
+        }
+
+        const source_segment = &self.builder.segments.items[self.segment_id];
+        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
+        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+
+        _ = try self.builder.writeListPointer(self.segment_id, pointer_pos, 0, element_count, target_segment_id);
+        return .{ .element_count = element_count };
+    }
+
     pub fn writeU8List(self: StructBuilder, pointer_index: usize, element_count: u32) !U8ListBuilder {
         return self.writeU8ListInSegment(pointer_index, element_count, self.segment_id);
     }
@@ -3177,87 +3319,16 @@ pub const StructBuilder = struct {
         content_segment_id: u32,
     ) !StructListBuilder {
         if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-        if (element_count > @as(u32, @intCast(std.math.maxInt(i32)))) return error.ElementCountTooLarge;
-
-        const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
-        const total_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
-        if (total_words_u64 > std.math.maxInt(u32)) return error.ListTooLarge;
-        const total_words = @as(u32, @intCast(total_words_u64));
-        const total_bytes = @as(usize, total_words) * 8;
-
-        while (self.builder.segments.items.len <= landing_segment_id or self.builder.segments.items.len <= content_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const source_segment = &self.builder.segments.items[self.segment_id];
         const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
-
-        if (landing_segment_id == content_segment_id) {
-            const target_segment = &self.builder.segments.items[landing_segment_id];
-            const landing_pad_pos = if (self.segment_id == landing_segment_id) null else target_segment.items.len;
-            if (landing_pad_pos) |_| {
-                try target_segment.appendNTimes(self.builder.allocator, 0, 8);
-            }
-
-            const tag_offset = target_segment.items.len;
-            try target_segment.appendNTimes(self.builder.allocator, 0, 8);
-
-            const elements_offset = target_segment.items.len;
-            try target_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
-
-            const tag_word = makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
-            std.mem.writeInt(u64, target_segment.items[tag_offset..][0..8], tag_word, .little);
-
-            if (self.segment_id == landing_segment_id) {
-                const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(tag_offset)) - @as(isize, @intCast(pointer_pos)) - 8, 8)));
-                const list_ptr = makeListPointer(rel_offset, 7, total_words);
-                std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], list_ptr, .little);
-            } else {
-                const landing_pos = landing_pad_pos.?;
-                const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(tag_offset)) - @as(isize, @intCast(landing_pos)) - 8, 8)));
-                const list_ptr = makeListPointer(rel_offset, 7, total_words);
-                std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
-
-                const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
-                std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
-            }
-
-            return StructListBuilder{
-                .builder = self.builder,
-                .segment_id = landing_segment_id,
-                .elements_offset = elements_offset,
-                .element_count = element_count,
-                .data_words = data_words,
-                .pointer_words = pointer_words,
-            };
-        }
-
-        const landing_segment = &self.builder.segments.items[landing_segment_id];
-        const landing_pad_pos = landing_segment.items.len;
-        try landing_segment.appendNTimes(self.builder.allocator, 0, 16);
-
-        const content_segment = &self.builder.segments.items[content_segment_id];
-        const elements_offset = content_segment.items.len;
-        try content_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
-
-        const landing_far = makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
-        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
-
-        const tag_word = makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
-        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
-
-        const far_ptr = makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
-        std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
-
-        return StructListBuilder{
-            .builder = self.builder,
-            .segment_id = content_segment_id,
-            .elements_offset = elements_offset,
-            .element_count = element_count,
-            .data_words = data_words,
-            .pointer_words = pointer_words,
-        };
+        return self.builder.writeStructListPointer(
+            self.segment_id,
+            pointer_pos,
+            element_count,
+            data_words,
+            pointer_words,
+            landing_segment_id,
+            content_segment_id,
+        );
     }
 
     pub fn writeTextList(self: StructBuilder, pointer_index: usize, element_count: u32) !TextListBuilder {
@@ -3419,7 +3490,7 @@ pub fn cloneAnyPointerToBytes(allocator: std.mem.Allocator, src: AnyPointerReade
     return out;
 }
 
-fn cloneAnyPointer(src: AnyPointerReader, dest: AnyPointerBuilder) anyerror!void {
+pub fn cloneAnyPointer(src: AnyPointerReader, dest: AnyPointerBuilder) anyerror!void {
     const resolved = try src.message.resolvePointer(src.segment_id, src.pointer_pos, src.pointer_word, 8);
     if (resolved.pointer_word == 0) {
         try dest.setNull();

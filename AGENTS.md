@@ -12,6 +12,7 @@
 - `just release` builds optimized (`zig build -Doptimize=ReleaseSafe`).
 - `just test` runs all tests with summary output (`zig build test --summary all`).
 - `zig build test-message`, `zig build test-codegen`, `zig build test-integration`, `zig build test-real-world`, `zig build test-union` run focused suites.
+- `zig build test-capnp-testdata` and `zig build test-capnp-test-vendor` run Cap’n Proto fixture suites.
 - `just fmt` formats `src/` and `tests/` (`zig fmt`).
 - `just check` compiles without linking (`zig build check`).
 - `just example` runs Cap’n Proto compilation using the local plugin (requires `capnp` and `just build`).

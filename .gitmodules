@@ -1,0 +1,3 @@
+[submodule "vendor/ext/capnp_test"]
+	path = vendor/ext/capnp_test
+	url = https://github.com/kaos/capnp_test.git
