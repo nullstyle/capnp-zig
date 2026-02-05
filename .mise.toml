@@ -1,0 +1,6 @@
+[tools]
+uv = "latest"
+zig = "0.15.2"
+
+[env]
+ZIG_GLOBAL_CACHE_DIR = ".zig-cache"

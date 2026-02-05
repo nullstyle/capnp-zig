@@ -1,0 +1,8 @@
+zig-out/
+.zig-cache/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.pdb

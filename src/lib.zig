@@ -1,0 +1,10 @@
+// Library exports for capnpc-zig
+pub const message = @import("message.zig");
+pub const schema = @import("schema.zig");
+pub const reader = @import("reader.zig");
+pub const codegen = @import("codegen/generator.zig");
+pub const request = @import("request_reader.zig");
+
+test {
+    @import("std").testing.refAllDecls(@This());
+}
