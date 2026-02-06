@@ -1,0 +1,11 @@
+.{
+    .name = .capnpc_zig,
+    .version = "0.15.2",
+    .dependencies = .{
+        .libxev = .{
+            .path = "vendor/ext/libxev",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0x9dca32f1156e479d,
+}

@@ -30,3 +30,4 @@ example: build
 # Check for errors without building
 check:
     zig build check
+

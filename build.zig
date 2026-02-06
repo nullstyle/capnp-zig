@@ -3,12 +3,26 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const with_interop_rpc = b.option(
+        bool,
+        "with-interop-rpc",
+        "Include RPC interop tests in the aggregate test step",
+    ) orelse false;
+
+    const xev_module = b.addModule("xev", .{
+        .root_source_file = b.path("vendor/ext/libxev/src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "xev", .module = xev_module },
+        },
     });
 
     // Main executable
@@ -89,6 +103,48 @@ pub fn build(b: *std.Build) void {
     const bench_unpack_step = b.step("bench-unpacked", "Run unpacked (unpacking) benchmark");
     bench_unpack_step.dependOn(&run_unpack.step);
 
+    const bench_check = b.addExecutable(.{
+        .name = "bench-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/bench_check.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(bench_check);
+
+    const run_bench_check = b.addRunArtifact(bench_check);
+    run_bench_check.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_bench_check.addArgs(args);
+    }
+
+    const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
+    bench_check_step.dependOn(&run_bench_check.step);
+
+    // RPC ping-pong example
+    const rpc_pingpong_example = b.addExecutable(.{
+        .name = "example-rpc-pingpong",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/rpc_pingpong.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "xev", .module = xev_module },
+            },
+        }),
+    });
+
+    const run_rpc_pingpong = b.addRunArtifact(rpc_pingpong_example);
+    if (b.args) |args| {
+        run_rpc_pingpong.addArgs(args);
+    }
+
+    const example_rpc_step = b.step("example-rpc", "Run RPC ping-pong example");
+    example_rpc_step.dependOn(&run_rpc_pingpong.step);
+
     // Unit tests for main
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -153,6 +209,32 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_codegen_annotations_tests = b.addRunArtifact(codegen_annotations_tests);
+
+    const codegen_rpc_nested_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/codegen_rpc_nested_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_codegen_rpc_nested_tests = b.addRunArtifact(codegen_rpc_nested_tests);
+
+    const codegen_generated_runtime_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/codegen_generated_runtime_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_codegen_generated_runtime_tests = b.addRunArtifact(codegen_generated_runtime_tests);
 
     // Integration tests
     const integration_tests = b.addTest(.{
@@ -279,6 +361,91 @@ pub fn build(b: *std.Build) void {
 
     const run_schema_validation_tests = b.addRunArtifact(schema_validation_tests);
 
+    // RPC framing tests
+    const rpc_framing_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_framing_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_framing_tests = b.addRunArtifact(rpc_framing_tests);
+
+    // RPC cap table encoding tests
+    const rpc_cap_table_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_cap_table_encode_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_cap_table_tests = b.addRunArtifact(rpc_cap_table_tests);
+
+    // RPC promised answer transform tests
+    const rpc_promised_answer_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_promised_answer_transform_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_promised_answer_tests = b.addRunArtifact(rpc_promised_answer_tests);
+
+    // RPC protocol/cap table tests
+    const rpc_protocol_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_protocol_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_protocol_tests = b.addRunArtifact(rpc_protocol_tests);
+
+    // RPC peer behavior tests
+    const rpc_peer_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_peer_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_peer_tests = b.addRunArtifact(rpc_peer_tests);
+
+    // RPC interop tests (Go server)
+    const interop_rpc_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/interop_rpc_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "xev", .module = xev_module },
+            },
+        }),
+    });
+
+    const run_interop_rpc_tests = b.addRunArtifact(interop_rpc_tests);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
@@ -286,6 +453,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_codegen_tests.step);
     test_step.dependOn(&run_codegen_defaults_tests.step);
     test_step.dependOn(&run_codegen_annotations_tests.step);
+    test_step.dependOn(&run_codegen_rpc_nested_tests.step);
+    test_step.dependOn(&run_codegen_generated_runtime_tests.step);
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_interop_tests.step);
     test_step.dependOn(&run_interop_roundtrip_tests.step);
@@ -295,6 +464,14 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_capnp_testdata_tests.step);
     test_step.dependOn(&run_capnp_test_vendor_tests.step);
     test_step.dependOn(&run_schema_validation_tests.step);
+    test_step.dependOn(&run_rpc_framing_tests.step);
+    test_step.dependOn(&run_rpc_cap_table_tests.step);
+    test_step.dependOn(&run_rpc_promised_answer_tests.step);
+    if (with_interop_rpc) {
+        test_step.dependOn(&run_interop_rpc_tests.step);
+    }
+    test_step.dependOn(&run_rpc_protocol_tests.step);
+    test_step.dependOn(&run_rpc_peer_tests.step);
 
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
@@ -304,6 +481,8 @@ pub fn build(b: *std.Build) void {
     test_codegen_step.dependOn(&run_codegen_tests.step);
     test_codegen_step.dependOn(&run_codegen_defaults_tests.step);
     test_codegen_step.dependOn(&run_codegen_annotations_tests.step);
+    test_codegen_step.dependOn(&run_codegen_rpc_nested_tests.step);
+    test_codegen_step.dependOn(&run_codegen_generated_runtime_tests.step);
 
     const test_integration_step = b.step("test-integration", "Run integration tests");
     test_integration_step.dependOn(&run_integration_tests.step);
@@ -326,6 +505,16 @@ pub fn build(b: *std.Build) void {
 
     const test_schema_validation_step = b.step("test-schema-validation", "Run schema validation + canonicalization tests");
     test_schema_validation_step.dependOn(&run_schema_validation_tests.step);
+
+    const test_rpc_step = b.step("test-rpc", "Run RPC framing tests");
+    test_rpc_step.dependOn(&run_rpc_framing_tests.step);
+    test_rpc_step.dependOn(&run_rpc_cap_table_tests.step);
+    test_rpc_step.dependOn(&run_rpc_promised_answer_tests.step);
+    test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
+    test_rpc_step.dependOn(&run_rpc_peer_tests.step);
+
+    const test_interop_rpc_step = b.step("test-interop-rpc", "Run RPC interop tests");
+    test_interop_rpc_step.dependOn(&run_interop_rpc_tests.step);
 
     // Check step (compile without linking)
     const check = b.addExecutable(.{

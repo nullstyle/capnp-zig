@@ -1,0 +1,93 @@
+{
+  "max_regression_pct": 30.0,
+  "cases": [
+    {
+      "name": "ping_pong_default",
+      "binary": "./zig-out/bin/bench-ping-pong",
+      "args": [
+        "--iters",
+        "6000",
+        "--payload",
+        "1024",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "ns_per_iter",
+      "baseline": 2929.381833
+    },
+    {
+      "name": "ping_pong_far",
+      "binary": "./zig-out/bin/bench-ping-pong",
+      "args": [
+        "--iters",
+        "6000",
+        "--payload",
+        "1024",
+        "--warmup",
+        "200",
+        "--far",
+        "--json"
+      ],
+      "metric": "ns_per_iter",
+      "baseline": 3459.708333
+    },
+    {
+      "name": "packed_pack_default",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "pack",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "ns_per_iter",
+      "baseline": 173923.652833
+    },
+    {
+      "name": "packed_unpack_default",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "unpack",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "ns_per_iter",
+      "baseline": 108204.368
+    },
+    {
+      "name": "packed_roundtrip_default",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "roundtrip",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "ns_per_iter",
+      "baseline": 270675.972167
+    }
+  ]
+}

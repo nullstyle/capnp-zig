@@ -1,0 +1,332 @@
+const std = @import("std");
+const framing = @import("framing.zig");
+const transport_xev = @import("transport_xev.zig");
+const xev = @import("xev");
+const message = @import("../message.zig");
+
+pub const Connection = struct {
+    allocator: std.mem.Allocator,
+    transport: transport_xev.Transport,
+    framer: framing.Framer,
+    ctx: ?*anyopaque = null,
+    on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
+    on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
+    on_close: ?*const fn (conn: *Connection) void = null,
+
+    pub const Options = struct {
+        read_buffer_size: usize = 64 * 1024,
+    };
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        loop: *xev.Loop,
+        socket: xev.TCP,
+        options: Options,
+    ) !Connection {
+        return .{
+            .allocator = allocator,
+            .transport = try transport_xev.Transport.init(allocator, loop, socket, options.read_buffer_size),
+            .framer = framing.Framer.init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Connection) void {
+        self.ctx = null;
+        self.on_message = null;
+        self.on_error = null;
+        self.on_close = null;
+        self.transport.clearHandlers();
+        self.transport.deinit();
+        self.framer.deinit();
+    }
+
+    pub fn start(
+        self: *Connection,
+        ctx: *anyopaque,
+        on_message: *const fn (conn: *Connection, frame: []const u8) anyerror!void,
+        on_error: *const fn (conn: *Connection, err: anyerror) void,
+        on_close: *const fn (conn: *Connection) void,
+    ) void {
+        self.ctx = ctx;
+        self.on_message = on_message;
+        self.on_error = on_error;
+        self.on_close = on_close;
+
+        self.transport.setCloseHandler(self, onTransportClose);
+        self.transport.startRead(self, onTransportRead);
+    }
+
+    pub fn sendFrame(self: *Connection, frame: []const u8) !void {
+        try self.transport.queueWrite(frame, self, onWriteDone);
+    }
+
+    pub fn close(self: *Connection) void {
+        self.transport.close();
+    }
+
+    fn onTransportRead(ctx: *anyopaque, data: []const u8) void {
+        const conn: *Connection = @ptrCast(@alignCast(ctx));
+        conn.handleRead(data);
+    }
+
+    fn handleRead(self: *Connection, data: []const u8) void {
+        if (self.on_message == null or self.on_error == null) return;
+
+        const push_result = self.framer.push(data);
+        if (push_result) |_| {} else |err| {
+            self.on_error.?(self, err);
+            return;
+        }
+
+        while (true) {
+            const frame = self.framer.popFrame() catch |err| {
+                self.on_error.?(self, err);
+                return;
+            };
+            if (frame == null) break;
+            const bytes = frame.?;
+            defer self.allocator.free(bytes);
+
+            self.on_message.?(self, bytes) catch |err| {
+                self.on_error.?(self, err);
+                return;
+            };
+        }
+    }
+
+    fn onTransportClose(ctx: *anyopaque, err: ?anyerror) void {
+        const conn: *Connection = @ptrCast(@alignCast(ctx));
+        if (err) |e| {
+            if (conn.on_error) |cb| cb(conn, e);
+        }
+        if (conn.on_close) |cb| cb(conn);
+    }
+
+    fn onWriteDone(ctx: *anyopaque, err: ?anyerror) void {
+        if (err) |e| {
+            const conn: *Connection = @ptrCast(@alignCast(ctx));
+            if (conn.on_error) |cb| cb(conn, e);
+        }
+    }
+};
+
+fn buildTestFrame(allocator: std.mem.Allocator, value: u32) ![]const u8 {
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(1, 0);
+    root.writeU32(0, value);
+    return builder.toBytes();
+}
+
+test "connection handleRead assembles fragmented frame and dispatches once complete" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            allocator: std.mem.Allocator,
+            received: std.ArrayList(u32),
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(conn: *Connection, frame: []const u8) !void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            var msg = try message.Message.init(state.allocator, frame);
+            defer msg.deinit();
+            const root = try msg.getRootStruct();
+            try state.received.append(state.allocator, root.readU32(0));
+        }
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    const frame = try buildTestFrame(allocator, 0xA1B2_C3D4);
+    defer allocator.free(frame);
+
+    var state = Harness.State{
+        .allocator = allocator,
+        .received = std.ArrayList(u32){},
+    };
+    defer state.received.deinit(allocator);
+
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.framer.deinit();
+
+    try std.testing.expect(frame.len > 8);
+    conn.handleRead(frame[0..5]);
+    try std.testing.expectEqual(@as(usize, 0), state.received.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.error_count);
+
+    conn.handleRead(frame[5..]);
+    try std.testing.expectEqual(@as(usize, 1), state.received.items.len);
+    try std.testing.expectEqual(@as(u32, 0xA1B2_C3D4), state.received.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), state.error_count);
+}
+
+test "connection handleRead dispatches coalesced frames in order" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            allocator: std.mem.Allocator,
+            received: std.ArrayList(u32),
+            error_count: usize = 0,
+        };
+
+        fn onMessage(conn: *Connection, frame: []const u8) !void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            var msg = try message.Message.init(state.allocator, frame);
+            defer msg.deinit();
+            const root = try msg.getRootStruct();
+            try state.received.append(state.allocator, root.readU32(0));
+        }
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            _ = err;
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+        }
+    };
+
+    const first = try buildTestFrame(allocator, 10);
+    defer allocator.free(first);
+    const second = try buildTestFrame(allocator, 20);
+    defer allocator.free(second);
+
+    const combined = try allocator.alloc(u8, first.len + second.len);
+    defer allocator.free(combined);
+    std.mem.copyForwards(u8, combined[0..first.len], first);
+    std.mem.copyForwards(u8, combined[first.len..], second);
+
+    var state = Harness.State{
+        .allocator = allocator,
+        .received = std.ArrayList(u32){},
+    };
+    defer state.received.deinit(allocator);
+
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.framer.deinit();
+
+    conn.handleRead(combined);
+    try std.testing.expectEqual(@as(usize, 2), state.received.items.len);
+    try std.testing.expectEqual(@as(u32, 10), state.received.items[0]);
+    try std.testing.expectEqual(@as(u32, 20), state.received.items[1]);
+    try std.testing.expectEqual(@as(usize, 0), state.error_count);
+}
+
+test "connection handleRead stops draining when message handler errors" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            allocator: std.mem.Allocator,
+            received: std.ArrayList(u32),
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(conn: *Connection, frame: []const u8) !void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            var msg = try message.Message.init(state.allocator, frame);
+            defer msg.deinit();
+            const root = try msg.getRootStruct();
+            try state.received.append(state.allocator, root.readU32(0));
+            if (state.received.items.len == 1) return error.TestMessageHandlerFailure;
+        }
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    const first = try buildTestFrame(allocator, 111);
+    defer allocator.free(first);
+    const second = try buildTestFrame(allocator, 222);
+    defer allocator.free(second);
+
+    const combined = try allocator.alloc(u8, first.len + second.len);
+    defer allocator.free(combined);
+    std.mem.copyForwards(u8, combined[0..first.len], first);
+    std.mem.copyForwards(u8, combined[first.len..], second);
+
+    var state = Harness.State{
+        .allocator = allocator,
+        .received = std.ArrayList(u32){},
+    };
+    defer state.received.deinit(allocator);
+
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.framer.deinit();
+
+    conn.handleRead(combined);
+    try std.testing.expectEqual(@as(usize, 1), state.received.items.len);
+    try std.testing.expectEqual(@as(u32, 111), state.received.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expect(state.last_error == error.TestMessageHandlerFailure);
+    try std.testing.expect(conn.framer.bufferedBytes() > 0);
+}
+
+test "connection handleRead reports malformed frame errors" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.framer.deinit();
+
+    // segment_count_minus_one = max u32 overflows on +1 in framer.updateExpected()
+    const bad_header = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    conn.handleRead(&bad_header);
+
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expect(state.last_error == error.InvalidFrame);
+}

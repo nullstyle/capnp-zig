@@ -200,6 +200,65 @@ test "Message: validate traversal and nesting limits" {
     try testing.expectError(error.NestingLimitExceeded, msg.validate(.{ .nesting_limit = 0 }));
 }
 
+test "Message: segment count decode limit is enforced" {
+    // segment_count_minus_one = 512 => 513 segments, beyond Message.max_segment_count (512)
+    const bytes = [_]u8{ 0x00, 0x02, 0x00, 0x00 };
+    try testing.expectError(error.SegmentCountLimitExceeded, message.Message.init(testing.allocator, &bytes));
+}
+
+test "Message: validate enforces segment count limit option" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    _ = try builder.allocateStruct(0, 0);
+    _ = try builder.createSegment();
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    try msg.validate(.{ .segment_count_limit = 2 });
+    try testing.expectError(error.SegmentCountLimitExceeded, msg.validate(.{ .segment_count_limit = 1 }));
+}
+
+test "Message: traversal limit boundary conditions" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(1, 0);
+    root_builder.writeU64(0, 123);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    try msg.validate(.{ .traversal_limit_words = 1 });
+    try testing.expectError(error.TraversalLimitExceeded, msg.validate(.{ .traversal_limit_words = 0 }));
+}
+
+test "Message: nesting limit boundary conditions" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var child = try root_builder.initStruct(0, 0, 1);
+    var grandchild = try child.initStruct(0, 1, 0);
+    grandchild.writeU32(0, 99);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    try msg.validate(.{ .nesting_limit = 3 });
+    try testing.expectError(error.NestingLimitExceeded, msg.validate(.{ .nesting_limit = 2 }));
+}
+
 test "StructReader: out of bounds access returns zero" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -819,4 +878,31 @@ test "AnyPointer: set and read text" {
     const root = try msg.getRootStruct();
     const any_reader = try root.readAnyPointer(0);
     try testing.expectEqualStrings("any", try any_reader.getText());
+}
+
+test "Message: malformed segment count header reports InvalidSegmentCount" {
+    const bytes = [_]u8{
+        0xff, 0xff, 0xff, 0xff, // segment_count_minus_one (overflow)
+        0x00, 0x00, 0x00, 0x00, // first segment size (unused)
+    };
+    try testing.expectError(error.InvalidSegmentCount, message.Message.init(testing.allocator, &bytes));
+}
+
+test "Message: fuzz malformed buffers do not crash decode" {
+    var prng = std.Random.DefaultPrng.init(0x3E22_7AB4_BD10_9C61);
+    const random = prng.random();
+
+    var i: usize = 0;
+    while (i < 1024) : (i += 1) {
+        const len = random.uintLessThan(usize, 160);
+        const bytes = try testing.allocator.alloc(u8, len);
+        defer testing.allocator.free(bytes);
+        random.bytes(bytes);
+
+        var msg = message.Message.init(testing.allocator, bytes) catch continue;
+        defer msg.deinit();
+
+        _ = msg.getRootStruct() catch {};
+        _ = msg.validate(.{}) catch {};
+    }
 }

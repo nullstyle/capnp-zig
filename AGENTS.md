@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `src/` holds the Zig library and plugin entry point.
-- `src/codegen/` contains codegen utilities and generators.
+- `src/capnpc-zig/` contains codegen utilities and generators.
 - `tests/` contains Zig test suites; fixture schemas live in `tests/test_schemas/`.
 - `build.zig` defines build/test steps; `Justfile` wraps common tasks.
 - `zig-out/` and `.zig-cache/` are build artifacts.
@@ -18,6 +18,7 @@
 - `just example` runs Cap’n Proto compilation using the local plugin (requires `capnp` and `just build`).
 - `just install` copies `zig-out/bin/capnpc-zig` to `~/.local/bin/`.
 - `zig build bench-ping-pong -- --iters 10000 --payload 1024` runs the ping-pong benchmark.
+- `zig build example-rpc` runs the RPC ping-pong example (`examples/rpc_pingpong.zig`).
 
 ## Coding Style & Naming Conventions
 - Format with `zig fmt`; don’t hand-format.

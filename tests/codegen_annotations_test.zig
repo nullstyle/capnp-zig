@@ -47,6 +47,7 @@ test "Codegen annotation uses" {
     try expectContains(output, "Person_field_annotations");
     try expectContains(output, "Color_enumerant_annotations");
     try expectContains(output, "Service_method_annotations");
+    try expectContains(output, "fromBootstrap");
     try expectContains(output, ".text = \"type\"");
     try expectContains(output, ".text = \"id\"");
     try expectContains(output, ".bool = true");

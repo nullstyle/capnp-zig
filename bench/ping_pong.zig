@@ -8,6 +8,7 @@ const Config = struct {
     payload_size: usize = 1024,
     warmup: usize = 100,
     far_payload: bool = false,
+    json: bool = false,
 };
 
 const IterationResult = struct {
@@ -25,6 +26,7 @@ fn printUsage() void {
         \\  --payload N  Payload size in bytes (default: 1024)
         \\  --warmup N   Warmup iterations (default: 100)
         \\  --far        Place payload in a second segment (far pointer)
+        \\  --json       Emit machine-readable JSON output
         \\  -h, --help   Show this help
         \\
     , .{}) catch {};
@@ -63,6 +65,10 @@ fn parseArgs(allocator: std.mem.Allocator) !?Config {
         }
         if (std.mem.eql(u8, arg, "--far")) {
             cfg.far_payload = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--json")) {
+            cfg.json = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -220,6 +226,28 @@ pub fn main() !void {
     const per_iter_bytes = @as(u64, @intCast(ping_size + pong_size));
     const total_bytes = per_iter_bytes * @as(u64, @intCast(cfg.iterations));
     const mib_per_sec = (@as(f64, @floatFromInt(total_bytes)) / (1024.0 * 1024.0)) / seconds;
+
+    if (cfg.json) {
+        var out_buffer: [4096]u8 = undefined;
+        var out = std.fs.File.stdout().writer(&out_buffer);
+        try out.interface.print(
+            "{{\"benchmark\":\"ping_pong\",\"iterations\":{d},\"payload_size\":{d},\"far_payload\":{s},\"ping_size\":{d},\"pong_size\":{d},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"checksum\":{d}}}\n",
+            .{
+                cfg.iterations,
+                cfg.payload_size,
+                if (cfg.far_payload) "true" else "false",
+                ping_size,
+                pong_size,
+                elapsed_ns,
+                ns_per_iter,
+                ops_per_sec,
+                mib_per_sec,
+                checksum,
+            },
+        );
+        try out.interface.flush();
+        return;
+    }
 
     var out_buffer: [4096]u8 = undefined;
     var out = std.fs.File.stdout().writer(&out_buffer);

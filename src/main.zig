@@ -1,5 +1,5 @@
 const std = @import("std");
-const Generator = @import("codegen/generator.zig").Generator;
+const Generator = @import("capnpc-zig/generator.zig").Generator;
 const request_reader = @import("request_reader.zig");
 
 pub fn main() !void {

@@ -145,7 +145,7 @@ capnpc-zig/
 │   ├── message.zig           # Core serialization/deserialization
 │   ├── schema.zig            # Schema structures
 │   ├── reader.zig            # Cap'n Proto reader utilities
-│   └── codegen/
+│   └── capnpc-zig/
 │       ├── generator.zig     # Code generator (future)
 │       ├── types.zig         # Type utilities
 │       └── struct_gen.zig    # Struct generation
@@ -283,7 +283,7 @@ The implementation follows a layered architecture:
 
 1. **Wire Format Layer** (`message.zig`): Handles Cap'n Proto binary format
 2. **Schema Layer** (`schema.zig`): Represents Cap'n Proto schema structures
-3. **Code Generation Layer** (`codegen/`): Transforms schemas to Zig code
+3. **Code Generation Layer** (`capnpc-zig/`): Transforms schemas to Zig code
 4. **Plugin Layer** (`main.zig`): Integrates with Cap'n Proto compiler
 
 ## Performance

@@ -16,6 +16,7 @@ const Config = struct {
     warmup: usize = 100,
     far_payload: bool = false,
     mode: Mode = .roundtrip,
+    json: bool = false,
 };
 
 fn printUsage() void {
@@ -30,6 +31,7 @@ fn printUsage() void {
         \\  --list-len N                  U64 list length (default: 2048)
         \\  --warmup N                    Warmup iterations (default: 100)
         \\  --far                         Place payload and list in a second segment
+        \\  --json                        Emit machine-readable JSON output
         \\  -h, --help                    Show this help
         \\
     , .{}) catch {};
@@ -95,6 +97,10 @@ fn parseArgs(allocator: std.mem.Allocator) !?Config {
         }
         if (std.mem.eql(u8, arg, "--far")) {
             cfg.far_payload = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--json")) {
+            cfg.json = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -298,6 +304,31 @@ pub fn main() !void {
         0.0
     else
         @as(f64, @floatFromInt(unpacked_len)) / @as(f64, @floatFromInt(packed_len));
+
+    if (cfg.json) {
+        var out_buffer: [4096]u8 = undefined;
+        var out = std.fs.File.stdout().writer(&out_buffer);
+        try out.interface.print(
+            "{{\"benchmark\":\"packed_unpacked\",\"mode\":\"{s}\",\"iterations\":{d},\"payload_size\":{d},\"list_len\":{d},\"far_payload\":{s},\"unpacked_len\":{d},\"packed_len\":{d},\"compression\":{d:.6},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"checksum\":{d}}}\n",
+            .{
+                modeName(cfg.mode),
+                cfg.iterations,
+                cfg.payload_size,
+                cfg.list_len,
+                if (cfg.far_payload) "true" else "false",
+                unpacked_len,
+                packed_len,
+                compression,
+                elapsed_ns,
+                ns_per_iter,
+                ops_per_sec,
+                mib_per_sec,
+                checksum,
+            },
+        );
+        try out.interface.flush();
+        return;
+    }
 
     var out_buffer: [4096]u8 = undefined;
     var out = std.fs.File.stdout().writer(&out_buffer);

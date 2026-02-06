@@ -232,6 +232,8 @@ pub const Capability = struct {
 
 /// Cap'n Proto message reader with full segment support
 pub const Message = struct {
+    pub const max_segment_count: usize = 512;
+
     allocator: std.mem.Allocator,
     segments: []const []const u8,
     segments_owned: bool = true,
@@ -252,6 +254,7 @@ pub const Message = struct {
     };
 
     pub const ValidationOptions = struct {
+        segment_count_limit: usize = max_segment_count,
         traversal_limit_words: usize = 8 * 1024 * 1024,
         nesting_limit: usize = 64,
     };
@@ -262,14 +265,21 @@ pub const Message = struct {
 
         // Read segment count
         const segment_count_minus_one = try reader.readInt(u32, .little);
-        const segment_count = segment_count_minus_one + 1;
+        const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
+        const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
+        if (segment_count_usize > max_segment_count) return error.SegmentCountLimitExceeded;
+        const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
+        const header_words_no_padding = std.math.add(usize, 1, segment_count_usize) catch return error.InvalidMessageSize;
+        const header_words = std.math.add(usize, header_words_no_padding, padding_words) catch return error.InvalidMessageSize;
+        const header_bytes = std.math.mul(usize, header_words, 4) catch return error.InvalidMessageSize;
+        if (header_bytes > data.len) return error.TruncatedMessage;
 
         // Allocate segment array
-        const segments = try allocator.alloc([]const u8, segment_count);
+        const segments = try allocator.alloc([]const u8, segment_count_usize);
         errdefer allocator.free(segments);
 
         // Read segment sizes (in words)
-        const segment_sizes = try allocator.alloc(u32, segment_count);
+        const segment_sizes = try allocator.alloc(u32, segment_count_usize);
         defer allocator.free(segment_sizes);
 
         // First segment size is in the next word
@@ -286,12 +296,14 @@ pub const Message = struct {
         // Read segment data
         var offset: usize = stream.pos;
         for (segment_sizes, 0..) |size_words, i| {
-            const size_bytes = size_words * 8;
-            if (offset + size_bytes > data.len) {
+            const size_words_usize = std.math.cast(usize, size_words) orelse return error.InvalidMessageSize;
+            const size_bytes = std.math.mul(usize, size_words_usize, 8) catch return error.InvalidMessageSize;
+            const end = std.math.add(usize, offset, size_bytes) catch return error.TruncatedMessage;
+            if (end > data.len) {
                 return error.TruncatedMessage;
             }
-            segments[i] = data[offset .. offset + size_bytes];
-            offset += size_bytes;
+            segments[i] = data[offset..end];
+            offset = end;
         }
 
         return .{
@@ -328,7 +340,7 @@ pub const Message = struct {
         return std.mem.readInt(u64, segment[byte_offset..][0..8], .little);
     }
 
-    fn resolvePointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64, depth: u8) !ResolvedPointer {
+    pub fn resolvePointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64, depth: u8) !ResolvedPointer {
         if (depth == 0) return error.PointerDepthLimit;
 
         const pointer_type = @as(u2, @truncate(pointer_word & 0x3));
@@ -574,6 +586,7 @@ pub const Message = struct {
 
     pub fn validate(self: *const Message, options: ValidationOptions) anyerror!void {
         if (self.segments.len == 0) return error.EmptyMessage;
+        if (self.segments.len > options.segment_count_limit) return error.SegmentCountLimitExceeded;
         const segment = self.segments[0];
         if (segment.len < 8) return error.TruncatedMessage;
 
