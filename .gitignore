@@ -1,8 +1,12 @@
 zig-out/
 .zig-cache/
+.zig-global-cache/
 *.o
 *.a
 *.so
 *.dylib
 *.exe
 *.pdb
+.gocache/
+.gomodcache/
+obj/
