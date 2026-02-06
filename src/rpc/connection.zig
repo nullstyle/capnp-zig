@@ -64,6 +64,10 @@ pub const Connection = struct {
         self.transport.close();
     }
 
+    pub fn isClosing(self: *const Connection) bool {
+        return self.transport.isClosing();
+    }
+
     fn onTransportRead(ctx: *anyopaque, data: []const u8) void {
         const conn: *Connection = @ptrCast(@alignCast(ctx));
         conn.handleRead(data);
@@ -329,4 +333,26 @@ test "connection handleRead reports malformed frame errors" {
 
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expect(state.last_error == error.InvalidFrame);
+}
+
+test "connection isClosing reflects transport state" {
+    const allocator = std.testing.allocator;
+    var read_buf = [_]u8{0} ** 8;
+
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = .{
+            .loop = undefined,
+            .socket = undefined,
+            .allocator = allocator,
+            .read_buf = read_buf[0..],
+        },
+        .framer = framing.Framer.init(allocator),
+    };
+    defer conn.framer.deinit();
+
+    try std.testing.expect(!conn.isClosing());
+
+    conn.transport.close_requested = true;
+    try std.testing.expect(conn.isClosing());
 }

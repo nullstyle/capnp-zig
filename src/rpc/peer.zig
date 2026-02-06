@@ -1333,6 +1333,18 @@ pub const Peer = struct {
     fn releaseExport(self: *Peer, id: u32, count: u32) void {
         if (count == 0) return;
         var entry = self.exports.getEntry(id) orelse return;
+
+        if (self.bootstrap_export_id) |bootstrap_id| {
+            if (bootstrap_id == id) {
+                if (entry.value_ptr.ref_count <= count) {
+                    entry.value_ptr.ref_count = 0;
+                } else {
+                    entry.value_ptr.ref_count -= count;
+                }
+                return;
+            }
+        }
+
         if (entry.value_ptr.ref_count <= count) {
             _ = self.exports.remove(id);
             self.caps.clearExportPromise(id);
@@ -1647,7 +1659,14 @@ pub const Peer = struct {
         protocol.CapDescriptor.writeSenderHosted(entry, export_id);
         try self.noteExportRef(export_id);
 
-        try self.sendBuilder(&builder);
+        const bytes = try builder.finish();
+        defer self.allocator.free(bytes);
+
+        try self.sendFrame(bytes);
+
+        const copy = try self.allocator.alloc(u8, bytes.len);
+        std.mem.copyForwards(u8, copy, bytes);
+        try self.recordResolvedAnswer(bootstrap.question_id, copy);
     }
 
     fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
@@ -4137,6 +4156,184 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
     const ex = ret.exception orelse return error.MissingException;
     try std.testing.expectEqualStrings("resolved", ex.reason);
+}
+
+test "bootstrap return is recorded for promisedAnswer pipelined calls" {
+    const allocator = std.testing.allocator;
+
+    const ServerCtx = struct {
+        called: bool = false,
+        question_id: u32 = 0,
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+    const Handlers = struct {
+        fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const ctx: *ServerCtx = @ptrCast(@alignCast(ctx_ptr));
+            ctx.called = true;
+            ctx.question_id = call.question_id;
+            try peer.sendReturnException(call.question_id, "ok");
+        }
+    };
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var server_ctx = ServerCtx{};
+    _ = try peer.setBootstrap(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    const bootstrap_question_id: u32 = 41;
+    {
+        var bootstrap_builder = protocol.MessageBuilder.init(allocator);
+        defer bootstrap_builder.deinit();
+        try bootstrap_builder.buildBootstrap(bootstrap_question_id);
+
+        const bootstrap_frame = try bootstrap_builder.finish();
+        defer allocator.free(bootstrap_frame);
+        try peer.handleFrame(bootstrap_frame);
+    }
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+
+    const pipelined_question_id: u32 = 42;
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(pipelined_question_id, 0xABCD, 7);
+        try call.setTargetPromisedAnswer(bootstrap_question_id);
+        try call.setEmptyCapTable();
+
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try peer.handleFrame(call_frame);
+    }
+
+    try std.testing.expect(server_ctx.called);
+    try std.testing.expectEqual(pipelined_question_id, server_ctx.question_id);
+    try std.testing.expect(!peer.pending_promises.contains(bootstrap_question_id));
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+
+    var ret_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
+    defer ret_msg.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.return_, ret_msg.tag);
+    const ret = try ret_msg.asReturn();
+    try std.testing.expectEqual(pipelined_question_id, ret.answer_id);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+}
+
+test "bootstrap promisedAnswer call still resolves after bootstrap export release" {
+    const allocator = std.testing.allocator;
+
+    const ServerCtx = struct {
+        called: bool = false,
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+    const Handlers = struct {
+        fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const ctx: *ServerCtx = @ptrCast(@alignCast(ctx_ptr));
+            ctx.called = true;
+            try peer.sendReturnException(call.question_id, "ok");
+        }
+    };
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var server_ctx = ServerCtx{};
+    const bootstrap_export_id = try peer.setBootstrap(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    const bootstrap_question_id: u32 = 101;
+    {
+        var bootstrap_builder = protocol.MessageBuilder.init(allocator);
+        defer bootstrap_builder.deinit();
+        try bootstrap_builder.buildBootstrap(bootstrap_question_id);
+
+        const bootstrap_frame = try bootstrap_builder.finish();
+        defer allocator.free(bootstrap_frame);
+        try peer.handleFrame(bootstrap_frame);
+    }
+
+    {
+        var release_builder = protocol.MessageBuilder.init(allocator);
+        defer release_builder.deinit();
+        try release_builder.buildRelease(bootstrap_export_id, 1);
+        const release_frame = try release_builder.finish();
+        defer allocator.free(release_frame);
+        try peer.handleFrame(release_frame);
+    }
+
+    const pipelined_question_id: u32 = 102;
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(pipelined_question_id, 0xCCDD, 7);
+        try call.setTargetPromisedAnswer(bootstrap_question_id);
+        try call.setEmptyCapTable();
+
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try peer.handleFrame(call_frame);
+    }
+
+    try std.testing.expect(server_ctx.called);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+
+    var ret_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
+    defer ret_msg.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.return_, ret_msg.tag);
+    const ret = try ret_msg.asReturn();
+    try std.testing.expectEqual(pipelined_question_id, ret.answer_id);
+    try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+    const ex = ret.exception orelse return error.MissingException;
+    try std.testing.expectEqualStrings("ok", ex.reason);
 }
 
 test "handleFrame unimplemented call converts outstanding question to exception" {

@@ -1,0 +1,65 @@
+# Zig interoperability end-to-end harness.
+#
+# This compose file provides reference Cap'n Proto RPC implementations.
+# The test runner always treats Zig as the system under test.
+
+services:
+  cpp-rpc:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/cpp/Dockerfile
+    networks:
+      - capnp-rpc-net
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CAPNP_RPC_PORT=4000
+    command: ["server", "--port", "4000", "--schema", "game_world"]
+
+  go-rpc:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/go/Dockerfile
+    networks:
+      - capnp-rpc-net
+    ports:
+      - "4001:4001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CAPNP_RPC_PORT=4001
+    command: ["server", "--port", "4001", "--schema", "gameworld"]
+
+  python-rpc:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/python/Dockerfile
+    networks:
+      - capnp-rpc-net
+    ports:
+      - "4002:4002"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CAPNP_RPC_PORT=4002
+    command: ["server", "--port", "4002", "--schema", "game_world"]
+
+  rust-rpc:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/rust/Dockerfile
+    networks:
+      - capnp-rpc-net
+    ports:
+      - "4003:4003"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - CAPNP_RPC_PORT=4003
+    command: ["server", "--port", "4003", "--schema", "game_world"]
+
+networks:
+  capnp-rpc-net:
+    driver: bridge

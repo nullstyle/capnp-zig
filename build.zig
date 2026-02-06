@@ -3,11 +3,6 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const with_interop_rpc = b.option(
-        bool,
-        "with-interop-rpc",
-        "Include RPC interop tests in the aggregate test step",
-    ) orelse false;
 
     const xev_module = b.addModule("xev", .{
         .root_source_file = b.path("vendor/ext/libxev/src/main.zig"),
@@ -144,6 +139,49 @@ pub fn build(b: *std.Build) void {
 
     const example_rpc_step = b.step("example-rpc", "Run RPC ping-pong example");
     example_rpc_step.dependOn(&run_rpc_pingpong.step);
+
+    // Zig e2e RPC hooks
+    const e2e_zig_client = b.addExecutable(.{
+        .name = "e2e-zig-client",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/zig/main_client.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "xev", .module = xev_module },
+            },
+        }),
+    });
+
+    const run_e2e_zig_client = b.addRunArtifact(e2e_zig_client);
+    if (b.args) |args| {
+        run_e2e_zig_client.addArgs(args);
+    }
+
+    const e2e_zig_client_step = b.step("e2e-zig-client", "Run Zig RPC e2e client hook");
+    e2e_zig_client_step.dependOn(&run_e2e_zig_client.step);
+
+    const e2e_zig_server = b.addExecutable(.{
+        .name = "e2e-zig-server",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/zig/main_server.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "xev", .module = xev_module },
+            },
+        }),
+    });
+
+    const run_e2e_zig_server = b.addRunArtifact(e2e_zig_server);
+    if (b.args) |args| {
+        run_e2e_zig_server.addArgs(args);
+    }
+
+    const e2e_zig_server_step = b.step("e2e-zig-server", "Run Zig RPC e2e server hook");
+    e2e_zig_server_step.dependOn(&run_e2e_zig_server.step);
 
     // Unit tests for main
     const main_tests = b.addTest(.{
@@ -431,21 +469,6 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_peer_tests = b.addRunArtifact(rpc_peer_tests);
 
-    // RPC interop tests (Go server)
-    const interop_rpc_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/interop_rpc_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "xev", .module = xev_module },
-            },
-        }),
-    });
-
-    const run_interop_rpc_tests = b.addRunArtifact(interop_rpc_tests);
-
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
@@ -467,9 +490,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_framing_tests.step);
     test_step.dependOn(&run_rpc_cap_table_tests.step);
     test_step.dependOn(&run_rpc_promised_answer_tests.step);
-    if (with_interop_rpc) {
-        test_step.dependOn(&run_interop_rpc_tests.step);
-    }
     test_step.dependOn(&run_rpc_protocol_tests.step);
     test_step.dependOn(&run_rpc_peer_tests.step);
 
@@ -512,9 +532,6 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_promised_answer_tests.step);
     test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_tests.step);
-
-    const test_interop_rpc_step = b.step("test-interop-rpc", "Run RPC interop tests");
-    test_interop_rpc_step.dependOn(&run_interop_rpc_tests.step);
 
     // Check step (compile without linking)
     const check = b.addExecutable(.{

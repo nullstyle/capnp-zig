@@ -1,0 +1,23 @@
+# C++ reference backend contract for e2e interoperability.
+compose_file := "../docker-compose.yml"
+
+configure:
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+build: configure
+    cmake --build build -j
+
+server host="0.0.0.0" port="4000" schema="game_world":
+    ./build/e2e_server --host {{host}} --port {{port}} --schema {{schema}}
+
+client host="127.0.0.1" port="4000" schema="game_world":
+    ./build/e2e_client --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-build:
+    docker compose -f {{compose_file}} build cpp-rpc
+
+docker-server container host="0.0.0.0" port="4000" schema="game_world":
+    docker compose -f {{compose_file}} run -d --name {{container}} --service-ports cpp-rpc server --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-client host="host.docker.internal" port="4700" schema="game_world" timeout_sec="20":
+    docker compose -f {{compose_file}} run --rm -T -e E2E_TIMEOUT_SEC={{timeout_sec}} cpp-rpc client --host {{host}} --port {{port}} --schema {{schema}}

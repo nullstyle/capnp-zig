@@ -116,6 +116,10 @@ pub const Transport = struct {
         );
     }
 
+    pub fn isClosing(self: *const Transport) bool {
+        return self.close_requested or self.close_signaled or self.shutting_down;
+    }
+
     fn queueRead(self: *Transport) void {
         self.socket.read(
             self.loop,
@@ -354,6 +358,29 @@ test "transport signalClose notifies callback once" {
     try std.testing.expectEqual(@as(usize, 1), state.calls);
     try std.testing.expect(state.last_err == error.TestTransportClosed);
     try std.testing.expect(transport.close_signaled);
+}
+
+test "transport isClosing tracks close state flags" {
+    var read_buf = [_]u8{0} ** 8;
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+
+    try std.testing.expect(!transport.isClosing());
+
+    transport.close_requested = true;
+    try std.testing.expect(transport.isClosing());
+
+    transport.close_requested = false;
+    transport.close_signaled = true;
+    try std.testing.expect(transport.isClosing());
+
+    transport.close_signaled = false;
+    transport.shutting_down = true;
+    try std.testing.expect(transport.isClosing());
 }
 
 test "write op completion untracks and calls callback" {

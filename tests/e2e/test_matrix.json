@@ -1,0 +1,13 @@
+{
+  "target": "capnp-zig",
+  "reference_backends": ["cpp", "go", "python", "rust"],
+  "scenarios": ["game_world", "chat", "inventory", "matchmaking"],
+  "directions": [
+    "zig-client_to_reference-server",
+    "reference-client_to_zig-server"
+  ],
+  "defaults": {
+    "server_startup_timeout_seconds": 60,
+    "client_timeout_seconds": 20
+  }
+}

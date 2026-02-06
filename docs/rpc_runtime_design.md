@@ -85,7 +85,7 @@ Outbound call:
 ## Test Plan
 - Unit tests for framing and state machines.
 - Loopback tests with in-process client/server.
-- Interop tests against Go reference in `tests/interop_rpc`.
+- Interop tests against reference backends in the canonical `tests/e2e` harness.
 
 ## Open Questions
 - Exact mapping of Cap’n Proto RPC protocol types to generated Zig types.

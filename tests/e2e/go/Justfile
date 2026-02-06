@@ -1,0 +1,21 @@
+# Go reference backend contract for e2e interoperability.
+compose_file := "../docker-compose.yml"
+
+build:
+    go build ./cmd/server
+    go build ./cmd/client
+
+server host="0.0.0.0" port="4001" schema="gameworld":
+    go run ./cmd/server --host {{host}} --port {{port}} --schema {{schema}}
+
+client host="127.0.0.1" port="4001" schema="gameworld":
+    go run ./cmd/client --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-build:
+    docker compose -f {{compose_file}} build go-rpc
+
+docker-server container host="0.0.0.0" port="4001" schema="gameworld":
+    docker compose -f {{compose_file}} run -d --name {{container}} --service-ports go-rpc server --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-client host="host.docker.internal" port="4700" schema="gameworld" timeout_sec="20":
+    docker compose -f {{compose_file}} run --rm -T -e E2E_TIMEOUT_SEC={{timeout_sec}} go-rpc client --host {{host}} --port {{port}} --schema {{schema}}

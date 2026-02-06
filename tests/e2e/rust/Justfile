@@ -1,0 +1,20 @@
+# Rust reference backend contract for e2e interoperability.
+compose_file := "../docker-compose.yml"
+
+build:
+    cargo build --release
+
+server host="0.0.0.0" port="4003" schema="game_world":
+    cargo run --release -- server --host {{host}} --port {{port}} --schema {{schema}}
+
+client host="127.0.0.1" port="4003" schema="game_world":
+    cargo run --release -- client --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-build:
+    docker compose -f {{compose_file}} build rust-rpc
+
+docker-server container host="0.0.0.0" port="4003" schema="game_world":
+    docker compose -f {{compose_file}} run -d --name {{container}} --service-ports rust-rpc server --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-client host="host.docker.internal" port="4700" schema="game_world" timeout_sec="20":
+    docker compose -f {{compose_file}} run --rm -T -e E2E_TIMEOUT_SEC={{timeout_sec}} rust-rpc client --host {{host}} --port {{port}} --schema {{schema}}

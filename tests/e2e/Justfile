@@ -1,0 +1,78 @@
+# Zig-focused Cap'n Proto RPC interop e2e harness.
+runner := 'zig run --global-cache-dir ../../.zig-global-cache ../../tools/e2e_runner.zig --'
+
+build:
+    {{runner}} --build-only
+
+test:
+    {{runner}}
+
+test-skip-build:
+    {{runner}} --skip-build
+
+test-scaffold:
+    {{runner}} --allow-missing-hooks
+
+test-zig-client:
+    {{runner}} --direction=zig-client
+
+test-zig-client-skip-build:
+    {{runner}} --skip-build --direction=zig-client
+
+test-zig-server:
+    {{runner}} --direction=zig-server
+
+test-zig-server-skip-build:
+    {{runner}} --skip-build --direction=zig-server
+
+test-schema schema:
+    {{runner}} --schema={{schema}}
+
+test-backend backend:
+    {{runner}} --backend={{backend}}
+
+# Local backend convenience wrappers.
+go-build:
+    just --justfile go/Justfile build
+
+go-server host="0.0.0.0" port="4001" schema="gameworld":
+    just --justfile go/Justfile server {{host}} {{port}} {{schema}}
+
+go-client host="127.0.0.1" port="4001" schema="gameworld":
+    just --justfile go/Justfile client {{host}} {{port}} {{schema}}
+
+cpp-build:
+    just --justfile cpp/Justfile build
+
+cpp-server host="0.0.0.0" port="4000" schema="game_world":
+    just --justfile cpp/Justfile server {{host}} {{port}} {{schema}}
+
+cpp-client host="127.0.0.1" port="4000" schema="game_world":
+    just --justfile cpp/Justfile client {{host}} {{port}} {{schema}}
+
+python-build:
+    just --justfile python/Justfile build
+
+python-server host="0.0.0.0" port="4002" schema="game_world":
+    just --justfile python/Justfile server {{host}} {{port}} {{schema}}
+
+python-client host="127.0.0.1" port="4002" schema="game_world":
+    just --justfile python/Justfile client {{host}} {{port}} {{schema}}
+
+rust-build:
+    just --justfile rust/Justfile build
+
+rust-server host="0.0.0.0" port="4003" schema="game_world":
+    just --justfile rust/Justfile server {{host}} {{port}} {{schema}}
+
+rust-client host="127.0.0.1" port="4003" schema="game_world":
+    just --justfile rust/Justfile client {{host}} {{port}} {{schema}}
+
+zig-client host="127.0.0.1" port="4000" schema="game_world" backend="manual":
+    just --justfile zig/Justfile client-hook {{host}} {{port}} {{schema}} {{backend}}
+
+zig-server host="0.0.0.0" port="4700" schema="game_world":
+    just --justfile zig/Justfile server-hook {{host}} {{port}} {{schema}}
+
+cleanup:
+    docker compose -f docker-compose.yml down --remove-orphans

@@ -7,6 +7,6 @@ zig-out/
 *.dylib
 *.exe
 *.pdb
-.gocache/
-.gomodcache/
+.go-cache/
+.go-mod-cache/
 obj/

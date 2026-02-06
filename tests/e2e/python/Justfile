@@ -1,0 +1,20 @@
+# Python reference backend contract for e2e interoperability.
+compose_file := "../docker-compose.yml"
+
+build:
+    python3 -m py_compile client.py server.py
+
+server host="0.0.0.0" port="4002" schema="game_world":
+    python3 server.py --host {{host}} --port {{port}} --schema {{schema}}
+
+client host="127.0.0.1" port="4002" schema="game_world":
+    python3 client.py --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-build:
+    docker compose -f {{compose_file}} build python-rpc
+
+docker-server container host="0.0.0.0" port="4002" schema="game_world":
+    docker compose -f {{compose_file}} run -d --name {{container}} --service-ports python-rpc server --host {{host}} --port {{port}} --schema {{schema}}
+
+docker-client host="host.docker.internal" port="4700" schema="game_world" timeout_sec="20":
+    docker compose -f {{compose_file}} run --rm -T -e E2E_TIMEOUT_SEC={{timeout_sec}} python-rpc client --host {{host}} --port {{port}} --schema {{schema}}

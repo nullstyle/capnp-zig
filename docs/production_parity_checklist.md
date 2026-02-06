@@ -16,7 +16,7 @@ Ship a production-ready Zig Cap'n Proto library and compiler plugin with spec-le
 
 ## Definition Of Done
 - No known spec-required feature is marked unsupported in primary runtime/codegen paths.
-- `zig build test`, `zig build test-rpc`, and `zig build test-interop-rpc` pass in CI without skips.
+- `zig build test`, `zig build test-rpc`, and `just e2e` pass without skips.
 - Interop passes against Go and Cap'n Proto CLI for representative schemas and RPC flows.
 - Public APIs and failure modes are documented and stable.
 
@@ -33,10 +33,10 @@ Ship a production-ready Zig Cap'n Proto library and compiler plugin with spec-le
 - [x] Add protocol conformance tests for every `MessageTag` and every `sendResultsTo` mode.
 
 ## P0: Interop As A Hard Gate
-- [x] Make `tests/interop_rpc_test.zig` non-skippable in CI by provisioning `capnp`, Go, and `CAPNP_GO_STD`.
-- [x] Add CI job that runs `zig build test-interop-rpc --summary all`.
+- [x] Make interoperability a required local gate via `just e2e`.
 - [x] Add interop cases covering promise resolution races, third-party handoff compatibility, and cancellation/finish edge cases.
-- [x] Add C++ reference-server backend path in interop CI (`CAPNP_INTEROP_BACKEND=cpp`) for core bootstrap/call/exception/follow-up flows.
+- [x] Run both directions for each scenario: Zig client -> reference server and reference client -> Zig server.
+- [x] Cover C++ and Go reference stacks, then expand with Python and Rust backends in the same canonical harness.
 
 ## P1: Codegen Parity
 - [x] Replace current TODO/stub type mappings in `src/capnpc-zig/types.zig` and `src/capnpc-zig/generator.zig`.
@@ -103,11 +103,10 @@ Ship a production-ready Zig Cap'n Proto library and compiler plugin with spec-le
 - 2026-02-06: Added segment-count resource limits in message decode/validate (`Message.max_segment_count`, `ValidationOptions.segment_count_limit`) and added explicit segment-limit regression tests in `tests/message_test.zig`.
 - 2026-02-06: Added traversal and nesting boundary-condition tests in `tests/message_test.zig` to lock in limit semantics (`exact-limit passes`, `below-limit fails`) for DoS hardening.
 - 2026-02-06: Added looped RPC stress coverage in `src/rpc/peer.zig` for embargoed `Accept` + promised-call release ordering and repeated forwarded-tail finish/return races, with explicit state-cleanup assertions for pending embargo/promise and tail-forward maps.
-- 2026-02-06: Hardened `tests/interop_rpc_test.zig` prerequisites to require `capnp`/Go/`CAPNP_GO_STD` (with vendored `vendor/ext/go-capnp/std` fallback) instead of skipping, and added interop cases for loopPromise race ordering, third-party `sendResultsTo` compatibility (`Unimplemented` fallback from current Go runtime), exception-path follow-up call health, and early-`Finish` follow-up-call resilience.
-- 2026-02-06: Added CI hard gate workflow `.github/workflows/interop-rpc.yml` that provisions `capnp` + Go, sets `CAPNP_GO_STD`, and runs `zig build test-interop-rpc --summary all`.
+- 2026-02-06: Hardened early RPC interop cases for loopPromise race ordering, third-party `sendResultsTo` compatibility (`Unimplemented` fallback from current Go runtime), exception-path follow-up call health, and early-`Finish` follow-up-call resilience.
 - 2026-02-06: Added machine-readable benchmark output (`--json`) for ping-pong and packed/unpacked benches, added `tools/bench_check.zig`, and wired `zig build bench-check` with committed baselines in `bench/baselines.json`.
 - 2026-02-06: Tightened benchmark regression threshold from 45% to 30% and added CI hard gate workflow `.github/workflows/bench-regression.yml` to enforce `zig build bench-check` on PRs and `main`.
 - 2026-02-06: Added API/lifecycle/error-contract documentation in `docs/api_contracts.md` covering ownership, thread-affinity, and caller error policy by category.
 - 2026-02-06: Added additional high-load RPC cleanup coverage in `src/rpc/peer.zig` for repeated third-party await/answer races and for deinit cleanup of unresolved embargoed-accept + promised-call queues.
 - 2026-02-06: Added runtime reliability coverage for `Connection.handleRead` fragmented/coalesced/error/malformed-frame behavior and for `Transport.signalClose` idempotency plus write-completion callback/untracking.
-- 2026-02-06: Added interop backend selection (`go`/`cpp`) to `tests/interop_rpc_test.zig`, introduced a C++ reference `Arith` server harness (`tests/interop_rpc/cpp/arith_server.cpp`), and updated `.github/workflows/interop-rpc.yml` to run a backend matrix with `libcapnp-dev` installed.
+- 2026-02-06: Unified interop into `tests/e2e` with backend-local Docker/Just contracts and a Zig-native orchestrator (`tools/e2e_runner.zig`) covering C++, Go, Python, and Rust.

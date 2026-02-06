@@ -1,0 +1,16 @@
+# Zig e2e hook contract for tools/e2e_runner.zig.
+
+repo_root := '../../..'
+zig_build := 'zig build --global-cache-dir ./.zig-global-cache'
+
+build-client:
+    cd {{repo_root}} && {{zig_build}} e2e-zig-client -- --help >/dev/null
+
+build-server:
+    cd {{repo_root}} && {{zig_build}} e2e-zig-server -- --help >/dev/null
+
+client-hook host port schema backend="unknown":
+    cd {{repo_root}} && E2E_BACKEND={{backend}} {{zig_build}} e2e-zig-client -- --host {{host}} --port {{port}} --schema {{schema}}
+
+server-hook host port schema:
+    cd {{repo_root}} && {{zig_build}} e2e-zig-server -- --host {{host}} --port {{port}} --schema {{schema}}

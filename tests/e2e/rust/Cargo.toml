@@ -1,0 +1,15 @@
+[package]
+name = "e2e-rpc-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+capnp = "0.20"
+capnp-rpc = "0.20"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+
+[build-dependencies]
+capnpc = "0.20"

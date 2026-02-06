@@ -21,7 +21,7 @@ Requires **Zig 0.15.2** (use `mise install` to set up toolchain).
 
 ### Individual test suites
 
-`zig build test-message`, `test-codegen`, `test-integration`, `test-interop`, `test-real-world`, `test-union`, `test-capnp-testdata`, `test-capnp-test-vendor`, `test-schema-validation`, `test-rpc`, `test-interop-rpc`
+`zig build test-message`, `test-codegen`, `test-integration`, `test-interop`, `test-real-world`, `test-union`, `test-capnp-testdata`, `test-capnp-test-vendor`, `test-schema-validation`, `test-rpc`, `just e2e`
 
 ### Benchmarks
 
@@ -66,7 +66,7 @@ Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation
 ## Dependencies & Vendored Code
 
 - `vendor/ext/libxev/` — Event loop library (git submodule), used by RPC runtime
-- `vendor/ext/go-capnp/` — Go Cap'n Proto reference (git submodule), used for RPC interop tests
+- `vendor/ext/go-capnp/` — Go Cap'n Proto reference (git submodule), used by the e2e Go backend and Cap'n Proto schema tooling
 - `vendor/ext/capnp_test/` — Official Cap'n Proto test fixtures (git submodule)
 
 ## Current Status

@@ -1,0 +1,16 @@
+.git
+.zig-cache
+.zig-global-cache
+zig-out
+
+.go-cache
+.go-mod-cache
+.go-path
+
+tests/e2e/.results
+tests/e2e/cpp/build
+tests/e2e/go/bin
+tests/e2e/rust/target
+
+**/.DS_Store
+**/__pycache__
