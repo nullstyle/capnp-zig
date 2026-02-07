@@ -171,7 +171,6 @@ pub const PlayerId = struct {
             const value = raw ^ @as(u64, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -190,7 +189,6 @@ pub const PlayerId = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -370,7 +368,6 @@ pub const Position = struct {
             const value = raw ^ @as(u32, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -399,7 +396,6 @@ pub const Position = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(8, stored);
         }
-
     };
 };
 
@@ -579,7 +575,6 @@ pub const Vector3 = struct {
             const value = raw ^ @as(u32, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -608,7 +603,6 @@ pub const Vector3 = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(8, stored);
         }
-
     };
 };
 
@@ -791,7 +785,6 @@ pub const ItemId = struct {
             const value = raw ^ @as(u64, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -810,7 +803,6 @@ pub const ItemId = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -1004,7 +996,6 @@ pub const Item = struct {
             const raw = try self._reader.readStructList(2);
             return StructListReader(Attribute){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -1048,7 +1039,6 @@ pub const Item = struct {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
             return StructListBuilder(Attribute){ ._list = raw };
         }
-
     };
 };
 
@@ -1221,7 +1211,6 @@ pub const Attribute = struct {
             const value = raw ^ @as(u32, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -1244,7 +1233,6 @@ pub const Attribute = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -1412,7 +1400,6 @@ pub const Timestamp = struct {
             const value = raw ^ @as(u64, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -1431,7 +1418,6 @@ pub const Timestamp = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -1614,7 +1600,6 @@ pub const PlayerInfo = struct {
             const value = raw ^ @as(u16, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -1648,7 +1633,6 @@ pub const PlayerInfo = struct {
             const stored = @as(u16, @bitCast(value)) ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -1660,4 +1644,3 @@ pub const StatusCode = enum(u16) {
     InvalidArgument = 4,
     ResourceExhausted = 5,
 };
-

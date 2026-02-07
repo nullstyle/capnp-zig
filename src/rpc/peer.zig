@@ -2,6 +2,25 @@ const std = @import("std");
 const protocol = @import("protocol.zig");
 const cap_table = @import("cap_table.zig");
 const message = @import("../message.zig");
+const promised_answer_copy = @import("promised_answer_copy.zig");
+const peer_dispatch = @import("peer_dispatch.zig");
+const peer_control = @import("peer_control.zig");
+const peer_call_targets = @import("peer_call_targets.zig");
+const payload_remap = @import("payload_remap.zig");
+const peer_promises = @import("peer_promises.zig");
+const peer_inbound_release = @import("peer_inbound_release.zig");
+const peer_embargo_accepts = @import("peer_embargo_accepts.zig");
+const peer_join_state = @import("peer_join_state.zig");
+const peer_provides_state = @import("peer_provides_state.zig");
+const peer_forward_orchestration = @import("peer_forward_orchestration.zig");
+const peer_forward_return_callbacks = @import("peer_forward_return_callbacks.zig");
+const peer_cap_lifecycle = @import("peer_cap_lifecycle.zig");
+const peer_call_orchestration = @import("peer_call_orchestration.zig");
+const peer_return_frames = @import("peer_return_frames.zig");
+const peer_return_orchestration = @import("peer_return_orchestration.zig");
+const peer_third_party_pending = @import("peer_third_party_pending.zig");
+const peer_return_dispatch = @import("peer_return_dispatch.zig");
+const peer_third_party_returns = @import("peer_third_party_returns.zig");
 
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
 pub const ReturnBuildFn = *const fn (ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void;
@@ -39,14 +58,7 @@ const StoredPromisedAnswer = struct {
     ops: []protocol.PromisedAnswerOp,
 
     fn fromPromised(allocator: std.mem.Allocator, promised: protocol.PromisedAnswer) !StoredPromisedAnswer {
-        const op_count = promised.transform.len();
-        const copied_ops = try allocator.alloc(protocol.PromisedAnswerOp, op_count);
-        errdefer allocator.free(copied_ops);
-
-        var idx: u32 = 0;
-        while (idx < op_count) : (idx += 1) {
-            copied_ops[idx] = try promised.transform.get(idx);
-        }
+        const copied_ops = try promised_answer_copy.cloneOpsFromPromised(allocator, promised);
 
         return .{
             .question_id = promised.question_id,
@@ -118,12 +130,7 @@ const PendingEmbargoedAccept = struct {
     provided_question_id: u32,
 };
 
-const ForwardReturnMode = enum {
-    translate_to_caller,
-    sent_elsewhere,
-    propagate_results_sent_elsewhere,
-    propagate_accept_from_third_party,
-};
+const ForwardReturnMode = peer_forward_orchestration.ForwardReturnMode;
 
 const ResolvedImport = struct {
     cap: ?cap_table.ResolvedCap,
@@ -648,19 +655,20 @@ pub const Peer = struct {
         const ctx = try self.allocator.create(ForwardCallContext);
         errdefer self.allocator.destroy(ctx);
 
+        const forwarded_plan = try peer_forward_orchestration.buildForwardCallPlan(
+            Peer,
+            self,
+            mode,
+            call.send_results_to.third_party,
+            captureAnyPointerPayloadForControl,
+        );
+
         ctx.* = .{
             .peer = self,
             .payload = call.params,
             .inbound_caps = inbound_caps,
-            .send_results_to = switch (mode) {
-                .translate_to_caller => .caller,
-                .sent_elsewhere, .propagate_results_sent_elsewhere => .yourself,
-                .propagate_accept_from_third_party => .third_party,
-            },
-            .send_results_to_third_party_payload = if (mode == .propagate_accept_from_third_party) try captureAnyPointerPayload(
-                self.allocator,
-                call.send_results_to.third_party,
-            ) else null,
+            .send_results_to = forwarded_plan.send_results_to,
+            .send_results_to_third_party_payload = forwarded_plan.send_results_to_third_party_payload,
             .answer_id = call.question_id,
             .mode = mode,
         };
@@ -673,33 +681,29 @@ pub const Peer = struct {
             buildForwardedCall,
             onForwardedReturn,
         );
-        try self.forwarded_questions.put(forwarded_question_id, call.question_id);
-
-        if (mode == .sent_elsewhere) {
-            try self.forwarded_tail_questions.put(call.question_id, forwarded_question_id);
-            if (self.questions.getEntry(forwarded_question_id)) |question| {
-                question.value_ptr.suppress_auto_finish = true;
-            }
-            try self.sendReturnTakeFromOtherQuestion(call.question_id, forwarded_question_id);
-        }
+        try peer_forward_orchestration.finishForwardResolvedCall(
+            Peer,
+            self,
+            mode,
+            call.question_id,
+            forwarded_question_id,
+            rememberForwardedQuestionForControl,
+            rememberForwardedTailQuestionForControl,
+            suppressAutoFinishForForwardedQuestionForControl,
+            sendTakeFromOtherQuestionForControl,
+        );
     }
 
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
         const ctx: *const ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));
-        switch (ctx.send_results_to) {
-            .caller => call_builder.setSendResultsToCaller(),
-            .yourself => call_builder.setSendResultsToYourself(),
-            .third_party => {
-                if (ctx.send_results_to_third_party_payload) |payload| {
-                    var msg = try message.Message.init(ctx.peer.allocator, payload);
-                    defer msg.deinit();
-                    const third_party = try msg.getRootAnyPointer();
-                    try call_builder.setSendResultsToThirdParty(third_party);
-                } else {
-                    try call_builder.setSendResultsToThirdPartyNull();
-                }
-            },
-        }
+        try peer_control.applyForwardedCallSendResults(
+            Peer,
+            ctx.peer,
+            call_builder,
+            ctx.send_results_to,
+            ctx.send_results_to_third_party_payload,
+            setForwardedCallThirdPartyFromPayloadForControl,
+        );
 
         const payload_builder = try call_builder.payloadBuilder();
         try ctx.peer.clonePayloadWithRemappedCaps(
@@ -708,6 +712,43 @@ pub const Peer = struct {
             ctx.payload,
             ctx.inbound_caps,
         );
+    }
+
+    fn setForwardedCallThirdPartyFromPayloadForControl(
+        self: *Peer,
+        call_builder: *protocol.CallBuilder,
+        payload: []const u8,
+    ) !void {
+        var msg = try message.Message.init(self.allocator, payload);
+        defer msg.deinit();
+        const third_party = try msg.getRootAnyPointer();
+        try call_builder.setSendResultsToThirdParty(third_party);
+    }
+
+    fn captureAnyPointerPayloadForControl(self: *Peer, ptr: ?message.AnyPointerReader) !?[]u8 {
+        return captureAnyPointerPayload(self.allocator, ptr);
+    }
+
+    fn lookupForwardedQuestionForForwardReturnControl(self: *Peer, local_question_id: u32) ?u32 {
+        return self.forwarded_questions.get(local_question_id);
+    }
+
+    fn rememberForwardedQuestionForControl(self: *Peer, local_question_id: u32, upstream_question_id: u32) !void {
+        try self.forwarded_questions.put(local_question_id, upstream_question_id);
+    }
+
+    fn rememberForwardedTailQuestionForControl(self: *Peer, upstream_question_id: u32, forwarded_question_id: u32) !void {
+        try self.forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
+    }
+
+    fn suppressAutoFinishForForwardedQuestionForControl(self: *Peer, forwarded_question_id: u32) void {
+        if (self.questions.getEntry(forwarded_question_id)) |question| {
+            question.value_ptr.suppress_auto_finish = true;
+        }
+    }
+
+    fn sendTakeFromOtherQuestionForControl(self: *Peer, answer_id: u32, other_question_id: u32) !void {
+        try self.sendReturnTakeFromOtherQuestion(answer_id, other_question_id);
     }
 
     fn onForwardedReturn(
@@ -722,111 +763,24 @@ pub const Peer = struct {
             peer.allocator.destroy(ctx);
         }
         _ = peer.forwarded_questions.remove(ret.answer_id);
-
-        switch (ctx.mode) {
-            .translate_to_caller => switch (ret.tag) {
-                .results => {
-                    const payload = ret.results orelse {
-                        try peer.sendReturnException(ctx.answer_id, "forwarded return missing payload");
-                        return;
-                    };
-                    var build_ctx = ForwardReturnBuildContext{
-                        .peer = peer,
-                        .payload = payload,
-                        .inbound_caps = inbound_caps,
-                    };
-                    peer.sendReturnResults(ctx.answer_id, &build_ctx, buildForwardedReturn) catch |err| {
-                        try peer.sendReturnException(ctx.answer_id, @errorName(err));
-                    };
-                },
-                .exception => {
-                    const ex = ret.exception orelse {
-                        try peer.sendReturnException(ctx.answer_id, "forwarded return missing exception");
-                        return;
-                    };
-                    try peer.sendReturnException(ctx.answer_id, ex.reason);
-                },
-                .canceled => try peer.sendReturnTag(ctx.answer_id, .canceled),
-                .results_sent_elsewhere => {
-                    try peer.sendReturnException(ctx.answer_id, "forwarded resultsSentElsewhere unsupported");
-                },
-                .take_from_other_question => {
-                    const other_local_id = ret.take_from_other_question orelse return error.MissingQuestionId;
-                    const translated = peer.forwarded_questions.get(other_local_id) orelse {
-                        try peer.sendReturnException(ctx.answer_id, "forwarded takeFromOtherQuestion missing mapping");
-                        return;
-                    };
-                    try peer.sendReturnTakeFromOtherQuestion(ctx.answer_id, translated);
-                },
-                .accept_from_third_party => {
-                    const await_ptr = ret.accept_from_third_party;
-                    const await_payload = try captureAnyPointerPayload(peer.allocator, await_ptr);
-                    defer if (await_payload) |payload| peer.allocator.free(payload);
-                    try peer.sendReturnAcceptFromThirdParty(ctx.answer_id, await_payload);
-                },
-            },
-            .sent_elsewhere => switch (ret.tag) {
-                .results_sent_elsewhere, .canceled => {},
-                else => return error.UnexpectedForwardedTailReturn,
-            },
-            .propagate_results_sent_elsewhere => switch (ret.tag) {
-                .results_sent_elsewhere => try peer.sendReturnTag(ctx.answer_id, .results_sent_elsewhere),
-                .canceled => try peer.sendReturnTag(ctx.answer_id, .canceled),
-                .exception => {
-                    const ex = ret.exception orelse {
-                        try peer.sendReturnException(ctx.answer_id, "forwarded return missing exception");
-                        return;
-                    };
-                    try peer.sendReturnException(ctx.answer_id, ex.reason);
-                },
-                .take_from_other_question => {
-                    try peer.sendReturnException(ctx.answer_id, "forwarded takeFromOtherQuestion unsupported");
-                },
-                .accept_from_third_party => {
-                    try peer.sendReturnTag(ctx.answer_id, .results_sent_elsewhere);
-                },
-                .results => {
-                    // For `sendResultsTo.yourself`, successful results should not be forwarded directly.
-                    try peer.sendReturnTag(ctx.answer_id, .results_sent_elsewhere);
-                },
-            },
-            .propagate_accept_from_third_party => switch (ret.tag) {
-                .results_sent_elsewhere => {
-                    try peer.sendReturnAcceptFromThirdParty(ctx.answer_id, ctx.send_results_to_third_party_payload);
-                },
-                .accept_from_third_party => {
-                    const await_ptr = ret.accept_from_third_party;
-                    const await_payload = try captureAnyPointerPayload(peer.allocator, await_ptr);
-                    defer if (await_payload) |payload| peer.allocator.free(payload);
-                    try peer.sendReturnAcceptFromThirdParty(ctx.answer_id, await_payload);
-                },
-                .canceled => try peer.sendReturnTag(ctx.answer_id, .canceled),
-                .exception => {
-                    const ex = ret.exception orelse {
-                        try peer.sendReturnException(ctx.answer_id, "forwarded return missing exception");
-                        return;
-                    };
-                    try peer.sendReturnException(ctx.answer_id, ex.reason);
-                },
-                .take_from_other_question => {
-                    try peer.sendReturnException(ctx.answer_id, "forwarded takeFromOtherQuestion unsupported");
-                },
-                .results => {
-                    const payload = ret.results orelse {
-                        try peer.sendReturnException(ctx.answer_id, "forwarded return missing payload");
-                        return;
-                    };
-                    var build_ctx = ForwardReturnBuildContext{
-                        .peer = peer,
-                        .payload = payload,
-                        .inbound_caps = inbound_caps,
-                    };
-                    peer.sendReturnResults(ctx.answer_id, &build_ctx, buildForwardedReturn) catch |err| {
-                        try peer.sendReturnException(ctx.answer_id, @errorName(err));
-                    };
-                },
-            },
-        }
+        try peer_forward_return_callbacks.handleForwardedReturnWithPeerCallbacks(
+            Peer,
+            cap_table.InboundCapTable,
+            ForwardReturnBuildContext,
+            buildForwardedReturn,
+            peer,
+            peer_forward_orchestration.toControlMode(ctx.mode),
+            ctx.answer_id,
+            ret,
+            inbound_caps,
+            captureAnyPointerPayloadForControl,
+            freeCapturedPayloadForControl,
+            ctx.send_results_to_third_party_payload,
+            sendReturnTag,
+            lookupForwardedQuestionForForwardReturnControl,
+            sendReturnTakeFromOtherQuestion,
+            sendReturnAcceptFromThirdParty,
+        );
     }
 
     fn buildForwardedReturn(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {
@@ -847,133 +801,16 @@ pub const Peer = struct {
         source: protocol.Payload,
         inbound_caps: *const cap_table.InboundCapTable,
     ) !void {
-        const any_builder = try payload_builder.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
-        try message.cloneAnyPointer(source.content, any_builder);
-        try self.remapPayloadCapabilities(builder, any_builder, inbound_caps);
-    }
-
-    fn remapPayloadCapabilities(
-        self: *Peer,
-        builder: *message.MessageBuilder,
-        root: message.AnyPointerBuilder,
-        inbound_caps: *const cap_table.InboundCapTable,
-    ) !void {
-        const view = try buildMessageView(self.allocator, builder);
-        defer self.allocator.free(view.segments);
-
-        if (root.segment_id >= view.msg.segments.len) return error.InvalidSegmentId;
-        const segment = view.msg.segments[root.segment_id];
-        if (root.pointer_pos + 8 > segment.len) return error.OutOfBounds;
-        const root_word = std.mem.readInt(u64, segment[root.pointer_pos..][0..8], .little);
-        try self.remapPayloadCapabilityPointer(&view.msg, builder, inbound_caps, root.segment_id, root.pointer_pos, root_word);
-    }
-
-    fn remapPayloadCapabilityPointer(
-        self: *Peer,
-        msg: *const message.Message,
-        builder: *message.MessageBuilder,
-        inbound_caps: *const cap_table.InboundCapTable,
-        segment_id: u32,
-        pointer_pos: usize,
-        pointer_word: u64,
-    ) !void {
-        if (pointer_word == 0) return;
-        const resolved = try msg.resolvePointer(segment_id, pointer_pos, pointer_word, 8);
-        if (resolved.pointer_word == 0) return;
-
-        const pointer_type: u2 = @truncate(resolved.pointer_word & 0x3);
-        switch (pointer_type) {
-            0 => {
-                const struct_reader = try msg.resolveStructPointer(
-                    resolved.segment_id,
-                    resolved.pointer_pos,
-                    resolved.pointer_word,
-                );
-                const pointer_base = struct_reader.offset + @as(usize, struct_reader.data_size) * 8;
-                var idx: usize = 0;
-                while (idx < struct_reader.pointer_count) : (idx += 1) {
-                    const child_pos = pointer_base + idx * 8;
-                    const child_word = std.mem.readInt(
-                        u64,
-                        msg.segments[struct_reader.segment_id][child_pos..][0..8],
-                        .little,
-                    );
-                    try self.remapPayloadCapabilityPointer(
-                        msg,
-                        builder,
-                        inbound_caps,
-                        struct_reader.segment_id,
-                        child_pos,
-                        child_word,
-                    );
-                }
-            },
-            1 => {
-                const list = try msg.resolveListPointer(
-                    resolved.segment_id,
-                    resolved.pointer_pos,
-                    resolved.pointer_word,
-                );
-                if (list.element_size == 6) {
-                    var idx: u32 = 0;
-                    while (idx < list.element_count) : (idx += 1) {
-                        const child_pos = list.content_offset + @as(usize, idx) * 8;
-                        const child_word = std.mem.readInt(
-                            u64,
-                            msg.segments[list.segment_id][child_pos..][0..8],
-                            .little,
-                        );
-                        try self.remapPayloadCapabilityPointer(
-                            msg,
-                            builder,
-                            inbound_caps,
-                            list.segment_id,
-                            child_pos,
-                            child_word,
-                        );
-                    }
-                } else if (list.element_size == 7) {
-                    const inline_list = try msg.resolveInlineCompositeList(
-                        resolved.segment_id,
-                        resolved.pointer_pos,
-                        resolved.pointer_word,
-                    );
-                    const stride = (@as(usize, inline_list.data_words) + @as(usize, inline_list.pointer_words)) * 8;
-                    var elem_idx: u32 = 0;
-                    while (elem_idx < inline_list.element_count) : (elem_idx += 1) {
-                        const element_offset = inline_list.elements_offset + @as(usize, elem_idx) * stride;
-                        const pointer_base = element_offset + @as(usize, inline_list.data_words) * 8;
-                        var pointer_idx: usize = 0;
-                        while (pointer_idx < inline_list.pointer_words) : (pointer_idx += 1) {
-                            const child_pos = pointer_base + pointer_idx * 8;
-                            const child_word = std.mem.readInt(
-                                u64,
-                                msg.segments[inline_list.segment_id][child_pos..][0..8],
-                                .little,
-                            );
-                            try self.remapPayloadCapabilityPointer(
-                                msg,
-                                builder,
-                                inbound_caps,
-                                inline_list.segment_id,
-                                child_pos,
-                                child_word,
-                            );
-                        }
-                    }
-                }
-            },
-            3 => {
-                const cap_index = try decodeCapabilityPointerWord(resolved.pointer_word);
-                if (try self.mapInboundCapForForward(inbound_caps, cap_index)) |cap_id| {
-                    const cap_word = try capabilityPointerWord(cap_id);
-                    try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, cap_word);
-                } else {
-                    try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, 0);
-                }
-            },
-            else => return error.InvalidPointer,
-        }
+        try payload_remap.clonePayloadWithRemappedCaps(
+            Peer,
+            self.allocator,
+            self,
+            builder,
+            payload_builder,
+            source,
+            inbound_caps,
+            mapInboundCapForForward,
+        );
     }
 
     fn mapInboundCapForForward(
@@ -988,45 +825,6 @@ pub const Peer = struct {
             .exported => |cap| cap.id,
             .promised => |promised| try self.caps.noteReceiverAnswer(promised),
         };
-    }
-
-    fn capabilityPointerWord(cap_id: u32) !u64 {
-        if (cap_id >= (@as(u32, 1) << 30)) return error.CapabilityIdTooLarge;
-        return 3 | (@as(u64, cap_id) << 2);
-    }
-
-    fn decodeCapabilityPointerWord(pointer_word: u64) !u32 {
-        if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
-        if ((pointer_word >> 32) != 0) return error.InvalidPointer;
-        return @as(u32, @intCast((pointer_word >> 2) & 0x3FFFFFFF));
-    }
-
-    fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_pos: usize, word: u64) !void {
-        if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
-        var segment = &builder.segments.items[segment_id];
-        if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], word, .little);
-    }
-
-    fn buildMessageView(
-        allocator: std.mem.Allocator,
-        builder: *message.MessageBuilder,
-    ) !struct { msg: message.Message, segments: []const []const u8 } {
-        const segment_count = builder.segments.items.len;
-        const segments = try allocator.alloc([]const u8, segment_count);
-        errdefer allocator.free(segments);
-
-        for (builder.segments.items, 0..) |segment, idx| {
-            segments[idx] = segment.items;
-        }
-
-        const msg = message.Message{
-            .allocator = allocator,
-            .segments = segments,
-            .segments_owned = false,
-            .backing_data = null,
-        };
-        return .{ .msg = msg, .segments = segments };
     }
 
     pub fn sendReturnResults(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
@@ -1052,11 +850,7 @@ pub const Peer = struct {
         const bytes = try builder.finish();
         defer self.allocator.free(bytes);
 
-        if (self.loopback_questions.remove(answer_id)) {
-            try self.deliverLoopbackReturn(bytes);
-            return;
-        }
-        try self.sendFrame(bytes);
+        try self.sendReturnFrameWithLoopback(answer_id, bytes);
 
         const copy = try self.allocator.alloc(u8, bytes.len);
         std.mem.copyForwards(u8, copy, bytes);
@@ -1064,82 +858,47 @@ pub const Peer = struct {
     }
 
     pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
-        _ = self.send_results_to_yourself.remove(answer_id);
-        self.clearSendResultsToThirdParty(answer_id);
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-
-        var ret = try builder.beginReturn(answer_id, .exception);
-        try ret.setException(reason);
-        const bytes = try builder.finish();
+        self.clearSendResultsRouting(answer_id);
+        const bytes = try peer_return_frames.buildReturnExceptionFrame(self.allocator, answer_id, reason);
         defer self.allocator.free(bytes);
-
-        if (self.loopback_questions.remove(answer_id)) {
-            try self.deliverLoopbackReturn(bytes);
-            return;
-        }
-        try self.sendFrame(bytes);
+        try self.sendReturnFrameWithLoopback(answer_id, bytes);
     }
 
     fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
-        _ = self.send_results_to_yourself.remove(answer_id);
-        self.clearSendResultsToThirdParty(answer_id);
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-
-        _ = try builder.beginReturn(answer_id, tag);
-        const bytes = try builder.finish();
+        self.clearSendResultsRouting(answer_id);
+        const bytes = try peer_return_frames.buildReturnTagFrame(self.allocator, answer_id, tag);
         defer self.allocator.free(bytes);
-
-        if (self.loopback_questions.remove(answer_id)) {
-            try self.deliverLoopbackReturn(bytes);
-            return;
-        }
-        try self.sendFrame(bytes);
+        try self.sendReturnFrameWithLoopback(answer_id, bytes);
     }
 
     fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
-        _ = self.send_results_to_yourself.remove(answer_id);
-        self.clearSendResultsToThirdParty(answer_id);
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-
-        var ret = try builder.beginReturn(answer_id, .take_from_other_question);
-        try ret.setTakeFromOtherQuestion(other_question_id);
-
-        const bytes = try builder.finish();
+        self.clearSendResultsRouting(answer_id);
+        const bytes = try peer_return_frames.buildReturnTakeFromOtherQuestionFrame(
+            self.allocator,
+            answer_id,
+            other_question_id,
+        );
         defer self.allocator.free(bytes);
-
-        if (self.loopback_questions.remove(answer_id)) {
-            try self.deliverLoopbackReturn(bytes);
-            return;
-        }
-        try self.sendFrame(bytes);
+        try self.sendReturnFrameWithLoopback(answer_id, bytes);
     }
 
     fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
+        self.clearSendResultsRouting(answer_id);
+        const bytes = try peer_return_frames.buildReturnAcceptFromThirdPartyFrame(
+            self.allocator,
+            answer_id,
+            await_payload,
+        );
+        defer self.allocator.free(bytes);
+        try self.sendReturnFrameWithLoopback(answer_id, bytes);
+    }
+
+    fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {
         _ = self.send_results_to_yourself.remove(answer_id);
         self.clearSendResultsToThirdParty(answer_id);
+    }
 
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-
-        var ret = try builder.beginReturn(answer_id, .accept_from_third_party);
-        if (await_payload) |payload| {
-            var await_msg = try message.Message.init(self.allocator, payload);
-            defer await_msg.deinit();
-            const await_ptr = try await_msg.getRootAnyPointer();
-            try ret.setAcceptFromThirdParty(await_ptr);
-        } else {
-            try ret.setAcceptFromThirdPartyNull();
-        }
-
-        const bytes = try builder.finish();
-        defer self.allocator.free(bytes);
-
+    fn sendReturnFrameWithLoopback(self: *Peer, answer_id: u32, bytes: []const u8) !void {
         if (self.loopback_questions.remove(answer_id)) {
             try self.deliverLoopbackReturn(bytes);
             return;
@@ -1181,29 +940,15 @@ pub const Peer = struct {
     }
 
     fn clearProvide(self: *Peer, question_id: u32) void {
-        if (self.provides_by_question.fetchRemove(question_id)) |removed| {
-            _ = self.provides_by_key.remove(removed.value.recipient_key);
-            self.allocator.free(removed.value.recipient_key);
-
-            var target = removed.value.target;
-            target.deinit(self.allocator);
-        }
-    }
-
-    fn parseJoinKeyPart(join_key_part: ?message.AnyPointerReader) !JoinKeyPart {
-        const key_part_ptr = join_key_part orelse return error.MissingJoinKeyPart;
-        if (key_part_ptr.isNull()) return error.MissingJoinKeyPart;
-
-        const key_struct = key_part_ptr.getStruct() catch return error.InvalidJoinKeyPart;
-        const part_count = key_struct.readU16(4);
-        const part_num = key_struct.readU16(6);
-
-        if (part_count == 0 or part_num >= part_count) return error.InvalidJoinKeyPart;
-        return .{
-            .join_id = key_struct.readU32(0),
-            .part_count = part_count,
-            .part_num = part_num,
-        };
+        peer_provides_state.clearProvide(
+            ProvideEntry,
+            ProvideTarget,
+            self.allocator,
+            &self.provides_by_question,
+            &self.provides_by_key,
+            question_id,
+            deinitProvideTargetForJoinStateControl,
+        );
     }
 
     fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
@@ -1228,137 +973,93 @@ pub const Peer = struct {
     }
 
     fn clearPendingJoinQuestion(self: *Peer, question_id: u32) void {
-        const pending_question = self.pending_join_questions.fetchRemove(question_id) orelse return;
-        const key = pending_question.value;
-
-        var remove_state = false;
-        if (self.pending_joins.getPtr(key.join_id)) |join_state| {
-            if (join_state.parts.fetchRemove(key.part_num)) |removed_part| {
-                var target = removed_part.value.target;
-                target.deinit(self.allocator);
-            }
-            remove_state = join_state.parts.count() == 0;
-        }
-
-        if (remove_state) {
-            if (self.pending_joins.fetchRemove(key.join_id)) |removed_state| {
-                var state = removed_state.value;
-                state.deinit(self.allocator);
-            }
-        }
+        peer_join_state.clearPendingJoinQuestion(
+            JoinState,
+            PendingJoinQuestion,
+            ProvideTarget,
+            self.allocator,
+            &self.pending_joins,
+            &self.pending_join_questions,
+            question_id,
+            deinitProvideTargetForJoinStateControl,
+            deinitJoinStateForJoinStateControl,
+        );
     }
 
     fn completeJoin(self: *Peer, join_id: u32) !void {
-        const removed = self.pending_joins.fetchRemove(join_id) orelse return;
-        var join_state = removed.value;
-        defer join_state.deinit(self.allocator);
+        try peer_join_state.completeJoin(
+            Peer,
+            JoinState,
+            PendingJoinQuestion,
+            ProvideTarget,
+            self,
+            self.allocator,
+            &self.pending_joins,
+            &self.pending_join_questions,
+            join_id,
+            provideTargetsEqual,
+            sendReturnProvidedTargetForControl,
+            sendReturnExceptionForControl,
+            deinitJoinStateForJoinStateControl,
+        );
+    }
 
-        if (join_state.parts.count() == 0) return;
+    fn deinitProvideTargetForJoinStateControl(target: *ProvideTarget, allocator: std.mem.Allocator) void {
+        target.deinit(allocator);
+    }
 
-        var first_target: ?*const ProvideTarget = null;
-        var all_equal = true;
+    fn deinitJoinStateForJoinStateControl(state: *JoinState, allocator: std.mem.Allocator) void {
+        state.deinit(allocator);
+    }
 
-        var part_it = join_state.parts.iterator();
-        while (part_it.next()) |entry| {
-            if (first_target) |target| {
-                if (!provideTargetsEqual(target, &entry.value_ptr.target)) {
-                    all_equal = false;
-                    break;
-                }
-            } else {
-                first_target = &entry.value_ptr.target;
-            }
-        }
-
-        var send_it = join_state.parts.iterator();
-        while (send_it.next()) |entry| {
-            _ = self.pending_join_questions.remove(entry.value_ptr.question_id);
-
-            if (all_equal) {
-                const target = first_target orelse &entry.value_ptr.target;
-                self.sendReturnProvidedTarget(entry.value_ptr.question_id, target) catch |err| {
-                    try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
-                };
-            } else {
-                try self.sendReturnException(entry.value_ptr.question_id, "join target mismatch");
-            }
-        }
+    fn initJoinStateForControl(allocator: std.mem.Allocator, part_count: u16) JoinState {
+        return JoinState.init(allocator, part_count);
     }
 
     fn queueEmbargoedAccept(self: *Peer, answer_id: u32, provided_question_id: u32, embargo: []const u8) !void {
-        const embargo_copy = try self.allocator.alloc(u8, embargo.len);
-        errdefer self.allocator.free(embargo_copy);
-        std.mem.copyForwards(u8, embargo_copy, embargo);
-
-        if (self.pending_accepts_by_embargo.getPtr(embargo)) |pending| {
-            try pending.append(self.allocator, .{
-                .answer_id = answer_id,
-                .provided_question_id = provided_question_id,
-            });
-        } else {
-            const key = try self.allocator.alloc(u8, embargo.len);
-            errdefer self.allocator.free(key);
-            std.mem.copyForwards(u8, key, embargo);
-
-            var pending = std.ArrayList(PendingEmbargoedAccept){};
-            errdefer pending.deinit(self.allocator);
-            try pending.append(self.allocator, .{
-                .answer_id = answer_id,
-                .provided_question_id = provided_question_id,
-            });
-            try self.pending_accepts_by_embargo.put(key, pending);
-        }
-
-        try self.pending_accept_embargo_by_question.put(answer_id, embargo_copy);
+        try peer_embargo_accepts.queueEmbargoedAccept(
+            PendingEmbargoedAccept,
+            self.allocator,
+            &self.pending_accepts_by_embargo,
+            &self.pending_accept_embargo_by_question,
+            answer_id,
+            provided_question_id,
+            embargo,
+        );
     }
 
     fn clearPendingAcceptQuestion(self: *Peer, question_id: u32) void {
-        const embargo_entry = self.pending_accept_embargo_by_question.fetchRemove(question_id) orelse return;
-        const embargo_key = embargo_entry.value;
-        defer self.allocator.free(embargo_key);
-
-        if (self.pending_accepts_by_embargo.getEntry(embargo_key)) |entry| {
-            const pending = entry.value_ptr;
-            var idx: usize = 0;
-            while (idx < pending.items.len) : (idx += 1) {
-                if (pending.items[idx].answer_id == question_id) {
-                    _ = pending.swapRemove(idx);
-                    break;
-                }
-            }
-
-            if (pending.items.len == 0) {
-                if (self.pending_accepts_by_embargo.fetchRemove(embargo_key)) |removed| {
-                    self.allocator.free(removed.key);
-                    var removed_list = removed.value;
-                    removed_list.deinit(self.allocator);
-                }
-            }
-        }
+        peer_embargo_accepts.clearPendingAcceptQuestion(
+            PendingEmbargoedAccept,
+            self.allocator,
+            &self.pending_accepts_by_embargo,
+            &self.pending_accept_embargo_by_question,
+            question_id,
+        );
     }
 
     fn releaseEmbargoedAccepts(self: *Peer, embargo: []const u8) !void {
-        const pending_entry = self.pending_accepts_by_embargo.fetchRemove(embargo) orelse return;
-        var pending_list = pending_entry.value;
-        defer {
-            self.allocator.free(pending_entry.key);
-            pending_list.deinit(self.allocator);
-        }
+        try peer_embargo_accepts.releaseEmbargoedAccepts(
+            Peer,
+            PendingEmbargoedAccept,
+            ProvideEntry,
+            self,
+            self.allocator,
+            &self.pending_accepts_by_embargo,
+            &self.pending_accept_embargo_by_question,
+            &self.provides_by_question,
+            embargo,
+            sendReturnProvidedEntryForEmbargoControl,
+            sendReturnExceptionForControl,
+        );
+    }
 
-        for (pending_list.items) |pending| {
-            if (self.pending_accept_embargo_by_question.fetchRemove(pending.answer_id)) |embargo_key| {
-                self.allocator.free(embargo_key.value);
-            }
-
-            const provided = self.provides_by_question.getPtr(pending.provided_question_id) orelse {
-                try self.sendReturnException(pending.answer_id, "unknown provision");
-                continue;
-            };
-
-            self.sendReturnProvidedTarget(pending.answer_id, &provided.target) catch |err| {
-                try self.sendReturnException(pending.answer_id, @errorName(err));
-            };
-        }
+    fn sendReturnProvidedEntryForEmbargoControl(
+        self: *Peer,
+        answer_id: u32,
+        entry: *const ProvideEntry,
+    ) !void {
+        try self.sendReturnProvidedTarget(answer_id, &entry.target);
     }
 
     fn captureAnyPointerPayload(
@@ -1401,15 +1102,26 @@ pub const Peer = struct {
     }
 
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
-        if (count == 0) return;
-        var remaining = count;
-        var removed = false;
-        while (remaining > 0) : (remaining -= 1) {
-            if (self.caps.releaseImport(import_id)) removed = true;
-        }
-        if (removed) {
-            try self.releaseResolvedImport(import_id);
-        }
+        try peer_cap_lifecycle.releaseImport(
+            Peer,
+            self,
+            import_id,
+            count,
+            releaseImportRefForCapLifecycle,
+            releaseResolvedImportForCapLifecycle,
+            sendReleaseForCapLifecycle,
+        );
+    }
+
+    fn releaseImportRefForCapLifecycle(self: *Peer, import_id: u32) bool {
+        return self.caps.releaseImport(import_id);
+    }
+
+    fn releaseResolvedImportForCapLifecycle(self: *Peer, promise_id: u32) !void {
+        try self.releaseResolvedImport(promise_id);
+    }
+
+    fn sendReleaseForCapLifecycle(self: *Peer, import_id: u32, count: u32) !void {
         try self.sendRelease(import_id, count);
     }
 
@@ -1439,77 +1151,62 @@ pub const Peer = struct {
     }
 
     fn noteExportRef(self: *Peer, id: u32) !void {
-        var entry = self.exports.getEntry(id) orelse return error.UnknownExport;
-        entry.value_ptr.ref_count +%= 1;
+        try peer_cap_lifecycle.noteExportRef(
+            ExportEntry,
+            &self.exports,
+            id,
+        );
     }
 
     fn releaseExport(self: *Peer, id: u32, count: u32) void {
-        if (count == 0) return;
-        var entry = self.exports.getEntry(id) orelse return;
+        peer_cap_lifecycle.releaseExport(
+            Peer,
+            ExportEntry,
+            PendingCall,
+            self,
+            self.allocator,
+            &self.exports,
+            &self.pending_export_promises,
+            self.bootstrap_export_id,
+            id,
+            count,
+            clearExportPromiseForCapLifecycle,
+            deinitPendingCallForCapLifecycle,
+        );
+    }
 
-        if (self.bootstrap_export_id) |bootstrap_id| {
-            if (bootstrap_id == id) {
-                if (entry.value_ptr.ref_count <= count) {
-                    entry.value_ptr.ref_count = 0;
-                } else {
-                    entry.value_ptr.ref_count -= count;
-                }
-                return;
-            }
-        }
+    fn clearExportPromiseForCapLifecycle(self: *Peer, id: u32) void {
+        self.caps.clearExportPromise(id);
+    }
 
-        if (entry.value_ptr.ref_count <= count) {
-            _ = self.exports.remove(id);
-            self.caps.clearExportPromise(id);
-            if (self.pending_export_promises.fetchRemove(id)) |removed| {
-                var pending = removed.value;
-                for (pending.items) |*pending_call| {
-                    pending_call.caps.deinit();
-                    self.allocator.free(pending_call.frame);
-                }
-                pending.deinit(self.allocator);
-            }
-        } else {
-            entry.value_ptr.ref_count -= count;
-        }
+    fn deinitPendingCallForCapLifecycle(self: *Peer, pending_call: *PendingCall, allocator: std.mem.Allocator) void {
+        _ = self;
+        pending_call.caps.deinit();
+        allocator.free(pending_call.frame);
     }
 
     fn releaseInboundCaps(self: *Peer, inbound: *cap_table.InboundCapTable) !void {
-        var releases = try self.collectReleaseCounts(inbound);
-        defer releases.deinit();
-
-        var it = releases.iterator();
-        while (it.next()) |entry| {
-            try self.sendRelease(entry.key_ptr.*, entry.value_ptr.*);
-        }
+        try peer_inbound_release.releaseInboundCaps(
+            Peer,
+            self.allocator,
+            self,
+            inbound,
+            releaseImportForInboundReleaseControl,
+            releaseResolvedImportForInboundReleaseControl,
+            sendReleaseForInboundReleaseControl,
+        );
     }
 
-    fn collectReleaseCounts(self: *Peer, inbound: *cap_table.InboundCapTable) !std.AutoHashMap(u32, u32) {
-        var releases = std.AutoHashMap(u32, u32).init(self.allocator);
-        errdefer releases.deinit();
+    fn releaseImportForInboundReleaseControl(self: *Peer, import_id: u32) bool {
+        return self.caps.releaseImport(import_id);
+    }
 
-        var idx: u32 = 0;
-        while (idx < inbound.len()) : (idx += 1) {
-            if (inbound.isRetained(idx)) continue;
-            const entry = try inbound.get(idx);
-            switch (entry) {
-                .imported => |cap| {
-                    const removed = self.caps.releaseImport(cap.id);
-                    if (removed) {
-                        try self.releaseResolvedImport(cap.id);
-                    }
-                    const slot = try releases.getOrPut(cap.id);
-                    if (!slot.found_existing) {
-                        slot.value_ptr.* = 1;
-                    } else {
-                        slot.value_ptr.* +%= 1;
-                    }
-                },
-                else => {},
-            }
-        }
+    fn releaseResolvedImportForInboundReleaseControl(self: *Peer, promise_id: u32) !void {
+        try self.releaseResolvedImport(promise_id);
+    }
 
-        return releases;
+    fn sendReleaseForInboundReleaseControl(self: *Peer, import_id: u32, count: u32) !void {
+        try self.sendRelease(import_id, count);
     }
 
     fn storeResolvedImport(
@@ -1519,30 +1216,36 @@ pub const Peer = struct {
         embargo_id: ?u32,
         embargoed: bool,
     ) !void {
-        if (self.resolved_imports.fetchRemove(promise_id)) |existing| {
-            if (existing.value.embargo_id) |id| {
-                _ = self.pending_embargoes.remove(id);
-            }
-            if (existing.value.cap) |old_cap| {
-                try self.releaseResolvedCap(old_cap);
-            }
-        }
-        try self.resolved_imports.put(promise_id, .{
-            .cap = cap,
-            .embargo_id = embargo_id,
-            .embargoed = embargoed,
-        });
+        try peer_cap_lifecycle.storeResolvedImport(
+            Peer,
+            ResolvedImport,
+            cap_table.ResolvedCap,
+            self,
+            &self.resolved_imports,
+            &self.pending_embargoes,
+            promise_id,
+            cap,
+            embargo_id,
+            embargoed,
+            releaseResolvedCapForCapLifecycle,
+        );
     }
 
     fn releaseResolvedImport(self: *Peer, promise_id: u32) anyerror!void {
-        if (self.resolved_imports.fetchRemove(promise_id)) |existing| {
-            if (existing.value.embargo_id) |id| {
-                _ = self.pending_embargoes.remove(id);
-            }
-            if (existing.value.cap) |resolved| {
-                try self.releaseResolvedCap(resolved);
-            }
-        }
+        try peer_cap_lifecycle.releaseResolvedImport(
+            Peer,
+            ResolvedImport,
+            cap_table.ResolvedCap,
+            self,
+            &self.resolved_imports,
+            &self.pending_embargoes,
+            promise_id,
+            releaseResolvedCapForCapLifecycle,
+        );
+    }
+
+    fn releaseResolvedCapForCapLifecycle(self: *Peer, resolved: cap_table.ResolvedCap) !void {
+        try self.releaseResolvedCap(resolved);
     }
 
     fn releaseResolvedCap(self: *Peer, resolved: cap_table.ResolvedCap) anyerror!void {
@@ -1618,24 +1321,17 @@ pub const Peer = struct {
     }
 
     fn releaseResultCaps(self: *Peer, frame: []const u8) !void {
-        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
-        defer decoded.deinit();
-        if (decoded.tag != .return_) return;
-        const ret = try decoded.asReturn();
-        if (ret.tag != .results or ret.results == null) return;
-        const cap_list = ret.results.?.cap_table orelse return;
-        var idx: u32 = 0;
-        while (idx < cap_list.len()) : (idx += 1) {
-            const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(idx));
-            switch (desc.tag) {
-                .sender_hosted, .sender_promise => {
-                    if (desc.id) |id| {
-                        self.releaseExport(id, 1);
-                    }
-                },
-                else => {},
-            }
-        }
+        try peer_cap_lifecycle.releaseResultCaps(
+            Peer,
+            self,
+            self.allocator,
+            frame,
+            releaseExportForCapLifecycleById,
+        );
+    }
+
+    fn releaseExportForCapLifecycleById(self: *Peer, id: u32, count: u32) void {
+        self.releaseExport(id, count);
     }
 
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
@@ -1691,7 +1387,7 @@ pub const Peer = struct {
         defer decoded.deinit();
         self.last_inbound_tag = decoded.tag;
 
-        switch (decoded.tag) {
+        switch (peer_dispatch.route(decoded.tag)) {
             .unimplemented => try self.handleUnimplemented(try decoded.asUnimplemented()),
             .abort => try self.handleAbort(try decoded.asAbort()),
             .bootstrap => try self.handleBootstrap(try decoded.asBootstrap()),
@@ -1705,7 +1401,7 @@ pub const Peer = struct {
             .accept => try self.handleAccept(try decoded.asAccept()),
             .join => try self.handleJoin(try decoded.asJoin()),
             .third_party_answer => try self.handleThirdPartyAnswer(try decoded.asThirdPartyAnswer()),
-            else => {
+            .unknown => {
                 const root = try decoded.msg.getRootAnyPointer();
                 try self.sendUnimplemented(root);
             },
@@ -1727,43 +1423,19 @@ pub const Peer = struct {
     }
 
     fn handleUnimplemented(self: *Peer, unimplemented: protocol.Unimplemented) !void {
-        const tag = unimplemented.message_tag orelse return;
-        const question_id = unimplemented.question_id orelse return;
-        switch (tag) {
-            .bootstrap, .call => try self.handleUnimplementedQuestion(question_id),
-            else => {},
-        }
+        try peer_control.handleUnimplemented(Peer, self, unimplemented, handleUnimplementedQuestion);
     }
 
     fn handleUnimplementedQuestion(self: *Peer, question_id: u32) !void {
-        const ret = protocol.Return{
-            .answer_id = question_id,
-            .release_param_caps = false,
-            .no_finish_needed = false,
-            .tag = .exception,
-            .results = null,
-            .exception = .{
-                .reason = "unimplemented",
-                .trace = "",
-                .type_value = 0,
-            },
-            .take_from_other_question = null,
-        };
-        self.handleReturn(&.{}, ret) catch |err| switch (err) {
-            error.UnknownQuestion => {},
-            else => return err,
-        };
+        try peer_control.handleUnimplementedQuestion(Peer, self, question_id, handleControlReturn);
     }
 
     fn handleAbort(self: *Peer, abort: protocol.Abort) !void {
-        if (self.last_remote_abort_reason) |existing| {
-            self.allocator.free(existing);
-            self.last_remote_abort_reason = null;
-        }
-        const reason_copy = try self.allocator.alloc(u8, abort.exception.reason.len);
-        std.mem.copyForwards(u8, reason_copy, abort.exception.reason);
-        self.last_remote_abort_reason = reason_copy;
-        return error.RemoteAbort;
+        try peer_control.handleAbort(self.allocator, &self.last_remote_abort_reason, abort);
+    }
+
+    fn handleControlReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
+        try self.handleReturn(frame, ret);
     }
 
     fn handleBootstrap(self: *Peer, bootstrap: protocol.Bootstrap) !void {
@@ -1772,19 +1444,8 @@ pub const Peer = struct {
             return;
         };
 
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-
-        var ret = try builder.beginReturn(bootstrap.question_id, .results);
-        var any = try ret.getResultsAnyPointer();
-        try any.setCapability(.{ .id = 0 });
-
-        var cap_list = try ret.initCapTable(1);
-        const entry = try cap_list.get(0);
-        protocol.CapDescriptor.writeSenderHosted(entry, export_id);
         try self.noteExportRef(export_id);
-
-        const bytes = try builder.finish();
+        const bytes = try peer_control.buildBootstrapReturnFrame(self.allocator, bootstrap.question_id, export_id);
         defer self.allocator.free(bytes);
 
         try self.sendFrame(bytes);
@@ -1795,122 +1456,176 @@ pub const Peer = struct {
     }
 
     fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
-        _ = self.send_results_to_yourself.remove(finish.question_id);
-        self.clearSendResultsToThirdParty(finish.question_id);
-        self.clearProvide(finish.question_id);
-        self.clearPendingJoinQuestion(finish.question_id);
-        self.clearPendingAcceptQuestion(finish.question_id);
-
-        if (self.forwarded_tail_questions.fetchRemove(finish.question_id)) |tail| {
-            try self.sendFinish(tail.value, false);
-        }
-
-        if (self.resolved_answers.fetchRemove(finish.question_id)) |entry| {
-            defer self.allocator.free(entry.value.frame);
-            if (finish.release_result_caps) {
-                try self.releaseResultCaps(entry.value.frame);
-            }
-        }
+        try peer_control.handleFinish(
+            Peer,
+            self,
+            finish.question_id,
+            finish.release_result_caps,
+            removeSendResultsToYourself,
+            clearSendResultsToThirdParty,
+            clearProvide,
+            clearPendingJoinQuestion,
+            clearPendingAcceptQuestion,
+            takeForwardedTailQuestion,
+            sendForwardedFinish,
+            takeResolvedAnswerFrame,
+            releaseCapsForFrame,
+            freeOwnedFrame,
+        );
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {
-        self.releaseExport(release.id, release.reference_count);
+        peer_control.handleRelease(Peer, self, release, releaseExportFromControl);
+    }
+
+    fn removeSendResultsToYourself(self: *Peer, question_id: u32) void {
+        _ = self.send_results_to_yourself.remove(question_id);
+    }
+
+    fn takeForwardedTailQuestion(self: *Peer, question_id: u32) ?u32 {
+        if (self.forwarded_tail_questions.fetchRemove(question_id)) |tail| {
+            return tail.value;
+        }
+        return null;
+    }
+
+    fn takeResolvedAnswerFrame(self: *Peer, question_id: u32) ?[]u8 {
+        if (self.resolved_answers.fetchRemove(question_id)) |entry| {
+            return entry.value.frame;
+        }
+        return null;
+    }
+
+    fn sendForwardedFinish(self: *Peer, question_id: u32, release_result_caps: bool) !void {
+        try self.sendFinish(question_id, release_result_caps);
+    }
+
+    fn releaseCapsForFrame(self: *Peer, frame: []const u8) !void {
+        try self.releaseResultCaps(frame);
+    }
+
+    fn freeOwnedFrame(self: *Peer, frame: []u8) void {
+        self.allocator.free(frame);
+    }
+
+    fn releaseExportFromControl(self: *Peer, export_id: u32, reference_count: u32) void {
+        self.releaseExport(export_id, reference_count);
     }
 
     fn handleResolve(self: *Peer, resolve: protocol.Resolve) !void {
-        const promise_id = resolve.promise_id;
-        const known_promise = self.caps.imports.contains(promise_id);
-
-        switch (resolve.tag) {
-            .cap => {
-                const descriptor = resolve.cap orelse return error.MissingResolveCap;
-                const resolved = try cap_table.resolveCapDescriptor(&self.caps, descriptor);
-
-                if (!known_promise) {
-                    try self.releaseResolvedCap(resolved);
-                    return;
-                }
-
-                var embargo_id: ?u32 = null;
-                var embargoed = false;
-                if (resolved == .exported or resolved == .promised) {
-                    embargo_id = self.next_embargo_id;
-                    self.next_embargo_id +%= 1;
-                    embargoed = true;
-                    try self.pending_embargoes.put(embargo_id.?, promise_id);
-                    const target = switch (resolved) {
-                        .promised => |promised| protocol.MessageTarget{
-                            .tag = .promised_answer,
-                            .imported_cap = null,
-                            .promised_answer = promised,
-                        },
-                        else => protocol.MessageTarget{
-                            .tag = .imported_cap,
-                            .imported_cap = promise_id,
-                            .promised_answer = null,
-                        },
-                    };
-                    try self.sendDisembargoSenderLoopback(target, embargo_id.?);
-                }
-
-                try self.storeResolvedImport(promise_id, resolved, embargo_id, embargoed);
-            },
-            .exception => {
-                if (!known_promise) return;
-                try self.storeResolvedImport(promise_id, null, null, false);
-            },
-        }
+        try peer_control.handleResolve(
+            Peer,
+            self,
+            resolve,
+            hasKnownResolvePromise,
+            resolveCapDescriptorForControl,
+            releaseResolvedCapForControl,
+            allocateEmbargoIdForControl,
+            rememberPendingEmbargoForControl,
+            sendDisembargoSenderLoopbackForControl,
+            storeResolvedImportForControl,
+        );
     }
 
     fn handleDisembargo(self: *Peer, disembargo: protocol.Disembargo) !void {
-        switch (disembargo.context_tag) {
-            .sender_loopback => {
-                const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
-                switch (disembargo.target.tag) {
-                    .imported_cap => {
-                        _ = disembargo.target.imported_cap orelse return error.MissingCallTarget;
-                    },
-                    .promised_answer => {
-                        _ = disembargo.target.promised_answer orelse return error.MissingPromisedAnswer;
-                    },
-                }
-                try self.sendDisembargoReceiverLoopback(disembargo.target, embargo_id);
-            },
-            .receiver_loopback => {
-                const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
-                const entry = self.pending_embargoes.fetchRemove(embargo_id) orelse return;
-                if (self.resolved_imports.getEntry(entry.value)) |resolved| {
-                    resolved.value_ptr.embargoed = false;
-                    resolved.value_ptr.embargo_id = null;
-                }
-            },
-            .accept => {
-                const accept_embargo = disembargo.accept orelse return;
-                try self.releaseEmbargoedAccepts(accept_embargo);
-            },
+        try peer_control.handleDisembargo(
+            Peer,
+            self,
+            disembargo,
+            sendDisembargoReceiverLoopbackForControl,
+            takePendingEmbargoPromiseForControl,
+            clearResolvedImportEmbargoForControl,
+            releaseEmbargoedAcceptsForControl,
+        );
+    }
+
+    fn hasKnownResolvePromise(self: *Peer, promise_id: u32) bool {
+        return self.caps.imports.contains(promise_id);
+    }
+
+    fn resolveCapDescriptorForControl(self: *Peer, descriptor: protocol.CapDescriptor) !cap_table.ResolvedCap {
+        return cap_table.resolveCapDescriptor(&self.caps, descriptor);
+    }
+
+    fn releaseResolvedCapForControl(self: *Peer, resolved: cap_table.ResolvedCap) !void {
+        try self.releaseResolvedCap(resolved);
+    }
+
+    fn allocateEmbargoIdForControl(self: *Peer) u32 {
+        const embargo_id = self.next_embargo_id;
+        self.next_embargo_id +%= 1;
+        return embargo_id;
+    }
+
+    fn rememberPendingEmbargoForControl(self: *Peer, embargo_id: u32, promise_id: u32) !void {
+        try self.pending_embargoes.put(embargo_id, promise_id);
+    }
+
+    fn sendDisembargoSenderLoopbackForControl(self: *Peer, target: protocol.MessageTarget, embargo_id: u32) !void {
+        try self.sendDisembargoSenderLoopback(target, embargo_id);
+    }
+
+    fn storeResolvedImportForControl(
+        self: *Peer,
+        promise_id: u32,
+        cap: ?cap_table.ResolvedCap,
+        embargo_id: ?u32,
+        embargoed: bool,
+    ) !void {
+        try self.storeResolvedImport(promise_id, cap, embargo_id, embargoed);
+    }
+
+    fn sendDisembargoReceiverLoopbackForControl(
+        self: *Peer,
+        target: protocol.MessageTarget,
+        embargo_id: u32,
+    ) !void {
+        try self.sendDisembargoReceiverLoopback(target, embargo_id);
+    }
+
+    fn takePendingEmbargoPromiseForControl(self: *Peer, embargo_id: u32) ?u32 {
+        if (self.pending_embargoes.fetchRemove(embargo_id)) |entry| {
+            return entry.value;
+        }
+        return null;
+    }
+
+    fn clearResolvedImportEmbargoForControl(self: *Peer, promise_id: u32) void {
+        if (self.resolved_imports.getEntry(promise_id)) |resolved| {
+            resolved.value_ptr.embargoed = false;
+            resolved.value_ptr.embargo_id = null;
         }
     }
 
-    fn resolveProvideTarget(self: *Peer, target: protocol.MessageTarget) !cap_table.ResolvedCap {
-        return switch (target.tag) {
-            .imported_cap => {
-                const export_id = target.imported_cap orelse return error.MissingCallTarget;
-                const exported_entry = self.exports.getEntry(export_id) orelse return error.UnknownExport;
+    fn releaseEmbargoedAcceptsForControl(self: *Peer, embargo: []const u8) !void {
+        try self.releaseEmbargoedAccepts(embargo);
+    }
 
-                if (exported_entry.value_ptr.is_promise) {
-                    const resolved = exported_entry.value_ptr.resolved orelse return error.PromiseUnresolved;
-                    if (resolved == .none) return error.PromiseBroken;
-                    return resolved;
-                }
-                return .{ .exported = .{ .id = export_id } };
-            },
-            .promised_answer => {
-                const promised = target.promised_answer orelse return error.MissingPromisedAnswer;
-                const resolved = try self.resolvePromisedAnswer(promised);
-                if (resolved == .none) return error.PromisedAnswerMissing;
-                return resolved;
-            },
-        };
+    fn resolveProvideTarget(self: *Peer, target: protocol.MessageTarget) !cap_table.ResolvedCap {
+        return peer_control.resolveProvideTarget(
+            Peer,
+            self,
+            target,
+            resolveProvideImportedCapForControl,
+            resolveProvidePromisedAnswerForControl,
+        );
+    }
+
+    fn resolveProvideImportedCapForControl(self: *Peer, export_id: u32) !cap_table.ResolvedCap {
+        const exported_entry = self.exports.getEntry(export_id) orelse return error.UnknownExport;
+
+        if (exported_entry.value_ptr.is_promise) {
+            const resolved = exported_entry.value_ptr.resolved orelse return error.PromiseUnresolved;
+            if (resolved == .none) return error.PromiseBroken;
+            return resolved;
+        }
+        return .{ .exported = .{ .id = export_id } };
+    }
+
+    fn resolveProvidePromisedAnswerForControl(self: *Peer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
+        const resolved = try self.resolvePromisedAnswer(promised);
+        if (resolved == .none) return error.PromisedAnswerMissing;
+        return resolved;
     }
 
     fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {
@@ -1924,246 +1639,402 @@ pub const Peer = struct {
         };
     }
 
+    fn captureProvideRecipientForControl(self: *Peer, provide: protocol.Provide) !?[]u8 {
+        return captureAnyPointerPayload(self.allocator, provide.recipient);
+    }
+
+    fn captureAcceptProvisionForControl(self: *Peer, accept: protocol.Accept) !?[]u8 {
+        return captureAnyPointerPayload(self.allocator, accept.provision);
+    }
+
+    fn freeCapturedPayloadForControl(self: *Peer, payload: []u8) void {
+        self.allocator.free(payload);
+    }
+
+    fn hasProvideQuestionForControl(self: *Peer, question_id: u32) bool {
+        return peer_provides_state.hasProvideQuestion(
+            ProvideEntry,
+            &self.provides_by_question,
+            question_id,
+        );
+    }
+
+    fn hasProvideRecipientForControl(self: *Peer, recipient_key: []const u8) bool {
+        return peer_provides_state.hasProvideRecipient(
+            &self.provides_by_key,
+            recipient_key,
+        );
+    }
+
+    fn sendAbortForControl(self: *Peer, reason: []const u8) !void {
+        try self.sendAbort(reason);
+    }
+
+    fn deinitProvideTargetForControl(self: *Peer, target: *ProvideTarget) void {
+        target.deinit(self.allocator);
+    }
+
+    fn putProvideByQuestionForControl(self: *Peer, question_id: u32, recipient_key: []u8, target: ProvideTarget) !void {
+        try peer_provides_state.putProvideByQuestion(
+            ProvideEntry,
+            ProvideTarget,
+            &self.provides_by_question,
+            question_id,
+            recipient_key,
+            target,
+        );
+    }
+
+    fn clearProvideForControl(self: *Peer, question_id: u32) void {
+        self.clearProvide(question_id);
+    }
+
+    fn putProvideByKeyForControl(self: *Peer, recipient_key: []const u8, question_id: u32) !void {
+        try peer_provides_state.putProvideByKey(
+            &self.provides_by_key,
+            recipient_key,
+            question_id,
+        );
+    }
+
+    fn getProvidedQuestionForControl(self: *Peer, recipient_key: []const u8) ?u32 {
+        return peer_provides_state.getProvidedQuestion(
+            &self.provides_by_key,
+            recipient_key,
+        );
+    }
+
+    fn getProvidedTargetForControl(self: *Peer, provided_question_id: u32) ?*ProvideTarget {
+        return peer_provides_state.getProvidedTarget(
+            ProvideEntry,
+            ProvideTarget,
+            &self.provides_by_question,
+            provided_question_id,
+        );
+    }
+
+    fn queueEmbargoedAcceptForControl(self: *Peer, answer_id: u32, provided_question_id: u32, embargo: []const u8) !void {
+        try self.queueEmbargoedAccept(answer_id, provided_question_id, embargo);
+    }
+
+    fn sendReturnProvidedTargetForControl(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {
+        try self.sendReturnProvidedTarget(answer_id, target);
+    }
+
+    fn sendReturnExceptionForControl(self: *Peer, question_id: u32, reason: []const u8) !void {
+        try self.sendReturnException(question_id, reason);
+    }
+
     fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
-        const key = try captureAnyPointerPayload(self.allocator, provide.recipient);
-        const key_bytes = key orelse {
-            try self.sendAbort("provide missing recipient");
-            return error.MissingThirdPartyPayload;
-        };
-        errdefer self.allocator.free(key_bytes);
-
-        if (self.provides_by_question.contains(provide.question_id)) {
-            try self.sendAbort("duplicate provide question");
-            return error.DuplicateProvideQuestionId;
-        }
-        if (self.provides_by_key.contains(key_bytes)) {
-            try self.sendAbort("duplicate provide recipient");
-            return error.DuplicateProvideRecipient;
-        }
-
-        const resolved = self.resolveProvideTarget(provide.target) catch |err| {
-            try self.sendAbort(@errorName(err));
-            return err;
-        };
-        const target = try self.makeProvideTarget(resolved);
-        errdefer {
-            var cleanup = target;
-            cleanup.deinit(self.allocator);
-        }
-
-        try self.provides_by_question.put(provide.question_id, .{
-            .recipient_key = key_bytes,
-            .target = target,
-        });
-        errdefer self.clearProvide(provide.question_id);
-        try self.provides_by_key.put(key_bytes, provide.question_id);
+        try peer_control.handleProvide(
+            Peer,
+            ProvideTarget,
+            self,
+            provide,
+            captureProvideRecipientForControl,
+            freeCapturedPayloadForControl,
+            hasProvideQuestionForControl,
+            hasProvideRecipientForControl,
+            sendAbortForControl,
+            resolveProvideTarget,
+            makeProvideTarget,
+            deinitProvideTargetForControl,
+            putProvideByQuestionForControl,
+            clearProvideForControl,
+            putProvideByKeyForControl,
+        );
     }
 
     fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
-        const key = try captureAnyPointerPayload(self.allocator, accept.provision);
-        defer if (key) |bytes| self.allocator.free(bytes);
-        const key_bytes = key orelse {
-            try self.sendReturnException(accept.question_id, "unknown provision");
-            return;
-        };
+        try peer_control.handleAccept(
+            Peer,
+            ProvideTarget,
+            self,
+            accept,
+            captureAcceptProvisionForControl,
+            freeCapturedPayloadForControl,
+            getProvidedQuestionForControl,
+            getProvidedTargetForControl,
+            queueEmbargoedAcceptForControl,
+            sendReturnProvidedTargetForControl,
+            sendReturnExceptionForControl,
+        );
+    }
 
-        const provided_question_id = self.provides_by_key.get(key_bytes) orelse {
-            try self.sendReturnException(accept.question_id, "unknown provision");
-            return;
-        };
-        const entry = self.provides_by_question.getPtr(provided_question_id) orelse {
-            try self.sendReturnException(accept.question_id, "unknown provision");
-            return;
-        };
+    fn hasPendingJoinQuestionForControl(self: *Peer, question_id: u32) bool {
+        return self.pending_join_questions.contains(question_id);
+    }
 
-        if (accept.embargo) |embargo| {
-            try self.queueEmbargoedAccept(accept.question_id, provided_question_id, embargo);
-            return;
-        }
+    fn parseJoinKeyPartForControl(self: *Peer, join: protocol.Join) !JoinKeyPart {
+        _ = self;
+        return peer_join_state.parseJoinKeyPart(JoinKeyPart, join.key_part);
+    }
 
-        self.sendReturnProvidedTarget(accept.question_id, &entry.target) catch |err| {
-            try self.sendReturnException(accept.question_id, @errorName(err));
+    fn insertJoinPartForControl(
+        self: *Peer,
+        join_key_part: JoinKeyPart,
+        question_id: u32,
+        target: ProvideTarget,
+    ) !peer_control.JoinInsertOutcome {
+        const outcome = try peer_join_state.insertJoinPart(
+            JoinKeyPart,
+            JoinState,
+            PendingJoinQuestion,
+            ProvideTarget,
+            self.allocator,
+            &self.pending_joins,
+            &self.pending_join_questions,
+            join_key_part,
+            question_id,
+            target,
+            initJoinStateForControl,
+        );
+        return switch (outcome) {
+            .inserted => .inserted,
+            .inserted_ready => .inserted_ready,
+            .part_count_mismatch => .part_count_mismatch,
+            .duplicate_part => .duplicate_part,
         };
+    }
+
+    fn completeJoinForControl(self: *Peer, join_key_part: JoinKeyPart) !void {
+        try self.completeJoin(join_key_part.join_id);
     }
 
     fn handleJoin(self: *Peer, join: protocol.Join) !void {
-        if (self.pending_join_questions.contains(join.question_id)) {
-            try self.sendAbort("duplicate join question");
-            return error.DuplicateJoinQuestionId;
-        }
+        try peer_control.handleJoin(
+            Peer,
+            JoinKeyPart,
+            ProvideTarget,
+            self,
+            join,
+            hasPendingJoinQuestionForControl,
+            sendAbortForControl,
+            parseJoinKeyPartForControl,
+            resolveProvideTarget,
+            makeProvideTarget,
+            deinitProvideTargetForControl,
+            insertJoinPartForControl,
+            completeJoinForControl,
+            sendReturnExceptionForControl,
+        );
+    }
 
-        const join_key_part = parseJoinKeyPart(join.key_part) catch |err| {
-            try self.sendReturnException(join.question_id, @errorName(err));
-            return;
-        };
+    fn captureThirdPartyCompletionForControl(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !?[]u8 {
+        return captureAnyPointerPayload(self.allocator, third_party_answer.completion);
+    }
 
-        const resolved = self.resolveProvideTarget(join.target) catch |err| {
-            try self.sendReturnException(join.question_id, @errorName(err));
-            return;
-        };
+    fn adoptPendingThirdPartyAwaitEntryForControl(
+        self: *Peer,
+        adopted_answer_id: u32,
+        pending_await: PendingThirdPartyAwait,
+    ) !void {
+        try self.adoptThirdPartyAnswer(
+            pending_await.question_id,
+            adopted_answer_id,
+            pending_await.question,
+        );
+    }
 
-        const target = self.makeProvideTarget(resolved) catch |err| {
-            try self.sendReturnException(join.question_id, @errorName(err));
-            return;
-        };
+    fn adoptPendingThirdPartyAwaitForControl(self: *Peer, completion_key: []const u8, adopted_answer_id: u32) !bool {
+        return try peer_third_party_pending.adoptPendingAwait(
+            Peer,
+            PendingThirdPartyAwait,
+            self.allocator,
+            &self.pending_third_party_awaits,
+            self,
+            completion_key,
+            adopted_answer_id,
+            adoptPendingThirdPartyAwaitEntryForControl,
+        );
+    }
 
-        const join_entry = try self.pending_joins.getOrPut(join_key_part.join_id);
-        if (!join_entry.found_existing) {
-            join_entry.value_ptr.* = JoinState.init(self.allocator, join_key_part.part_count);
-        } else if (join_entry.value_ptr.part_count != join_key_part.part_count) {
-            var cleanup = target;
-            cleanup.deinit(self.allocator);
-            try self.sendReturnException(join.question_id, "join partCount mismatch");
-            return;
-        }
+    fn getPendingThirdPartyAnswerIdForControl(self: *Peer, completion_key: []const u8) ?u32 {
+        return self.pending_third_party_answers.get(completion_key);
+    }
 
-        if (join_entry.value_ptr.parts.contains(join_key_part.part_num)) {
-            var cleanup = target;
-            cleanup.deinit(self.allocator);
-            try self.sendReturnException(join.question_id, "duplicate join part");
-            return;
-        }
-
-        try join_entry.value_ptr.parts.put(join_key_part.part_num, .{
-            .question_id = join.question_id,
-            .target = target,
-        });
-        errdefer {
-            if (join_entry.value_ptr.parts.fetchRemove(join_key_part.part_num)) |removed| {
-                var cleanup = removed.value.target;
-                cleanup.deinit(self.allocator);
-            }
-        }
-        try self.pending_join_questions.put(join.question_id, .{
-            .join_id = join_key_part.join_id,
-            .part_num = join_key_part.part_num,
-        });
-        errdefer _ = self.pending_join_questions.remove(join.question_id);
-
-        if (join_entry.value_ptr.parts.count() == join_key_part.part_count) {
-            try self.completeJoin(join_key_part.join_id);
-        }
+    fn putPendingThirdPartyAnswerForControl(self: *Peer, completion_key: []u8, answer_id: u32) !void {
+        try peer_third_party_pending.putPendingAnswer(
+            &self.pending_third_party_answers,
+            completion_key,
+            answer_id,
+        );
     }
 
     fn handleThirdPartyAnswer(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !void {
-        if (!isThirdPartyAnswerId(third_party_answer.answer_id)) {
-            try self.sendAbort("invalid thirdPartyAnswer answerId");
-            return error.InvalidThirdPartyAnswerId;
-        }
-
-        const completion_payload = try captureAnyPointerPayload(self.allocator, third_party_answer.completion);
-        const completion_key = completion_payload orelse {
-            try self.sendAbort("thirdPartyAnswer missing completion");
-            return error.MissingThirdPartyPayload;
-        };
-        errdefer self.allocator.free(completion_key);
-
-        if (self.pending_third_party_awaits.fetchRemove(completion_key)) |await_entry| {
-            defer self.allocator.free(await_entry.key);
-            self.allocator.free(completion_key);
-            try self.adoptThirdPartyAnswer(
-                await_entry.value.question_id,
-                third_party_answer.answer_id,
-                await_entry.value.question,
-            );
-            return;
-        }
-
-        if (self.pending_third_party_answers.get(completion_key)) |existing_id| {
-            if (existing_id == third_party_answer.answer_id) {
-                self.allocator.free(completion_key);
-                return;
-            }
-            try self.sendAbort("conflicting thirdPartyAnswer completion");
-            return error.ConflictingThirdPartyAnswer;
-        }
-
-        try self.pending_third_party_answers.put(completion_key, third_party_answer.answer_id);
+        try peer_control.handleThirdPartyAnswer(
+            Peer,
+            self,
+            third_party_answer,
+            peer_control.isThirdPartyAnswerId,
+            captureThirdPartyCompletionForControl,
+            freeCapturedPayloadForControl,
+            sendAbortForControl,
+            adoptPendingThirdPartyAwaitForControl,
+            getPendingThirdPartyAnswerIdForControl,
+            putPendingThirdPartyAnswerForControl,
+        );
     }
 
-    fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
-        switch (call.target.tag) {
-            .imported_cap => {
-                var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, call.params.cap_table, &self.caps);
-                const export_id = call.target.imported_cap orelse return error.MissingCallTarget;
-                const exported_entry = self.exports.getEntry(export_id) orelse {
-                    try self.sendReturnException(call.question_id, "unknown capability");
-                    inbound_caps.deinit();
-                    return;
-                };
+    fn handleResolvedExportedForControl(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        export_id: u32,
+    ) !void {
+        const exported_entry = self.exports.getEntry(export_id) orelse {
+            try self.sendReturnException(call.question_id, "unknown promised capability");
+            return;
+        };
+        const handler = exported_entry.value_ptr.handler;
+        try peer_call_orchestration.handleResolvedExportedCall(
+            Peer,
+            cap_table.InboundCapTable,
+            self,
+            call,
+            inbound_caps,
+            true,
+            exported_entry.value_ptr.is_promise,
+            exported_entry.value_ptr.resolved,
+            if (handler) |h| h.ctx else null,
+            if (handler) |h| h.on_call else null,
+            noteCallSendResultsForCallOrchestration,
+            handleResolvedCallForCallOrchestration,
+            sendReturnExceptionForControl,
+        );
+    }
 
-                if (exported_entry.value_ptr.is_promise) {
-                    const resolved = exported_entry.value_ptr.resolved;
-                    if (resolved == null) {
-                        try self.queuePromiseExportCall(export_id, frame, inbound_caps);
-                        return;
-                    }
+    fn forwardResolvedCallForControl(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        resolved: cap_table.ResolvedCap,
+        mode: peer_control.ForwardResolvedMode,
+    ) !void {
+        const forward_mode: ForwardReturnMode = switch (mode) {
+            .sent_elsewhere => .sent_elsewhere,
+            .propagate_results_sent_elsewhere => .propagate_results_sent_elsewhere,
+            .propagate_accept_from_third_party => .propagate_accept_from_third_party,
+        };
+        try self.forwardResolvedCall(call, inbound_caps, resolved, forward_mode);
+    }
 
-                    defer inbound_caps.deinit();
-                    defer self.releaseInboundCaps(&inbound_caps) catch |err| {
-                        if (self.on_error) |cb| cb(self, err);
-                    };
+    fn resolvePromisedAnswerForCallTargetControl(self: *Peer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
+        return self.resolvePromisedAnswer(promised);
+    }
 
-                    if (resolved.? == .none) {
-                        try self.sendReturnException(call.question_id, "promise broken");
-                        return;
-                    }
-                    try self.handleResolvedCall(call, &inbound_caps, resolved.?);
-                    return;
-                }
+    fn hasUnresolvedPromiseExportForCallTargetControl(self: *Peer, export_id: u32) bool {
+        if (self.exports.getEntry(export_id)) |entry| {
+            return entry.value_ptr.is_promise and entry.value_ptr.resolved == null;
+        }
+        return false;
+    }
 
-                defer inbound_caps.deinit();
-                defer self.releaseInboundCaps(&inbound_caps) catch |err| {
-                    if (self.on_error) |cb| cb(self, err);
-                };
+    fn noteCallSendResultsForCallOrchestration(self: *Peer, call: protocol.Call) !void {
+        try peer_control.noteCallSendResults(
+            Peer,
+            self,
+            call,
+            noteSendResultsToYourself,
+            noteSendResultsToThirdParty,
+        );
+    }
 
-                switch (call.send_results_to.tag) {
-                    .caller => {},
-                    .yourself => {
-                        try self.noteSendResultsToYourself(call.question_id);
-                    },
-                    .third_party => {
-                        try self.noteSendResultsToThirdParty(call.question_id, call.send_results_to.third_party);
-                    },
-                }
+    fn handleResolvedCallForCallOrchestration(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        resolved: cap_table.ResolvedCap,
+    ) !void {
+        try self.handleResolvedCall(call, inbound_caps, resolved);
+    }
 
-                const handler = exported_entry.value_ptr.handler orelse {
-                    try self.sendReturnException(call.question_id, "missing export handler");
-                    return;
-                };
-                handler.on_call(handler.ctx, self, call, &inbound_caps) catch |err| {
-                    try self.sendReturnException(call.question_id, @errorName(err));
-                    return;
-                };
+    fn handleCallImportedTarget(self: *Peer, frame: []const u8, call: protocol.Call, export_id: u32) !void {
+        var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, call.params.cap_table, &self.caps);
+        const exported_entry = self.exports.getEntry(export_id);
+        const target_plan = peer_call_targets.planImportedTarget(
+            exported_entry != null,
+            if (exported_entry) |entry| entry.value_ptr.is_promise else false,
+            if (exported_entry) |entry| entry.value_ptr.resolved else null,
+            if (exported_entry) |entry| entry.value_ptr.handler != null else false,
+        );
+
+        switch (target_plan) {
+            .unknown_capability => {
+                try self.sendReturnException(call.question_id, "unknown capability");
+                inbound_caps.deinit();
+                return;
             },
-            .promised_answer => {
-                const promised = call.target.promised_answer orelse return error.MissingCallTarget;
-                var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, call.params.cap_table, &self.caps);
-                const resolved = self.resolvePromisedAnswer(promised) catch |err| {
-                    if (err == error.PromiseUnresolved) {
-                        try self.queuePromisedCall(promised.question_id, frame, inbound_caps);
-                        return;
-                    }
-                    inbound_caps.deinit();
-                    try self.sendReturnException(call.question_id, @errorName(err));
-                    return;
-                };
+            .queue_promise_export => {
+                try self.queuePromiseExportCall(export_id, frame, inbound_caps);
+                return;
+            },
+            else => {},
+        }
 
-                if (resolved == .exported) {
-                    const export_id = resolved.exported.id;
-                    if (self.exports.getEntry(export_id)) |entry| {
-                        if (entry.value_ptr.is_promise and entry.value_ptr.resolved == null) {
-                            try self.queuePromiseExportCall(export_id, frame, inbound_caps);
-                            return;
-                        }
-                    }
-                }
+        defer inbound_caps.deinit();
+        defer self.releaseInboundCaps(&inbound_caps) catch |err| {
+            if (self.on_error) |cb| cb(self, err);
+        };
 
+        const handler = if (exported_entry) |entry| entry.value_ptr.handler else null;
+        try peer_call_orchestration.dispatchImportedTargetPlan(
+            Peer,
+            cap_table.InboundCapTable,
+            self,
+            call,
+            &inbound_caps,
+            target_plan,
+            if (handler) |h| h.ctx else null,
+            if (handler) |h| h.on_call else null,
+            noteCallSendResultsForCallOrchestration,
+            sendReturnExceptionForControl,
+            handleResolvedCallForCallOrchestration,
+        );
+    }
+
+    fn handleCallPromisedTarget(self: *Peer, frame: []const u8, call: protocol.Call, promised: protocol.PromisedAnswer) !void {
+        var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, call.params.cap_table, &self.caps);
+        const target_plan = peer_call_targets.planPromisedTarget(
+            Peer,
+            self,
+            promised,
+            resolvePromisedAnswerForCallTargetControl,
+            hasUnresolvedPromiseExportForCallTargetControl,
+        );
+
+        switch (target_plan) {
+            .queue_promised_call => {
+                try self.queuePromisedCall(promised.question_id, frame, inbound_caps);
+                return;
+            },
+            .queue_export_promise => |export_id| {
+                try self.queuePromiseExportCall(export_id, frame, inbound_caps);
+                return;
+            },
+            .send_exception => |err| {
+                inbound_caps.deinit();
+                try self.sendReturnException(call.question_id, @errorName(err));
+                return;
+            },
+            .handle_resolved => |resolved| {
                 defer inbound_caps.deinit();
                 defer self.releaseInboundCaps(&inbound_caps) catch |err| {
                     if (self.on_error) |cb| cb(self, err);
                 };
                 try self.handleResolvedCall(call, &inbound_caps, resolved);
+            },
+        }
+    }
+
+    fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
+        const target = try peer_call_orchestration.routeCallTarget(call);
+        switch (target) {
+            .imported => |export_id| {
+                try self.handleCallImportedTarget(frame, call, export_id);
+            },
+            .promised => |promised| {
+                try self.handleCallPromisedTarget(frame, call, promised);
             },
         }
     }
@@ -2174,152 +2045,95 @@ pub const Peer = struct {
         inbound_caps: *const cap_table.InboundCapTable,
         resolved: cap_table.ResolvedCap,
     ) !void {
-        switch (resolved) {
-            .exported => |cap| {
-                switch (call.send_results_to.tag) {
-                    .caller => {},
-                    .yourself => {
-                        try self.noteSendResultsToYourself(call.question_id);
-                    },
-                    .third_party => {
-                        try self.noteSendResultsToThirdParty(call.question_id, call.send_results_to.third_party);
-                    },
-                }
+        try peer_control.handleResolvedCall(
+            Peer,
+            cap_table.InboundCapTable,
+            self,
+            call,
+            inbound_caps,
+            resolved,
+            handleResolvedExportedForControl,
+            forwardResolvedCallForControl,
+            sendReturnExceptionForControl,
+        );
+    }
 
-                const exported_entry = self.exports.getEntry(cap.id) orelse {
-                    try self.sendReturnException(call.question_id, "unknown promised capability");
-                    return;
-                };
+    fn resolvePromisedAnswerForPromiseControl(self: *Peer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
+        return self.resolvePromisedAnswer(promised);
+    }
 
-                if (exported_entry.value_ptr.is_promise) {
-                    const next = exported_entry.value_ptr.resolved orelse {
-                        try self.sendReturnException(call.question_id, "promised capability unresolved");
-                        return;
-                    };
-                    if (next == .none) {
-                        try self.sendReturnException(call.question_id, "promise broken");
-                        return;
-                    }
-                    try self.handleResolvedCall(call, inbound_caps, next);
-                    return;
-                }
+    fn handleResolvedCallForPromiseControl(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        resolved: cap_table.ResolvedCap,
+    ) !void {
+        try self.handleResolvedCall(call, inbound_caps, resolved);
+    }
 
-                const handler = exported_entry.value_ptr.handler orelse {
-                    try self.sendReturnException(call.question_id, "missing promised capability handler");
-                    return;
-                };
-                handler.on_call(handler.ctx, self, call, inbound_caps) catch |err| {
-                    try self.sendReturnException(call.question_id, @errorName(err));
-                };
-            },
-            .imported => {
-                const mode = switch (call.send_results_to.tag) {
-                    .caller => ForwardReturnMode.sent_elsewhere,
-                    .yourself => ForwardReturnMode.propagate_results_sent_elsewhere,
-                    .third_party => ForwardReturnMode.propagate_accept_from_third_party,
-                };
-                self.forwardResolvedCall(call, inbound_caps, resolved, mode) catch |err| {
-                    try self.sendReturnException(call.question_id, @errorName(err));
-                };
-            },
-            .promised => {
-                const mode = switch (call.send_results_to.tag) {
-                    .caller => ForwardReturnMode.sent_elsewhere,
-                    .yourself => ForwardReturnMode.propagate_results_sent_elsewhere,
-                    .third_party => ForwardReturnMode.propagate_accept_from_third_party,
-                };
-                self.forwardResolvedCall(call, inbound_caps, resolved, mode) catch |err| {
-                    try self.sendReturnException(call.question_id, @errorName(err));
-                };
-            },
-            .none => {
-                try self.sendReturnException(call.question_id, "promised answer missing");
-            },
-        }
+    fn releaseInboundCapsForPromiseControl(self: *Peer, inbound_caps: *cap_table.InboundCapTable) !void {
+        try self.releaseInboundCaps(inbound_caps);
     }
 
     fn recordResolvedAnswer(self: *Peer, question_id: u32, frame: []u8) !void {
-        if (self.resolved_answers.fetchRemove(question_id)) |existing| {
-            self.allocator.free(existing.value.frame);
-        }
-        _ = try self.resolved_answers.put(question_id, .{ .frame = frame });
-
-        var pending = self.pending_promises.fetchRemove(question_id) orelse return;
-        defer pending.value.deinit(self.allocator);
-
-        for (pending.value.items) |*pending_call| {
-            defer pending_call.caps.deinit();
-            defer self.allocator.free(pending_call.frame);
-
-            var decoded = try protocol.DecodedMessage.init(self.allocator, pending_call.frame);
-            defer decoded.deinit();
-            if (decoded.tag != .call) continue;
-            const call = try decoded.asCall();
-            const promised = call.target.promised_answer orelse continue;
-            const resolved = self.resolvePromisedAnswer(promised) catch |err| {
-                try self.sendReturnException(call.question_id, @errorName(err));
-                continue;
-            };
-            self.handleResolvedCall(call, &pending_call.caps, resolved) catch |err| {
-                if (self.on_error) |cb| cb(self, err);
-            };
-            self.releaseInboundCaps(&pending_call.caps) catch |err| {
-                if (self.on_error) |cb| cb(self, err);
-            };
-        }
+        try peer_promises.recordResolvedAnswer(
+            Peer,
+            ResolvedAnswer,
+            PendingCall,
+            cap_table.InboundCapTable,
+            self.allocator,
+            self,
+            question_id,
+            frame,
+            &self.resolved_answers,
+            &self.pending_promises,
+            resolvePromisedAnswerForPromiseControl,
+            sendReturnExceptionForControl,
+            handleResolvedCallForPromiseControl,
+            releaseInboundCapsForPromiseControl,
+            reportNonfatalErrorForControl,
+        );
     }
 
     fn queuePromisedCall(self: *Peer, question_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
-        const copy = try self.allocator.alloc(u8, frame.len);
-        std.mem.copyForwards(u8, copy, frame);
-
-        var entry = try self.pending_promises.getOrPut(question_id);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(PendingCall){};
-        }
-        try entry.value_ptr.append(self.allocator, .{ .frame = copy, .caps = inbound_caps });
+        try peer_promises.queuePendingCall(
+            PendingCall,
+            cap_table.InboundCapTable,
+            self.allocator,
+            &self.pending_promises,
+            question_id,
+            frame,
+            inbound_caps,
+        );
     }
 
     fn queuePromiseExportCall(self: *Peer, export_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
-        const copy = try self.allocator.alloc(u8, frame.len);
-        std.mem.copyForwards(u8, copy, frame);
-
-        var entry = try self.pending_export_promises.getOrPut(export_id);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = std.ArrayList(PendingCall){};
-        }
-        try entry.value_ptr.append(self.allocator, .{ .frame = copy, .caps = inbound_caps });
+        try peer_promises.queuePendingCall(
+            PendingCall,
+            cap_table.InboundCapTable,
+            self.allocator,
+            &self.pending_export_promises,
+            export_id,
+            frame,
+            inbound_caps,
+        );
     }
 
     fn replayResolvedPromiseExport(self: *Peer, export_id: u32, resolved: cap_table.ResolvedCap) !void {
-        var pending = self.pending_export_promises.fetchRemove(export_id) orelse return;
-        defer pending.value.deinit(self.allocator);
-
-        for (pending.value.items) |*pending_call| {
-            defer pending_call.caps.deinit();
-            defer self.allocator.free(pending_call.frame);
-
-            var decoded = try protocol.DecodedMessage.init(self.allocator, pending_call.frame);
-            defer decoded.deinit();
-            if (decoded.tag != .call) continue;
-            const call = try decoded.asCall();
-
-            if (resolved == .none) {
-                try self.sendReturnException(call.question_id, "promise broken");
-            } else {
-                self.handleResolvedCall(call, &pending_call.caps, resolved) catch |err| {
-                    if (self.on_error) |cb| cb(self, err);
-                };
-            }
-
-            self.releaseInboundCaps(&pending_call.caps) catch |err| {
-                if (self.on_error) |cb| cb(self, err);
-            };
-        }
-    }
-
-    fn isThirdPartyAnswerId(answer_id: u32) bool {
-        return (answer_id & 0x4000_0000) != 0 and (answer_id & 0x8000_0000) == 0;
+        try peer_promises.replayResolvedPromiseExport(
+            Peer,
+            PendingCall,
+            cap_table.InboundCapTable,
+            self.allocator,
+            self,
+            export_id,
+            resolved,
+            &self.pending_export_promises,
+            handleResolvedCallForPromiseControl,
+            sendReturnExceptionForControl,
+            releaseInboundCapsForPromiseControl,
+            reportNonfatalErrorForControl,
+        );
     }
 
     fn adoptThirdPartyAnswer(
@@ -2328,97 +2142,283 @@ pub const Peer = struct {
         adopted_answer_id: u32,
         question: Question,
     ) anyerror!void {
-        if (!isThirdPartyAnswerId(adopted_answer_id)) {
-            try self.sendAbort("invalid thirdPartyAnswer answerId");
-            return error.InvalidThirdPartyAnswerId;
-        }
-        if (self.questions.contains(adopted_answer_id) or self.adopted_third_party_answers.contains(adopted_answer_id)) {
-            try self.sendAbort("duplicate thirdPartyAnswer answerId");
-            return error.DuplicateThirdPartyAnswerId;
-        }
+        try peer_control.adoptThirdPartyAnswer(
+            Peer,
+            Question,
+            self,
+            question_id,
+            adopted_answer_id,
+            question,
+            hasQuestionForThirdPartyAdoptControl,
+            hasAdoptedThirdPartyAnswerForControl,
+            sendAbortForControl,
+            putQuestionForThirdPartyAdoptControl,
+            removeQuestionForThirdPartyAdoptControl,
+            putAdoptedThirdPartyAnswerForControl,
+            removeAdoptedThirdPartyAnswerForControl,
+            takePendingThirdPartyReturnFrameForControl,
+            freeOwnedFrame,
+            handlePendingThirdPartyReturnFrameForControl,
+        );
+    }
 
-        try self.questions.put(adopted_answer_id, question);
-        errdefer _ = self.questions.remove(adopted_answer_id);
+    fn hasQuestionForThirdPartyAdoptControl(self: *Peer, answer_id: u32) bool {
+        return self.questions.contains(answer_id);
+    }
+
+    fn hasAdoptedThirdPartyAnswerForControl(self: *Peer, answer_id: u32) bool {
+        return self.adopted_third_party_answers.contains(answer_id);
+    }
+
+    fn putQuestionForThirdPartyAdoptControl(self: *Peer, answer_id: u32, question: Question) !void {
+        try self.questions.put(answer_id, question);
+    }
+
+    fn removeQuestionForThirdPartyAdoptControl(self: *Peer, answer_id: u32) void {
+        _ = self.questions.remove(answer_id);
+    }
+
+    fn putAdoptedThirdPartyAnswerForControl(self: *Peer, adopted_answer_id: u32, question_id: u32) !void {
         try self.adopted_third_party_answers.put(adopted_answer_id, question_id);
-        errdefer _ = self.adopted_third_party_answers.remove(adopted_answer_id);
+    }
 
-        if (self.pending_third_party_returns.fetchRemove(adopted_answer_id)) |pending| {
-            defer self.allocator.free(pending.value);
-            var decoded = try protocol.DecodedMessage.init(self.allocator, pending.value);
-            defer decoded.deinit();
-            if (decoded.tag != .return_) return error.UnexpectedMessage;
-            try self.handleReturn(pending.value, try decoded.asReturn());
+    fn removeAdoptedThirdPartyAnswerForControl(self: *Peer, adopted_answer_id: u32) void {
+        _ = self.adopted_third_party_answers.remove(adopted_answer_id);
+    }
+
+    fn takePendingThirdPartyReturnFrameForControl(self: *Peer, adopted_answer_id: u32) ?[]u8 {
+        return peer_third_party_returns.takePendingReturnFrame(
+            &self.pending_third_party_returns,
+            adopted_answer_id,
+        );
+    }
+
+    fn handlePendingThirdPartyReturnFrameForControl(self: *Peer, frame: []const u8) !void {
+        try peer_third_party_returns.handlePendingReturnFrame(
+            Peer,
+            self.allocator,
+            self,
+            frame,
+            handleReturnFrameForThirdPartyControl,
+        );
+    }
+
+    fn handleReturnFrameForThirdPartyControl(self: *Peer, frame: []const u8, ret: protocol.Return) !void {
+        try self.handleReturn(frame, ret);
+    }
+
+    fn hasPendingThirdPartyReturnForControl(self: *Peer, answer_id: u32) bool {
+        return peer_third_party_returns.hasPendingReturn(
+            &self.pending_third_party_returns,
+            answer_id,
+        );
+    }
+
+    fn bufferPendingThirdPartyReturnForControl(self: *Peer, answer_id: u32, frame: []const u8) !void {
+        try peer_third_party_returns.bufferPendingReturn(
+            self.allocator,
+            &self.pending_third_party_returns,
+            answer_id,
+            frame,
+        );
+    }
+
+    fn captureReturnAcceptCompletionForControl(self: *Peer, await_ptr: ?message.AnyPointerReader) !?[]u8 {
+        return captureAnyPointerPayload(self.allocator, await_ptr);
+    }
+
+    fn hasPendingThirdPartyAwaitForControl(self: *Peer, completion_key: []const u8) bool {
+        return self.pending_third_party_awaits.contains(completion_key);
+    }
+
+    fn takePendingThirdPartyAnswerIdForControl(self: *Peer, completion_key: []const u8) ?u32 {
+        return peer_third_party_pending.takePendingAnswerId(
+            self.allocator,
+            &self.pending_third_party_answers,
+            completion_key,
+        );
+    }
+
+    fn adoptThirdPartyAnswerForControl(
+        self: *Peer,
+        question_id: u32,
+        adopted_answer_id: u32,
+        question: Question,
+    ) !void {
+        try self.adoptThirdPartyAnswer(question_id, adopted_answer_id, question);
+    }
+
+    fn putPendingThirdPartyAwaitForControl(
+        self: *Peer,
+        completion_key: []u8,
+        question_id: u32,
+        question: Question,
+    ) !void {
+        try peer_third_party_pending.putPendingAwait(
+            PendingThirdPartyAwait,
+            &self.pending_third_party_awaits,
+            completion_key,
+            .{
+                .question_id = question_id,
+                .question = question,
+            },
+        );
+    }
+
+    fn maybeSendAutoFinishForReturn(self: *Peer, question: Question, answer_id: u32, no_finish_needed: bool) void {
+        if (!question.is_loopback and !question.suppress_auto_finish and !no_finish_needed) {
+            self.sendFinish(answer_id, false) catch |err| {
+                if (self.on_error) |cb| cb(self, err);
+            };
         }
     }
 
-    fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
-        const entry = self.questions.fetchRemove(ret.answer_id) orelse {
-            if (isThirdPartyAnswerId(ret.answer_id)) {
-                if (self.pending_third_party_returns.contains(ret.answer_id)) {
-                    return error.DuplicateThirdPartyReturn;
-                }
-                const copy = try self.allocator.alloc(u8, frame.len);
-                errdefer self.allocator.free(copy);
-                std.mem.copyForwards(u8, copy, frame);
-                try self.pending_third_party_returns.put(ret.answer_id, copy);
-                return;
-            }
-            return error.UnknownQuestion;
-        };
+    fn takeAdoptedThirdPartyAnswerOriginalForControl(self: *Peer, answer_id: u32) ?u32 {
+        return peer_return_dispatch.takeAdoptedAnswerOriginal(
+            &self.adopted_third_party_answers,
+            answer_id,
+        );
+    }
 
+    fn reportNonfatalErrorForControl(self: *Peer, err: anyerror) void {
+        if (self.on_error) |cb| cb(self, err);
+    }
+
+    fn dispatchQuestionReturnForControl(
+        self: *Peer,
+        question: Question,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) void {
+        peer_return_dispatch.dispatchQuestionReturn(
+            Peer,
+            Question,
+            cap_table.InboundCapTable,
+            self,
+            question,
+            ret,
+            inbound_caps,
+            invokeQuestionReturnForControl,
+            reportNonfatalErrorForControl,
+        );
+    }
+
+    fn invokeQuestionReturnForControl(
+        question: Question,
+        self: *Peer,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        try question.on_return(question.ctx, self, ret, inbound_caps);
+    }
+
+    fn releaseInboundCapsForControl(self: *Peer, inbound_caps: *const cap_table.InboundCapTable) !void {
+        try peer_return_dispatch.releaseInboundCaps(
+            Peer,
+            cap_table.InboundCapTable,
+            self,
+            inbound_caps,
+            releaseInboundCapsMutableForControl,
+        );
+    }
+
+    fn releaseInboundCapsMutableForControl(self: *Peer, inbound_caps: *cap_table.InboundCapTable) !void {
+        try self.releaseInboundCaps(inbound_caps);
+    }
+
+    fn maybeSendAutoFinishForControl(self: *Peer, question: Question, answer_id: u32, no_finish_needed: bool) void {
+        self.maybeSendAutoFinishForReturn(question, answer_id, no_finish_needed);
+    }
+
+    fn fetchRemoveQuestionForReturnOrchestration(self: *Peer, answer_id: u32) ?Question {
+        const entry = self.questions.fetchRemove(answer_id) orelse return null;
+        return entry.value;
+    }
+
+    fn handleMissingReturnQuestionForReturnOrchestration(self: *Peer, frame: []const u8, answer_id: u32) !void {
+        try peer_control.handleMissingReturnQuestion(
+            Peer,
+            self,
+            frame,
+            answer_id,
+            peer_control.isThirdPartyAnswerId,
+            hasPendingThirdPartyReturnForControl,
+            bufferPendingThirdPartyReturnForControl,
+        );
+    }
+
+    fn initInboundCapsForReturnOrchestration(self: *Peer, ret: protocol.Return) !cap_table.InboundCapTable {
         const cap_list = if (ret.tag == .results and ret.results != null) ret.results.?.cap_table else null;
-        var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, cap_list, &self.caps);
-        defer inbound_caps.deinit();
+        return cap_table.InboundCapTable.init(self.allocator, cap_list, &self.caps);
+    }
 
-        if (ret.tag == .accept_from_third_party) {
-            const completion_payload = try captureAnyPointerPayload(self.allocator, ret.accept_from_third_party);
-            const completion_key = completion_payload orelse return error.MissingThirdPartyPayload;
-            errdefer self.allocator.free(completion_key);
+    fn deinitInboundCapsForReturnOrchestration(inbound_caps: *cap_table.InboundCapTable) void {
+        inbound_caps.deinit();
+    }
 
-            if (self.pending_third_party_awaits.contains(completion_key)) {
-                try self.sendAbort("duplicate awaitFromThirdParty completion");
-                return error.DuplicateThirdPartyAwait;
-            }
+    fn handleReturnAcceptFromThirdPartyForReturnOrchestration(
+        self: *Peer,
+        answer_id: u32,
+        question: Question,
+        accept_from_third_party: ?message.AnyPointerReader,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) !void {
+        _ = inbound_caps;
+        try peer_control.handleReturnAcceptFromThirdParty(
+            Peer,
+            Question,
+            self,
+            answer_id,
+            question,
+            accept_from_third_party,
+            captureReturnAcceptCompletionForControl,
+            freeCapturedPayloadForControl,
+            hasPendingThirdPartyAwaitForControl,
+            sendAbortForControl,
+            takePendingThirdPartyAnswerIdForControl,
+            adoptThirdPartyAnswerForControl,
+            putPendingThirdPartyAwaitForControl,
+        );
+    }
 
-            if (self.pending_third_party_answers.fetchRemove(completion_key)) |pending_answer| {
-                self.allocator.free(pending_answer.key);
-                self.allocator.free(completion_key);
-                try self.adoptThirdPartyAnswer(ret.answer_id, pending_answer.value, entry.value);
-            } else {
-                try self.pending_third_party_awaits.put(completion_key, .{
-                    .question_id = ret.answer_id,
-                    .question = entry.value,
-                });
-            }
+    fn handleReturnRegularForReturnOrchestration(
+        self: *Peer,
+        question: Question,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) void {
+        peer_control.handleReturnRegular(
+            Peer,
+            Question,
+            cap_table.InboundCapTable,
+            self,
+            question,
+            ret,
+            inbound_caps,
+            takeAdoptedThirdPartyAnswerOriginalForControl,
+            dispatchQuestionReturnForControl,
+            releaseInboundCapsForControl,
+            reportNonfatalErrorForControl,
+            maybeSendAutoFinishForControl,
+        );
+    }
 
-            if (!entry.value.is_loopback and !entry.value.suppress_auto_finish and !ret.no_finish_needed) {
-                self.sendFinish(ret.answer_id, false) catch |err| {
-                    if (self.on_error) |cb| cb(self, err);
-                };
-            }
-            return;
-        }
-
-        var callback_ret = ret;
-        if (self.adopted_third_party_answers.fetchRemove(ret.answer_id)) |original| {
-            callback_ret.answer_id = original.value;
-        }
-
-        entry.value.on_return(entry.value.ctx, self, callback_ret, &inbound_caps) catch |err| {
-            if (self.on_error) |cb| cb(self, err);
-        };
-
-        if (ret.tag == .results and ret.results != null) {
-            self.releaseInboundCaps(&inbound_caps) catch |err| {
-                if (self.on_error) |cb| cb(self, err);
-            };
-        }
-
-        if (!entry.value.is_loopback and !entry.value.suppress_auto_finish and !ret.no_finish_needed) {
-            self.sendFinish(ret.answer_id, false) catch |err| {
-                if (self.on_error) |cb| cb(self, err);
-            };
-        }
+    fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
+        try peer_return_orchestration.handleReturn(
+            Peer,
+            Question,
+            cap_table.InboundCapTable,
+            self,
+            frame,
+            ret,
+            fetchRemoveQuestionForReturnOrchestration,
+            handleMissingReturnQuestionForReturnOrchestration,
+            initInboundCapsForReturnOrchestration,
+            deinitInboundCapsForReturnOrchestration,
+            handleReturnAcceptFromThirdPartyForReturnOrchestration,
+            maybeSendAutoFinishForControl,
+            handleReturnRegularForReturnOrchestration,
+        );
     }
 };
 
@@ -2859,6 +2859,128 @@ test "forwarded return converts resultsSentElsewhere to exception" {
         .results = null,
         .exception = null,
         .take_from_other_question = null,
+    };
+    try Peer.onForwardedReturn(forward_ctx, &peer, ret, &inbound);
+
+    try std.testing.expect(callback_ctx.seen);
+    try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
+}
+
+test "forwarded return translate mode missing payload sends exception" {
+    const allocator = std.testing.allocator;
+
+    const CallbackCtx = struct {
+        seen: bool = false,
+    };
+    const Handlers = struct {
+        fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = peer;
+            _ = caps;
+            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            state.seen = true;
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            const ex = ret.exception orelse return error.MissingException;
+            try std.testing.expectEqualStrings("forwarded return missing payload", ex.reason);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const upstream_answer_id: u32 = 350;
+    const local_forwarded_question_id: u32 = 351;
+
+    var callback_ctx = CallbackCtx{};
+    try peer.questions.put(upstream_answer_id, .{
+        .ctx = &callback_ctx,
+        .on_return = Handlers.onReturn,
+        .is_loopback = true,
+    });
+    try peer.loopback_questions.put(upstream_answer_id, {});
+    try peer.forwarded_questions.put(local_forwarded_question_id, upstream_answer_id);
+
+    const forward_ctx = try allocator.create(ForwardCallContext);
+    forward_ctx.* = .{
+        .peer = &peer,
+        .payload = undefined,
+        .inbound_caps = undefined,
+        .send_results_to = .caller,
+        .answer_id = upstream_answer_id,
+        .mode = .translate_to_caller,
+    };
+
+    var inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    defer inbound.deinit();
+
+    const ret = protocol.Return{
+        .answer_id = local_forwarded_question_id,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .results,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = null,
+    };
+    try Peer.onForwardedReturn(forward_ctx, &peer, ret, &inbound);
+
+    try std.testing.expect(callback_ctx.seen);
+    try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
+}
+
+test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
+    const allocator = std.testing.allocator;
+
+    const CallbackCtx = struct {
+        seen: bool = false,
+    };
+    const Handlers = struct {
+        fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = peer;
+            _ = caps;
+            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            state.seen = true;
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            const ex = ret.exception orelse return error.MissingException;
+            try std.testing.expectEqualStrings("forwarded takeFromOtherQuestion unsupported", ex.reason);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const upstream_answer_id: u32 = 352;
+    const local_forwarded_question_id: u32 = 353;
+
+    var callback_ctx = CallbackCtx{};
+    try peer.questions.put(upstream_answer_id, .{
+        .ctx = &callback_ctx,
+        .on_return = Handlers.onReturn,
+        .is_loopback = true,
+    });
+    try peer.loopback_questions.put(upstream_answer_id, {});
+    try peer.forwarded_questions.put(local_forwarded_question_id, upstream_answer_id);
+
+    const forward_ctx = try allocator.create(ForwardCallContext);
+    forward_ctx.* = .{
+        .peer = &peer,
+        .payload = undefined,
+        .inbound_caps = undefined,
+        .send_results_to = .yourself,
+        .answer_id = upstream_answer_id,
+        .mode = .propagate_results_sent_elsewhere,
+    };
+
+    var inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    defer inbound.deinit();
+
+    const ret = protocol.Return{
+        .answer_id = local_forwarded_question_id,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .take_from_other_question,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = 900,
     };
     try Peer.onForwardedReturn(forward_ctx, &peer, ret, &inbound);
 
@@ -5542,4 +5664,355 @@ test "handleFrame unknown message tag sends unimplemented" {
     const unimplemented = try out_decoded.asUnimplemented();
     try std.testing.expect(unimplemented.message_tag == null);
     try std.testing.expect(unimplemented.question_id == null);
+}
+
+fn queuePromisedCallOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(100, 0xAA55, 1);
+    try call.setTargetPromisedAnswer(77);
+    try call.setEmptyCapTable();
+    const frame = try call_builder.finish();
+    defer allocator.free(frame);
+
+    try peer.handleFrame(frame);
+    try std.testing.expect(peer.pending_promises.contains(77));
+}
+
+test "peer queuePromisedCall path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, queuePromisedCallOomImpl, .{});
+}
+
+fn queuePromiseExportCallOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const promise_export_id = try peer.addPromiseExport();
+    const promised_answer_id: u32 = 300;
+
+    {
+        var ret_builder = protocol.MessageBuilder.init(allocator);
+        defer ret_builder.deinit();
+        var ret = try ret_builder.beginReturn(promised_answer_id, .results);
+        var any = try ret.getResultsAnyPointer();
+        try any.setCapability(.{ .id = 0 });
+        var cap_list = try ret.initCapTable(1);
+        const entry = try cap_list.get(0);
+        protocol.CapDescriptor.writeSenderPromise(entry, promise_export_id);
+
+        const frame = try ret_builder.finish();
+        defer allocator.free(frame);
+        const stored = try allocator.alloc(u8, frame.len);
+        std.mem.copyForwards(u8, stored, frame);
+        try peer.resolved_answers.put(promised_answer_id, .{ .frame = stored });
+    }
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(301, 0xABCD, 2);
+    try call.setTargetPromisedAnswer(promised_answer_id);
+    try call.setEmptyCapTable();
+    const frame = try call_builder.finish();
+    defer allocator.free(frame);
+
+    try peer.handleFrame(frame);
+    try std.testing.expect(peer.pending_export_promises.contains(promise_export_id));
+}
+
+test "peer queuePromiseExportCall path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, queuePromiseExportCallOomImpl, .{});
+}
+
+fn embargoAcceptQueueOomImpl(allocator: std.mem.Allocator) !void {
+    const NoopHandler = struct {
+        fn onCall(
+            _: *anyopaque,
+            _: *Peer,
+            _: protocol.Call,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var recipient_builder = message.MessageBuilder.init(allocator);
+    defer recipient_builder.deinit();
+    const recipient_root = try recipient_builder.initRootAnyPointer();
+    try recipient_root.setText("oom-accept-recipient");
+    const recipient_bytes = try recipient_builder.toBytes();
+    defer allocator.free(recipient_bytes);
+
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    defer recipient_msg.deinit();
+    const recipient_ptr = try recipient_msg.getRootAnyPointer();
+
+    var provide_builder = protocol.MessageBuilder.init(allocator);
+    defer provide_builder.deinit();
+    try provide_builder.buildProvide(
+        910,
+        .{
+            .tag = .imported_cap,
+            .imported_cap = export_id,
+            .promised_answer = null,
+        },
+        recipient_ptr,
+    );
+    const provide_frame = try provide_builder.finish();
+    defer allocator.free(provide_frame);
+    try peer.handleFrame(provide_frame);
+
+    var accept_builder = protocol.MessageBuilder.init(allocator);
+    defer accept_builder.deinit();
+    try accept_builder.buildAccept(911, recipient_ptr, "oom-accept-embargo");
+    const accept_frame = try accept_builder.finish();
+    defer allocator.free(accept_frame);
+    try peer.handleFrame(accept_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_accepts_by_embargo.count());
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_accept_embargo_by_question.count());
+}
+
+test "peer embargo accept queue path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, embargoAcceptQueueOomImpl, .{});
+}
+
+fn sendResultsToThirdPartyLocalExportOomImpl(allocator: std.mem.Allocator) !void {
+    const NoopHandler = struct {
+        fn onCall(
+            _: *anyopaque,
+            _: *Peer,
+            _: protocol.Call,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var destination_builder = message.MessageBuilder.init(allocator);
+    defer destination_builder.deinit();
+    const destination_root = try destination_builder.initRootAnyPointer();
+    try destination_root.setText("oom-send-results-third-party");
+    const destination_bytes = try destination_builder.toBytes();
+    defer allocator.free(destination_bytes);
+    var destination_msg = try message.Message.init(allocator, destination_bytes);
+    defer destination_msg.deinit();
+    const destination_ptr = try destination_msg.getRootAnyPointer();
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(920, 0xBEEF, 9);
+    try call.setTargetImportedCap(export_id);
+    try call.setSendResultsToThirdParty(destination_ptr);
+    try call.setEmptyCapTable();
+    const call_frame = try call_builder.finish();
+    defer allocator.free(call_frame);
+
+    try peer.handleFrame(call_frame);
+    try std.testing.expect(peer.send_results_to_third_party.contains(920));
+}
+
+test "peer local sendResultsTo.thirdParty path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        sendResultsToThirdPartyLocalExportOomImpl,
+        .{},
+    );
+}
+
+fn sendResultsToYourselfLocalExportOomImpl(allocator: std.mem.Allocator) !void {
+    const NoopHandler = struct {
+        fn onCall(
+            _: *anyopaque,
+            _: *Peer,
+            _: protocol.Call,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(921, 0xBEEF, 10);
+    try call.setTargetImportedCap(export_id);
+    try call.setSendResultsToYourself();
+    try call.setEmptyCapTable();
+    const call_frame = try call_builder.finish();
+    defer allocator.free(call_frame);
+
+    try peer.handleFrame(call_frame);
+    try std.testing.expect(peer.send_results_to_yourself.contains(921));
+}
+
+test "peer local sendResultsTo.yourself path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        sendResultsToYourselfLocalExportOomImpl,
+        .{},
+    );
+}
+
+fn bufferThirdPartyReturnOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const adopted_answer_id: u32 = 0x4000_0301;
+
+    var ret_builder = protocol.MessageBuilder.init(allocator);
+    defer ret_builder.deinit();
+    var ret = try ret_builder.beginReturn(adopted_answer_id, .exception);
+    try ret.setException("oom-buffer-third-party-return");
+    const ret_frame = try ret_builder.finish();
+    defer allocator.free(ret_frame);
+
+    try peer.handleFrame(ret_frame);
+    try std.testing.expect(peer.pending_third_party_returns.contains(adopted_answer_id));
+}
+
+test "peer buffer thirdParty return path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        bufferThirdPartyReturnOomImpl,
+        .{},
+    );
+}
+
+fn acceptFromThirdPartyAwaitQueueOomImpl(allocator: std.mem.Allocator) !void {
+    const Callback = struct {
+        fn onReturn(
+            _: *anyopaque,
+            _: *Peer,
+            _: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const original_answer_id: u32 = 930;
+    var callback_ctx: u8 = 0;
+    try peer.questions.put(original_answer_id, .{
+        .ctx = &callback_ctx,
+        .on_return = Callback.onReturn,
+        .is_loopback = true,
+    });
+
+    var completion_builder = message.MessageBuilder.init(allocator);
+    defer completion_builder.deinit();
+    const completion_root = try completion_builder.initRootAnyPointer();
+    try completion_root.setText("oom-await-queue");
+    const completion_bytes = try completion_builder.toBytes();
+    defer allocator.free(completion_bytes);
+    var completion_msg = try message.Message.init(allocator, completion_bytes);
+    defer completion_msg.deinit();
+    const completion_ptr = try completion_msg.getRootAnyPointer();
+
+    var await_builder = protocol.MessageBuilder.init(allocator);
+    defer await_builder.deinit();
+    var await_ret = try await_builder.beginReturn(original_answer_id, .accept_from_third_party);
+    try await_ret.setAcceptFromThirdParty(completion_ptr);
+    const await_frame = try await_builder.finish();
+    defer allocator.free(await_frame);
+
+    try peer.handleFrame(await_frame);
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_third_party_awaits.count());
+    try std.testing.expect(!peer.questions.contains(original_answer_id));
+}
+
+test "peer awaitFromThirdParty queue path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        acceptFromThirdPartyAwaitQueueOomImpl,
+        .{},
+    );
+}
+
+fn forwardResolvedCallThirdPartyContextOomImpl(allocator: std.mem.Allocator) !void {
+    const Sink = struct {
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var sink_ctx: u8 = 0;
+    peer.setSendFrameOverride(&sink_ctx, Sink.onFrame);
+
+    var inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    defer inbound.deinit();
+
+    var third_builder = message.MessageBuilder.init(allocator);
+    defer third_builder.deinit();
+    const third_root = try third_builder.initRootAnyPointer();
+    try third_root.setText("oom-forward-context-third-party");
+    const third_bytes = try third_builder.toBytes();
+    defer allocator.free(third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes);
+    defer third_msg.deinit();
+    const third_ptr = try third_msg.getRootAnyPointer();
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(940, 0xCAFE, 1);
+    try call.setTargetImportedCap(77);
+    try call.setSendResultsToThirdParty(third_ptr);
+    try call.setEmptyCapTable();
+    const call_frame = try call_builder.finish();
+    defer allocator.free(call_frame);
+
+    var call_decoded = try protocol.DecodedMessage.init(allocator, call_frame);
+    defer call_decoded.deinit();
+    const parsed_call = try call_decoded.asCall();
+
+    try peer.handleResolvedCall(parsed_call, &inbound, .{ .imported = .{ .id = 77 } });
+
+    const forwarded_question_id = blk: {
+        var it = peer.forwarded_questions.iterator();
+        const entry = it.next() orelse return error.UnknownQuestion;
+        break :blk entry.key_ptr.*;
+    };
+    const question = peer.questions.get(forwarded_question_id) orelse return error.UnknownQuestion;
+    const fwd_ctx: *const ForwardCallContext = @ptrCast(@alignCast(question.ctx));
+    try std.testing.expectEqual(protocol.SendResultsToTag.third_party, fwd_ctx.send_results_to);
+    try std.testing.expect(fwd_ctx.send_results_to_third_party_payload != null);
+
+    var ret_builder = protocol.MessageBuilder.init(allocator);
+    defer ret_builder.deinit();
+    _ = try ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+    const ret_frame = try ret_builder.finish();
+    defer allocator.free(ret_frame);
+    try peer.handleFrame(ret_frame);
+}
+
+test "peer forwardResolvedCall third-party context path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        forwardResolvedCallThirdPartyContextOomImpl,
+        .{},
+    );
 }

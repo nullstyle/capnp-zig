@@ -89,6 +89,25 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the plugin");
     run_step.dependOn(&run_cmd.step);
 
+    const docs_obj = b.addObject(.{
+        .name = "capnpc-zig-docs",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "xev", .module = xev_module },
+            },
+        }),
+    });
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_obj.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+    const docs_step = b.step("docs", "Generate API documentation");
+    docs_step.dependOn(&install_docs.step);
+
     // Benchmarks
     const ping_pong_bench = b.addExecutable(.{
         .name = "bench-ping-pong",
@@ -255,6 +274,19 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_main_tests = b.addRunArtifact(main_tests);
+
+    const lib_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "xev", .module = xev_module },
+            },
+        }),
+    });
+
+    const run_lib_tests = b.addRunArtifact(lib_tests);
 
     // Message tests
     const message_tests = b.addTest(.{
@@ -548,6 +580,7 @@ pub fn build(b: *std.Build) void {
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
+    test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_message_tests.step);
     test_step.dependOn(&run_codegen_tests.step);
     test_step.dependOn(&run_codegen_defaults_tests.step);
@@ -610,6 +643,9 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_tests.step);
     test_rpc_step.dependOn(&run_rpc_host_peer_tests.step);
+
+    const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
+    test_lib_step.dependOn(&run_lib_tests.step);
 
     // Check step (compile without linking)
     const check = b.addExecutable(.{

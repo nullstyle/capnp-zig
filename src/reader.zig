@@ -3,6 +3,8 @@ const message = @import("message.zig");
 
 /// Cap'n Proto message reader (segment-aware)
 pub const Reader = struct {
+    pub const max_total_words: usize = 8 * 1024 * 1024;
+
     msg: message.Message,
     allocator: std.mem.Allocator,
 
@@ -27,27 +29,35 @@ pub const Reader = struct {
     /// Read a segment-framed message from a reader and return the framed bytes.
     pub fn readMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
         const segment_count_minus_one = try reader.readInt(u32, .little);
-        const segment_count = segment_count_minus_one + 1;
+        const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
+        const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
+        if (segment_count_usize > message.Message.max_segment_count) return error.SegmentCountLimitExceeded;
 
-        const segment_sizes = try allocator.alloc(u32, segment_count);
+        const segment_sizes = try allocator.alloc(u32, segment_count_usize);
         defer allocator.free(segment_sizes);
 
         var total_words: usize = 0;
         for (segment_sizes) |*size| {
             size.* = try reader.readInt(u32, .little);
-            total_words += size.*;
+            const size_words = std.math.cast(usize, size.*) orelse return error.InvalidMessageSize;
+            total_words = std.math.add(usize, total_words, size_words) catch return error.InvalidMessageSize;
+        }
+        if (total_words > max_total_words) {
+            return error.MessageTooLarge;
         }
 
-        const padding_words: usize = if (segment_count % 2 == 0) 1 else 0;
+        const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
         if (padding_words == 1) {
             _ = try reader.readInt(u32, .little);
         }
 
-        const header_words = 1 + segment_count + padding_words;
-        const header_bytes = header_words * 4;
-        const total_bytes = total_words * 8;
+        const header_words_no_padding = std.math.add(usize, 1, segment_count_usize) catch return error.InvalidMessageSize;
+        const header_words = std.math.add(usize, header_words_no_padding, padding_words) catch return error.InvalidMessageSize;
+        const header_bytes = std.math.mul(usize, header_words, 4) catch return error.InvalidMessageSize;
+        const total_bytes = std.math.mul(usize, total_words, 8) catch return error.InvalidMessageSize;
+        const framed_len = std.math.add(usize, header_bytes, total_bytes) catch return error.InvalidMessageSize;
 
-        const framed = try allocator.alloc(u8, header_bytes + total_bytes);
+        const framed = try allocator.alloc(u8, framed_len);
         errdefer allocator.free(framed);
 
         std.mem.writeInt(u32, framed[0..4], segment_count_minus_one, .little);
@@ -110,10 +120,13 @@ pub const Reader = struct {
 
             if (total_needed == null and out.items.len >= 4) {
                 const segment_count_minus_one = std.mem.readInt(u32, out.items[0..4], .little);
-                const segment_count = segment_count_minus_one + 1;
-                const padding_words: usize = if (segment_count % 2 == 0) 1 else 0;
-                const header_words = 1 + segment_count + padding_words;
-                const header_bytes = header_words * 4;
+                const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
+                const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
+                if (segment_count_usize > message.Message.max_segment_count) return error.SegmentCountLimitExceeded;
+                const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
+                const header_words_no_padding = std.math.add(usize, 1, segment_count_usize) catch return error.InvalidPackedMessage;
+                const header_words = std.math.add(usize, header_words_no_padding, padding_words) catch return error.InvalidPackedMessage;
+                const header_bytes = std.math.mul(usize, header_words, 4) catch return error.InvalidPackedMessage;
 
                 if (out.items.len >= header_bytes) {
                     var total_words: usize = 0;
@@ -121,11 +134,12 @@ pub const Reader = struct {
                     var idx: u32 = 0;
                     while (idx < segment_count) : (idx += 1) {
                         const size_words = std.mem.readInt(u32, out.items[offset..][0..4], .little);
-                        total_words += size_words;
+                        total_words = std.math.add(usize, total_words, @as(usize, size_words)) catch return error.InvalidPackedMessage;
                         offset += 4;
                     }
-
-                    total_needed = header_bytes + total_words * 8;
+                    if (total_words > max_total_words) return error.MessageTooLarge;
+                    const total_bytes = std.math.mul(usize, total_words, 8) catch return error.InvalidPackedMessage;
+                    total_needed = std.math.add(usize, header_bytes, total_bytes) catch return error.InvalidPackedMessage;
                 }
             }
 
@@ -269,4 +283,105 @@ test "Reader.readPackedMessage unpacks a packed stream" {
     const maybe_text = reader.readText(8);
     try std.testing.expect(maybe_text != null);
     try std.testing.expectEqualStrings("packed-stream", maybe_text.?);
+}
+
+test "Reader.readMessage rejects overflowing segment count" {
+    const bytes = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    var stream = std.io.fixedBufferStream(&bytes);
+    try std.testing.expectError(error.InvalidSegmentCount, Reader.readMessage(std.testing.allocator, stream.reader()));
+}
+
+test "Reader.readMessage rejects oversized payload claims" {
+    const oversized_words: u32 = @as(u32, @intCast(Reader.max_total_words + 1));
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u32, bytes[0..4], 0, .little);
+    std.mem.writeInt(u32, bytes[4..8], oversized_words, .little);
+
+    var stream = std.io.fixedBufferStream(&bytes);
+    try std.testing.expectError(error.MessageTooLarge, Reader.readMessage(std.testing.allocator, stream.reader()));
+}
+
+test "Reader.readPackedMessage rejects overflowing segment count" {
+    var packed_bytes: [10]u8 = [_]u8{0} ** 10;
+    packed_bytes[0] = 0xff;
+    std.mem.writeInt(u64, packed_bytes[1..9], 0x00000000ffffffff, .little);
+    packed_bytes[9] = 0;
+
+    var stream = std.io.fixedBufferStream(&packed_bytes);
+    try std.testing.expectError(error.InvalidSegmentCount, Reader.readPackedMessage(std.testing.allocator, stream.reader()));
+}
+
+test "Reader.readPackedMessage rejects oversized payload claims" {
+    const oversized_words: u32 = @as(u32, @intCast(Reader.max_total_words + 1));
+    var packed_bytes: [10]u8 = [_]u8{0} ** 10;
+    packed_bytes[0] = 0xff;
+    std.mem.writeInt(u64, packed_bytes[1..9], @as(u64, oversized_words) << 32, .little);
+    packed_bytes[9] = 0;
+
+    var stream = std.io.fixedBufferStream(&packed_bytes);
+    try std.testing.expectError(error.MessageTooLarge, Reader.readPackedMessage(std.testing.allocator, stream.reader()));
+}
+
+fn readMessageOomImpl(allocator: std.mem.Allocator, framed: []const u8) !void {
+    var stream = std.io.fixedBufferStream(framed);
+    const out = try Reader.readMessage(allocator, stream.reader());
+    defer allocator.free(out);
+}
+
+fn readPackedMessageOomImpl(allocator: std.mem.Allocator, packed_bytes: []const u8) !void {
+    var stream = std.io.fixedBufferStream(packed_bytes);
+    const out = try Reader.readPackedMessage(allocator, stream.reader());
+    defer allocator.free(out);
+}
+
+test "Reader.readMessage propagates OOM without leaks" {
+    const framed = [_]u8{
+        0x00, 0x00, 0x00, 0x00, // segment_count_minus_one = 0 (1 segment)
+        0x01, 0x00, 0x00, 0x00, // segment 0 size = 1 word
+        0x00, 0x00, 0x00, 0x00, // segment payload (8 bytes total)
+        0x00, 0x00, 0x00, 0x00,
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, readMessageOomImpl, .{&framed});
+}
+
+test "Reader.readPackedMessage propagates OOM without leaks" {
+    const packed_bytes = [_]u8{
+        0x10, 0x01, // first word: one non-zero byte at index 4
+        0x00, 0x00, // second word: one zero word run
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, readPackedMessageOomImpl, .{&packed_bytes});
+}
+
+test "Reader.readPackedMessage rejects decoded header/body length mismatch" {
+    // Decodes to 16 zero bytes, but the embedded frame header says only 8 bytes are needed.
+    const packed_bytes = [_]u8{ 0x00, 0x01 };
+    var stream = std.io.fixedBufferStream(&packed_bytes);
+    try std.testing.expectError(error.InvalidPackedMessage, Reader.readPackedMessage(std.testing.allocator, stream.reader()));
+}
+
+fn expectPackedTruncationError(packed_bytes: []const u8) !void {
+    var stream = std.io.fixedBufferStream(packed_bytes);
+    const framed = Reader.readPackedMessage(std.testing.allocator, stream.reader()) catch |err| {
+        switch (err) {
+            error.EndOfStream => return,
+            else => return err,
+        }
+    };
+    defer std.testing.allocator.free(framed);
+    return error.ExpectedPackedDecodeFailure;
+}
+
+test "Reader.readPackedMessage reports truncation for zero-run tag" {
+    const packed_bytes = [_]u8{0x00}; // missing run-length byte
+    try expectPackedTruncationError(&packed_bytes);
+}
+
+test "Reader.readPackedMessage reports truncation for full-run tag" {
+    const packed_bytes = [_]u8{0xFF}; // missing literal word and run-length byte
+    try expectPackedTruncationError(&packed_bytes);
+}
+
+test "Reader.readPackedMessage reports truncation for literal tag payload" {
+    const packed_bytes = [_]u8{0x01}; // tag expects one payload byte, but none present
+    try expectPackedTruncationError(&packed_bytes);
 }

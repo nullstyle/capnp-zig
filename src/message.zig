@@ -477,8 +477,8 @@ pub const Message = struct {
             const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
 
             const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
-            const expected_words = element_count * words_per_element;
-            if (expected_words > word_count) return error.InvalidInlineCompositePointer;
+            const expected_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
+            if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
             const elements_offset = tag_pos + 8;
             const segment = self.segments[segment_id];
@@ -530,10 +530,12 @@ pub const Message = struct {
             const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
 
             const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
-            const total_words = element_count * words_per_element;
+            const total_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
+            if (total_words_u64 > std.math.maxInt(usize) / 8) return error.OutOfBounds;
+            const total_words = @as(usize, @intCast(total_words_u64));
             const elements_offset = @as(usize, landing_far.landing_pad_offset_words) * 8;
             const content_segment = self.segments[landing_far.segment_id];
-            const total_bytes = @as(usize, total_words) * 8;
+            const total_bytes = total_words * 8;
             if (elements_offset + total_bytes > content_segment.len) return error.OutOfBounds;
 
             return .{
@@ -564,8 +566,8 @@ pub const Message = struct {
             const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
 
             const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
-            const expected_words = element_count * words_per_element;
-            if (expected_words > word_count) return error.InvalidInlineCompositePointer;
+            const expected_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
+            if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
             const elements_offset = tag_pos + 8;
             const content_segment = self.segments[landing_far.segment_id];

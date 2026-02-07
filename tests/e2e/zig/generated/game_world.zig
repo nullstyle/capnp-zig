@@ -176,7 +176,6 @@ pub const EntityId = struct {
             const value = raw ^ @as(u64, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -195,7 +194,6 @@ pub const EntityId = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -405,7 +403,6 @@ pub const Entity = struct {
         pub fn getAlive(self: Reader) !bool {
             return self._reader.readBool(12, 0) != true;
         }
-
     };
 
     pub const Builder = struct {
@@ -459,7 +456,6 @@ pub const Entity = struct {
         pub fn setAlive(self: *Builder, value: bool) !void {
             self._builder.writeBool(12, 0, value != true);
         }
-
     };
 };
 
@@ -647,7 +643,6 @@ pub const SpawnRequest = struct {
             const value = raw ^ @as(u32, 100);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -687,7 +682,6 @@ pub const SpawnRequest = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 100);
             self._builder.writeU32(4, stored);
         }
-
     };
 };
 
@@ -860,7 +854,6 @@ pub const AreaQuery = struct {
             const value = raw ^ @as(u32, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -884,7 +877,6 @@ pub const AreaQuery = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -1462,7 +1454,6 @@ pub const GameWorld = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -1714,7 +1705,6 @@ pub const SpawnEntityParams = struct {
             const value = try self._reader.readStruct(0);
             return SpawnRequest.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1733,7 +1723,6 @@ pub const SpawnEntityParams = struct {
             const builder = try self._builder.initStruct(0, 1, 2);
             return SpawnRequest.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1905,7 +1894,6 @@ pub const SpawnEntityResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -1930,7 +1918,6 @@ pub const SpawnEntityResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -2097,7 +2084,6 @@ pub const DespawnEntityParams = struct {
             const value = try self._reader.readStruct(0);
             return EntityId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2116,7 +2102,6 @@ pub const DespawnEntityParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return EntityId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2283,7 +2268,6 @@ pub const DespawnEntityResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2303,7 +2287,6 @@ pub const DespawnEntityResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -2470,7 +2453,6 @@ pub const GetEntityParams = struct {
             const value = try self._reader.readStruct(0);
             return EntityId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2489,7 +2471,6 @@ pub const GetEntityParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return EntityId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2661,7 +2642,6 @@ pub const GetEntityResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2686,7 +2666,6 @@ pub const GetEntityResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -2858,7 +2837,6 @@ pub const MoveEntityParams = struct {
             const value = try self._reader.readStruct(1);
             return Position.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2882,7 +2860,6 @@ pub const MoveEntityParams = struct {
             const builder = try self._builder.initStruct(1, 2, 0);
             return Position.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -3054,7 +3031,6 @@ pub const MoveEntityResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3079,7 +3055,6 @@ pub const MoveEntityResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -3252,7 +3227,6 @@ pub const DamageEntityParams = struct {
             const value = raw ^ @as(u32, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -3276,7 +3250,6 @@ pub const DamageEntityParams = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -3452,7 +3425,6 @@ pub const DamageEntityResults = struct {
             const raw = self._reader.readU16(2) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3481,7 +3453,6 @@ pub const DamageEntityResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -3648,7 +3619,6 @@ pub const QueryAreaParams = struct {
             const value = try self._reader.readStruct(0);
             return AreaQuery.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -3667,7 +3637,6 @@ pub const QueryAreaParams = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return AreaQuery.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -3840,7 +3809,6 @@ pub const QueryAreaResults = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -3864,6 +3832,5 @@ pub const QueryAreaResults = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };

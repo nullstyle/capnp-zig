@@ -8,7 +8,7 @@ A pure Zig implementation of a Cap'n Proto compiler plugin for Zig 0.15.2. Gener
 - **Full Serialization Support**: Complete Cap'n Proto wire format implementation
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
-- **Comprehensive Tests**: 100% test coverage for serialization/deserialization
+- **Comprehensive Tests**: Extensive message/codegen/RPC/interop coverage
 - **Type Safe**: Leverages Zig's compile-time type system
 
 ## Installation
@@ -140,18 +140,18 @@ pub fn main() !void {
 ```
 capnpc-zig/
 ├── src/
-│   ├── main.zig              # Plugin entry point (future)
+│   ├── main.zig              # Plugin entry point
 │   ├── lib.zig               # Library exports
 │   ├── message.zig           # Core serialization/deserialization
 │   ├── schema.zig            # Schema structures
 │   ├── reader.zig            # Cap'n Proto reader utilities
 │   └── capnpc-zig/
-│       ├── generator.zig     # Code generator (future)
+│       ├── generator.zig     # Code generator
 │       ├── types.zig         # Type utilities
 │       └── struct_gen.zig    # Struct generation
 ├── tests/
-│   ├── message_test.zig      # Serialization tests (10 tests, all passing)
-│   ├── codegen_test.zig      # Code generation tests (3 tests, all passing)
+│   ├── message_test.zig      # Message serialization/validation tests
+│   ├── codegen_test.zig      # Code generation tests
 │   └── integration_test.zig  # Integration tests
 ├── build.zig                 # Zig build configuration
 ├── Justfile                  # Task automation
@@ -204,26 +204,18 @@ The project includes comprehensive tests:
 just test
 
 # Run specific test suites
-just test-message      # Serialization tests
-just test-codegen      # Code generation tests
-just test-integration  # Integration tests
+zig build test-message      # Message tests
+zig build test-codegen      # Codegen tests
+zig build test-rpc          # RPC tests
+just e2e                    # Cross-language interop harness
 ```
 
 ### Test Coverage
 
-- **Message Serialization**: 10/10 tests passing
-  - Empty messages
-  - Simple structs with primitive types
-  - Boolean fields
-  - All integer types (u8, u16, u32, u64)
-  - Text fields (single and multiple)
-  - Mixed data and pointer fields
-  - Error handling (truncated messages, out of bounds)
-
-- **Code Generation**: 3/3 tests passing
-  - Person struct round trip
-  - Boolean configuration struct
-  - All integer types struct
+- Message wire-format encode/decode, pointer resolution, limits, and malformed/fuzz inputs
+- Codegen generation/compile/runtime behavior across schema features
+- RPC protocol, framing, cap-table encoding, peer runtime semantics, and host-peer transport behavior
+- Interop validation against reference stacks via the e2e harness
 
 ## Development
 
@@ -244,6 +236,9 @@ just clean
 
 # Check for compilation errors
 just check
+
+# Generate API docs into zig-out/docs
+just docs
 ```
 
 ### Adding New Features
@@ -255,27 +250,15 @@ just check
 
 ## Implementation Status
 
-### Completed ✓
-- [x] Full Cap'n Proto wire format implementation
-- [x] Message serialization and deserialization
-- [x] Struct readers and builders
-- [x] Primitive types (bool, u8-u64, i8-i64, f32, f64)
-- [x] Text fields
-- [x] Comprehensive test suite (13 tests, all passing)
-- [x] Build system integration
-- [x] Documentation
+Implemented today:
+- Full Cap'n Proto message wire format (including packed/unpacked and far pointers)
+- Schema-driven code generation via `capnpc-zig`
+- RPC protocol/runtime surface with dedicated RPC test suites
+- Local benchmark and interop gates (`zig build bench-check`, `just e2e`)
 
-### Future Enhancements
-- [ ] Code generation from .capnp schema files
-- [ ] List types
-- [ ] Nested structs
-- [ ] Enum types
-- [ ] Union types
-- [ ] Interface/RPC support
-- [ ] Packed message format
-- [ ] Data fields (binary blobs)
-- [ ] Default values
-- [ ] Const definitions
+Roadmap and parity tracking live in:
+- `ROADMAP.md`
+- `docs/production_parity_checklist.md`
 
 ## Architecture
 

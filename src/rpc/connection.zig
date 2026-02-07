@@ -197,8 +197,7 @@ test "connection handleRead dispatches coalesced frames in order" {
             try state.received.append(state.allocator, root.readU32(0));
         }
 
-        fn onError(conn: *Connection, err: anyerror) void {
-            _ = err;
+        fn onError(conn: *Connection, _: anyerror) void {
             const state: *State = @ptrCast(@alignCast(conn.ctx.?));
             state.error_count += 1;
         }
@@ -294,7 +293,7 @@ test "connection handleRead stops draining when message handler errors" {
     try std.testing.expectEqual(@as(usize, 1), state.received.items.len);
     try std.testing.expectEqual(@as(u32, 111), state.received.items[0]);
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
-    try std.testing.expect(state.last_error == error.TestMessageHandlerFailure);
+    try std.testing.expectEqual(@as(?anyerror, error.TestMessageHandlerFailure), state.last_error);
     try std.testing.expect(conn.framer.bufferedBytes() > 0);
 }
 
@@ -332,7 +331,124 @@ test "connection handleRead reports malformed frame errors" {
     conn.handleRead(&bad_header);
 
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
-    try std.testing.expect(state.last_error == error.InvalidFrame);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+}
+
+test "connection handleRead rejects oversized frame headers" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.framer.deinit();
+
+    const oversized_words: u32 = (8 * 1024 * 1024) + 1;
+    var header: [8]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 0, .little); // 1 segment
+    std.mem.writeInt(u32, header[4..8], oversized_words, .little);
+
+    conn.handleRead(&header);
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.FrameTooLarge), state.last_error);
+}
+
+test "connection onTransportClose reports error then close" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            close_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+
+        fn onClose(conn: *Connection) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.close_count += 1;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+        .on_close = Harness.onClose,
+    };
+    defer conn.framer.deinit();
+
+    Connection.onTransportClose(&conn, error.ConnectionResetByPeer);
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
+    try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), state.last_error);
+}
+
+test "connection onWriteDone forwards write errors to on_error" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.framer.deinit();
+
+    Connection.onWriteDone(&conn, error.ConnectionResetByPeer);
+    Connection.onWriteDone(&conn, null);
+
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), state.last_error);
 }
 
 test "connection isClosing reflects transport state" {

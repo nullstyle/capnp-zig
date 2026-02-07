@@ -59,7 +59,7 @@ Ship a production-ready Zig Cap'n Proto library and compiler plugin with spec-le
 2. (Done) `thirdPartyHosted`/`receiverAnswer` capability descriptor support.
 3. (Done) Replace generic `Unimplemented` fallback for `provide`/`accept`/`join`/`thirdPartyAnswer`.
 4. (Done) Full level-4 semantics for `join` (join-key aggregation/verification).
-5. (Done) CI-enforced interop (remove skips).
+5. (Done) Interop-enforced local gate (remove skips).
 
 ## Next Hardening Focus
 - Expand containerized cross-language e2e matrix beyond current Go path (C++ reference server/client flows).
@@ -105,7 +105,7 @@ Ship a production-ready Zig Cap'n Proto library and compiler plugin with spec-le
 - 2026-02-06: Added looped RPC stress coverage in `src/rpc/peer.zig` for embargoed `Accept` + promised-call release ordering and repeated forwarded-tail finish/return races, with explicit state-cleanup assertions for pending embargo/promise and tail-forward maps.
 - 2026-02-06: Hardened early RPC interop cases for loopPromise race ordering, third-party `sendResultsTo` compatibility (`Unimplemented` fallback from current Go runtime), exception-path follow-up call health, and early-`Finish` follow-up-call resilience.
 - 2026-02-06: Added machine-readable benchmark output (`--json`) for ping-pong and packed/unpacked benches, added `tools/bench_check.zig`, and wired `zig build bench-check` with committed baselines in `bench/baselines.json`.
-- 2026-02-06: Tightened benchmark regression threshold from 45% to 30% and added CI hard gate workflow `.github/workflows/bench-regression.yml` to enforce `zig build bench-check` on PRs and `main`.
+- 2026-02-06: Tightened benchmark regression threshold from 45% to 30% and enforced it in local quality gates via `zig build bench-check` and `just ci`.
 - 2026-02-06: Added API/lifecycle/error-contract documentation in `docs/api_contracts.md` covering ownership, thread-affinity, and caller error policy by category.
 - 2026-02-06: Added additional high-load RPC cleanup coverage in `src/rpc/peer.zig` for repeated third-party await/answer races and for deinit cleanup of unresolved embargoed-accept + promised-call queues.
 - 2026-02-06: Added runtime reliability coverage for `Connection.handleRead` fragmented/coalesced/error/malformed-frame behavior and for `Transport.signalClose` idempotency plus write-completion callback/untracking.

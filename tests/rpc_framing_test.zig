@@ -72,6 +72,21 @@ test "Framer rejects malformed frame header overflow" {
     try std.testing.expectError(error.InvalidFrame, framer.popFrame());
 }
 
+test "Framer rejects oversized frame claims" {
+    const allocator = std.testing.allocator;
+
+    var framer = Framer.init(allocator);
+    defer framer.deinit();
+
+    const oversized_words: u32 = @as(u32, @intCast(Framer.max_frame_words + 1));
+    var header: [8]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 0, .little); // 1 segment
+    std.mem.writeInt(u32, header[4..8], oversized_words, .little);
+
+    try framer.push(&header);
+    try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
+}
+
 test "Framer fuzz malformed streams does not crash" {
     const allocator = std.testing.allocator;
 

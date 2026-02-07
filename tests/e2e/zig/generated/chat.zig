@@ -178,7 +178,6 @@ pub const RoomId = struct {
             const value = raw ^ @as(u64, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -197,7 +196,6 @@ pub const RoomId = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -374,7 +372,6 @@ pub const ChatMessage = struct {
             const value = try self._reader.readStruct(2);
             return Timestamp.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -402,7 +399,6 @@ pub const ChatMessage = struct {
             const builder = try self._builder.initStruct(2, 1, 0);
             return Timestamp.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -585,7 +581,6 @@ pub const RoomInfo = struct {
             if (self._reader.isPointerNull(2)) return "";
             return try self._reader.readText(2);
         }
-
     };
 
     pub const Builder = struct {
@@ -617,7 +612,6 @@ pub const RoomInfo = struct {
         pub fn setTopic(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(2, value);
         }
-
     };
 };
 
@@ -1102,7 +1096,6 @@ pub const ChatRoom = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -1352,7 +1345,6 @@ pub const SendMessageParams = struct {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1370,7 +1362,6 @@ pub const SendMessageParams = struct {
         pub fn setContent(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
         }
-
     };
 };
 
@@ -1542,7 +1533,6 @@ pub const SendMessageResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -1567,7 +1557,6 @@ pub const SendMessageResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -1734,7 +1723,6 @@ pub const SendEmoteParams = struct {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1752,7 +1740,6 @@ pub const SendEmoteParams = struct {
         pub fn setContent(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
         }
-
     };
 };
 
@@ -1924,7 +1911,6 @@ pub const SendEmoteResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -1949,7 +1935,6 @@ pub const SendEmoteResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -2117,7 +2102,6 @@ pub const GetHistoryParams = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -2136,7 +2120,6 @@ pub const GetHistoryParams = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -2303,7 +2286,6 @@ pub const GetHistoryResults = struct {
             const raw = try self._reader.readStructList(0);
             return StructListReader(ChatMessage){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -2322,7 +2304,6 @@ pub const GetHistoryResults = struct {
             const raw = try self._builder.writeStructList(0, element_count, 1, 4);
             return StructListBuilder(ChatMessage){ ._list = raw };
         }
-
     };
 };
 
@@ -2484,7 +2465,6 @@ pub const GetInfoParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -2498,7 +2478,6 @@ pub const GetInfoParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -2665,7 +2644,6 @@ pub const GetInfoResults = struct {
             const value = try self._reader.readStruct(0);
             return RoomInfo.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2684,7 +2662,6 @@ pub const GetInfoResults = struct {
             const builder = try self._builder.initStruct(0, 1, 3);
             return RoomInfo.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2846,7 +2823,6 @@ pub const LeaveParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -2860,7 +2836,6 @@ pub const LeaveParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -3027,7 +3002,6 @@ pub const LeaveResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3047,7 +3021,6 @@ pub const LeaveResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -3439,7 +3412,6 @@ pub const ChatService = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -3692,7 +3664,6 @@ pub const CreateRoomParams = struct {
             if (self._reader.isPointerNull(1)) return "";
             return try self._reader.readText(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -3714,7 +3685,6 @@ pub const CreateRoomParams = struct {
         pub fn setTopic(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(1, value);
         }
-
     };
 };
 
@@ -3890,7 +3860,6 @@ pub const CreateRoomResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3929,7 +3898,6 @@ pub const CreateRoomResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4101,7 +4069,6 @@ pub const JoinRoomParams = struct {
             const value = try self._reader.readStruct(1);
             return PlayerInfo.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -4124,7 +4091,6 @@ pub const JoinRoomParams = struct {
             const builder = try self._builder.initStruct(1, 1, 2);
             return PlayerInfo.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -4295,7 +4261,6 @@ pub const JoinRoomResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -4329,7 +4294,6 @@ pub const JoinRoomResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4491,7 +4455,6 @@ pub const ListRoomsParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -4505,7 +4468,6 @@ pub const ListRoomsParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -4672,7 +4634,6 @@ pub const ListRoomsResults = struct {
             const raw = try self._reader.readStructList(0);
             return StructListReader(RoomInfo){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -4691,7 +4652,6 @@ pub const ListRoomsResults = struct {
             const raw = try self._builder.writeStructList(0, element_count, 1, 3);
             return StructListBuilder(RoomInfo){ ._list = raw };
         }
-
     };
 };
 
@@ -4868,7 +4828,6 @@ pub const WhisperParams = struct {
             if (self._reader.isPointerNull(2)) return "";
             return try self._reader.readText(2);
         }
-
     };
 
     pub const Builder = struct {
@@ -4896,7 +4855,6 @@ pub const WhisperParams = struct {
         pub fn setContent(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(2, value);
         }
-
     };
 };
 
@@ -5068,7 +5026,6 @@ pub const WhisperResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -5093,6 +5050,5 @@ pub const WhisperResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };

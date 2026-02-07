@@ -1,6 +1,8 @@
 const std = @import("std");
 
 pub const Framer = struct {
+    pub const max_frame_words: usize = 8 * 1024 * 1024;
+
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8),
     expected_total: ?usize = null,
@@ -66,6 +68,7 @@ pub const Framer = struct {
             total_words = std.math.add(usize, total_words, @as(usize, size_words)) catch return error.InvalidFrame;
             offset += 4;
         }
+        if (total_words > max_frame_words) return error.FrameTooLarge;
 
         const body_bytes = std.math.mul(usize, total_words, 8) catch return error.InvalidFrame;
         const total_bytes = std.math.add(usize, header_bytes, body_bytes) catch return error.InvalidFrame;

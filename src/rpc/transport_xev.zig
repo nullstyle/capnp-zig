@@ -277,9 +277,14 @@ const WriteOp = struct {
 };
 
 test "transport write op tracking and abandon" {
+    const Noop = struct {
+        fn onWriteDone(_: *anyopaque, _: ?anyerror) void {}
+    };
+
     var read_buf = [_]u8{0} ** 8;
     var op1_bytes = [_]u8{1};
     var op2_bytes = [_]u8{2};
+    var callback_ctx: u8 = 0;
 
     var transport = Transport{
         .loop = undefined,
@@ -293,16 +298,16 @@ test "transport write op tracking and abandon" {
         .transport = &transport,
         .request = undefined,
         .bytes = op1_bytes[0..],
-        .ctx = @ptrFromInt(1),
-        .cb = @ptrFromInt(1),
+        .ctx = &callback_ctx,
+        .cb = Noop.onWriteDone,
     };
     var op2 = WriteOp{
         .allocator = std.testing.allocator,
         .transport = &transport,
         .request = undefined,
         .bytes = op2_bytes[0..],
-        .ctx = @ptrFromInt(1),
-        .cb = @ptrFromInt(1),
+        .ctx = &callback_ctx,
+        .cb = Noop.onWriteDone,
     };
 
     transport.trackWriteOp(&op1);
@@ -356,8 +361,78 @@ test "transport signalClose notifies callback once" {
     transport.signalClose(null);
 
     try std.testing.expectEqual(@as(usize, 1), state.calls);
-    try std.testing.expect(state.last_err == error.TestTransportClosed);
+    try std.testing.expectEqual(@as(?anyerror, error.TestTransportClosed), state.last_err);
     try std.testing.expect(transport.close_signaled);
+}
+
+test "transport onRead read error signals close callback" {
+    const CloseHarness = struct {
+        const State = struct {
+            calls: usize = 0,
+            last_err: ?anyerror = null,
+        };
+
+        fn onClose(ctx: *anyopaque, err: ?anyerror) void {
+            const state: *State = @ptrCast(@alignCast(ctx));
+            state.calls += 1;
+            state.last_err = err;
+        }
+    };
+
+    var read_buf = [_]u8{0} ** 8;
+    var state = CloseHarness.State{};
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+    transport.setCloseHandler(&state, CloseHarness.onClose);
+
+    const action = Transport.onRead(
+        &transport,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        error.ConnectionResetByPeer,
+    );
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), state.last_err);
+    try std.testing.expect(transport.close_signaled);
+}
+
+test "transport onClose after prior signalClose does not double notify" {
+    const CloseHarness = struct {
+        const State = struct {
+            calls: usize = 0,
+            last_err: ?anyerror = null,
+        };
+
+        fn onClose(ctx: *anyopaque, err: ?anyerror) void {
+            const state: *State = @ptrCast(@alignCast(ctx));
+            state.calls += 1;
+            state.last_err = err;
+        }
+    };
+
+    var read_buf = [_]u8{0} ** 8;
+    var state = CloseHarness.State{};
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+    transport.setCloseHandler(&state, CloseHarness.onClose);
+
+    transport.signalClose(error.TestTransportClosed);
+    const action = Transport.onClose(&transport, undefined, undefined, undefined, {});
+
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectEqual(@as(?anyerror, error.TestTransportClosed), state.last_err);
 }
 
 test "transport isClosing tracks close state flags" {
@@ -438,5 +513,58 @@ test "write op completion untracks and calls callback" {
     try std.testing.expectEqual(@as(usize, 0), transport.pending_writes);
     try std.testing.expect(transport.write_head == null);
     try std.testing.expectEqual(@as(usize, 1), callback_state.calls);
-    try std.testing.expect(callback_state.last_err == null);
+    try std.testing.expectEqual(@as(?anyerror, null), callback_state.last_err);
+}
+
+test "write op completion forwards write errors" {
+    const WriteHarness = struct {
+        const State = struct {
+            calls: usize = 0,
+            last_err: ?anyerror = null,
+        };
+
+        fn onWrite(ctx: *anyopaque, err: ?anyerror) void {
+            const state: *State = @ptrCast(@alignCast(ctx));
+            state.calls += 1;
+            state.last_err = err;
+        }
+    };
+
+    var read_buf = [_]u8{0} ** 8;
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+
+    var callback_state = WriteHarness.State{};
+    const bytes = try std.testing.allocator.alloc(u8, 2);
+    bytes[0] = 9;
+    bytes[1] = 7;
+
+    const op = try std.testing.allocator.create(WriteOp);
+    op.* = .{
+        .allocator = std.testing.allocator,
+        .transport = &transport,
+        .request = undefined,
+        .bytes = bytes,
+        .ctx = &callback_state,
+        .cb = WriteHarness.onWrite,
+    };
+
+    transport.trackWriteOp(op);
+    const action = WriteOp.onWrite(
+        op,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        error.ConnectionResetByPeer,
+    );
+
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+    try std.testing.expectEqual(@as(usize, 0), transport.pending_writes);
+    try std.testing.expectEqual(@as(usize, 1), callback_state.calls);
+    try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), callback_state.last_err);
 }

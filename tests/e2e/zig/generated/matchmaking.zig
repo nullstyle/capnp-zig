@@ -193,7 +193,6 @@ pub const MatchId = struct {
             const value = raw ^ @as(u64, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -212,7 +211,6 @@ pub const MatchId = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -401,7 +399,6 @@ pub const QueueTicket = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -441,7 +438,6 @@ pub const QueueTicket = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(12, stored);
         }
-
     };
 };
 
@@ -633,7 +629,6 @@ pub const MatchInfo = struct {
             const value = try self._reader.readStruct(3);
             return Timestamp.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -679,7 +674,6 @@ pub const MatchInfo = struct {
             const builder = try self._builder.initStruct(3, 1, 0);
             return Timestamp.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -863,7 +857,6 @@ pub const MatchResult = struct {
             const raw = try self._reader.readStructList(1);
             return StructListReader(PlayerMatchStats){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -897,7 +890,6 @@ pub const MatchResult = struct {
             const raw = try self._builder.writeStructList(1, element_count, 2, 1);
             return StructListBuilder(PlayerMatchStats){ ._list = raw };
         }
-
     };
 };
 
@@ -1088,7 +1080,6 @@ pub const PlayerMatchStats = struct {
             const value = raw ^ @as(u32, 0);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -1127,7 +1118,6 @@ pub const PlayerMatchStats = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(12, stored);
         }
-
     };
 };
 
@@ -1519,7 +1509,6 @@ pub const MatchController = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -1762,7 +1751,6 @@ pub const GetInfoParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1776,7 +1764,6 @@ pub const GetInfoParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1943,7 +1930,6 @@ pub const GetInfoResults = struct {
             const value = try self._reader.readStruct(0);
             return MatchInfo.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1962,7 +1948,6 @@ pub const GetInfoResults = struct {
             const builder = try self._builder.initStruct(0, 1, 4);
             return MatchInfo.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2129,7 +2114,6 @@ pub const SignalReadyParams = struct {
             const value = try self._reader.readStruct(0);
             return PlayerId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2148,7 +2132,6 @@ pub const SignalReadyParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return PlayerId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2319,7 +2302,6 @@ pub const SignalReadyResults = struct {
             const raw = self._reader.readU16(2) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2343,7 +2325,6 @@ pub const SignalReadyResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -2510,7 +2491,6 @@ pub const ReportResultParams = struct {
             const value = try self._reader.readStruct(0);
             return MatchResult.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2529,7 +2509,6 @@ pub const ReportResultParams = struct {
             const builder = try self._builder.initStruct(0, 1, 2);
             return MatchResult.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2696,7 +2675,6 @@ pub const ReportResultResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2716,7 +2694,6 @@ pub const ReportResultResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -2878,7 +2855,6 @@ pub const CancelMatchParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -2892,7 +2868,6 @@ pub const CancelMatchParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -3059,7 +3034,6 @@ pub const CancelMatchResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3079,7 +3053,6 @@ pub const CancelMatchResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -3564,7 +3537,6 @@ pub const MatchmakingService = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -3819,7 +3791,6 @@ pub const EnqueueParams = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3844,7 +3815,6 @@ pub const EnqueueParams = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4016,7 +3986,6 @@ pub const EnqueueResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -4041,7 +4010,6 @@ pub const EnqueueResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4209,7 +4177,6 @@ pub const DequeueParams = struct {
             const value = raw ^ @as(u64, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -4228,7 +4195,6 @@ pub const DequeueParams = struct {
             const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
             self._builder.writeU64(0, stored);
         }
-
     };
 };
 
@@ -4395,7 +4361,6 @@ pub const DequeueResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -4415,7 +4380,6 @@ pub const DequeueResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4587,7 +4551,6 @@ pub const FindMatchParams = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -4612,7 +4575,6 @@ pub const FindMatchParams = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4783,7 +4745,6 @@ pub const FindMatchResults = struct {
             const value = try self._reader.readStruct(1);
             return MatchId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -4816,7 +4777,6 @@ pub const FindMatchResults = struct {
             const builder = try self._builder.initStruct(1, 1, 0);
             return MatchId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -4983,7 +4943,6 @@ pub const GetQueueStatsParams = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -5003,7 +4962,6 @@ pub const GetQueueStatsParams = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -5177,7 +5135,6 @@ pub const GetQueueStatsResults = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -5201,7 +5158,6 @@ pub const GetQueueStatsResults = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(4, stored);
         }
-
     };
 };
 
@@ -5368,7 +5324,6 @@ pub const GetMatchResultParams = struct {
             const value = try self._reader.readStruct(0);
             return MatchId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -5387,7 +5342,6 @@ pub const GetMatchResultParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return MatchId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -5559,7 +5513,6 @@ pub const GetMatchResultResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -5584,6 +5537,5 @@ pub const GetMatchResultResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };

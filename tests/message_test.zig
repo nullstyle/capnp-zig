@@ -888,6 +888,93 @@ test "Message: malformed segment count header reports InvalidSegmentCount" {
     try testing.expectError(error.InvalidSegmentCount, message.Message.init(testing.allocator, &bytes));
 }
 
+test "MessageBuilder: struct list rejects oversized element count" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(0, 1);
+    const too_many: u32 = @as(u32, @intCast(std.math.maxInt(i32))) + 1;
+    try testing.expectError(error.ElementCountTooLarge, root.writeStructList(0, too_many, 1, 0));
+}
+
+test "Message: invalid double-far landing pointer reports InvalidFarPointer" {
+    var bytes: [40]u8 = [_]u8{0} ** 40;
+    std.mem.writeInt(u32, bytes[0..4], 1, .little); // 2 segments total
+    std.mem.writeInt(u32, bytes[4..8], 1, .little); // segment 0: root pointer word
+    std.mem.writeInt(u32, bytes[8..12], 2, .little); // segment 1: double-far landing pad (2 words)
+    // bytes[12..16] padding word left as zero
+
+    const root_double_far: u64 = 2 | (@as(u64, 1) << 2) | (@as(u64, 1) << 32);
+    std.mem.writeInt(u64, bytes[16..24], root_double_far, .little);
+
+    // landing first word intentionally not a far pointer -> InvalidFarPointer
+    std.mem.writeInt(u64, bytes[24..32], 0, .little);
+    std.mem.writeInt(u64, bytes[32..40], 0, .little);
+
+    var msg = try message.Message.init(testing.allocator, &bytes);
+    defer msg.deinit();
+
+    try testing.expectError(error.InvalidFarPointer, msg.getRootStruct());
+}
+
+test "Message: inline composite overflow in expected words is rejected" {
+    var bytes: [32]u8 = [_]u8{0} ** 32;
+    std.mem.writeInt(u32, bytes[0..4], 0, .little); // 1 segment
+    std.mem.writeInt(u32, bytes[4..8], 3, .little); // 3 words
+
+    // Root pointer: inline composite list with 1 word payload.
+    const root_pointer: u64 = 1 | (@as(u64, 7) << 32) | (@as(u64, 1) << 35);
+    std.mem.writeInt(u64, bytes[8..16], root_pointer, .little);
+
+    // Tag word: element_count=65536, data_words=1, pointer_words=65535.
+    // This overflows u32 multiplication if arithmetic is unchecked.
+    const tag_word: u64 = (@as(u64, 65_536) << 2) | (@as(u64, 1) << 32) | (@as(u64, 65_535) << 48);
+    std.mem.writeInt(u64, bytes[16..24], tag_word, .little);
+
+    var msg = try message.Message.init(testing.allocator, &bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootAnyPointer();
+    try testing.expectError(error.InvalidInlineCompositePointer, root.getInlineCompositeList());
+}
+
+test "Message: double-far inline composite overflow is rejected" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    const landing_segment = try builder.createSegment();
+    const content_segment = try builder.createSegment();
+
+    _ = try root_builder.writeStructListInSegments(0, 2, 1, 0, landing_segment, content_segment);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    const mutated = try testing.allocator.alloc(u8, bytes.len);
+    defer testing.allocator.free(mutated);
+    std.mem.copyForwards(u8, mutated, bytes);
+
+    try testing.expectEqual(@as(u32, 1), landing_segment);
+    const segment_count = std.mem.readInt(u32, mutated[0..4], .little) + 1;
+    try testing.expectEqual(@as(u32, 3), segment_count);
+
+    const padding_words: usize = if (segment_count % 2 == 0) 1 else 0;
+    const header_bytes = (1 + @as(usize, segment_count) + padding_words) * 4;
+    const segment0_words = std.mem.readInt(u32, mutated[4..8], .little);
+    const landing_offset = header_bytes + @as(usize, segment0_words) * 8;
+
+    // Mutate landing-pad tag to trigger words-per-element multiplication overflow.
+    const tag_word: u64 = (@as(u64, 65_536) << 2) | (@as(u64, 1) << 32) | (@as(u64, 65_535) << 48);
+    std.mem.writeInt(u64, mutated[landing_offset + 8 ..][0..8], tag_word, .little);
+
+    var msg = try message.Message.init(testing.allocator, mutated);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    try testing.expectError(error.OutOfBounds, root.readStructList(0));
+}
+
 test "Message: fuzz malformed buffers do not crash decode" {
     var prng = std.Random.DefaultPrng.init(0x3E22_7AB4_BD10_9C61);
     const random = prng.random();

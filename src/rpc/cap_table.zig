@@ -1,6 +1,7 @@
 const std = @import("std");
 const message = @import("../message.zig");
 const protocol = @import("protocol.zig");
+const promised_answer_copy = @import("promised_answer_copy.zig");
 
 pub const ExportCap = struct {
     id: u32,
@@ -26,14 +27,7 @@ pub const OwnedPromisedAnswer = struct {
     }
 
     fn fromPromised(allocator: std.mem.Allocator, promised: protocol.PromisedAnswer) !OwnedPromisedAnswer {
-        const op_count = promised.transform.len();
-        const ops = try allocator.alloc(protocol.PromisedAnswerOp, op_count);
-        errdefer allocator.free(ops);
-
-        var idx: u32 = 0;
-        while (idx < op_count) : (idx += 1) {
-            ops[idx] = try promised.transform.get(idx);
-        }
+        const ops = try promised_answer_copy.cloneOpsFromPromised(allocator, promised);
 
         return .{
             .question_id = promised.question_id,

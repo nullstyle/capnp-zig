@@ -537,7 +537,6 @@ fn dupText(allocator: std.mem.Allocator, reader: message.StructReader, pointer_i
     return allocator.dupe(u8, text);
 }
 
-
 fn freeNodes(allocator: std.mem.Allocator, nodes: []schema.Node) void {
     for (nodes) |node| {
         allocator.free(node.display_name);

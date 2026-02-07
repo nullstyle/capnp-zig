@@ -51,3 +51,7 @@ example: build
 # Check for errors without building
 check:
     zig build check
+
+# Generate API documentation
+docs:
+    zig build docs

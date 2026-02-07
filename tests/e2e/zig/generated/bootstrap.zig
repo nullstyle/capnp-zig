@@ -395,7 +395,6 @@ pub const Bootstrap = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -640,7 +639,6 @@ pub const GameWorldParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -654,7 +652,6 @@ pub const GameWorldParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -820,7 +817,6 @@ pub const GameWorldResults = struct {
         pub fn getService(self: Reader) !message.Capability {
             return try self._reader.readCapability(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -848,7 +844,6 @@ pub const GameWorldResults = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
-
     };
 };
 
@@ -1010,7 +1005,6 @@ pub const ChatServiceParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1024,7 +1018,6 @@ pub const ChatServiceParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1190,7 +1183,6 @@ pub const ChatServiceResults = struct {
         pub fn getService(self: Reader) !message.Capability {
             return try self._reader.readCapability(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1218,7 +1210,6 @@ pub const ChatServiceResults = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
-
     };
 };
 
@@ -1380,7 +1371,6 @@ pub const InventoryServiceParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1394,7 +1384,6 @@ pub const InventoryServiceParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1560,7 +1549,6 @@ pub const InventoryServiceResults = struct {
         pub fn getService(self: Reader) !message.Capability {
             return try self._reader.readCapability(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1588,7 +1576,6 @@ pub const InventoryServiceResults = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
-
     };
 };
 
@@ -1750,7 +1737,6 @@ pub const MatchmakingServiceParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1764,7 +1750,6 @@ pub const MatchmakingServiceParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1930,7 +1915,6 @@ pub const MatchmakingServiceResults = struct {
         pub fn getService(self: Reader) !message.Capability {
             return try self._reader.readCapability(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1958,7 +1942,5 @@ pub const MatchmakingServiceResults = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
-
     };
 };
-

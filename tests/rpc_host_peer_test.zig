@@ -98,3 +98,31 @@ test "host peers can pump bootstrap exchange" {
     }
     try std.testing.expectEqual(@as(usize, 0), server.pendingOutgoingCount());
 }
+
+test "host peer rejects oversized outbound frame capture" {
+    const allocator = std.testing.allocator;
+
+    var host = HostPeer.init(allocator);
+    defer host.deinit();
+    host.start(null, null);
+
+    const too_large_len: usize = 16 * 1024 * 1024 + 1024;
+    const reason = try allocator.alloc(u8, too_large_len);
+    defer allocator.free(reason);
+    @memset(reason, 'x');
+
+    try std.testing.expectError(error.FrameTooLarge, host.peer.sendReturnException(1, reason));
+    try std.testing.expectEqual(@as(usize, 0), host.pendingOutgoingCount());
+}
+
+test "host peer propagates OOM from outgoing frame allocator" {
+    const allocator = std.testing.allocator;
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    var host = HostPeer.initWithOutgoingAllocator(allocator, failing.allocator());
+    defer host.deinit();
+    host.start(null, null);
+
+    try std.testing.expectError(error.OutOfMemory, host.peer.sendReturnException(2, "oom"));
+    try std.testing.expectEqual(@as(usize, 0), host.pendingOutgoingCount());
+}

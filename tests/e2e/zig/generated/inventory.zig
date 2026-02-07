@@ -188,7 +188,6 @@ pub const InventorySlot = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -217,7 +216,6 @@ pub const InventorySlot = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(4, stored);
         }
-
     };
 };
 
@@ -401,7 +399,6 @@ pub const InventoryView = struct {
             const value = raw ^ @as(u16, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -435,7 +432,6 @@ pub const InventoryView = struct {
             const stored = @as(u16, @bitCast(value)) ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -613,7 +609,6 @@ pub const TradeOffer = struct {
         pub fn getAccepted(self: Reader) !bool {
             return self._reader.readBool(0, 0) != false;
         }
-
     };
 
     pub const Builder = struct {
@@ -636,7 +631,6 @@ pub const TradeOffer = struct {
         pub fn setAccepted(self: *Builder, value: bool) !void {
             self._builder.writeBool(0, 0, value != false);
         }
-
     };
 };
 
@@ -1307,7 +1301,6 @@ pub const TradeSession = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -1560,7 +1553,6 @@ pub const OfferItemsParams = struct {
         pub fn getSlots(self: Reader) !message.U16ListReader {
             return try self._reader.readU16List(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1578,7 +1570,6 @@ pub const OfferItemsParams = struct {
         pub fn initSlots(self: *Builder, element_count: u32) !message.U16ListBuilder {
             return try self._builder.writeU16List(0, element_count);
         }
-
     };
 };
 
@@ -1750,7 +1741,6 @@ pub const OfferItemsResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -1775,7 +1765,6 @@ pub const OfferItemsResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -1941,7 +1930,6 @@ pub const RemoveItemsParams = struct {
         pub fn getSlots(self: Reader) !message.U16ListReader {
             return try self._reader.readU16List(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1959,7 +1947,6 @@ pub const RemoveItemsParams = struct {
         pub fn initSlots(self: *Builder, element_count: u32) !message.U16ListBuilder {
             return try self._builder.writeU16List(0, element_count);
         }
-
     };
 };
 
@@ -2131,7 +2118,6 @@ pub const RemoveItemsResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2156,7 +2142,6 @@ pub const RemoveItemsResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -2318,7 +2303,6 @@ pub const AcceptParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -2332,7 +2316,6 @@ pub const AcceptParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -2504,7 +2487,6 @@ pub const AcceptResults = struct {
             const raw = self._reader.readU16(2) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2530,7 +2512,6 @@ pub const AcceptResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -2692,7 +2673,6 @@ pub const ConfirmParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -2706,7 +2686,6 @@ pub const ConfirmParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -2878,7 +2857,6 @@ pub const ConfirmResults = struct {
             const raw = self._reader.readU16(2) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -2904,7 +2882,6 @@ pub const ConfirmResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -3066,7 +3043,6 @@ pub const CancelParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -3080,7 +3056,6 @@ pub const CancelParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -3247,7 +3222,6 @@ pub const CancelResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3267,7 +3241,6 @@ pub const CancelResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -3429,7 +3402,6 @@ pub const ViewOtherOfferParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -3443,7 +3415,6 @@ pub const ViewOtherOfferParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -3610,7 +3581,6 @@ pub const ViewOtherOfferResults = struct {
             const value = try self._reader.readStruct(0);
             return TradeOffer.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -3629,7 +3599,6 @@ pub const ViewOtherOfferResults = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return TradeOffer.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -3791,7 +3760,6 @@ pub const GetStateParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -3805,7 +3773,6 @@ pub const GetStateParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -3972,7 +3939,6 @@ pub const GetStateResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -3992,7 +3958,6 @@ pub const GetStateResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -4477,7 +4442,6 @@ pub const InventoryService = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -4727,7 +4691,6 @@ pub const GetInventoryParams = struct {
             const value = try self._reader.readStruct(0);
             return PlayerId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -4746,7 +4709,6 @@ pub const GetInventoryParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return PlayerId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -4918,7 +4880,6 @@ pub const GetInventoryResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -4943,7 +4904,6 @@ pub const GetInventoryResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -5121,7 +5081,6 @@ pub const AddItemParams = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -5150,7 +5109,6 @@ pub const AddItemParams = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -5322,7 +5280,6 @@ pub const AddItemResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -5347,7 +5304,6 @@ pub const AddItemResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -5526,7 +5482,6 @@ pub const RemoveItemParams = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -5555,7 +5510,6 @@ pub const RemoveItemParams = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(4, stored);
         }
-
     };
 };
 
@@ -5722,7 +5676,6 @@ pub const RemoveItemResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -5742,7 +5695,6 @@ pub const RemoveItemResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -5914,7 +5866,6 @@ pub const StartTradeParams = struct {
             const value = try self._reader.readStruct(1);
             return PlayerId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -5938,7 +5889,6 @@ pub const StartTradeParams = struct {
             const builder = try self._builder.initStruct(1, 1, 0);
             return PlayerId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -6109,7 +6059,6 @@ pub const StartTradeResults = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -6143,7 +6092,6 @@ pub const StartTradeResults = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -6315,7 +6263,6 @@ pub const FilterByRarityParams = struct {
             const raw = self._reader.readU16(0) ^ @as(u16, 0);
             return @enumFromInt(raw);
         }
-
     };
 
     pub const Builder = struct {
@@ -6340,7 +6287,6 @@ pub const FilterByRarityParams = struct {
             const stored = raw ^ @as(u16, 0);
             self._builder.writeU16(0, stored);
         }
-
     };
 };
 
@@ -6507,7 +6453,6 @@ pub const FilterByRarityResults = struct {
             const raw = try self._reader.readStructList(0);
             return StructListReader(InventorySlot){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -6526,6 +6471,5 @@ pub const FilterByRarityResults = struct {
             const raw = try self._builder.writeStructList(0, element_count, 1, 1);
             return StructListBuilder(InventorySlot){ ._list = raw };
         }
-
     };
 };

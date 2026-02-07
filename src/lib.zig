@@ -9,4 +9,6 @@ pub const rpc = @import("rpc/mod.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = @import("rpc/connection.zig");
+    _ = @import("rpc/transport_xev.zig");
 }

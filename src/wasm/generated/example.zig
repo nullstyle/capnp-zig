@@ -181,7 +181,6 @@ pub const Person = struct {
             if (self._reader.isPointerNull(1)) return "";
             return try self._reader.readText(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -208,7 +207,6 @@ pub const Person = struct {
         pub fn setEmail(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(1, value);
         }
-
     };
 };
 
@@ -386,7 +384,6 @@ pub const Address = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -413,7 +410,6 @@ pub const Address = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -422,4 +418,3 @@ pub const Color = enum(u16) {
     Green = 1,
     Blue = 2,
 };
-
