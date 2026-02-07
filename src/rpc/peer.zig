@@ -12,13 +12,14 @@ const peer_inbound_release = @import("peer_inbound_release.zig");
 const peer_embargo_accepts = @import("peer_embargo_accepts.zig");
 const peer_join_state = @import("peer_join_state.zig");
 const peer_provides_state = @import("peer_provides_state.zig");
+const peer_provide_join_orchestration = @import("peer_provide_join_orchestration.zig");
 const peer_forward_orchestration = @import("peer_forward_orchestration.zig");
 const peer_forward_return_callbacks = @import("peer_forward_return_callbacks.zig");
 const peer_cap_lifecycle = @import("peer_cap_lifecycle.zig");
 const peer_call_orchestration = @import("peer_call_orchestration.zig");
 const peer_return_frames = @import("peer_return_frames.zig");
 const peer_return_orchestration = @import("peer_return_orchestration.zig");
-const peer_third_party_pending = @import("peer_third_party_pending.zig");
+const peer_third_party_adoption = @import("peer_third_party_adoption.zig");
 const peer_return_dispatch = @import("peer_return_dispatch.zig");
 const peer_third_party_returns = @import("peer_third_party_returns.zig");
 
@@ -681,17 +682,18 @@ pub const Peer = struct {
             buildForwardedCall,
             onForwardedReturn,
         );
-        try peer_forward_orchestration.finishForwardResolvedCall(
-            Peer,
-            self,
+        const completion = try peer_forward_orchestration.finishForwardResolvedCall(
+            Question,
             mode,
             call.question_id,
             forwarded_question_id,
-            rememberForwardedQuestionForControl,
-            rememberForwardedTailQuestionForControl,
-            suppressAutoFinishForForwardedQuestionForControl,
-            sendTakeFromOtherQuestionForControl,
+            &self.forwarded_questions,
+            &self.forwarded_tail_questions,
+            &self.questions,
         );
+        if (completion.send_take_from_other_question) {
+            try self.sendReturnTakeFromOtherQuestion(call.question_id, forwarded_question_id);
+        }
     }
 
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
@@ -729,28 +731,6 @@ pub const Peer = struct {
         return captureAnyPointerPayload(self.allocator, ptr);
     }
 
-    fn lookupForwardedQuestionForForwardReturnControl(self: *Peer, local_question_id: u32) ?u32 {
-        return self.forwarded_questions.get(local_question_id);
-    }
-
-    fn rememberForwardedQuestionForControl(self: *Peer, local_question_id: u32, upstream_question_id: u32) !void {
-        try self.forwarded_questions.put(local_question_id, upstream_question_id);
-    }
-
-    fn rememberForwardedTailQuestionForControl(self: *Peer, upstream_question_id: u32, forwarded_question_id: u32) !void {
-        try self.forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
-    }
-
-    fn suppressAutoFinishForForwardedQuestionForControl(self: *Peer, forwarded_question_id: u32) void {
-        if (self.questions.getEntry(forwarded_question_id)) |question| {
-            question.value_ptr.suppress_auto_finish = true;
-        }
-    }
-
-    fn sendTakeFromOtherQuestionForControl(self: *Peer, answer_id: u32, other_question_id: u32) !void {
-        try self.sendReturnTakeFromOtherQuestion(answer_id, other_question_id);
-    }
-
     fn onForwardedReturn(
         ctx_ptr: *anyopaque,
         peer: *Peer,
@@ -762,7 +742,7 @@ pub const Peer = struct {
             if (ctx.send_results_to_third_party_payload) |payload| peer.allocator.free(payload);
             peer.allocator.destroy(ctx);
         }
-        _ = peer.forwarded_questions.remove(ret.answer_id);
+        peer_forward_orchestration.removeForwardedQuestionForPeer(Peer, peer, ret.answer_id);
         try peer_forward_return_callbacks.handleForwardedReturnWithPeerCallbacks(
             Peer,
             cap_table.InboundCapTable,
@@ -777,7 +757,7 @@ pub const Peer = struct {
             freeCapturedPayloadForControl,
             ctx.send_results_to_third_party_payload,
             sendReturnTag,
-            lookupForwardedQuestionForForwardReturnControl,
+            peer_forward_orchestration.lookupForwardedQuestionForPeerFn(Peer),
             sendReturnTakeFromOtherQuestion,
             sendReturnAcceptFromThirdParty,
         );
@@ -1113,6 +1093,19 @@ pub const Peer = struct {
         );
     }
 
+    pub fn sendReleaseForHost(self: *Peer, import_id: u32, count: u32) !void {
+        try self.sendRelease(import_id, count);
+    }
+
+    pub fn sendFinishForHost(
+        self: *Peer,
+        question_id: u32,
+        release_result_caps: bool,
+        require_early_cancellation: bool,
+    ) !void {
+        try self.sendFinishWithFlags(question_id, release_result_caps, require_early_cancellation);
+    }
+
     fn releaseImportRefForCapLifecycle(self: *Peer, import_id: u32) bool {
         return self.caps.releaseImport(import_id);
     }
@@ -1263,9 +1256,18 @@ pub const Peer = struct {
     }
 
     fn sendFinish(self: *Peer, question_id: u32, release_result_caps: bool) !void {
+        try self.sendFinishWithFlags(question_id, release_result_caps, false);
+    }
+
+    fn sendFinishWithFlags(
+        self: *Peer,
+        question_id: u32,
+        release_result_caps: bool,
+        require_early_cancellation: bool,
+    ) !void {
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
-        try builder.buildFinish(question_id, release_result_caps, false);
+        try builder.buildFinish(question_id, release_result_caps, require_early_cancellation);
         try self.sendBuilder(&builder);
     }
 
@@ -1461,15 +1463,15 @@ pub const Peer = struct {
             self,
             finish.question_id,
             finish.release_result_caps,
-            removeSendResultsToYourself,
+            peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
             clearSendResultsToThirdParty,
             clearProvide,
             clearPendingJoinQuestion,
             clearPendingAcceptQuestion,
-            takeForwardedTailQuestion,
-            sendForwardedFinish,
+            peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
+            sendFinish,
             takeResolvedAnswerFrame,
-            releaseCapsForFrame,
+            releaseResultCaps,
             freeOwnedFrame,
         );
     }
@@ -1478,30 +1480,11 @@ pub const Peer = struct {
         peer_control.handleRelease(Peer, self, release, releaseExportFromControl);
     }
 
-    fn removeSendResultsToYourself(self: *Peer, question_id: u32) void {
-        _ = self.send_results_to_yourself.remove(question_id);
-    }
-
-    fn takeForwardedTailQuestion(self: *Peer, question_id: u32) ?u32 {
-        if (self.forwarded_tail_questions.fetchRemove(question_id)) |tail| {
-            return tail.value;
-        }
-        return null;
-    }
-
     fn takeResolvedAnswerFrame(self: *Peer, question_id: u32) ?[]u8 {
         if (self.resolved_answers.fetchRemove(question_id)) |entry| {
             return entry.value.frame;
         }
         return null;
-    }
-
-    fn sendForwardedFinish(self: *Peer, question_id: u32, release_result_caps: bool) !void {
-        try self.sendFinish(question_id, release_result_caps);
-    }
-
-    fn releaseCapsForFrame(self: *Peer, frame: []const u8) !void {
-        try self.releaseResultCaps(frame);
     }
 
     fn freeOwnedFrame(self: *Peer, frame: []u8) void {
@@ -1651,66 +1634,8 @@ pub const Peer = struct {
         self.allocator.free(payload);
     }
 
-    fn hasProvideQuestionForControl(self: *Peer, question_id: u32) bool {
-        return peer_provides_state.hasProvideQuestion(
-            ProvideEntry,
-            &self.provides_by_question,
-            question_id,
-        );
-    }
-
-    fn hasProvideRecipientForControl(self: *Peer, recipient_key: []const u8) bool {
-        return peer_provides_state.hasProvideRecipient(
-            &self.provides_by_key,
-            recipient_key,
-        );
-    }
-
     fn sendAbortForControl(self: *Peer, reason: []const u8) !void {
         try self.sendAbort(reason);
-    }
-
-    fn deinitProvideTargetForControl(self: *Peer, target: *ProvideTarget) void {
-        target.deinit(self.allocator);
-    }
-
-    fn putProvideByQuestionForControl(self: *Peer, question_id: u32, recipient_key: []u8, target: ProvideTarget) !void {
-        try peer_provides_state.putProvideByQuestion(
-            ProvideEntry,
-            ProvideTarget,
-            &self.provides_by_question,
-            question_id,
-            recipient_key,
-            target,
-        );
-    }
-
-    fn clearProvideForControl(self: *Peer, question_id: u32) void {
-        self.clearProvide(question_id);
-    }
-
-    fn putProvideByKeyForControl(self: *Peer, recipient_key: []const u8, question_id: u32) !void {
-        try peer_provides_state.putProvideByKey(
-            &self.provides_by_key,
-            recipient_key,
-            question_id,
-        );
-    }
-
-    fn getProvidedQuestionForControl(self: *Peer, recipient_key: []const u8) ?u32 {
-        return peer_provides_state.getProvidedQuestion(
-            &self.provides_by_key,
-            recipient_key,
-        );
-    }
-
-    fn getProvidedTargetForControl(self: *Peer, provided_question_id: u32) ?*ProvideTarget {
-        return peer_provides_state.getProvidedTarget(
-            ProvideEntry,
-            ProvideTarget,
-            &self.provides_by_question,
-            provided_question_id,
-        );
     }
 
     fn queueEmbargoedAcceptForControl(self: *Peer, answer_id: u32, provided_question_id: u32, embargo: []const u8) !void {
@@ -1726,96 +1651,63 @@ pub const Peer = struct {
     }
 
     fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
-        try peer_control.handleProvide(
+        try peer_provide_join_orchestration.handleProvide(
             Peer,
+            ProvideEntry,
             ProvideTarget,
             self,
+            self.allocator,
             provide,
+            &self.provides_by_question,
+            &self.provides_by_key,
             captureProvideRecipientForControl,
             freeCapturedPayloadForControl,
-            hasProvideQuestionForControl,
-            hasProvideRecipientForControl,
             sendAbortForControl,
             resolveProvideTarget,
             makeProvideTarget,
-            deinitProvideTargetForControl,
-            putProvideByQuestionForControl,
-            clearProvideForControl,
-            putProvideByKeyForControl,
+            deinitProvideTargetForJoinStateControl,
         );
     }
 
     fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
-        try peer_control.handleAccept(
+        try peer_provide_join_orchestration.handleAccept(
             Peer,
+            ProvideEntry,
             ProvideTarget,
             self,
             accept,
+            &self.provides_by_question,
+            &self.provides_by_key,
             captureAcceptProvisionForControl,
             freeCapturedPayloadForControl,
-            getProvidedQuestionForControl,
-            getProvidedTargetForControl,
             queueEmbargoedAcceptForControl,
             sendReturnProvidedTargetForControl,
             sendReturnExceptionForControl,
         );
     }
 
-    fn hasPendingJoinQuestionForControl(self: *Peer, question_id: u32) bool {
-        return self.pending_join_questions.contains(question_id);
+    fn completeJoinForProvideJoinOrchestration(self: *Peer, join_id: u32) !void {
+        try self.completeJoin(join_id);
     }
 
-    fn parseJoinKeyPartForControl(self: *Peer, join: protocol.Join) !JoinKeyPart {
-        _ = self;
-        return peer_join_state.parseJoinKeyPart(JoinKeyPart, join.key_part);
-    }
-
-    fn insertJoinPartForControl(
-        self: *Peer,
-        join_key_part: JoinKeyPart,
-        question_id: u32,
-        target: ProvideTarget,
-    ) !peer_control.JoinInsertOutcome {
-        const outcome = try peer_join_state.insertJoinPart(
+    fn handleJoin(self: *Peer, join: protocol.Join) !void {
+        try peer_provide_join_orchestration.handleJoin(
+            Peer,
             JoinKeyPart,
             JoinState,
             PendingJoinQuestion,
             ProvideTarget,
+            self,
             self.allocator,
+            join,
             &self.pending_joins,
             &self.pending_join_questions,
-            join_key_part,
-            question_id,
-            target,
-            initJoinStateForControl,
-        );
-        return switch (outcome) {
-            .inserted => .inserted,
-            .inserted_ready => .inserted_ready,
-            .part_count_mismatch => .part_count_mismatch,
-            .duplicate_part => .duplicate_part,
-        };
-    }
-
-    fn completeJoinForControl(self: *Peer, join_key_part: JoinKeyPart) !void {
-        try self.completeJoin(join_key_part.join_id);
-    }
-
-    fn handleJoin(self: *Peer, join: protocol.Join) !void {
-        try peer_control.handleJoin(
-            Peer,
-            JoinKeyPart,
-            ProvideTarget,
-            self,
-            join,
-            hasPendingJoinQuestionForControl,
             sendAbortForControl,
-            parseJoinKeyPartForControl,
             resolveProvideTarget,
             makeProvideTarget,
-            deinitProvideTargetForControl,
-            insertJoinPartForControl,
-            completeJoinForControl,
+            deinitProvideTargetForJoinStateControl,
+            initJoinStateForControl,
+            completeJoinForProvideJoinOrchestration,
             sendReturnExceptionForControl,
         );
     }
@@ -1824,7 +1716,7 @@ pub const Peer = struct {
         return captureAnyPointerPayload(self.allocator, third_party_answer.completion);
     }
 
-    fn adoptPendingThirdPartyAwaitEntryForControl(
+    fn adoptPendingThirdPartyAwaitEntryForThirdPartyAdoption(
         self: *Peer,
         adopted_answer_id: u32,
         pending_await: PendingThirdPartyAwait,
@@ -1836,43 +1728,19 @@ pub const Peer = struct {
         );
     }
 
-    fn adoptPendingThirdPartyAwaitForControl(self: *Peer, completion_key: []const u8, adopted_answer_id: u32) !bool {
-        return try peer_third_party_pending.adoptPendingAwait(
+    fn handleThirdPartyAnswer(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !void {
+        try peer_third_party_adoption.handleThirdPartyAnswer(
             Peer,
             PendingThirdPartyAwait,
             self.allocator,
-            &self.pending_third_party_awaits,
-            self,
-            completion_key,
-            adopted_answer_id,
-            adoptPendingThirdPartyAwaitEntryForControl,
-        );
-    }
-
-    fn getPendingThirdPartyAnswerIdForControl(self: *Peer, completion_key: []const u8) ?u32 {
-        return self.pending_third_party_answers.get(completion_key);
-    }
-
-    fn putPendingThirdPartyAnswerForControl(self: *Peer, completion_key: []u8, answer_id: u32) !void {
-        try peer_third_party_pending.putPendingAnswer(
-            &self.pending_third_party_answers,
-            completion_key,
-            answer_id,
-        );
-    }
-
-    fn handleThirdPartyAnswer(self: *Peer, third_party_answer: protocol.ThirdPartyAnswer) !void {
-        try peer_control.handleThirdPartyAnswer(
-            Peer,
             self,
             third_party_answer,
-            peer_control.isThirdPartyAnswerId,
+            &self.pending_third_party_awaits,
+            &self.pending_third_party_answers,
             captureThirdPartyCompletionForControl,
             freeCapturedPayloadForControl,
             sendAbortForControl,
-            adoptPendingThirdPartyAwaitForControl,
-            getPendingThirdPartyAnswerIdForControl,
-            putPendingThirdPartyAnswerForControl,
+            adoptPendingThirdPartyAwaitEntryForThirdPartyAdoption,
         );
     }
 
@@ -2142,54 +2010,19 @@ pub const Peer = struct {
         adopted_answer_id: u32,
         question: Question,
     ) anyerror!void {
-        try peer_control.adoptThirdPartyAnswer(
+        try peer_third_party_adoption.adoptThirdPartyAnswer(
             Peer,
             Question,
             self,
             question_id,
             adopted_answer_id,
             question,
-            hasQuestionForThirdPartyAdoptControl,
-            hasAdoptedThirdPartyAnswerForControl,
+            &self.questions,
+            &self.adopted_third_party_answers,
+            &self.pending_third_party_returns,
             sendAbortForControl,
-            putQuestionForThirdPartyAdoptControl,
-            removeQuestionForThirdPartyAdoptControl,
-            putAdoptedThirdPartyAnswerForControl,
-            removeAdoptedThirdPartyAnswerForControl,
-            takePendingThirdPartyReturnFrameForControl,
             freeOwnedFrame,
             handlePendingThirdPartyReturnFrameForControl,
-        );
-    }
-
-    fn hasQuestionForThirdPartyAdoptControl(self: *Peer, answer_id: u32) bool {
-        return self.questions.contains(answer_id);
-    }
-
-    fn hasAdoptedThirdPartyAnswerForControl(self: *Peer, answer_id: u32) bool {
-        return self.adopted_third_party_answers.contains(answer_id);
-    }
-
-    fn putQuestionForThirdPartyAdoptControl(self: *Peer, answer_id: u32, question: Question) !void {
-        try self.questions.put(answer_id, question);
-    }
-
-    fn removeQuestionForThirdPartyAdoptControl(self: *Peer, answer_id: u32) void {
-        _ = self.questions.remove(answer_id);
-    }
-
-    fn putAdoptedThirdPartyAnswerForControl(self: *Peer, adopted_answer_id: u32, question_id: u32) !void {
-        try self.adopted_third_party_answers.put(adopted_answer_id, question_id);
-    }
-
-    fn removeAdoptedThirdPartyAnswerForControl(self: *Peer, adopted_answer_id: u32) void {
-        _ = self.adopted_third_party_answers.remove(adopted_answer_id);
-    }
-
-    fn takePendingThirdPartyReturnFrameForControl(self: *Peer, adopted_answer_id: u32) ?[]u8 {
-        return peer_third_party_returns.takePendingReturnFrame(
-            &self.pending_third_party_returns,
-            adopted_answer_id,
         );
     }
 
@@ -2227,19 +2060,7 @@ pub const Peer = struct {
         return captureAnyPointerPayload(self.allocator, await_ptr);
     }
 
-    fn hasPendingThirdPartyAwaitForControl(self: *Peer, completion_key: []const u8) bool {
-        return self.pending_third_party_awaits.contains(completion_key);
-    }
-
-    fn takePendingThirdPartyAnswerIdForControl(self: *Peer, completion_key: []const u8) ?u32 {
-        return peer_third_party_pending.takePendingAnswerId(
-            self.allocator,
-            &self.pending_third_party_answers,
-            completion_key,
-        );
-    }
-
-    fn adoptThirdPartyAnswerForControl(
+    fn adoptThirdPartyAnswerForThirdPartyAdoption(
         self: *Peer,
         question_id: u32,
         adopted_answer_id: u32,
@@ -2248,21 +2069,14 @@ pub const Peer = struct {
         try self.adoptThirdPartyAnswer(question_id, adopted_answer_id, question);
     }
 
-    fn putPendingThirdPartyAwaitForControl(
-        self: *Peer,
-        completion_key: []u8,
+    fn makePendingThirdPartyAwaitForThirdPartyAdoption(
         question_id: u32,
         question: Question,
-    ) !void {
-        try peer_third_party_pending.putPendingAwait(
-            PendingThirdPartyAwait,
-            &self.pending_third_party_awaits,
-            completion_key,
-            .{
-                .question_id = question_id,
-                .question = question,
-            },
-        );
+    ) PendingThirdPartyAwait {
+        return .{
+            .question_id = question_id,
+            .question = question,
+        };
     }
 
     fn maybeSendAutoFinishForReturn(self: *Peer, question: Question, answer_id: u32, no_finish_needed: bool) void {
@@ -2364,20 +2178,22 @@ pub const Peer = struct {
         inbound_caps: *const cap_table.InboundCapTable,
     ) !void {
         _ = inbound_caps;
-        try peer_control.handleReturnAcceptFromThirdParty(
+        try peer_third_party_adoption.handleReturnAcceptFromThirdParty(
             Peer,
             Question,
+            PendingThirdPartyAwait,
+            self.allocator,
             self,
             answer_id,
             question,
             accept_from_third_party,
+            &self.pending_third_party_awaits,
+            &self.pending_third_party_answers,
             captureReturnAcceptCompletionForControl,
             freeCapturedPayloadForControl,
-            hasPendingThirdPartyAwaitForControl,
             sendAbortForControl,
-            takePendingThirdPartyAnswerIdForControl,
-            adoptThirdPartyAnswerForControl,
-            putPendingThirdPartyAwaitForControl,
+            adoptThirdPartyAnswerForThirdPartyAdoption,
+            makePendingThirdPartyAwaitForThirdPartyAdoption,
         );
     }
 

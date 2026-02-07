@@ -122,6 +122,57 @@ test "peer sendCallResolved rejects unavailable capability" {
     );
 }
 
+test "peer sendReleaseForHost emits release frame" {
+    const allocator = std.testing.allocator;
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    try peer.sendReleaseForHost(77, 3);
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+    defer decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.release, decoded.tag);
+    const release = try decoded.asRelease();
+    try std.testing.expectEqual(@as(u32, 77), release.id);
+    try std.testing.expectEqual(@as(u32, 3), release.reference_count);
+}
+
+test "peer sendFinishForHost emits finish frame with explicit flags" {
+    const allocator = std.testing.allocator;
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    try peer.sendFinishForHost(91, true, true);
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+    defer decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.finish, decoded.tag);
+    const finish = try decoded.asFinish();
+    try std.testing.expectEqual(@as(u32, 91), finish.question_id);
+    try std.testing.expect(finish.release_result_caps);
+    try std.testing.expect(finish.require_early_cancellation);
+}
+
 test "peer handleFrame abort updates last inbound tag and abort reason" {
     const allocator = std.testing.allocator;
 

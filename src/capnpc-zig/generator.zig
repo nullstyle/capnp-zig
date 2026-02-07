@@ -51,6 +51,7 @@ pub const Generator = struct {
 
         // Find the file node
         const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
+        try self.writeSchemaManifest(requested_file, file_node, writer);
 
         var generated = std.AutoHashMap(schema.Id, void).init(self.allocator);
         defer generated.deinit();
@@ -61,6 +62,144 @@ pub const Generator = struct {
         }
 
         return output.toOwnedSlice(self.allocator);
+    }
+
+    const ManifestSerdeEntry = struct {
+        id: u64,
+        type_name: []const u8,
+        to_json_export: []const u8,
+        from_json_export: []const u8,
+    };
+
+    const ManifestSerdeJsonEntry = struct {
+        id: u64,
+        type_name: []const u8,
+        to_json_export: []const u8,
+        from_json_export: []const u8,
+    };
+
+    const SchemaManifestJson = struct {
+        schema: []const u8,
+        module: []const u8,
+        serde: []const ManifestSerdeJsonEntry,
+    };
+
+    fn writeSchemaManifest(
+        self: *Generator,
+        requested_file: schema.RequestedFile,
+        file_node: *const schema.Node,
+        writer: anytype,
+    ) !void {
+        const module_name = try self.moduleNameFromFilename(requested_file.filename);
+        defer self.allocator.free(module_name);
+
+        var seen = std.AutoHashMap(schema.Id, void).init(self.allocator);
+        defer seen.deinit();
+
+        var entries = std.ArrayList(ManifestSerdeEntry){};
+        defer {
+            for (entries.items) |entry| {
+                self.allocator.free(entry.type_name);
+                self.allocator.free(entry.to_json_export);
+                self.allocator.free(entry.from_json_export);
+            }
+            entries.deinit(self.allocator);
+        }
+
+        for (file_node.nested_nodes) |nested| {
+            try self.collectManifestSerdeEntries(nested.id, module_name, &seen, &entries);
+        }
+
+        self.sortManifestSerdeEntries(entries.items);
+
+        var json_entries = try self.allocator.alloc(ManifestSerdeJsonEntry, entries.items.len);
+        defer self.allocator.free(json_entries);
+        for (entries.items, 0..) |entry, i| {
+            json_entries[i] = .{
+                .id = entry.id,
+                .type_name = entry.type_name,
+                .to_json_export = entry.to_json_export,
+                .from_json_export = entry.from_json_export,
+            };
+        }
+
+        const manifest_json_bytes = try std.json.Stringify.valueAlloc(self.allocator, SchemaManifestJson{
+            .schema = requested_file.filename,
+            .module = module_name,
+            .serde = json_entries,
+        }, .{});
+        defer self.allocator.free(manifest_json_bytes);
+
+        try writer.print("pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = \"{f}\";\n", .{
+            std.zig.fmtString(manifest_json_bytes),
+        });
+        try writer.writeAll("pub fn capnpSchemaManifestJson() []const u8 {\n");
+        try writer.writeAll("    return CAPNP_SCHEMA_MANIFEST_JSON;\n");
+        try writer.writeAll("}\n\n");
+    }
+
+    fn collectManifestSerdeEntries(
+        self: *Generator,
+        id: schema.Id,
+        module_name: []const u8,
+        seen: *std.AutoHashMap(schema.Id, void),
+        entries: *std.ArrayList(ManifestSerdeEntry),
+    ) !void {
+        if (seen.contains(id)) return;
+        const node = self.getNode(id) orelse return;
+        try seen.put(id, {});
+
+        if (node.kind == .@"struct") {
+            const simple_name = self.getSimpleName(node);
+            const type_name = try self.toZigIdentifier(simple_name);
+            const type_export = try self.toSnakeCaseLower(simple_name);
+            defer self.allocator.free(type_export);
+
+            try entries.append(self.allocator, .{
+                .id = node.id,
+                .type_name = type_name,
+                .to_json_export = try std.fmt.allocPrint(
+                    self.allocator,
+                    "capnp_{s}_{s}_to_json",
+                    .{ module_name, type_export },
+                ),
+                .from_json_export = try std.fmt.allocPrint(
+                    self.allocator,
+                    "capnp_{s}_{s}_from_json",
+                    .{ module_name, type_export },
+                ),
+            });
+        }
+
+        for (node.nested_nodes) |nested| {
+            try self.collectManifestSerdeEntries(nested.id, module_name, seen, entries);
+        }
+
+        if (node.kind == .interface) {
+            const iface = node.interface_node orelse return;
+            for (iface.methods) |method| {
+                try self.collectManifestSerdeEntries(method.param_struct_type, module_name, seen, entries);
+                try self.collectManifestSerdeEntries(method.result_struct_type, module_name, seen, entries);
+            }
+        }
+    }
+
+    fn sortManifestSerdeEntries(self: *Generator, entries: []ManifestSerdeEntry) void {
+        _ = self;
+        var i: usize = 1;
+        while (i < entries.len) : (i += 1) {
+            var j = i;
+            while (j > 0 and manifestSerdeEntryLess(entries[j], entries[j - 1])) : (j -= 1) {
+                std.mem.swap(ManifestSerdeEntry, &entries[j], &entries[j - 1]);
+            }
+        }
+    }
+
+    fn manifestSerdeEntryLess(a: ManifestSerdeEntry, b: ManifestSerdeEntry) bool {
+        const type_order = std.mem.order(u8, a.type_name, b.type_name);
+        if (type_order == .lt) return true;
+        if (type_order == .gt) return false;
+        return a.id < b.id;
     }
 
     /// Generate code for a single node
@@ -482,6 +621,49 @@ pub const Generator = struct {
         }
 
         return result.toOwnedSlice(self.allocator);
+    }
+
+    fn moduleNameFromFilename(self: *Generator, filename: []const u8) ![]const u8 {
+        const stem = std.fs.path.stem(filename);
+        return self.toSnakeCaseLower(stem);
+    }
+
+    fn toSnakeCaseLower(self: *Generator, name: []const u8) ![]u8 {
+        var out = std.ArrayList(u8){};
+        errdefer out.deinit(self.allocator);
+
+        var prev_was_sep = false;
+        for (name, 0..) |c, i| {
+            if (!std.ascii.isAlphanumeric(c)) {
+                if (out.items.len != 0 and !prev_was_sep) {
+                    try out.append(self.allocator, '_');
+                    prev_was_sep = true;
+                }
+                continue;
+            }
+
+            if (std.ascii.isUpper(c)) {
+                if (i != 0 and out.items.len != 0 and !prev_was_sep) {
+                    try out.append(self.allocator, '_');
+                }
+                try out.append(self.allocator, std.ascii.toLower(c));
+                prev_was_sep = false;
+                continue;
+            }
+
+            try out.append(self.allocator, c);
+            prev_was_sep = false;
+        }
+
+        if (out.items.len == 0) {
+            try out.append(self.allocator, 'x');
+        }
+
+        if (out.items[out.items.len - 1] == '_') {
+            _ = out.pop();
+        }
+
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn lookupNode(ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node {

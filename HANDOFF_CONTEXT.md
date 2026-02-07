@@ -1,80 +1,74 @@
-# Handoff Context: QUALITY_REPORT Response Work
+# Handoff Context: QUALITY_REPORT Response (Resume Notes)
 
 Date: 2026-02-07
 Repository: capnpc-zig
-Audience: Parallel contributors sharing current refactor state before next slices.
+Purpose: Resume decomposition work quickly without re-reading the entire RPC stack.
 
-## Goal of this handoff
+## Current branch state (important)
 
-Capture current decomposition boundaries, test expectations, and remaining high-priority work so parallel efforts can proceed without re-deriving context.
+Modified/new RPC files in working tree:
+- `src/rpc/peer.zig` (modified)
+- `src/rpc/peer_forward_orchestration.zig` (modified)
+- `src/rpc/mod.zig` (modified)
+- `src/rpc/peer_third_party_adoption.zig` (new)
+- `src/rpc/peer_provide_join_orchestration.zig` (new)
 
-## What is stable now
+## Stable verification baseline
 
-1. P0 safety fixes are in place and validated
-- `src/reader.zig` checked arithmetic and size guards
-- `src/message.zig` widened inline-composite multiplication checks
-
-2. `peer.zig` runtime paths are now partially orchestrated via extracted modules
-- Call target orchestration: `src/rpc/peer_call_orchestration.zig`
-- Return orchestration: `src/rpc/peer_return_orchestration.zig`
-- Cap/import lifecycle: `src/rpc/peer_cap_lifecycle.zig`
-- Forwarded return logic: `src/rpc/peer_forwarded_return_logic.zig` (delegated from `peer_control`)
-
-3. Prior extracted modules are still wired and green
-- dispatch, promises, call-target planning, third-party pending/returns, return dispatch, inbound release, forwarding helpers, payload remap, etc.
-
-## Key wiring points (for fast navigation)
-
-- Module exports: `src/rpc/mod.zig`
-- Primary orchestrator still in place: `src/rpc/peer.zig`
-- Delegation anchors:
-  - `Peer.handleCall`: calls `peer_call_orchestration.routeCallTarget`
-  - `Peer.handleCallImportedTarget`: calls `peer_call_orchestration.dispatchImportedTargetPlan`
-  - `Peer.handleResolvedExportedForControl`: calls `peer_call_orchestration.handleResolvedExportedCall`
-  - `Peer.handleReturn`: calls `peer_return_orchestration.handleReturn`
-  - `peer_control.handleForwardedReturn`: delegates to `peer_forwarded_return_logic.handleForwardedReturn`
-
-## Test/verification contract
-
-Minimum required verification before sharing additional slices:
-
-1. `zig build test-rpc --summary all`
-2. `just test`
+Latest successful commands after all current changes:
+1. `zig build test-rpc --summary all` (65/65)
+2. `just test` (188/188)
 3. `just check`
 
-Current status at handoff time:
+Use those as minimum gate before/after additional slices.
 
-- `test-rpc`: pass (65/65)
-- `just test`: pass (188/188)
-- `just check`: pass
+## What was extracted recently
 
-## Remaining high-priority decomposition slices
+1. Third-party adoption/await lifecycle
+- Module: `src/rpc/peer_third_party_adoption.zig`
+- Entry points:
+  - `adoptThirdPartyAnswer(...)`
+  - `handleThirdPartyAnswer(...)`
+  - `handleReturnAcceptFromThirdParty(...)`
+- `peer.zig` now delegates adoption/await orchestration to this module.
 
-Recommended next slices, in priority order:
+2. Provide/accept/join orchestration
+- Module: `src/rpc/peer_provide_join_orchestration.zig`
+- Entry points:
+  - `handleProvide(...)`
+  - `handleAccept(...)`
+  - `handleJoin(...)`
+- `peer.zig` now delegates provide/accept/join flow orchestration.
 
-1. Third-party adoption/await completion control flow extraction from `peer.zig`
-- Scope: pending await/answer reconciliation and adopted-answer return handling adapters that still live in `peer.zig`
-- Goal: reduce dense control-flow and map transitions still centralized in `Peer`
+3. Forward/tail coordination centralization
+- Module: `src/rpc/peer_forward_orchestration.zig`
+- `finishForwardResolvedCall(...)` now mutates forward/tail maps directly and returns a completion directive.
+- Added callback-factory helpers for control-path callback signatures.
 
-2. Join/provide completion slice extraction
-- Scope: residual provide/join completion orchestration and cleanup adapters still centralized in `peer.zig`
-- Goal: isolate protocol state transitions from object-method boilerplate
+4. Callback adapter consolidation
+- `handleFinish(...)` in `peer.zig` now uses orchestration callback factories and direct methods, removing redundant wrappers.
 
-3. Forward/tail-question coordination tightening
-- Scope: remaining forwarded-tail question bookkeeping paths still split across `peer.zig` and helper modules
-- Goal: one focused orchestration module for forward+tail lifecycle
+## Key navigation anchors
 
-4. Peer callback adapter consolidation
-- Scope: many one-line adapter methods in `peer.zig` introduced during extraction
-- Goal: reduce adapter surface and make handoff points more uniform without changing behavior
+- Forward call/return orchestration path:
+  - `src/rpc/peer.zig` around `forwardResolvedCall(...)` and `onForwardedReturn(...)`
+  - `src/rpc/peer_forward_orchestration.zig`
 
-## Collaboration guardrails
+- Provide/accept/join path:
+  - `src/rpc/peer.zig` around `handleProvide(...)`, `handleAccept(...)`, `handleJoin(...)`
+  - `src/rpc/peer_provide_join_orchestration.zig`
 
-- Preserve behavior: refactor-only slices should avoid protocol semantics changes.
-- Keep tests with each slice: add focused tests in extracted module and keep end-to-end suite green.
-- Avoid broad rewrites: prefer one slice per commit to keep bisectability and review clarity.
+- Third-party adoption path:
+  - `src/rpc/peer.zig` around `handleThirdPartyAnswer(...)`, `adoptThirdPartyAnswer(...)`, return-accept adapter
+  - `src/rpc/peer_third_party_adoption.zig`
 
-## Out-of-scope for this branch slice
+## Next practical slice (if continuing decomposition)
 
-- GitHub Actions CI setup (explicitly not used in this workflow)
-- Packaging/versioning/perf initiatives from lower-priority report items
+1. Reduce remaining one-line control adapters in `peer.zig` where module-level helpers can preserve behavior.
+2. Keep incremental: one small cluster at a time + helper tests + full gate commands.
+
+## Guardrails
+
+- Refactor-only: avoid protocol behavior changes.
+- Maintain test-first with each extraction/consolidation step.
+- Keep changes bisectable and module-scoped.

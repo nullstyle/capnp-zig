@@ -577,6 +577,31 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_host_peer_tests = b.addRunArtifact(rpc_host_peer_tests);
 
+    const wasm_host_abi_test_module = b.createModule(.{
+        .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig-core", .module = core_module },
+            .{ .name = "capnpc-zig", .module = core_module },
+        },
+    });
+
+    const wasm_host_abi_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/wasm_host_abi_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig-core", .module = core_module },
+                .{ .name = "capnpc-zig", .module = core_module },
+                .{ .name = "capnp-wasm-host-abi", .module = wasm_host_abi_test_module },
+            },
+        }),
+    });
+
+    const run_wasm_host_abi_tests = b.addRunArtifact(wasm_host_abi_tests);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
@@ -602,6 +627,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_protocol_tests.step);
     test_step.dependOn(&run_rpc_peer_tests.step);
     test_step.dependOn(&run_rpc_host_peer_tests.step);
+    test_step.dependOn(&run_wasm_host_abi_tests.step);
 
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
@@ -643,6 +669,9 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_tests.step);
     test_rpc_step.dependOn(&run_rpc_host_peer_tests.step);
+
+    const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
+    test_wasm_host_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
     test_lib_step.dependOn(&run_lib_tests.step);

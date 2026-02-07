@@ -6,6 +6,14 @@ const HostPeer = capnpc.rpc.host_peer.HostPeer;
 const Peer = capnpc.rpc.peer.Peer;
 const protocol = capnpc.rpc.protocol;
 
+fn pumpAll(src: *HostPeer, dst: *HostPeer) !void {
+    while (src.popOutgoingFrame()) |frame| {
+        errdefer src.freeFrame(frame);
+        try dst.pushFrame(frame);
+        src.freeFrame(frame);
+    }
+}
+
 test "host peer queues outbound frame from detached sendBootstrap" {
     const allocator = std.testing.allocator;
 
@@ -125,4 +133,200 @@ test "host peer propagates OOM from outgoing frame allocator" {
 
     try std.testing.expectError(error.OutOfMemory, host.peer.sendReturnException(2, "oom"));
     try std.testing.expectEqual(@as(usize, 0), host.pendingOutgoingCount());
+}
+
+test "host peer tracks outbound bytes and enforces queue limits" {
+    const allocator = std.testing.allocator;
+
+    var host = HostPeer.init(allocator);
+    defer host.deinit();
+    host.start(null, null);
+
+    host.setLimits(.{ .outbound_count_limit = 1 });
+    const limits_after_set = host.getLimits();
+    try std.testing.expectEqual(@as(usize, 1), limits_after_set.outbound_count_limit);
+    try std.testing.expectEqual(@as(usize, 0), limits_after_set.outbound_bytes_limit);
+
+    try host.peer.sendReturnException(1, "first");
+    const first_pending_bytes = host.pendingOutgoingBytes();
+    try std.testing.expect(first_pending_bytes > 0);
+    try std.testing.expectEqual(@as(usize, 1), host.pendingOutgoingCount());
+
+    try std.testing.expectError(error.OutgoingQueueLimitExceeded, host.peer.sendReturnException(2, "second"));
+    try std.testing.expectEqual(@as(usize, 1), host.pendingOutgoingCount());
+
+    const first = host.popOutgoingFrame() orelse return error.ExpectedFrame;
+    defer host.freeFrame(first);
+    try std.testing.expectEqual(@as(usize, 0), host.pendingOutgoingCount());
+    try std.testing.expectEqual(@as(usize, 0), host.pendingOutgoingBytes());
+
+    const bytes_limit: usize = if (first.len > 1) first.len - 1 else 1;
+    host.setLimits(.{ .outbound_bytes_limit = bytes_limit });
+    try std.testing.expectError(error.OutgoingBytesLimitExceeded, host.peer.sendReturnException(3, "third"));
+
+    host.setLimits(.{});
+    try host.peer.sendReturnException(4, "fourth");
+    try std.testing.expectEqual(@as(usize, 1), host.pendingOutgoingCount());
+}
+
+test "host peer host-call bridge queues call and allows exception response" {
+    const allocator = std.testing.allocator;
+
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        call_returned: bool = false,
+        saw_expected_exception: bool = false,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.call_returned = true;
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            const ex = ret.exception orelse return error.MissingException;
+            try std.testing.expectEqualStrings("bridge exception", ex.reason);
+            state.saw_expected_exception = true;
+        }
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            try call.setEmptyCapTable();
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null);
+
+    var server = HostPeer.init(allocator);
+    defer server.deinit();
+    server.start(null, null);
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x1234,
+        9,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+
+    try pumpAll(&client, &server);
+    try std.testing.expectEqual(@as(usize, 1), server.pendingHostCallCount());
+
+    const call = server.popHostCall() orelse return error.MissingHostCall;
+    try std.testing.expectEqual(@as(u64, 0x1234), call.interface_id);
+    try std.testing.expectEqual(@as(u16, 9), call.method_id);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, call.frame);
+    defer decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.call, decoded.tag);
+    const decoded_call = try decoded.asCall();
+    try std.testing.expectEqual(call.question_id, decoded_call.question_id);
+
+    try server.respondHostCallException(call.question_id, "bridge exception");
+    server.freeHostCallFrame(call.frame);
+
+    try pumpAll(&server, &client);
+    try std.testing.expect(client_ctx.call_returned);
+    try std.testing.expect(client_ctx.saw_expected_exception);
+}
+
+test "host peer host-call bridge can respond with results payload" {
+    const allocator = std.testing.allocator;
+
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        call_returned: bool = false,
+        saw_expected_text: bool = false,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.call_returned = true;
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+            const payload = ret.results orelse return error.MissingPayload;
+            const text = try payload.content.getText();
+            try std.testing.expectEqualStrings("bridge results", text);
+            state.saw_expected_text = true;
+        }
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            try call.setEmptyCapTable();
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null);
+
+    var server = HostPeer.init(allocator);
+    defer server.deinit();
+    server.start(null, null);
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x2222,
+        3,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+
+    try pumpAll(&client, &server);
+    const call = server.popHostCall() orelse return error.MissingHostCall;
+    defer server.freeHostCallFrame(call.frame);
+
+    var payload_builder = capnpc.message.MessageBuilder.init(allocator);
+    defer payload_builder.deinit();
+    const root = try payload_builder.initRootAnyPointer();
+    try root.setText("bridge results");
+    const payload = try payload_builder.toBytes();
+    defer allocator.free(payload);
+
+    try server.respondHostCallResults(call.question_id, payload);
+    try pumpAll(&server, &client);
+
+    try std.testing.expect(client_ctx.call_returned);
+    try std.testing.expect(client_ctx.saw_expected_text);
 }

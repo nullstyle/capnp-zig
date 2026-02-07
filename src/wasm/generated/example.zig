@@ -7,6 +7,12 @@ const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
 
+pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"tests/test_schemas/example.capnp\",\"module\":\"example\",\"serde\":[{\"id\":10276275038482591170,\"type_name\":\"Person\",\"to_json_export\":\"capnp_example_person_to_json\",\"from_json_export\":\"capnp_example_person_from_json\"}]}";
+
+pub fn capnpSchemaManifestJson() []const u8 {
+    return CAPNP_SCHEMA_MANIFEST_JSON;
+}
+
 pub const Person = struct {
     fn EnumListReader(comptime EnumType: type) type {
         return struct {

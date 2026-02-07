@@ -331,3 +331,52 @@ test "Codegen generated edge schema compiles and runs" {
         \\
     );
 }
+
+test "Codegen generated schema manifest compiles and runs" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/list_wrappers_runtime.capnp",
+        \\const std = @import("std");
+        \\const generated = @import("generated.zig");
+        \\
+        \\const ManifestSerdeEntry = struct {
+        \\    id: u64,
+        \\    type_name: []const u8,
+        \\    to_json_export: []const u8,
+        \\    from_json_export: []const u8,
+        \\};
+        \\
+        \\const Manifest = struct {
+        \\    schema: []const u8,
+        \\    module: []const u8,
+        \\    serde: []const ManifestSerdeEntry,
+        \\};
+        \\
+        \\test "generated schema manifest runtime" {
+        \\    const json_a = generated.capnpSchemaManifestJson();
+        \\    const json_b = generated.capnpSchemaManifestJson();
+        \\    try std.testing.expectEqualStrings(json_a, json_b);
+        \\
+        \\    var parsed = try std.json.parseFromSlice(Manifest, std.testing.allocator, json_a, .{});
+        \\    defer parsed.deinit();
+        \\
+        \\    try std.testing.expectEqualStrings("tests/test_schemas/list_wrappers_runtime.capnp", parsed.value.schema);
+        \\    try std.testing.expectEqualStrings("list_wrappers_runtime", parsed.value.module);
+        \\    try std.testing.expect(parsed.value.serde.len > 0);
+        \\
+        \\    var saw_root = false;
+        \\    var saw_child = false;
+        \\    for (parsed.value.serde) |entry| {
+        \\        if (std.mem.eql(u8, entry.type_name, "ListWrapperDemo")) {
+        \\            saw_root = true;
+        \\        }
+        \\        if (std.mem.eql(u8, entry.type_name, "Child")) {
+        \\            saw_child = true;
+        \\        }
+        \\    }
+        \\    try std.testing.expect(saw_root);
+        \\    try std.testing.expect(saw_child);
+        \\}
+        \\
+    );
+}

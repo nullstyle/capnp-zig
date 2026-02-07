@@ -45,24 +45,72 @@ pub fn buildForwardCallPlan(
     };
 }
 
+pub const ForwardResolvedCompletion = struct {
+    send_take_from_other_question: bool = false,
+};
+
 pub fn finishForwardResolvedCall(
-    comptime PeerType: type,
-    peer: *PeerType,
+    comptime QuestionType: type,
     mode: ForwardReturnMode,
     upstream_question_id: u32,
     forwarded_question_id: u32,
-    remember_forwarded_question: *const fn (*PeerType, u32, u32) anyerror!void,
-    remember_forwarded_tail_question: *const fn (*PeerType, u32, u32) anyerror!void,
-    suppress_auto_finish: *const fn (*PeerType, u32) void,
-    send_take_from_other_question: *const fn (*PeerType, u32, u32) anyerror!void,
-) !void {
-    try remember_forwarded_question(peer, forwarded_question_id, upstream_question_id);
+    forwarded_questions: *std.AutoHashMap(u32, u32),
+    forwarded_tail_questions: *std.AutoHashMap(u32, u32),
+    questions: *std.AutoHashMap(u32, QuestionType),
+) !ForwardResolvedCompletion {
+    try forwarded_questions.put(forwarded_question_id, upstream_question_id);
 
     if (mode == .sent_elsewhere) {
-        try remember_forwarded_tail_question(peer, upstream_question_id, forwarded_question_id);
-        suppress_auto_finish(peer, forwarded_question_id);
-        try send_take_from_other_question(peer, upstream_question_id, forwarded_question_id);
+        try forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
+        if (questions.getEntry(forwarded_question_id)) |question| {
+            question.value_ptr.suppress_auto_finish = true;
+        }
+        return .{ .send_take_from_other_question = true };
     }
+    return .{};
+}
+
+pub fn lookupForwardedQuestionForPeer(comptime PeerType: type, peer: *PeerType, local_question_id: u32) ?u32 {
+    return peer.forwarded_questions.get(local_question_id);
+}
+
+pub fn lookupForwardedQuestionForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ?u32 {
+    return struct {
+        fn call(peer: *PeerType, local_question_id: u32) ?u32 {
+            return lookupForwardedQuestionForPeer(PeerType, peer, local_question_id);
+        }
+    }.call;
+}
+
+pub fn removeForwardedQuestionForPeer(comptime PeerType: type, peer: *PeerType, local_question_id: u32) void {
+    _ = peer.forwarded_questions.remove(local_question_id);
+}
+
+pub fn takeForwardedTailQuestionForPeer(comptime PeerType: type, peer: *PeerType, question_id: u32) ?u32 {
+    if (peer.forwarded_tail_questions.fetchRemove(question_id)) |tail| {
+        return tail.value;
+    }
+    return null;
+}
+
+pub fn takeForwardedTailQuestionForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ?u32 {
+    return struct {
+        fn call(peer: *PeerType, question_id: u32) ?u32 {
+            return takeForwardedTailQuestionForPeer(PeerType, peer, question_id);
+        }
+    }.call;
+}
+
+pub fn removeSendResultsToYourselfForPeer(comptime PeerType: type, peer: *PeerType, answer_id: u32) void {
+    _ = peer.send_results_to_yourself.remove(answer_id);
+}
+
+pub fn removeSendResultsToYourselfForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) void {
+    return struct {
+        fn call(peer: *PeerType, answer_id: u32) void {
+            removeSendResultsToYourselfForPeer(PeerType, peer, answer_id);
+        }
+    }.call;
 }
 
 test "peer_forward_orchestration buildForwardCallPlan maps modes to sendResultsTo tags" {
@@ -140,89 +188,89 @@ test "peer_forward_orchestration buildForwardCallPlan maps modes to sendResultsT
 }
 
 test "peer_forward_orchestration finishForwardResolvedCall records forwarding and tail state" {
-    const State = struct {
-        forwarded_question_calls: usize = 0,
-        forwarded_question_local: u32 = 0,
-        forwarded_question_upstream: u32 = 0,
-        tail_calls: usize = 0,
-        tail_upstream: u32 = 0,
-        tail_forwarded: u32 = 0,
-        suppress_calls: usize = 0,
-        suppressed_question_id: u32 = 0,
-        take_calls: usize = 0,
-        take_answer_id: u32 = 0,
-        take_other_id: u32 = 0,
+    const Question = struct {
+        suppress_auto_finish: bool = false,
     };
 
-    const Hooks = struct {
-        fn rememberForwardedQuestion(state: *State, local_question_id: u32, upstream_question_id: u32) !void {
-            state.forwarded_question_calls += 1;
-            state.forwarded_question_local = local_question_id;
-            state.forwarded_question_upstream = upstream_question_id;
+    var forwarded_questions = std.AutoHashMap(u32, u32).init(std.testing.allocator);
+    defer forwarded_questions.deinit();
+
+    var forwarded_tail_questions = std.AutoHashMap(u32, u32).init(std.testing.allocator);
+    defer forwarded_tail_questions.deinit();
+
+    var questions = std.AutoHashMap(u32, Question).init(std.testing.allocator);
+    defer questions.deinit();
+
+    try questions.put(20, .{});
+    const completion_normal = try finishForwardResolvedCall(
+        Question,
+        .translate_to_caller,
+        10,
+        20,
+        &forwarded_questions,
+        &forwarded_tail_questions,
+        &questions,
+    );
+
+    try std.testing.expect(!completion_normal.send_take_from_other_question);
+    try std.testing.expectEqual(@as(u32, 10), forwarded_questions.get(20).?);
+    try std.testing.expectEqual(@as(usize, 0), forwarded_tail_questions.count());
+    try std.testing.expect(!questions.get(20).?.suppress_auto_finish);
+
+    try questions.put(21, .{});
+    const completion_tail = try finishForwardResolvedCall(
+        Question,
+        .sent_elsewhere,
+        11,
+        21,
+        &forwarded_questions,
+        &forwarded_tail_questions,
+        &questions,
+    );
+
+    try std.testing.expect(completion_tail.send_take_from_other_question);
+    try std.testing.expectEqual(@as(u32, 11), forwarded_questions.get(21).?);
+    try std.testing.expectEqual(@as(u32, 21), forwarded_tail_questions.get(11).?);
+    try std.testing.expect(questions.get(21).?.suppress_auto_finish);
+}
+
+test "peer_forward_orchestration peer-map helpers lookup/remove/take/remove-send-results" {
+    const FakePeer = struct {
+        forwarded_questions: std.AutoHashMap(u32, u32),
+        forwarded_tail_questions: std.AutoHashMap(u32, u32),
+        send_results_to_yourself: std.AutoHashMap(u32, void),
+
+        fn init(allocator: std.mem.Allocator) @This() {
+            return .{
+                .forwarded_questions = std.AutoHashMap(u32, u32).init(allocator),
+                .forwarded_tail_questions = std.AutoHashMap(u32, u32).init(allocator),
+                .send_results_to_yourself = std.AutoHashMap(u32, void).init(allocator),
+            };
         }
 
-        fn rememberTail(state: *State, upstream_question_id: u32, forwarded_question_id: u32) !void {
-            state.tail_calls += 1;
-            state.tail_upstream = upstream_question_id;
-            state.tail_forwarded = forwarded_question_id;
-        }
-
-        fn suppress(state: *State, forwarded_question_id: u32) void {
-            state.suppress_calls += 1;
-            state.suppressed_question_id = forwarded_question_id;
-        }
-
-        fn sendTake(state: *State, answer_id: u32, other_question_id: u32) !void {
-            state.take_calls += 1;
-            state.take_answer_id = answer_id;
-            state.take_other_id = other_question_id;
+        fn deinit(self: *@This()) void {
+            self.forwarded_questions.deinit();
+            self.forwarded_tail_questions.deinit();
+            self.send_results_to_yourself.deinit();
         }
     };
 
-    {
-        var state = State{};
-        try finishForwardResolvedCall(
-            State,
-            &state,
-            .translate_to_caller,
-            10,
-            20,
-            Hooks.rememberForwardedQuestion,
-            Hooks.rememberTail,
-            Hooks.suppress,
-            Hooks.sendTake,
-        );
+    var peer = FakePeer.init(std.testing.allocator);
+    defer peer.deinit();
 
-        try std.testing.expectEqual(@as(usize, 1), state.forwarded_question_calls);
-        try std.testing.expectEqual(@as(u32, 20), state.forwarded_question_local);
-        try std.testing.expectEqual(@as(u32, 10), state.forwarded_question_upstream);
-        try std.testing.expectEqual(@as(usize, 0), state.tail_calls);
-        try std.testing.expectEqual(@as(usize, 0), state.suppress_calls);
-        try std.testing.expectEqual(@as(usize, 0), state.take_calls);
-    }
+    try peer.forwarded_questions.put(30, 300);
+    try peer.forwarded_tail_questions.put(40, 400);
+    try peer.send_results_to_yourself.put(50, {});
 
-    {
-        var state = State{};
-        try finishForwardResolvedCall(
-            State,
-            &state,
-            .sent_elsewhere,
-            11,
-            21,
-            Hooks.rememberForwardedQuestion,
-            Hooks.rememberTail,
-            Hooks.suppress,
-            Hooks.sendTake,
-        );
+    try std.testing.expectEqual(@as(?u32, 300), lookupForwardedQuestionForPeer(FakePeer, &peer, 30));
 
-        try std.testing.expectEqual(@as(usize, 1), state.forwarded_question_calls);
-        try std.testing.expectEqual(@as(usize, 1), state.tail_calls);
-        try std.testing.expectEqual(@as(u32, 11), state.tail_upstream);
-        try std.testing.expectEqual(@as(u32, 21), state.tail_forwarded);
-        try std.testing.expectEqual(@as(usize, 1), state.suppress_calls);
-        try std.testing.expectEqual(@as(u32, 21), state.suppressed_question_id);
-        try std.testing.expectEqual(@as(usize, 1), state.take_calls);
-        try std.testing.expectEqual(@as(u32, 11), state.take_answer_id);
-        try std.testing.expectEqual(@as(u32, 21), state.take_other_id);
-    }
+    removeForwardedQuestionForPeer(FakePeer, &peer, 30);
+    try std.testing.expectEqual(@as(?u32, null), lookupForwardedQuestionForPeer(FakePeer, &peer, 30));
+
+    const tail = takeForwardedTailQuestionForPeer(FakePeer, &peer, 40) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 400), tail);
+    try std.testing.expectEqual(@as(?u32, null), takeForwardedTailQuestionForPeer(FakePeer, &peer, 40));
+
+    removeSendResultsToYourselfForPeer(FakePeer, &peer, 50);
+    try std.testing.expectEqual(@as(usize, 0), peer.send_results_to_yourself.count());
 }
