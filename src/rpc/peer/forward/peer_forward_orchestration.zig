@@ -1,7 +1,7 @@
 const std = @import("std");
-const message = @import("../message.zig");
-const peer_control = @import("peer_control.zig");
-const protocol = @import("protocol.zig");
+const message = @import("../../../message.zig");
+const peer_control = @import("../peer_control.zig");
+const protocol = @import("../../protocol.zig");
 
 pub const ForwardReturnMode = enum {
     translate_to_caller,

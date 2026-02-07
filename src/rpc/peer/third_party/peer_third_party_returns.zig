@@ -1,5 +1,5 @@
 const std = @import("std");
-const protocol = @import("protocol.zig");
+const protocol = @import("../../protocol.zig");
 
 pub fn hasPendingReturn(
     pending_returns: *const std.AutoHashMap(u32, []u8),

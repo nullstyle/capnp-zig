@@ -1,8 +1,8 @@
 const std = @import("std");
-const cap_table = @import("cap_table.zig");
+const cap_table = @import("../../cap_table.zig");
 const peer_join_state = @import("peer_join_state.zig");
 const peer_provides_state = @import("peer_provides_state.zig");
-const protocol = @import("protocol.zig");
+const protocol = @import("../../protocol.zig");
 
 pub fn handleProvide(
     comptime PeerType: type,

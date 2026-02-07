@@ -1,7 +1,7 @@
 const std = @import("std");
-const cap_table = @import("cap_table.zig");
+const cap_table = @import("../../cap_table.zig");
 const peer_call_targets = @import("peer_call_targets.zig");
-const protocol = @import("protocol.zig");
+const protocol = @import("../../protocol.zig");
 
 pub fn routeCallTarget(call: protocol.Call) !union(enum) {
     imported: u32,

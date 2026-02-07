@@ -1,5 +1,5 @@
 const std = @import("std");
-const cap_table = @import("cap_table.zig");
+const cap_table = @import("../cap_table.zig");
 
 pub fn releaseInboundCaps(
     comptime PeerType: type,

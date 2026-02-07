@@ -1,6 +1,6 @@
 const std = @import("std");
-const message = @import("../message.zig");
-const protocol = @import("protocol.zig");
+const message = @import("../../../message.zig");
+const protocol = @import("../../protocol.zig");
 const peer_third_party_pending = @import("peer_third_party_pending.zig");
 const peer_third_party_returns = @import("peer_third_party_returns.zig");
 

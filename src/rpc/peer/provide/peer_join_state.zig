@@ -1,5 +1,5 @@
 const std = @import("std");
-const message = @import("../message.zig");
+const message = @import("../../../message.zig");
 
 pub const InsertOutcome = enum {
     inserted,

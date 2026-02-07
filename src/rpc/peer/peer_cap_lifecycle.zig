@@ -1,5 +1,5 @@
 const std = @import("std");
-const protocol = @import("protocol.zig");
+const protocol = @import("../protocol.zig");
 
 pub fn releaseImport(
     comptime PeerType: type,

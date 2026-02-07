@@ -1,5 +1,5 @@
 const std = @import("std");
-const protocol = @import("protocol.zig");
+const protocol = @import("../../protocol.zig");
 
 pub fn takeAdoptedAnswerOriginal(
     adopted_answers: *std.AutoHashMap(u32, u32),

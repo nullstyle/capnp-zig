@@ -1,8 +1,8 @@
 const std = @import("std");
-const cap_table = @import("cap_table.zig");
-const message = @import("../message.zig");
-const peer_forwarded_return_logic = @import("peer_forwarded_return_logic.zig");
-const protocol = @import("protocol.zig");
+const cap_table = @import("../cap_table.zig");
+const message = @import("../../message.zig");
+const peer_forwarded_return_logic = @import("forward/peer_forwarded_return_logic.zig");
+const protocol = @import("../protocol.zig");
 
 pub fn handleUnimplemented(
     comptime PeerType: type,

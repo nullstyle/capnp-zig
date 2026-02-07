@@ -1,6 +1,6 @@
 const std = @import("std");
-const message = @import("../message.zig");
-const protocol = @import("protocol.zig");
+const message = @import("../../../message.zig");
+const protocol = @import("../../protocol.zig");
 
 pub const ForwardedReturnMode = enum {
     translate_to_caller,

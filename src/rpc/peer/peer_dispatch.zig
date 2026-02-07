@@ -1,4 +1,4 @@
-const protocol = @import("protocol.zig");
+const protocol = @import("../protocol.zig");
 
 pub const InboundRoute = enum {
     unimplemented,

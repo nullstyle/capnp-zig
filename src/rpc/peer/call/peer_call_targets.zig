@@ -1,6 +1,6 @@
 const std = @import("std");
-const cap_table = @import("cap_table.zig");
-const protocol = @import("protocol.zig");
+const cap_table = @import("../../cap_table.zig");
+const protocol = @import("../../protocol.zig");
 
 pub const ImportedTargetPlan = union(enum) {
     unknown_capability,
