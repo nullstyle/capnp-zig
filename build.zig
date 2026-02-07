@@ -20,6 +20,52 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const core_module = b.addModule("capnpc-zig-core", .{
+        .root_source_file = b.path("src/lib_core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+
+    const wasm_example_schema_module = b.addModule("capnp-wasm-example-schema", .{
+        .root_source_file = b.path("src/wasm/generated/example.zig"),
+        .target = wasm_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig", .module = core_module },
+        },
+    });
+
+    const wasm_host_module = b.addExecutable(.{
+        .name = "capnp_wasm_host",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig-core", .module = core_module },
+                .{ .name = "capnpc-zig", .module = core_module },
+                .{ .name = "capnp-wasm-example-schema", .module = wasm_example_schema_module },
+            },
+        }),
+    });
+    wasm_host_module.entry = .disabled;
+    wasm_host_module.rdynamic = true;
+    wasm_host_module.export_memory = true;
+    wasm_host_module.initial_memory = 4 * 1024 * 1024;
+    wasm_host_module.max_memory = 64 * 1024 * 1024;
+    const install_wasm_host = b.addInstallArtifact(wasm_host_module, .{});
+
+    const wasm_host_step = b.step("wasm-host", "Build host-neutral WebAssembly ABI module");
+    wasm_host_step.dependOn(&install_wasm_host.step);
+
+    const wasm_deno_step = b.step("wasm-deno", "Compatibility alias for wasm-host");
+    wasm_deno_step.dependOn(&install_wasm_host.step);
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "capnpc-zig",
@@ -117,6 +163,22 @@ pub fn build(b: *std.Build) void {
 
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);
+
+    const rpc_fixture_gen = b.addExecutable(.{
+        .name = "gen-rpc-fixtures",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_rpc_fixtures.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig-core", .module = core_module },
+            },
+        }),
+    });
+
+    const run_rpc_fixture_gen = b.addRunArtifact(rpc_fixture_gen);
+    const rpc_fixture_step = b.step("gen-rpc-fixtures", "Generate deterministic RPC frame fixtures for Deno tests");
+    rpc_fixture_step.dependOn(&run_rpc_fixture_gen.step);
 
     // RPC ping-pong example
     const rpc_pingpong_example = b.addExecutable(.{
@@ -469,6 +531,20 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_peer_tests = b.addRunArtifact(rpc_peer_tests);
 
+    // RPC host peer wrapper tests
+    const rpc_host_peer_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_host_peer_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_host_peer_tests = b.addRunArtifact(rpc_host_peer_tests);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_main_tests.step);
@@ -492,6 +568,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_promised_answer_tests.step);
     test_step.dependOn(&run_rpc_protocol_tests.step);
     test_step.dependOn(&run_rpc_peer_tests.step);
+    test_step.dependOn(&run_rpc_host_peer_tests.step);
 
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
@@ -532,6 +609,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_promised_answer_tests.step);
     test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_tests.step);
+    test_rpc_step.dependOn(&run_rpc_host_peer_tests.step);
 
     // Check step (compile without linking)
     const check = b.addExecutable(.{

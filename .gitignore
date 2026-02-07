@@ -10,3 +10,5 @@ zig-out/
 .go-cache/
 .go-mod-cache/
 obj/
+__cmake_systeminformation/
+ext/capnp-deno/.artifacts/

@@ -103,7 +103,7 @@ fn statusOk(comptime T: type) T {
 
 fn finish(app: *ClientApp, peer: *rpc.peer.Peer) void {
     app.done = true;
-    if (!peer.conn.isClosing()) peer.conn.close();
+    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
 fn failAndFinish(app: *ClientApp, peer: *rpc.peer.Peer, desc: []const u8) void {
@@ -113,7 +113,7 @@ fn failAndFinish(app: *ClientApp, peer: *rpc.peer.Peer, desc: []const u8) void {
 
 fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
     std.log.err("rpc peer error: {s}", .{@errorName(err)});
-    if (!peer.conn.isClosing()) peer.conn.close();
+    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
     if (g_client_app) |app| {
         app.err = err;
         app.done = true;

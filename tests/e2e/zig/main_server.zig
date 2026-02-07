@@ -1712,18 +1712,20 @@ fn onControllerCancelMatch(
 
 fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
     std.log.err("rpc peer error: {s}", .{@errorName(err)});
-    if (!peer.conn.isClosing()) peer.conn.close();
+    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
-    const conn = peer.conn;
+    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
 
     peer.deinit();
     allocator.destroy(peer);
 
-    conn.deinit();
-    allocator.destroy(conn);
+    if (conn) |attached| {
+        attached.deinit();
+        allocator.destroy(attached);
+    }
 }
 
 fn onAccept(listener: *rpc.runtime.Listener, conn: *rpc.connection.Connection) void {

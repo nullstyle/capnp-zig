@@ -35,7 +35,9 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
     if (g_state) |state| {
         state.err = err;
         state.done = true;
-        if (state.client_peer) |p| p.conn.close();
+        if (state.client_peer) |p| {
+            if (!p.isAttachedTransportClosing()) p.closeAttachedTransport();
+        }
     }
 }
 
@@ -99,7 +101,7 @@ fn onPingReturn(
             const value = try results.getCount();
             std.debug.print("Ping result: {d}\n", .{value});
             state.done = true;
-            peer.conn.close();
+            if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
         },
         .exception => return error.RemoteException,
         else => return error.UnexpectedReturn,

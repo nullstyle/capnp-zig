@@ -1,7 +1,6 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const cap_table = @import("cap_table.zig");
-const Connection = @import("connection.zig").Connection;
 const message = @import("../message.zig");
 
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
@@ -9,6 +8,10 @@ pub const ReturnBuildFn = *const fn (ctx: *anyopaque, ret: *protocol.ReturnBuild
 pub const CallHandler = *const fn (ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void;
 pub const QuestionCallback = *const fn (ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void;
 pub const SendFrameOverride = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
+pub const TransportStartFn = *const fn (ctx: *anyopaque, peer: *Peer) void;
+pub const TransportSendFn = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
+pub const TransportCloseFn = *const fn (ctx: *anyopaque) void;
+pub const TransportIsClosingFn = *const fn (ctx: *anyopaque) bool;
 
 pub const Export = struct {
     ctx: *anyopaque,
@@ -158,7 +161,11 @@ const ForwardReturnBuildContext = struct {
 
 pub const Peer = struct {
     allocator: std.mem.Allocator,
-    conn: *Connection,
+    transport_ctx: ?*anyopaque = null,
+    transport_start: ?TransportStartFn = null,
+    transport_send: ?TransportSendFn = null,
+    transport_close: ?TransportCloseFn = null,
+    transport_is_closing: ?TransportIsClosingFn = null,
     caps: cap_table.CapTable,
     exports: std.AutoHashMap(u32, ExportEntry),
     questions: std.AutoHashMap(u32, Question),
@@ -192,10 +199,15 @@ pub const Peer = struct {
     last_inbound_tag: ?protocol.MessageTag = null,
     last_remote_abort_reason: ?[]u8 = null,
 
-    pub fn init(allocator: std.mem.Allocator, conn: *Connection) Peer {
+    pub fn init(allocator: std.mem.Allocator, conn: anytype) Peer {
+        var peer = initDetached(allocator);
+        peer.attachConnection(conn);
+        return peer;
+    }
+
+    pub fn initDetached(allocator: std.mem.Allocator) Peer {
         return .{
             .allocator = allocator,
-            .conn = conn,
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),
@@ -220,6 +232,102 @@ pub const Peer = struct {
             .send_results_to_yourself = std.AutoHashMap(u32, void).init(allocator),
             .send_results_to_third_party = std.AutoHashMap(u32, ?[]u8).init(allocator),
         };
+    }
+
+    pub fn attachConnection(self: *Peer, conn: anytype) void {
+        const ConnPtr = @TypeOf(conn);
+        comptime {
+            const info = @typeInfo(ConnPtr);
+            if (info != .pointer) @compileError("attachConnection expects a pointer type");
+        }
+
+        self.attachTransport(
+            conn,
+            struct {
+                fn call(ctx: *anyopaque, peer: *Peer) void {
+                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    typed.start(
+                        peer,
+                        onConnectionMessageFor(ConnPtr),
+                        onConnectionErrorFor(ConnPtr),
+                        onConnectionCloseFor(ConnPtr),
+                    );
+                }
+            }.call,
+            struct {
+                fn call(ctx: *anyopaque, frame: []const u8) anyerror!void {
+                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    try typed.sendFrame(frame);
+                }
+            }.call,
+            struct {
+                fn call(ctx: *anyopaque) void {
+                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    typed.close();
+                }
+            }.call,
+            struct {
+                fn call(ctx: *anyopaque) bool {
+                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    return typed.isClosing();
+                }
+            }.call,
+        );
+    }
+
+    pub fn detachConnection(self: *Peer) void {
+        self.detachTransport();
+    }
+
+    pub fn attachTransport(
+        self: *Peer,
+        ctx: *anyopaque,
+        start_fn: ?TransportStartFn,
+        send_fn: ?TransportSendFn,
+        close_fn: ?TransportCloseFn,
+        is_closing: ?TransportIsClosingFn,
+    ) void {
+        self.transport_ctx = ctx;
+        self.transport_start = start_fn;
+        self.transport_send = send_fn;
+        self.transport_close = close_fn;
+        self.transport_is_closing = is_closing;
+    }
+
+    pub fn detachTransport(self: *Peer) void {
+        self.transport_ctx = null;
+        self.transport_start = null;
+        self.transport_send = null;
+        self.transport_close = null;
+        self.transport_is_closing = null;
+    }
+
+    pub fn hasAttachedTransport(self: *const Peer) bool {
+        return self.transport_ctx != null and self.transport_send != null;
+    }
+
+    pub fn closeAttachedTransport(self: *Peer) void {
+        if (self.transport_ctx) |ctx| {
+            if (self.transport_close) |close| close(ctx);
+        }
+    }
+
+    pub fn isAttachedTransportClosing(self: *const Peer) bool {
+        if (self.transport_ctx) |ctx| {
+            if (self.transport_is_closing) |is_closing| return is_closing(ctx);
+        }
+        return false;
+    }
+
+    pub fn takeAttachedConnection(self: *Peer, comptime ConnPtr: type) ?ConnPtr {
+        const conn = self.getAttachedConnection(ConnPtr);
+        self.detachTransport();
+        return conn;
+    }
+
+    pub fn getAttachedConnection(self: *const Peer, comptime ConnPtr: type) ?ConnPtr {
+        const ctx = self.transport_ctx orelse return null;
+        return @ptrCast(@alignCast(ctx));
     }
 
     pub fn deinit(self: *Peer) void {
@@ -320,7 +428,10 @@ pub const Peer = struct {
     ) void {
         self.on_error = on_error;
         self.on_close = on_close;
-        self.conn.start(self, onConnectionMessage, onConnectionError, onConnectionClose);
+        if (self.transport_start) |start_fn| {
+            const ctx = self.transport_ctx orelse return;
+            start_fn(ctx, self);
+        }
     }
 
     pub fn setSendFrameOverride(self: *Peer, ctx: ?*anyopaque, callback: ?SendFrameOverride) void {
@@ -1314,7 +1425,9 @@ pub const Peer = struct {
             try cb(ctx, frame);
             return;
         }
-        try self.conn.sendFrame(frame);
+        const send = self.transport_send orelse return error.TransportNotAttached;
+        const ctx = self.transport_ctx orelse return error.TransportNotAttached;
+        try send(ctx, frame);
     }
 
     fn onOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
@@ -1536,22 +1649,34 @@ pub const Peer = struct {
         return id;
     }
 
-    fn onConnectionMessage(conn: *Connection, frame: []const u8) anyerror!void {
-        const peer = peerFromConnection(conn);
-        try peer.handleFrame(frame);
+    fn onConnectionMessageFor(comptime ConnPtr: type) *const fn (conn: ConnPtr, frame: []const u8) anyerror!void {
+        return struct {
+            fn call(conn: ConnPtr, frame: []const u8) anyerror!void {
+                const peer = peerFromConnection(ConnPtr, conn);
+                try peer.handleFrame(frame);
+            }
+        }.call;
     }
 
-    fn onConnectionError(conn: *Connection, err: anyerror) void {
-        const peer = peerFromConnection(conn);
-        if (peer.on_error) |cb| cb(peer, err);
+    fn onConnectionErrorFor(comptime ConnPtr: type) *const fn (conn: ConnPtr, err: anyerror) void {
+        return struct {
+            fn call(conn: ConnPtr, err: anyerror) void {
+                const peer = peerFromConnection(ConnPtr, conn);
+                if (peer.on_error) |cb| cb(peer, err);
+            }
+        }.call;
     }
 
-    fn onConnectionClose(conn: *Connection) void {
-        const peer = peerFromConnection(conn);
-        if (peer.on_close) |cb| cb(peer);
+    fn onConnectionCloseFor(comptime ConnPtr: type) *const fn (conn: ConnPtr) void {
+        return struct {
+            fn call(conn: ConnPtr) void {
+                const peer = peerFromConnection(ConnPtr, conn);
+                if (peer.on_close) |cb| cb(peer);
+            }
+        }.call;
     }
 
-    fn peerFromConnection(conn: *Connection) *Peer {
+    fn peerFromConnection(comptime ConnPtr: type, conn: ConnPtr) *Peer {
         return @ptrCast(@alignCast(conn.ctx.?));
     }
 
@@ -2297,11 +2422,25 @@ pub const Peer = struct {
     }
 };
 
+test "peer initDetached starts without attached transport" {
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    peer.start(null, null);
+    try std.testing.expect(!peer.hasAttachedTransport());
+}
+
+test "peer detached sendFrame requires override or attached transport" {
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    try std.testing.expectError(error.TransportNotAttached, peer.sendFrame(&[_]u8{ 0x01, 0x02 }));
+}
+
 test "release batching aggregates per import id" {
     const allocator = std.testing.allocator;
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     try peer.caps.noteImport(5);
@@ -2361,8 +2500,7 @@ test "sendCallResolved routes exported target through local loopback" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var server_ctx = ServerCtx{};
@@ -2388,8 +2526,7 @@ test "sendCallResolved routes exported target through local loopback" {
 test "forwarded payload remaps capability index to local id" {
     const allocator = std.testing.allocator;
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var inbound = cap_table.InboundCapTable{
@@ -2437,8 +2574,7 @@ test "forwarded payload remaps capability index to local id" {
 test "forwarded payload converts none capability to null pointer" {
     const allocator = std.testing.allocator;
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var inbound = cap_table.InboundCapTable{
@@ -2485,8 +2621,7 @@ test "forwarded payload converts none capability to null pointer" {
 test "forwarded payload encodes promised capability descriptors as receiverAnswer" {
     const allocator = std.testing.allocator;
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var inbound = cap_table.InboundCapTable{
@@ -2561,8 +2696,7 @@ test "forwarded return passes through canceled tag" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const upstream_answer_id: u32 = 55;
@@ -2623,8 +2757,7 @@ test "forwarded return translates takeFromOtherQuestion id" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const upstream_answer_id: u32 = 100;
@@ -2690,8 +2823,7 @@ test "forwarded return converts resultsSentElsewhere to exception" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const upstream_answer_id: u32 = 300;
@@ -2751,8 +2883,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const upstream_answer_id: u32 = 400;
@@ -2811,8 +2942,7 @@ test "forwarded return sentElsewhere mode accepts resultsSentElsewhere without u
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const upstream_answer_id: u32 = 500;
@@ -2858,8 +2988,7 @@ test "forwarded return sentElsewhere mode accepts resultsSentElsewhere without u
 test "forwarded return sentElsewhere mode rejects unexpected result payload" {
     const allocator = std.testing.allocator;
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const local_forwarded_question_id: u32 = 601;
@@ -2922,8 +3051,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3010,8 +3138,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3125,8 +3252,7 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var server_ctx = ServerCtx{};
@@ -3194,8 +3320,7 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var server_ctx = ServerCtx{};
@@ -3264,8 +3389,7 @@ test "handleReturn adopts thirdPartyAnswer when await arrives first" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3382,8 +3506,7 @@ test "handleReturn replays buffered thirdPartyAnswer return when await arrives l
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3497,8 +3620,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3605,9 +3727,8 @@ test "peer deinit releases pending embargo and promised-call queues under load" 
         }
     };
 
-    var conn: Connection = undefined;
     {
-        var peer = Peer.init(allocator, &conn);
+        var peer = Peer.initDetached(allocator);
         defer peer.deinit();
 
         var handler_state: u8 = 0;
@@ -3687,8 +3808,7 @@ test "handleFinish forwards mapped tail finish question id" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3733,8 +3853,7 @@ test "handleFinish without tail mapping does not send finish" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{};
@@ -3764,8 +3883,7 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3868,8 +3986,7 @@ test "forwarded tail finish before forwarded return still emits single finish an
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -3950,8 +4067,7 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -4073,8 +4189,7 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -4186,8 +4301,7 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -4270,8 +4384,7 @@ test "bootstrap promisedAnswer call still resolves after bootstrap export releas
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -4354,8 +4467,7 @@ test "handleFrame unimplemented call converts outstanding question to exception"
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     const question_id: u32 = 420;
@@ -4392,8 +4504,7 @@ test "handleFrame unimplemented call converts outstanding question to exception"
 test "handleFrame abort returns remote abort error" {
     const allocator = std.testing.allocator;
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var builder = protocol.MessageBuilder.init(allocator);
@@ -4434,8 +4545,7 @@ test "handleFrame provide stores provision without immediate return" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_state: u8 = 0;
@@ -4514,8 +4624,7 @@ test "handleFrame duplicate provide recipient sends abort" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_state: u8 = 0;
@@ -4613,8 +4722,7 @@ test "handleFrame accept returns provided capability" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_state: u8 = 0;
@@ -4713,8 +4821,7 @@ test "handleFrame embargoed accept + promised calls preserve ordering under stre
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var server_ctx = ServerCtx{};
@@ -4856,8 +4963,7 @@ test "handleFrame accept unknown provision returns exception" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -4918,8 +5024,7 @@ test "handleFrame finish clears stored provide entry" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_state: u8 = 0;
@@ -5018,8 +5123,7 @@ test "handleFrame join returns capability" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_state: u8 = 0;
@@ -5111,8 +5215,7 @@ test "handleFrame join aggregates parts and returns capability for each part" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_state: u8 = 0;
@@ -5246,8 +5349,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var handler_a: u8 = 0;
@@ -5367,8 +5469,7 @@ test "handleFrame thirdPartyAnswer rejects missing completion" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
@@ -5412,8 +5513,7 @@ test "handleFrame unknown message tag sends unimplemented" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
+    var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
     var capture = Capture{
