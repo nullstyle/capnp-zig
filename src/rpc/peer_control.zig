@@ -77,6 +77,33 @@ pub fn buildBootstrapReturnFrame(
     return builder.finish();
 }
 
+pub fn handleBootstrap(
+    comptime PeerType: type,
+    peer: *PeerType,
+    allocator: std.mem.Allocator,
+    bootstrap: protocol.Bootstrap,
+    bootstrap_export_id: ?u32,
+    note_export_ref: *const fn (*PeerType, u32) anyerror!void,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    send_frame: *const fn (*PeerType, []const u8) anyerror!void,
+    record_resolved_answer: *const fn (*PeerType, u32, []u8) anyerror!void,
+) !void {
+    const export_id = bootstrap_export_id orelse {
+        try send_return_exception(peer, bootstrap.question_id, "bootstrap not configured");
+        return;
+    };
+
+    try note_export_ref(peer, export_id);
+    const bytes = try buildBootstrapReturnFrame(allocator, bootstrap.question_id, export_id);
+    defer allocator.free(bytes);
+
+    try send_frame(peer, bytes);
+
+    const copy = try allocator.alloc(u8, bytes.len);
+    std.mem.copyForwards(u8, copy, bytes);
+    try record_resolved_answer(peer, bootstrap.question_id, copy);
+}
+
 pub fn handleRelease(
     comptime PeerType: type,
     peer: *PeerType,
@@ -264,6 +291,126 @@ pub fn handleDisembargo(
             try release_embargoed_accepts(peer, accept_embargo);
         },
     }
+}
+
+pub fn hasKnownResolvePromiseForPeer(comptime PeerType: type, peer: *PeerType, promise_id: u32) bool {
+    return peer.caps.imports.contains(promise_id);
+}
+
+pub fn hasKnownResolvePromiseForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) bool {
+    return struct {
+        fn call(peer: *PeerType, promise_id: u32) bool {
+            return hasKnownResolvePromiseForPeer(PeerType, peer, promise_id);
+        }
+    }.call;
+}
+
+pub fn resolveCapDescriptorForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    descriptor: protocol.CapDescriptor,
+) !cap_table.ResolvedCap {
+    return cap_table.resolveCapDescriptor(&peer.caps, descriptor);
+}
+
+pub fn resolveCapDescriptorForPeerFn(
+    comptime PeerType: type,
+) *const fn (*PeerType, protocol.CapDescriptor) anyerror!cap_table.ResolvedCap {
+    return struct {
+        fn call(peer: *PeerType, descriptor: protocol.CapDescriptor) anyerror!cap_table.ResolvedCap {
+            return resolveCapDescriptorForPeer(PeerType, peer, descriptor);
+        }
+    }.call;
+}
+
+pub fn allocateEmbargoIdForPeer(comptime PeerType: type, peer: *PeerType) u32 {
+    const embargo_id = peer.next_embargo_id;
+    peer.next_embargo_id +%= 1;
+    return embargo_id;
+}
+
+pub fn allocateEmbargoIdForPeerFn(comptime PeerType: type) *const fn (*PeerType) u32 {
+    return struct {
+        fn call(peer: *PeerType) u32 {
+            return allocateEmbargoIdForPeer(PeerType, peer);
+        }
+    }.call;
+}
+
+pub fn rememberPendingEmbargoForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    embargo_id: u32,
+    promise_id: u32,
+) !void {
+    try peer.pending_embargoes.put(embargo_id, promise_id);
+}
+
+pub fn rememberPendingEmbargoForPeerFn(
+    comptime PeerType: type,
+) *const fn (*PeerType, u32, u32) anyerror!void {
+    return struct {
+        fn call(peer: *PeerType, embargo_id: u32, promise_id: u32) anyerror!void {
+            return rememberPendingEmbargoForPeer(PeerType, peer, embargo_id, promise_id);
+        }
+    }.call;
+}
+
+pub fn takePendingEmbargoPromiseForPeer(comptime PeerType: type, peer: *PeerType, embargo_id: u32) ?u32 {
+    if (peer.pending_embargoes.fetchRemove(embargo_id)) |entry| {
+        return entry.value;
+    }
+    return null;
+}
+
+pub fn takePendingEmbargoPromiseForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ?u32 {
+    return struct {
+        fn call(peer: *PeerType, embargo_id: u32) ?u32 {
+            return takePendingEmbargoPromiseForPeer(PeerType, peer, embargo_id);
+        }
+    }.call;
+}
+
+pub fn clearResolvedImportEmbargoForPeer(comptime PeerType: type, peer: *PeerType, promise_id: u32) void {
+    if (peer.resolved_imports.getEntry(promise_id)) |resolved| {
+        resolved.value_ptr.embargoed = false;
+        resolved.value_ptr.embargo_id = null;
+    }
+}
+
+pub fn clearResolvedImportEmbargoForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) void {
+    return struct {
+        fn call(peer: *PeerType, promise_id: u32) void {
+            clearResolvedImportEmbargoForPeer(PeerType, peer, promise_id);
+        }
+    }.call;
+}
+
+pub fn takeResolvedAnswerFrameForPeer(comptime PeerType: type, peer: *PeerType, question_id: u32) ?[]u8 {
+    if (peer.resolved_answers.fetchRemove(question_id)) |entry| {
+        return entry.value.frame;
+    }
+    return null;
+}
+
+pub fn takeResolvedAnswerFrameForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) ?[]u8 {
+    return struct {
+        fn call(peer: *PeerType, question_id: u32) ?[]u8 {
+            return takeResolvedAnswerFrameForPeer(PeerType, peer, question_id);
+        }
+    }.call;
+}
+
+pub fn freeOwnedFrameForPeer(comptime PeerType: type, peer: *PeerType, frame: []u8) void {
+    peer.allocator.free(frame);
+}
+
+pub fn freeOwnedFrameForPeerFn(comptime PeerType: type) *const fn (*PeerType, []u8) void {
+    return struct {
+        fn call(peer: *PeerType, frame: []u8) void {
+            freeOwnedFrameForPeer(PeerType, peer, frame);
+        }
+    }.call;
 }
 
 pub fn resolveProvideTarget(
@@ -759,6 +906,235 @@ pub fn handleReturnRegular(
     }
 
     maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
+}
+
+test "peer_control resolve/disembargo peer helper factories operate on peer state" {
+    const FakeResolvedImport = struct {
+        cap: ?cap_table.ResolvedCap = null,
+        embargo_id: ?u32 = null,
+        embargoed: bool = false,
+    };
+
+    const FakePeer = struct {
+        caps: cap_table.CapTable,
+        pending_embargoes: std.AutoHashMap(u32, u32),
+        resolved_imports: std.AutoHashMap(u32, FakeResolvedImport),
+        next_embargo_id: u32 = 0,
+    };
+
+    var peer = FakePeer{
+        .caps = cap_table.CapTable.init(std.testing.allocator),
+        .pending_embargoes = std.AutoHashMap(u32, u32).init(std.testing.allocator),
+        .resolved_imports = std.AutoHashMap(u32, FakeResolvedImport).init(std.testing.allocator),
+    };
+    defer {
+        peer.pending_embargoes.deinit();
+        peer.resolved_imports.deinit();
+        peer.caps.deinit();
+    }
+
+    const has_known = hasKnownResolvePromiseForPeerFn(FakePeer);
+    try std.testing.expect(!has_known(&peer, 7));
+    try peer.caps.noteImport(7);
+    try std.testing.expect(has_known(&peer, 7));
+
+    const resolve_descriptor = resolveCapDescriptorForPeerFn(FakePeer);
+    const resolved_none = try resolve_descriptor(&peer, .{ .tag = .none });
+    try std.testing.expect(resolved_none == .none);
+
+    const alloc_embargo_id = allocateEmbargoIdForPeerFn(FakePeer);
+    const remember_pending = rememberPendingEmbargoForPeerFn(FakePeer);
+    const take_pending = takePendingEmbargoPromiseForPeerFn(FakePeer);
+    const clear_embargo = clearResolvedImportEmbargoForPeerFn(FakePeer);
+
+    const first_id = alloc_embargo_id(&peer);
+    const second_id = alloc_embargo_id(&peer);
+    try std.testing.expectEqual(@as(u32, 0), first_id);
+    try std.testing.expectEqual(@as(u32, 1), second_id);
+    try remember_pending(&peer, first_id, 41);
+    try remember_pending(&peer, second_id, 42);
+    try std.testing.expectEqual(@as(?u32, 41), take_pending(&peer, first_id));
+    try std.testing.expectEqual(@as(?u32, null), take_pending(&peer, first_id));
+    try std.testing.expectEqual(@as(?u32, 42), take_pending(&peer, second_id));
+
+    peer.next_embargo_id = std.math.maxInt(u32);
+    try std.testing.expectEqual(std.math.maxInt(u32), alloc_embargo_id(&peer));
+    try std.testing.expectEqual(@as(u32, 0), alloc_embargo_id(&peer));
+
+    try peer.resolved_imports.put(9, .{
+        .cap = .none,
+        .embargo_id = 123,
+        .embargoed = true,
+    });
+    clear_embargo(&peer, 9);
+    const cleared = peer.resolved_imports.get(9) orelse return error.MissingResolvedImport;
+    try std.testing.expect(!cleared.embargoed);
+    try std.testing.expectEqual(@as(?u32, null), cleared.embargo_id);
+
+    clear_embargo(&peer, 12345);
+}
+
+test "peer_control handleBootstrap sends exception when bootstrap export is not configured" {
+    const State = struct {
+        send_return_exception_calls: usize = 0,
+        exception_question_id: u32 = 0,
+        exception_reason: ?[]const u8 = null,
+        note_export_ref_calls: usize = 0,
+        send_frame_calls: usize = 0,
+        record_resolved_answer_calls: usize = 0,
+        allocator: std.mem.Allocator,
+
+        fn noteExportRef(state: *@This(), export_id: u32) !void {
+            _ = export_id;
+            state.note_export_ref_calls += 1;
+        }
+
+        fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
+            state.send_return_exception_calls += 1;
+            state.exception_question_id = question_id;
+            state.exception_reason = reason;
+        }
+
+        fn sendFrame(state: *@This(), frame: []const u8) !void {
+            _ = frame;
+            state.send_frame_calls += 1;
+        }
+
+        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
+            _ = question_id;
+            state.record_resolved_answer_calls += 1;
+            state.allocator.free(frame);
+        }
+    };
+
+    var state = State{ .allocator = std.testing.allocator };
+    try handleBootstrap(
+        State,
+        &state,
+        std.testing.allocator,
+        .{
+            .question_id = 91,
+            .deprecated_object = null,
+        },
+        null,
+        State.noteExportRef,
+        State.sendReturnException,
+        State.sendFrame,
+        State.recordResolvedAnswer,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), state.send_return_exception_calls);
+    try std.testing.expectEqual(@as(u32, 91), state.exception_question_id);
+    try std.testing.expectEqualStrings("bootstrap not configured", state.exception_reason orelse "");
+    try std.testing.expectEqual(@as(usize, 0), state.note_export_ref_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.send_frame_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.record_resolved_answer_calls);
+}
+
+test "peer_control handleBootstrap sends frame and records resolved bootstrap answer" {
+    const State = struct {
+        allocator: std.mem.Allocator,
+        note_export_ref_calls: usize = 0,
+        noted_export_id: ?u32 = null,
+        send_return_exception_calls: usize = 0,
+        send_frame_calls: usize = 0,
+        sent_frame: ?[]u8 = null,
+        record_resolved_answer_calls: usize = 0,
+        recorded_question_id: ?u32 = null,
+        recorded_frame: ?[]u8 = null,
+
+        fn deinit(state: *@This()) void {
+            if (state.sent_frame) |bytes| state.allocator.free(bytes);
+            if (state.recorded_frame) |bytes| state.allocator.free(bytes);
+        }
+
+        fn noteExportRef(state: *@This(), export_id: u32) !void {
+            state.note_export_ref_calls += 1;
+            state.noted_export_id = export_id;
+        }
+
+        fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
+            _ = question_id;
+            _ = reason;
+            state.send_return_exception_calls += 1;
+        }
+
+        fn sendFrame(state: *@This(), frame: []const u8) !void {
+            state.send_frame_calls += 1;
+            const copy = try state.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            state.sent_frame = copy;
+        }
+
+        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
+            state.record_resolved_answer_calls += 1;
+            state.recorded_question_id = question_id;
+            state.recorded_frame = frame;
+        }
+    };
+
+    var state = State{
+        .allocator = std.testing.allocator,
+    };
+    defer state.deinit();
+
+    try handleBootstrap(
+        State,
+        &state,
+        std.testing.allocator,
+        .{
+            .question_id = 7,
+            .deprecated_object = null,
+        },
+        1234,
+        State.noteExportRef,
+        State.sendReturnException,
+        State.sendFrame,
+        State.recordResolvedAnswer,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), state.note_export_ref_calls);
+    try std.testing.expectEqual(@as(?u32, 1234), state.noted_export_id);
+    try std.testing.expectEqual(@as(usize, 0), state.send_return_exception_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.send_frame_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.record_resolved_answer_calls);
+    try std.testing.expectEqual(@as(?u32, 7), state.recorded_question_id);
+    try std.testing.expect(state.sent_frame != null);
+    try std.testing.expect(state.recorded_frame != null);
+    try std.testing.expectEqualSlices(u8, state.sent_frame.?, state.recorded_frame.?);
+}
+
+test "peer_control frame helper factories take and free resolved answer frame" {
+    const FakeResolvedAnswer = struct {
+        frame: []u8,
+    };
+
+    const FakePeer = struct {
+        allocator: std.mem.Allocator,
+        resolved_answers: std.AutoHashMap(u32, FakeResolvedAnswer),
+    };
+
+    var peer = FakePeer{
+        .allocator = std.testing.allocator,
+        .resolved_answers = std.AutoHashMap(u32, FakeResolvedAnswer).init(std.testing.allocator),
+    };
+    defer peer.resolved_answers.deinit();
+
+    const frame = try std.testing.allocator.alloc(u8, 3);
+    frame[0] = 1;
+    frame[1] = 2;
+    frame[2] = 3;
+    try peer.resolved_answers.put(55, .{ .frame = frame });
+
+    const take_frame = takeResolvedAnswerFrameForPeerFn(FakePeer);
+    const free_frame = freeOwnedFrameForPeerFn(FakePeer);
+
+    const removed = take_frame(&peer, 55) orelse return error.MissingResolvedImport;
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, removed);
+    try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
+    free_frame(&peer, removed);
+
+    try std.testing.expectEqual(@as(?[]u8, null), take_frame(&peer, 55));
 }
 
 test "peer_control handleFinish runs clear, tail-forward, and resolved cleanup" {

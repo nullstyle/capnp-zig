@@ -23,12 +23,16 @@ const FEATURE_PEER_LIMITS: u64 = 1 << 2;
 const FEATURE_HOST_CALL_BRIDGE: u64 = 1 << 3;
 const FEATURE_LIFECYCLE_HELPERS: u64 = 1 << 4;
 const FEATURE_SCHEMA_MANIFEST: u64 = 1 << 5;
+const FEATURE_HOST_CALL_FRAME_RELEASE: u64 = 1 << 6;
+const FEATURE_BOOTSTRAP_STUB_IDENTITY: u64 = 1 << 7;
 const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_ERROR_TAKE |
     FEATURE_PEER_LIMITS |
     FEATURE_HOST_CALL_BRIDGE |
     FEATURE_LIFECYCLE_HELPERS |
-    FEATURE_SCHEMA_MANIFEST;
+    FEATURE_SCHEMA_MANIFEST |
+    FEATURE_HOST_CALL_FRAME_RELEASE |
+    FEATURE_BOOTSTRAP_STUB_IDENTITY;
 
 const ERROR_ALLOC: u32 = 1;
 const ERROR_INVALID_ARG: u32 = 2;
@@ -434,6 +438,41 @@ pub export fn capnp_peer_set_bootstrap_stub(peer: u32) u32 {
     return 1;
 }
 
+pub export fn capnp_peer_set_bootstrap_stub_with_id(
+    peer: u32,
+    out_export_id_ptr: AbiPtr,
+) u32 {
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+
+    if (out_export_id_ptr == 0) {
+        setError(ERROR_INVALID_ARG, "output pointer is null");
+        return 0;
+    }
+
+    if (state.bootstrap_stub_export_id == null) {
+        const export_id = state.host.peer.setBootstrap(.{
+            .ctx = &bootstrap_stub_ctx,
+            .on_call = BootstrapStubHandler.onCall,
+        }) catch |err| {
+            setError(ERROR_BOOTSTRAP_CONFIG, @errorName(err));
+            return 0;
+        };
+        state.bootstrap_stub_export_id = export_id;
+    }
+
+    writeU32(out_export_id_ptr, state.bootstrap_stub_export_id.?) catch {
+        setError(ERROR_INVALID_ARG, "invalid out_export_id_ptr");
+        return 0;
+    };
+
+    return 1;
+}
+
 pub export fn capnp_peer_outbound_count(peer: u32) u32 {
     clearErrorState();
 
@@ -595,6 +634,29 @@ pub export fn capnp_peer_pop_host_call(
         return 0;
     };
 
+    return 1;
+}
+
+pub export fn capnp_peer_free_host_call_frame(
+    peer: u32,
+    frame_ptr: AbiPtr,
+    frame_len: u32,
+) u32 {
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+
+    if (frame_len == 0) return 1;
+    if (frame_ptr == 0) {
+        setError(ERROR_INVALID_ARG, "invalid host call frame pointer");
+        return 0;
+    }
+
+    const frame_ptr_bytes: [*]u8 = @ptrFromInt(@as(usize, @intCast(frame_ptr)));
+    state.host.freeHostCallFrame(frame_ptr_bytes[0..@as(usize, frame_len)]);
     return 1;
 }
 

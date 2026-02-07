@@ -167,6 +167,10 @@ const ForwardReturnBuildContext = struct {
     inbound_caps: *const cap_table.InboundCapTable,
 };
 
+fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
+    return @ptrCast(@alignCast(ctx));
+}
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     transport_ctx: ?*anyopaque = null,
@@ -253,7 +257,7 @@ pub const Peer = struct {
             conn,
             struct {
                 fn call(ctx: *anyopaque, peer: *Peer) void {
-                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
                     typed.start(
                         peer,
                         onConnectionMessageFor(ConnPtr),
@@ -264,19 +268,19 @@ pub const Peer = struct {
             }.call,
             struct {
                 fn call(ctx: *anyopaque, frame: []const u8) anyerror!void {
-                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
                     try typed.sendFrame(frame);
                 }
             }.call,
             struct {
                 fn call(ctx: *anyopaque) void {
-                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
                     typed.close();
                 }
             }.call,
             struct {
                 fn call(ctx: *anyopaque) bool {
-                    const typed: ConnPtr = @ptrCast(@alignCast(ctx));
+                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
                     return typed.isClosing();
                 }
             }.call,
@@ -335,7 +339,7 @@ pub const Peer = struct {
 
     pub fn getAttachedConnection(self: *const Peer, comptime ConnPtr: type) ?ConnPtr {
         const ctx = self.transport_ctx orelse return null;
-        return @ptrCast(@alignCast(ctx));
+        return castCtx(ConnPtr, ctx);
     }
 
     pub fn deinit(self: *Peer) void {
@@ -697,7 +701,7 @@ pub const Peer = struct {
     }
 
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
-        const ctx: *const ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));
+        const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, ctx_ptr);
         try peer_control.applyForwardedCallSendResults(
             Peer,
             ctx.peer,
@@ -737,7 +741,7 @@ pub const Peer = struct {
         ret: protocol.Return,
         inbound_caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
-        const ctx: *ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));
+        const ctx: *ForwardCallContext = castCtx(*ForwardCallContext, ctx_ptr);
         defer {
             if (ctx.send_results_to_third_party_payload) |payload| peer.allocator.free(payload);
             peer.allocator.destroy(ctx);
@@ -764,7 +768,7 @@ pub const Peer = struct {
     }
 
     fn buildForwardedReturn(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {
-        const ctx: *const ForwardReturnBuildContext = @ptrCast(@alignCast(ctx_ptr));
+        const ctx: *const ForwardReturnBuildContext = castCtx(*const ForwardReturnBuildContext, ctx_ptr);
         const payload_builder = try ret_builder.payloadBuilder();
         try ctx.peer.clonePayloadWithRemappedCaps(
             ret_builder.ret.builder,
@@ -892,7 +896,7 @@ pub const Peer = struct {
             target: *const ProvideTarget,
 
             fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
-                const ctx: *const @This() = @ptrCast(@alignCast(ctx_ptr));
+                const ctx: *const @This() = castCtx(*const @This(), ctx_ptr);
                 var any = try ret.getResultsAnyPointer();
 
                 const cap_id = switch (ctx.target.*) {
@@ -919,18 +923,6 @@ pub const Peer = struct {
         }
     }
 
-    fn clearProvide(self: *Peer, question_id: u32) void {
-        peer_provides_state.clearProvide(
-            ProvideEntry,
-            ProvideTarget,
-            self.allocator,
-            &self.provides_by_question,
-            &self.provides_by_key,
-            question_id,
-            deinitProvideTargetForJoinStateControl,
-        );
-    }
-
     fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
         return switch (a.*) {
             .cap_id => |cap_id| switch (b.*) {
@@ -950,96 +942,6 @@ pub const Peer = struct {
                 else => false,
             },
         };
-    }
-
-    fn clearPendingJoinQuestion(self: *Peer, question_id: u32) void {
-        peer_join_state.clearPendingJoinQuestion(
-            JoinState,
-            PendingJoinQuestion,
-            ProvideTarget,
-            self.allocator,
-            &self.pending_joins,
-            &self.pending_join_questions,
-            question_id,
-            deinitProvideTargetForJoinStateControl,
-            deinitJoinStateForJoinStateControl,
-        );
-    }
-
-    fn completeJoin(self: *Peer, join_id: u32) !void {
-        try peer_join_state.completeJoin(
-            Peer,
-            JoinState,
-            PendingJoinQuestion,
-            ProvideTarget,
-            self,
-            self.allocator,
-            &self.pending_joins,
-            &self.pending_join_questions,
-            join_id,
-            provideTargetsEqual,
-            sendReturnProvidedTargetForControl,
-            sendReturnExceptionForControl,
-            deinitJoinStateForJoinStateControl,
-        );
-    }
-
-    fn deinitProvideTargetForJoinStateControl(target: *ProvideTarget, allocator: std.mem.Allocator) void {
-        target.deinit(allocator);
-    }
-
-    fn deinitJoinStateForJoinStateControl(state: *JoinState, allocator: std.mem.Allocator) void {
-        state.deinit(allocator);
-    }
-
-    fn initJoinStateForControl(allocator: std.mem.Allocator, part_count: u16) JoinState {
-        return JoinState.init(allocator, part_count);
-    }
-
-    fn queueEmbargoedAccept(self: *Peer, answer_id: u32, provided_question_id: u32, embargo: []const u8) !void {
-        try peer_embargo_accepts.queueEmbargoedAccept(
-            PendingEmbargoedAccept,
-            self.allocator,
-            &self.pending_accepts_by_embargo,
-            &self.pending_accept_embargo_by_question,
-            answer_id,
-            provided_question_id,
-            embargo,
-        );
-    }
-
-    fn clearPendingAcceptQuestion(self: *Peer, question_id: u32) void {
-        peer_embargo_accepts.clearPendingAcceptQuestion(
-            PendingEmbargoedAccept,
-            self.allocator,
-            &self.pending_accepts_by_embargo,
-            &self.pending_accept_embargo_by_question,
-            question_id,
-        );
-    }
-
-    fn releaseEmbargoedAccepts(self: *Peer, embargo: []const u8) !void {
-        try peer_embargo_accepts.releaseEmbargoedAccepts(
-            Peer,
-            PendingEmbargoedAccept,
-            ProvideEntry,
-            self,
-            self.allocator,
-            &self.pending_accepts_by_embargo,
-            &self.pending_accept_embargo_by_question,
-            &self.provides_by_question,
-            embargo,
-            sendReturnProvidedEntryForEmbargoControl,
-            sendReturnExceptionForControl,
-        );
-    }
-
-    fn sendReturnProvidedEntryForEmbargoControl(
-        self: *Peer,
-        answer_id: u32,
-        entry: *const ProvideEntry,
-    ) !void {
-        try self.sendReturnProvidedTarget(answer_id, &entry.target);
     }
 
     fn captureAnyPointerPayload(
@@ -1136,7 +1038,7 @@ pub const Peer = struct {
     }
 
     fn onOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
-        const peer: *Peer = @ptrCast(@alignCast(ctx));
+        const peer: *Peer = castCtx(*Peer, ctx);
         switch (tag) {
             .sender_hosted, .sender_promise => try peer.noteExportRef(id),
             else => {},
@@ -1441,20 +1343,17 @@ pub const Peer = struct {
     }
 
     fn handleBootstrap(self: *Peer, bootstrap: protocol.Bootstrap) !void {
-        const export_id = self.bootstrap_export_id orelse {
-            try self.sendReturnException(bootstrap.question_id, "bootstrap not configured");
-            return;
-        };
-
-        try self.noteExportRef(export_id);
-        const bytes = try peer_control.buildBootstrapReturnFrame(self.allocator, bootstrap.question_id, export_id);
-        defer self.allocator.free(bytes);
-
-        try self.sendFrame(bytes);
-
-        const copy = try self.allocator.alloc(u8, bytes.len);
-        std.mem.copyForwards(u8, copy, bytes);
-        try self.recordResolvedAnswer(bootstrap.question_id, copy);
+        try peer_control.handleBootstrap(
+            Peer,
+            self,
+            self.allocator,
+            bootstrap,
+            self.bootstrap_export_id,
+            noteExportRef,
+            sendReturnException,
+            sendFrame,
+            recordResolvedAnswer,
+        );
     }
 
     fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
@@ -1465,34 +1364,34 @@ pub const Peer = struct {
             finish.release_result_caps,
             peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
             clearSendResultsToThirdParty,
-            clearProvide,
-            clearPendingJoinQuestion,
-            clearPendingAcceptQuestion,
+            peer_provides_state.clearProvideForPeerFn(
+                Peer,
+                ProvideEntry,
+                ProvideTarget,
+                ProvideTarget.deinit,
+            ),
+            peer_join_state.clearPendingJoinQuestionForPeerFn(
+                Peer,
+                JoinState,
+                PendingJoinQuestion,
+                ProvideTarget,
+                ProvideTarget.deinit,
+                JoinState.deinit,
+            ),
+            peer_embargo_accepts.clearPendingAcceptQuestionForPeerFn(
+                Peer,
+                PendingEmbargoedAccept,
+            ),
             peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
             sendFinish,
-            takeResolvedAnswerFrame,
+            peer_control.takeResolvedAnswerFrameForPeerFn(Peer),
             releaseResultCaps,
-            freeOwnedFrame,
+            peer_control.freeOwnedFrameForPeerFn(Peer),
         );
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {
-        peer_control.handleRelease(Peer, self, release, releaseExportFromControl);
-    }
-
-    fn takeResolvedAnswerFrame(self: *Peer, question_id: u32) ?[]u8 {
-        if (self.resolved_answers.fetchRemove(question_id)) |entry| {
-            return entry.value.frame;
-        }
-        return null;
-    }
-
-    fn freeOwnedFrame(self: *Peer, frame: []u8) void {
-        self.allocator.free(frame);
-    }
-
-    fn releaseExportFromControl(self: *Peer, export_id: u32, reference_count: u32) void {
-        self.releaseExport(export_id, reference_count);
+        peer_control.handleRelease(Peer, self, release, releaseExport);
     }
 
     fn handleResolve(self: *Peer, resolve: protocol.Resolve) !void {
@@ -1500,13 +1399,13 @@ pub const Peer = struct {
             Peer,
             self,
             resolve,
-            hasKnownResolvePromise,
-            resolveCapDescriptorForControl,
-            releaseResolvedCapForControl,
-            allocateEmbargoIdForControl,
-            rememberPendingEmbargoForControl,
-            sendDisembargoSenderLoopbackForControl,
-            storeResolvedImportForControl,
+            peer_control.hasKnownResolvePromiseForPeerFn(Peer),
+            peer_control.resolveCapDescriptorForPeerFn(Peer),
+            releaseResolvedCap,
+            peer_control.allocateEmbargoIdForPeerFn(Peer),
+            peer_control.rememberPendingEmbargoForPeerFn(Peer),
+            sendDisembargoSenderLoopback,
+            storeResolvedImport,
         );
     }
 
@@ -1515,73 +1414,18 @@ pub const Peer = struct {
             Peer,
             self,
             disembargo,
-            sendDisembargoReceiverLoopbackForControl,
-            takePendingEmbargoPromiseForControl,
-            clearResolvedImportEmbargoForControl,
-            releaseEmbargoedAcceptsForControl,
+            sendDisembargoReceiverLoopback,
+            peer_control.takePendingEmbargoPromiseForPeerFn(Peer),
+            peer_control.clearResolvedImportEmbargoForPeerFn(Peer),
+            peer_embargo_accepts.releaseEmbargoedAcceptsForPeerFn(
+                Peer,
+                PendingEmbargoedAccept,
+                ProvideEntry,
+                ProvideTarget,
+                sendReturnProvidedTargetForControl,
+                sendReturnExceptionForControl,
+            ),
         );
-    }
-
-    fn hasKnownResolvePromise(self: *Peer, promise_id: u32) bool {
-        return self.caps.imports.contains(promise_id);
-    }
-
-    fn resolveCapDescriptorForControl(self: *Peer, descriptor: protocol.CapDescriptor) !cap_table.ResolvedCap {
-        return cap_table.resolveCapDescriptor(&self.caps, descriptor);
-    }
-
-    fn releaseResolvedCapForControl(self: *Peer, resolved: cap_table.ResolvedCap) !void {
-        try self.releaseResolvedCap(resolved);
-    }
-
-    fn allocateEmbargoIdForControl(self: *Peer) u32 {
-        const embargo_id = self.next_embargo_id;
-        self.next_embargo_id +%= 1;
-        return embargo_id;
-    }
-
-    fn rememberPendingEmbargoForControl(self: *Peer, embargo_id: u32, promise_id: u32) !void {
-        try self.pending_embargoes.put(embargo_id, promise_id);
-    }
-
-    fn sendDisembargoSenderLoopbackForControl(self: *Peer, target: protocol.MessageTarget, embargo_id: u32) !void {
-        try self.sendDisembargoSenderLoopback(target, embargo_id);
-    }
-
-    fn storeResolvedImportForControl(
-        self: *Peer,
-        promise_id: u32,
-        cap: ?cap_table.ResolvedCap,
-        embargo_id: ?u32,
-        embargoed: bool,
-    ) !void {
-        try self.storeResolvedImport(promise_id, cap, embargo_id, embargoed);
-    }
-
-    fn sendDisembargoReceiverLoopbackForControl(
-        self: *Peer,
-        target: protocol.MessageTarget,
-        embargo_id: u32,
-    ) !void {
-        try self.sendDisembargoReceiverLoopback(target, embargo_id);
-    }
-
-    fn takePendingEmbargoPromiseForControl(self: *Peer, embargo_id: u32) ?u32 {
-        if (self.pending_embargoes.fetchRemove(embargo_id)) |entry| {
-            return entry.value;
-        }
-        return null;
-    }
-
-    fn clearResolvedImportEmbargoForControl(self: *Peer, promise_id: u32) void {
-        if (self.resolved_imports.getEntry(promise_id)) |resolved| {
-            resolved.value_ptr.embargoed = false;
-            resolved.value_ptr.embargo_id = null;
-        }
-    }
-
-    fn releaseEmbargoedAcceptsForControl(self: *Peer, embargo: []const u8) !void {
-        try self.releaseEmbargoedAccepts(embargo);
     }
 
     fn resolveProvideTarget(self: *Peer, target: protocol.MessageTarget) !cap_table.ResolvedCap {
@@ -1638,10 +1482,6 @@ pub const Peer = struct {
         try self.sendAbort(reason);
     }
 
-    fn queueEmbargoedAcceptForControl(self: *Peer, answer_id: u32, provided_question_id: u32, embargo: []const u8) !void {
-        try self.queueEmbargoedAccept(answer_id, provided_question_id, embargo);
-    }
-
     fn sendReturnProvidedTargetForControl(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {
         try self.sendReturnProvidedTarget(answer_id, target);
     }
@@ -1665,7 +1505,7 @@ pub const Peer = struct {
             sendAbortForControl,
             resolveProvideTarget,
             makeProvideTarget,
-            deinitProvideTargetForJoinStateControl,
+            ProvideTarget.deinit,
         );
     }
 
@@ -1680,14 +1520,10 @@ pub const Peer = struct {
             &self.provides_by_key,
             captureAcceptProvisionForControl,
             freeCapturedPayloadForControl,
-            queueEmbargoedAcceptForControl,
+            peer_embargo_accepts.queueEmbargoedAcceptForPeerFn(Peer, PendingEmbargoedAccept),
             sendReturnProvidedTargetForControl,
             sendReturnExceptionForControl,
         );
-    }
-
-    fn completeJoinForProvideJoinOrchestration(self: *Peer, join_id: u32) !void {
-        try self.completeJoin(join_id);
     }
 
     fn handleJoin(self: *Peer, join: protocol.Join) !void {
@@ -1705,9 +1541,18 @@ pub const Peer = struct {
             sendAbortForControl,
             resolveProvideTarget,
             makeProvideTarget,
-            deinitProvideTargetForJoinStateControl,
-            initJoinStateForControl,
-            completeJoinForProvideJoinOrchestration,
+            ProvideTarget.deinit,
+            JoinState.init,
+            peer_join_state.completeJoinForPeerFn(
+                Peer,
+                JoinState,
+                PendingJoinQuestion,
+                ProvideTarget,
+                provideTargetsEqual,
+                sendReturnProvidedTargetForControl,
+                sendReturnExceptionForControl,
+                JoinState.deinit,
+            ),
             sendReturnExceptionForControl,
         );
     }
@@ -2021,7 +1866,7 @@ pub const Peer = struct {
             &self.adopted_third_party_answers,
             &self.pending_third_party_returns,
             sendAbortForControl,
-            freeOwnedFrame,
+            peer_control.freeOwnedFrameForPeerFn(Peer),
             handlePendingThirdPartyReturnFrameForControl,
         );
     }
@@ -2300,7 +2145,7 @@ test "sendCallResolved routes exported target through local loopback" {
     const Handlers = struct {
         fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = caps;
-            const server: *ServerCtx = @ptrCast(@alignCast(ctx));
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
             server.called = true;
             try peer.sendReturnException(call.question_id, "loopback");
         }
@@ -2308,7 +2153,7 @@ test "sendCallResolved routes exported target through local loopback" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const client: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const client: *ClientCtx = castCtx(*ClientCtx, ctx);
             client.returned = true;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
@@ -2506,7 +2351,7 @@ test "forwarded return passes through canceled tag" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag);
         }
@@ -2566,7 +2411,7 @@ test "forwarded return translates takeFromOtherQuestion id" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, ret.tag);
             state.referenced_answer = ret.take_from_other_question orelse return error.MissingQuestionId;
@@ -2631,7 +2476,7 @@ test "forwarded return converts resultsSentElsewhere to exception" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
@@ -2692,7 +2537,7 @@ test "forwarded return translate mode missing payload sends exception" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
@@ -2753,7 +2598,7 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
@@ -2814,7 +2659,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret.tag);
             try std.testing.expect(ret.exception == null);
@@ -2875,7 +2720,7 @@ test "forwarded return sentElsewhere mode accepts resultsSentElsewhere without u
             _ = peer;
             _ = ret;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
         }
     };
@@ -2973,7 +2818,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -2983,7 +2828,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.results_sent_elsewhere, ret.tag);
         }
@@ -3058,7 +2903,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3068,7 +2913,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret.tag);
             const await_ptr = ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
@@ -3175,7 +3020,7 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
 
         fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = caps;
-            const server: *ServerCtx = @ptrCast(@alignCast(ctx));
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
             server.called = true;
             try peer.sendReturnResults(call.question_id, server, buildResults);
         }
@@ -3183,7 +3028,7 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const client: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const client: *ClientCtx = castCtx(*ClientCtx, ctx);
             client.returned = true;
             try std.testing.expectEqual(protocol.ReturnTag.results_sent_elsewhere, ret.tag);
             try std.testing.expect(ret.results == null);
@@ -3229,7 +3074,7 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
     };
     const Handlers = struct {
         fn buildCall(ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
-            const build: *const BuildCtx = @ptrCast(@alignCast(ctx));
+            const build: *const BuildCtx = castCtx(*const BuildCtx, ctx);
             try call.setSendResultsToThirdParty(build.destination);
         }
 
@@ -3241,7 +3086,7 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
 
         fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = caps;
-            const server: *ServerCtx = @ptrCast(@alignCast(ctx));
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
             server.called = true;
             try peer.sendReturnResults(call.question_id, server, buildResults);
         }
@@ -3249,7 +3094,7 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const client: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const client: *ClientCtx = castCtx(*ClientCtx, ctx);
             client.returned = true;
             try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret.tag);
             try std.testing.expect(ret.results == null);
@@ -3308,7 +3153,7 @@ test "handleReturn adopts thirdPartyAnswer when await arrives first" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3318,7 +3163,7 @@ test "handleReturn adopts thirdPartyAnswer when await arrives first" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             state.answer_id = ret.answer_id;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -3425,7 +3270,7 @@ test "handleReturn replays buffered thirdPartyAnswer return when await arrives l
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3435,7 +3280,7 @@ test "handleReturn replays buffered thirdPartyAnswer return when await arrives l
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             state.answer_id = ret.answer_id;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -3540,7 +3385,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3550,7 +3395,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen += 1;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
@@ -3739,7 +3584,7 @@ test "handleFinish forwards mapped tail finish question id" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3786,7 +3631,7 @@ test "handleFinish without tail mapping does not send finish" {
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
             _ = frame;
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             ctx.count += 1;
         }
     };
@@ -3814,7 +3659,7 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3917,7 +3762,7 @@ test "forwarded tail finish before forwarded return still emits single finish an
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -3998,7 +3843,7 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4111,7 +3956,7 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4120,7 +3965,7 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
     const Handlers = struct {
         fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = caps;
-            const ctx: *ServerCtx = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *ServerCtx = castCtx(*ServerCtx, ctx_ptr);
             ctx.called = true;
             ctx.question_id = call.question_id;
             try peer.sendReturnException(call.question_id, "resolved");
@@ -4223,7 +4068,7 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4232,7 +4077,7 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
     const Handlers = struct {
         fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = caps;
-            const ctx: *ServerCtx = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *ServerCtx = castCtx(*ServerCtx, ctx_ptr);
             ctx.called = true;
             ctx.question_id = call.question_id;
             try peer.sendReturnException(call.question_id, "ok");
@@ -4307,7 +4152,7 @@ test "bootstrap promisedAnswer call still resolves after bootstrap export releas
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4316,7 +4161,7 @@ test "bootstrap promisedAnswer call still resolves after bootstrap export releas
     const Handlers = struct {
         fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = caps;
-            const ctx: *ServerCtx = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *ServerCtx = castCtx(*ServerCtx, ctx_ptr);
             ctx.called = true;
             try peer.sendReturnException(call.question_id, "ok");
         }
@@ -4397,7 +4242,7 @@ test "handleFrame unimplemented call converts outstanding question to exception"
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
             _ = peer;
             _ = caps;
-            const state: *CallbackCtx = @ptrCast(@alignCast(ctx));
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
@@ -4476,7 +4321,7 @@ test "handleFrame provide stores provision without immediate return" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4555,7 +4400,7 @@ test "handleFrame duplicate provide recipient sends abort" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4653,7 +4498,7 @@ test "handleFrame accept returns provided capability" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4739,7 +4584,7 @@ test "handleFrame embargoed accept + promised calls preserve ordering under stre
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4753,7 +4598,7 @@ test "handleFrame embargoed accept + promised calls preserve ordering under stre
             caps: *const cap_table.InboundCapTable,
         ) anyerror!void {
             _ = caps;
-            const state: *ServerCtx = @ptrCast(@alignCast(ctx));
+            const state: *ServerCtx = castCtx(*ServerCtx, ctx);
             state.called += 1;
             try called_peer.sendReturnException(call.question_id, "stress-ordered");
         }
@@ -4894,7 +4739,7 @@ test "handleFrame accept unknown provision returns exception" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -4955,7 +4800,7 @@ test "handleFrame finish clears stored provide entry" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -5054,7 +4899,7 @@ test "handleFrame join returns capability" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -5146,7 +4991,7 @@ test "handleFrame join aggregates parts and returns capability for each part" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -5280,7 +5125,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -5400,7 +5245,7 @@ test "handleFrame thirdPartyAnswer rejects missing completion" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
@@ -5444,7 +5289,7 @@ test "handleFrame unknown message tag sends unimplemented" {
         frames: std.ArrayList([]u8),
 
         fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
-            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);

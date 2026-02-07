@@ -21,7 +21,7 @@ const BootstrapStubHandler = struct {
 
 var bootstrap_stub_ctx: u8 = 0;
 
-const FramePair = struct {
+pub const FramePair = struct {
     inbound: []u8,
     outbound: []u8,
 
@@ -61,10 +61,11 @@ fn dupBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return copy;
 }
 
-fn runCase(allocator: std.mem.Allocator, inbound: []const u8, with_bootstrap_stub: bool) ![]u8 {
+pub fn runCase(allocator: std.mem.Allocator, inbound: []const u8, with_bootstrap_stub: bool) ![]u8 {
     var host = host_peer_mod.HostPeer.init(allocator);
     defer host.deinit();
     host.start(null, null);
+    try host.enableHostCallBridge();
 
     if (with_bootstrap_stub) {
         _ = try host.peer.setBootstrap(.{
@@ -80,10 +81,11 @@ fn runCase(allocator: std.mem.Allocator, inbound: []const u8, with_bootstrap_stu
     return dupBytes(allocator, out);
 }
 
-fn makeCallToBootstrapFixture(allocator: std.mem.Allocator) !FramePair {
+pub fn makeCallToBootstrapFixture(allocator: std.mem.Allocator) !FramePair {
     var host = host_peer_mod.HostPeer.init(allocator);
     defer host.deinit();
     host.start(null, null);
+    try host.enableHostCallBridge();
 
     const export_id = try host.peer.setBootstrap(.{
         .ctx = &bootstrap_stub_ctx,

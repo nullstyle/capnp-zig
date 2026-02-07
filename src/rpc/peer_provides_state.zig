@@ -76,6 +76,45 @@ pub fn clearProvide(
     }
 }
 
+pub fn clearProvideForPeer(
+    comptime PeerType: type,
+    comptime ProvideEntryType: type,
+    comptime ProvideTargetType: type,
+    peer: *PeerType,
+    question_id: u32,
+    deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
+) void {
+    clearProvide(
+        ProvideEntryType,
+        ProvideTargetType,
+        peer.allocator,
+        &peer.provides_by_question,
+        &peer.provides_by_key,
+        question_id,
+        deinit_target,
+    );
+}
+
+pub fn clearProvideForPeerFn(
+    comptime PeerType: type,
+    comptime ProvideEntryType: type,
+    comptime ProvideTargetType: type,
+    comptime deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
+) *const fn (*PeerType, u32) void {
+    return struct {
+        fn call(peer: *PeerType, question_id: u32) void {
+            clearProvideForPeer(
+                PeerType,
+                ProvideEntryType,
+                ProvideTargetType,
+                peer,
+                question_id,
+                deinit_target,
+            );
+        }
+    }.call;
+}
+
 const TestTarget = struct {
     id: u32,
     deinit_count: *usize,
@@ -171,4 +210,46 @@ test "peer_provides_state clearProvide is a no-op for missing question id" {
     );
     try std.testing.expectEqual(@as(usize, 0), provides_by_question.count());
     try std.testing.expectEqual(@as(usize, 0), provides_by_key.count());
+}
+
+test "peer_provides_state clearProvideForPeerFn removes provide entry from fake peer maps" {
+    const FakePeer = struct {
+        allocator: std.mem.Allocator,
+        provides_by_question: std.AutoHashMap(u32, TestProvideEntry),
+        provides_by_key: std.StringHashMap(u32),
+    };
+
+    var peer = FakePeer{
+        .allocator = std.testing.allocator,
+        .provides_by_question = std.AutoHashMap(u32, TestProvideEntry).init(std.testing.allocator),
+        .provides_by_key = std.StringHashMap(u32).init(std.testing.allocator),
+    };
+    defer cleanupProvideMaps(std.testing.allocator, &peer.provides_by_question, &peer.provides_by_key);
+
+    var deinit_count: usize = 0;
+    const recipient = try std.testing.allocator.dupe(u8, "peer-recipient");
+    try putProvideByQuestion(
+        TestProvideEntry,
+        TestTarget,
+        &peer.provides_by_question,
+        77,
+        recipient,
+        .{
+            .id = 5,
+            .deinit_count = &deinit_count,
+        },
+    );
+    try putProvideByKey(&peer.provides_by_key, recipient, 77);
+
+    const clear_fn = clearProvideForPeerFn(
+        FakePeer,
+        TestProvideEntry,
+        TestTarget,
+        deinitTestTarget,
+    );
+    clear_fn(&peer, 77);
+
+    try std.testing.expectEqual(@as(usize, 0), peer.provides_by_question.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.provides_by_key.count());
+    try std.testing.expectEqual(@as(usize, 1), deinit_count);
 }

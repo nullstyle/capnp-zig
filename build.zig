@@ -587,6 +587,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const rpc_fixture_tool_module = b.createModule(.{
+        .root_source_file = b.path("tools/gen_rpc_fixtures.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig-core", .module = core_module },
+        },
+    });
+
     const wasm_host_abi_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/wasm_host_abi_test.zig"),
@@ -596,6 +605,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "capnpc-zig-core", .module = core_module },
                 .{ .name = "capnpc-zig", .module = core_module },
                 .{ .name = "capnp-wasm-host-abi", .module = wasm_host_abi_test_module },
+                .{ .name = "rpc-fixture-tool", .module = rpc_fixture_tool_module },
             },
         }),
     });

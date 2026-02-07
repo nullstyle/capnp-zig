@@ -102,6 +102,53 @@ pub fn clearPendingJoinQuestion(
     }
 }
 
+pub fn clearPendingJoinQuestionForPeer(
+    comptime PeerType: type,
+    comptime JoinStateType: type,
+    comptime PendingJoinQuestionType: type,
+    comptime ProvideTargetType: type,
+    peer: *PeerType,
+    question_id: u32,
+    deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
+    deinit_join_state: *const fn (*JoinStateType, std.mem.Allocator) void,
+) void {
+    clearPendingJoinQuestion(
+        JoinStateType,
+        PendingJoinQuestionType,
+        ProvideTargetType,
+        peer.allocator,
+        &peer.pending_joins,
+        &peer.pending_join_questions,
+        question_id,
+        deinit_target,
+        deinit_join_state,
+    );
+}
+
+pub fn clearPendingJoinQuestionForPeerFn(
+    comptime PeerType: type,
+    comptime JoinStateType: type,
+    comptime PendingJoinQuestionType: type,
+    comptime ProvideTargetType: type,
+    comptime deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
+    comptime deinit_join_state: *const fn (*JoinStateType, std.mem.Allocator) void,
+) *const fn (*PeerType, u32) void {
+    return struct {
+        fn call(peer: *PeerType, question_id: u32) void {
+            clearPendingJoinQuestionForPeer(
+                PeerType,
+                JoinStateType,
+                PendingJoinQuestionType,
+                ProvideTargetType,
+                peer,
+                question_id,
+                deinit_target,
+                deinit_join_state,
+            );
+        }
+    }.call;
+}
+
 pub fn completeJoin(
     comptime PeerType: type,
     comptime JoinStateType: type,
@@ -152,6 +199,63 @@ pub fn completeJoin(
             try send_return_exception(peer, entry.value_ptr.question_id, "join target mismatch");
         }
     }
+}
+
+pub fn completeJoinForPeer(
+    comptime PeerType: type,
+    comptime JoinStateType: type,
+    comptime PendingJoinQuestionType: type,
+    comptime ProvideTargetType: type,
+    peer: *PeerType,
+    join_id: u32,
+    targets_equal: *const fn (*const ProvideTargetType, *const ProvideTargetType) bool,
+    send_return_provided_target: *const fn (*PeerType, u32, *const ProvideTargetType) anyerror!void,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    deinit_join_state: *const fn (*JoinStateType, std.mem.Allocator) void,
+) !void {
+    try completeJoin(
+        PeerType,
+        JoinStateType,
+        PendingJoinQuestionType,
+        ProvideTargetType,
+        peer,
+        peer.allocator,
+        &peer.pending_joins,
+        &peer.pending_join_questions,
+        join_id,
+        targets_equal,
+        send_return_provided_target,
+        send_return_exception,
+        deinit_join_state,
+    );
+}
+
+pub fn completeJoinForPeerFn(
+    comptime PeerType: type,
+    comptime JoinStateType: type,
+    comptime PendingJoinQuestionType: type,
+    comptime ProvideTargetType: type,
+    comptime targets_equal: *const fn (*const ProvideTargetType, *const ProvideTargetType) bool,
+    comptime send_return_provided_target: *const fn (*PeerType, u32, *const ProvideTargetType) anyerror!void,
+    comptime send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    comptime deinit_join_state: *const fn (*JoinStateType, std.mem.Allocator) void,
+) *const fn (*PeerType, u32) anyerror!void {
+    return struct {
+        fn call(peer: *PeerType, join_id: u32) anyerror!void {
+            try completeJoinForPeer(
+                PeerType,
+                JoinStateType,
+                PendingJoinQuestionType,
+                ProvideTargetType,
+                peer,
+                join_id,
+                targets_equal,
+                send_return_provided_target,
+                send_return_exception,
+                deinit_join_state,
+            );
+        }
+    }.call;
 }
 
 const TestTarget = struct {
@@ -599,4 +703,81 @@ test "peer_join_state completeJoin converts send-target failures to return excep
     try std.testing.expectEqual(@as(usize, 2), state.exceptions.items.len);
     try std.testing.expect(containsException(state.exceptions.items, 1100, "TestExpectedError"));
     try std.testing.expect(containsException(state.exceptions.items, 1101, "TestExpectedError"));
+}
+
+test "peer_join_state clearPendingJoinQuestionForPeerFn clears fake peer join state" {
+    const FakeTarget = struct {
+        id: u32,
+    };
+    const FakeJoinPartEntry = struct {
+        question_id: u32,
+        target: FakeTarget,
+    };
+    const FakeJoinState = struct {
+        part_count: u16,
+        parts: std.AutoHashMap(u16, FakeJoinPartEntry),
+
+        fn init(allocator: std.mem.Allocator, part_count: u16) @This() {
+            return .{
+                .part_count = part_count,
+                .parts = std.AutoHashMap(u16, FakeJoinPartEntry).init(allocator),
+            };
+        }
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            _ = allocator;
+            self.parts.deinit();
+        }
+    };
+    const FakePendingJoinQuestion = struct {
+        join_id: u32,
+        part_num: u16,
+    };
+    const FakePeer = struct {
+        allocator: std.mem.Allocator,
+        pending_joins: std.AutoHashMap(u32, FakeJoinState),
+        pending_join_questions: std.AutoHashMap(u32, FakePendingJoinQuestion),
+    };
+
+    const Hooks = struct {
+        fn deinitTarget(_: *FakeTarget, _: std.mem.Allocator) void {}
+    };
+
+    var peer = FakePeer{
+        .allocator = std.testing.allocator,
+        .pending_joins = std.AutoHashMap(u32, FakeJoinState).init(std.testing.allocator),
+        .pending_join_questions = std.AutoHashMap(u32, FakePendingJoinQuestion).init(std.testing.allocator),
+    };
+    defer {
+        var it = peer.pending_joins.valueIterator();
+        while (it.next()) |state| {
+            state.deinit(std.testing.allocator);
+        }
+        peer.pending_joins.deinit();
+        peer.pending_join_questions.deinit();
+    }
+
+    var state = FakeJoinState.init(std.testing.allocator, 1);
+    try state.parts.put(0, .{
+        .question_id = 81,
+        .target = .{ .id = 9 },
+    });
+    try peer.pending_joins.put(33, state);
+    try peer.pending_join_questions.put(81, .{
+        .join_id = 33,
+        .part_num = 0,
+    });
+
+    const clear_fn = clearPendingJoinQuestionForPeerFn(
+        FakePeer,
+        FakeJoinState,
+        FakePendingJoinQuestion,
+        FakeTarget,
+        Hooks.deinitTarget,
+        FakeJoinState.deinit,
+    );
+    clear_fn(&peer, 81);
+
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_joins.count());
 }

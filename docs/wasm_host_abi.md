@@ -46,6 +46,10 @@ Feature flags are encoded as a 64-bit bitset split into low/high `u32` words:
 - bit `3`: host-call bridge pop/respond exports are present.
 - bit `4`: lifecycle helper exports (`capnp_peer_send_finish/release`) are present.
 - bit `5`: schema manifest export (`capnp_schema_manifest_json`) is present.
+- bit `6`: host-call frame release export
+  (`capnp_peer_free_host_call_frame`) is present.
+- bit `7`: bootstrap-stub identity export
+  (`capnp_peer_set_bootstrap_stub_with_id`) is present.
 
 ## Types and Conventions
 
@@ -124,6 +128,7 @@ u32 capnp_peer_push_frame(u32 peer, u32 frame_ptr, u32 frame_len);
 u32 capnp_peer_pop_out_frame(u32 peer, u32 out_ptr_ptr, u32 out_len_ptr);
 void capnp_peer_pop_commit(u32 peer);
 u32 capnp_peer_set_bootstrap_stub(u32 peer); // optional/test hook
+u32 capnp_peer_set_bootstrap_stub_with_id(u32 peer, u32 out_export_id_ptr); // optional/test hook
 u32 capnp_peer_outbound_count(u32 peer);
 u32 capnp_peer_outbound_bytes(u32 peer);
 u32 capnp_peer_has_uncommitted_pop(u32 peer);
@@ -137,6 +142,7 @@ u32 capnp_peer_pop_host_call(
   u32 out_frame_ptr_ptr,
   u32 out_frame_len_ptr
 );
+u32 capnp_peer_free_host_call_frame(u32 peer, u32 frame_ptr, u32 frame_len);
 u32 capnp_peer_respond_host_call_results(u32 peer, u32 question_id, u32 payload_ptr, u32 payload_len);
 u32 capnp_peer_respond_host_call_exception(u32 peer, u32 question_id, u32 reason_ptr, u32 reason_len);
 u32 capnp_peer_send_finish(
@@ -183,7 +189,18 @@ Borrow rule:
 - Optional hook primarily for integration tests.
 - Installs a default bootstrap export that returns an exception.
 - Returns `1` on success, `0` on error.
+- If called repeatedly on the same peer, the initially installed stub is
+  retained.
+- For deterministic export identity, prefer
+  `capnp_peer_set_bootstrap_stub_with_id`.
 - Production hosts typically do not need this.
+
+### `capnp_peer_set_bootstrap_stub_with_id`
+- Optional hook primarily for integration tests.
+- Installs (or reuses) the default bootstrap-stub export and writes its
+  installed export id to `out_export_id_ptr`.
+- Returns `1` on success; `0` on invalid args/config failure.
+- Repeated calls on the same peer return the same export id.
 
 ### `capnp_peer_outbound_count` / `capnp_peer_outbound_bytes`
 - Return current queued outbound frame count/bytes for the peer.
@@ -208,7 +225,13 @@ Borrow rule:
   - method id (`u16`)
   - owned call frame pointer/length (`ptr,len`)
 - Returns `0` with zeroed outputs when queue is empty.
-- Host owns returned `frame` buffer and must free with `capnp_buf_free`.
+- Host owns returned `frame` buffer and must release it with
+  `capnp_peer_free_host_call_frame`.
+
+### `capnp_peer_free_host_call_frame`
+- Releases a frame previously returned by `capnp_peer_pop_host_call`.
+- Returns `1` on success; `0` on invalid args/unknown peer.
+- Passing `frame_len == 0` is a no-op success.
 
 ### `capnp_peer_respond_host_call_results`
 - Sends a `Return.results` for a queued host call question.
