@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_transport);
 const xev = @import("xev");
 
 /// Union of all xev I/O error types that can surface through transport
@@ -105,6 +106,7 @@ pub const Transport = struct {
         self.shutting_down = true;
         self.drainPendingWrites();
         if (self.pending_writes != 0) {
+            log.warn("abandoning {} pending writes during deinit", .{self.pending_writes});
             self.abandonPendingWrites();
         }
         self.allocator.free(self.read_buf);
@@ -201,6 +203,7 @@ pub const Transport = struct {
     /// once.
     pub fn close(self: *Transport) void {
         if (self.close_requested) return;
+        log.debug("transport close requested", .{});
         self.close_requested = true;
         self.shutting_down = true;
         self.socket.close(
@@ -291,6 +294,11 @@ pub const Transport = struct {
     fn signalClose(self: *Transport, err: ?TransportError) void {
         if (self.close_signaled) return;
         self.close_signaled = true;
+        if (err) |e| {
+            log.debug("transport signaling close with error: {}", .{e});
+        } else {
+            log.debug("transport signaling clean close", .{});
+        }
         if (self.close_cb) |cb| {
             cb(self.close_ctx.?, err);
         }

@@ -22,6 +22,7 @@ pub const Runtime = struct {
     /// Assert that the caller is on the thread that created this runtime.
     /// No-op in release builds.
     fn assertThreadAffinity(self: *const Runtime) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
         if (builtin.mode == .Debug) {
             const current = std.Thread.getCurrentId();
             if (current != self.owner_thread_id) {
@@ -39,7 +40,7 @@ pub const Runtime = struct {
         return .{
             .allocator = allocator,
             .loop = loop,
-            .owner_thread_id = std.Thread.getCurrentId(),
+            .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) 0 else std.Thread.getCurrentId(),
         };
     }
 

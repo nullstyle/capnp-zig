@@ -222,6 +222,7 @@ pub const AllTypes = struct {
         pub fn getDataField(self: Reader) ![]const u8 {
             return try self._reader.readData(1);
         }
+
     };
 
     pub const Builder = struct {
@@ -287,5 +288,7 @@ pub const AllTypes = struct {
         pub fn setDataField(self: *Builder, value: []const u8) !void {
             try self._builder.writeData(1, value);
         }
+
     };
 };
+

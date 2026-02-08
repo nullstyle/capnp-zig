@@ -174,8 +174,8 @@ pub const Shape = struct {
         pub const Reader = struct {
             _reader: message.StructReader,
 
-            pub fn wrap(_reader: message.StructReader) Reader {
-                return .{ ._reader = _reader };
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
             }
 
             pub fn getWidth(self: Reader) !f32 {
@@ -185,13 +185,14 @@ pub const Shape = struct {
             pub fn getHeight(self: Reader) !f32 {
                 return @bitCast(self._reader.readU32(8));
             }
+
         };
 
         pub const Builder = struct {
             _builder: message.StructBuilder,
 
-            pub fn wrap(_builder: message.StructBuilder) Builder {
-                return .{ ._builder = _builder };
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
             }
 
             pub fn setWidth(self: *Builder, value: f32) !void {
@@ -201,6 +202,7 @@ pub const Shape = struct {
             pub fn setHeight(self: *Builder, value: f32) !void {
                 self._builder.writeU32(8, @bitCast(value));
             }
+
         };
     };
 
@@ -231,6 +233,7 @@ pub const Shape = struct {
         pub fn getRectangle(self: Reader) Rectangle.Reader {
             return .{ ._reader = self._reader };
         }
+
     };
 
     pub const Builder = struct {
@@ -258,5 +261,7 @@ pub const Shape = struct {
             self._builder.writeU16(2, 1);
             return .{ ._builder = self._builder };
         }
+
     };
 };
+

@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_conn);
 const framing = @import("framing.zig");
 const transport_xev = @import("transport_xev.zig");
 const xev = @import("xev");
@@ -71,6 +72,7 @@ pub const Connection = struct {
         on_error: *const fn (conn: *Connection, err: anyerror) void,
         on_close: *const fn (conn: *Connection) void,
     ) void {
+        log.debug("connection starting", .{});
         self.ctx = ctx;
         self.on_message = on_message;
         self.on_error = on_error;
@@ -85,6 +87,7 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
+        log.debug("connection closing", .{});
         self.transport.close();
     }
 
@@ -102,6 +105,7 @@ pub const Connection = struct {
 
         const push_result = self.framer.push(data);
         if (push_result) |_| {} else |err| {
+            log.debug("framer push failed: {}", .{err});
             self.on_error.?(self, err);
             return;
         }
@@ -125,13 +129,17 @@ pub const Connection = struct {
     fn onTransportClose(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
         const conn: *Connection = @ptrCast(@alignCast(ctx));
         if (err) |e| {
+            log.debug("transport closed with error: {}", .{e});
             if (conn.on_error) |cb| cb(conn, e);
+        } else {
+            log.debug("transport closed cleanly", .{});
         }
         if (conn.on_close) |cb| cb(conn);
     }
 
     fn onWriteDone(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
         if (err) |e| {
+            log.debug("write failed: {}", .{e});
             const conn: *Connection = @ptrCast(@alignCast(ctx));
             if (conn.on_error) |cb| cb(conn, e);
         }

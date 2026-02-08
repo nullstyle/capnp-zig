@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_cap_table);
 const message = @import("../message.zig");
 const protocol = @import("protocol.zig");
 const promised_answer_copy = @import("promised_answer_copy.zig");
@@ -155,7 +156,14 @@ pub const CapTable = struct {
     }
 
     fn allocLocalCapId(self: *CapTable) error{CapTableFull}!u32 {
-        if (self.totalEntries() >= max_table_size) return error.CapTableFull;
+        const total = self.totalEntries();
+        if (total >= max_table_size) {
+            log.err("cap table full ({} entries)", .{total});
+            return error.CapTableFull;
+        }
+        if (total >= max_table_size * 9 / 10) {
+            log.warn("cap table near full: {}/{} entries", .{ total, max_table_size });
+        }
         var iterations: u32 = 0;
         while (iterations < max_table_size + 1) : (iterations += 1) {
             const id = self.next_export_id;
@@ -165,6 +173,7 @@ pub const CapTable = struct {
             if (self.receiver_answers.contains(id)) continue;
             return id;
         }
+        log.err("cap table full after exhaustive ID search", .{});
         return error.CapTableFull;
     }
 };

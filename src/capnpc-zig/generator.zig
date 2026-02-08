@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.codegen);
 const schema = @import("../schema.zig");
 const StructGenerator = @import("struct_gen.zig").StructGenerator;
 pub const TypeGenerator = @import("types.zig").TypeGenerator;
@@ -42,6 +43,8 @@ pub const Generator = struct {
     /// definitions. Returns an allocator-owned byte slice containing the
     /// generated `.zig` source.
     pub fn generateFile(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
+        log.debug("generating file: {s}", .{requested_file.filename});
+
         var output = std.ArrayList(u8){};
         errdefer output.deinit(self.allocator);
 
@@ -211,6 +214,7 @@ pub const Generator = struct {
 
     /// Generate code for a single node
     fn generateNode(self: *Generator, node: *const schema.Node, output: *std.ArrayList(u8)) !void {
+        log.debug("generating node id=0x{x} kind={s}", .{ node.id, @tagName(node.kind) });
         const writer = output.writer(self.allocator);
 
         switch (node.kind) {

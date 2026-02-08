@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const log = std.log.scoped(.rpc_peer);
 const protocol = @import("protocol.zig");
 const cap_table = @import("cap_table.zig");
 const message = @import("../message.zig");
@@ -331,6 +332,7 @@ pub const Peer = struct {
     /// This is a no-op in release builds. In debug builds, it panics
     /// with a clear message if the current thread is not the owner.
     fn assertThreadAffinity(self: *const Peer) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
         if (builtin.mode == .Debug) {
             const owner = self.owner_thread_id orelse return;
             const current = std.Thread.getCurrentId();
@@ -354,7 +356,7 @@ pub const Peer = struct {
     pub fn initDetached(allocator: std.mem.Allocator) Peer {
         return .{
             .allocator = allocator,
-            .owner_thread_id = std.Thread.getCurrentId(),
+            .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),
@@ -608,6 +610,7 @@ pub const Peer = struct {
             .is_promise = false,
             .resolved = null,
         });
+        log.debug("added export id={}", .{id});
         return id;
     }
 
@@ -634,6 +637,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         const id = try self.addExport(exported);
         self.bootstrap_export_id = id;
+        log.debug("bootstrap set export_id={}", .{id});
         return id;
     }
 
@@ -650,6 +654,7 @@ pub const Peer = struct {
 
         try builder.buildBootstrap(question_id);
         try self.sendBuilder(&builder);
+        log.debug("sent bootstrap question_id={}", .{question_id});
         return question_id;
     }
 
@@ -709,6 +714,7 @@ pub const Peer = struct {
         on_return: QuestionCallback,
     ) !u32 {
         self.assertThreadAffinity();
+        log.debug("sendCall target_id={} interface_id=0x{x} method_id={}", .{ target_id, interface_id, method_id });
         if (self.resolved_imports.get(target_id)) |entry| {
             if (!entry.embargoed and entry.cap != null) {
                 return self.sendCallResolved(entry.cap.?, interface_id, method_id, ctx, build, on_return);
@@ -1194,6 +1200,7 @@ pub const Peer = struct {
     /// to the remote peer when the reference count drops to zero.
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
         self.assertThreadAffinity();
+        log.debug("releasing import id={} count={}", .{ import_id, count });
         try peer_cap_lifecycle.releaseImport(
             Peer,
             self,
@@ -1241,12 +1248,21 @@ pub const Peer = struct {
 
     fn sendFrame(self: *Peer, frame: []const u8) !void {
         if (self.send_frame_override) |cb| {
-            const ctx = self.send_frame_ctx orelse return error.MissingCallbackContext;
+            const ctx = self.send_frame_ctx orelse {
+                log.debug("send frame override missing callback context", .{});
+                return error.MissingCallbackContext;
+            };
             try cb(ctx, frame);
             return;
         }
-        const send = self.transport_send orelse return error.TransportNotAttached;
-        const ctx = self.transport_ctx orelse return error.TransportNotAttached;
+        const send = self.transport_send orelse {
+            log.debug("cannot send frame: transport not attached", .{});
+            return error.TransportNotAttached;
+        };
+        const ctx = self.transport_ctx orelse {
+            log.debug("cannot send frame: transport not attached", .{});
+            return error.TransportNotAttached;
+        };
         try send(ctx, frame);
     }
 
@@ -1375,10 +1391,12 @@ pub const Peer = struct {
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {
+        log.debug("connection error: {}", .{err});
         if (self.on_error) |cb| cb(self, err);
     }
 
     fn onConnectionClose(self: *Peer) void {
+        log.debug("connection closed", .{});
         if (self.on_close) |cb| cb(self);
     }
 
@@ -1391,13 +1409,16 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| {
             if (err == error.InvalidMessageTag) {
+                log.debug("unknown message tag in frame, sending unimplemented", .{});
                 try self.sendUnimplementedForFrame(frame);
                 return;
             }
+            log.debug("failed to decode inbound frame: {}", .{err});
             return err;
         };
         defer decoded.deinit();
         self.last_inbound_tag = decoded.tag;
+        log.debug("dispatching inbound {s}", .{@tagName(decoded.tag)});
 
         try peer_dispatch.dispatchDecodedForPeer(
             Peer,
@@ -1448,6 +1469,7 @@ pub const Peer = struct {
     }
 
     fn handleAbort(self: *Peer, abort: protocol.Abort) !void {
+        log.debug("received abort from remote: {s}", .{abort.exception.reason});
         try peer_control.handleAbort(self.allocator, &self.last_remote_abort_reason, abort);
     }
 

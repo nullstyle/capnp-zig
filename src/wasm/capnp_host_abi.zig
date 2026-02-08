@@ -3,6 +3,19 @@ const builtin = @import("builtin");
 const core = @import("capnpc-zig-core");
 const generated_example = @import("generated/example.zig");
 
+/// On freestanding targets (WASM), provide a no-op log function since there
+/// is no stderr. On native targets, use the default log implementation.
+pub const std_options: std.Options = .{
+    .logFn = if (builtin.target.os.tag == .freestanding) noopLog else std.log.defaultLog,
+};
+
+fn noopLog(
+    comptime _: std.log.Level,
+    comptime _: @Type(.enum_literal),
+    comptime _: []const u8,
+    _: anytype,
+) void {}
+
 const HostPeer = core.rpc.host_peer.HostPeer;
 const message = core.message;
 const Peer = core.rpc.peer.Peer;

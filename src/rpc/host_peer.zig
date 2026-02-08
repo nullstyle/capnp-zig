@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_host);
 const message = @import("../message.zig");
 const peer_mod = @import("peer.zig");
 const protocol = @import("protocol.zig");
@@ -73,6 +74,7 @@ pub const HostPeer = struct {
         self.ensureOverride();
         self.current_inbound_frame = frame;
         defer self.current_inbound_frame = null;
+        log.debug("pushing inbound frame ({} bytes)", .{frame.len});
         try self.peer.handleFrame(frame);
     }
 
@@ -218,14 +220,24 @@ pub const HostPeer = struct {
 
     fn captureOutgoingFrame(ctx: *anyopaque, frame: []const u8) anyerror!void {
         const self: *HostPeer = @ptrCast(@alignCast(ctx));
-        if (frame.len > MAX_CAPTURED_FRAME_BYTES) return error.FrameTooLarge;
+        if (frame.len > MAX_CAPTURED_FRAME_BYTES) {
+            log.debug("outgoing frame too large: {} bytes", .{frame.len});
+            return error.FrameTooLarge;
+        }
 
         if (self.limits.outbound_count_limit != 0 and self.outgoing.items.len >= self.limits.outbound_count_limit) {
+            log.debug("outgoing queue count limit exceeded", .{});
             return error.OutgoingQueueLimitExceeded;
         }
         if (self.limits.outbound_bytes_limit != 0) {
-            const next = std.math.add(usize, self.outgoing_bytes, frame.len) catch return error.OutgoingBytesLimitExceeded;
-            if (next > self.limits.outbound_bytes_limit) return error.OutgoingBytesLimitExceeded;
+            const next = std.math.add(usize, self.outgoing_bytes, frame.len) catch {
+                log.debug("outgoing bytes limit exceeded", .{});
+                return error.OutgoingBytesLimitExceeded;
+            };
+            if (next > self.limits.outbound_bytes_limit) {
+                log.debug("outgoing bytes limit exceeded", .{});
+                return error.OutgoingBytesLimitExceeded;
+            }
         }
 
         const owned = try self.outgoing_allocator.alloc(u8, frame.len);

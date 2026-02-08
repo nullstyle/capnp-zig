@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_framing);
 
 pub const Framer = struct {
     pub const max_frame_words: usize = 8 * 1024 * 1024;
@@ -68,7 +69,10 @@ pub const Framer = struct {
             total_words = std.math.add(usize, total_words, @as(usize, size_words)) catch return error.InvalidFrame;
             offset += 4;
         }
-        if (total_words > max_frame_words) return error.FrameTooLarge;
+        if (total_words > max_frame_words) {
+            log.debug("frame too large: {} words exceeds limit of {}", .{ total_words, max_frame_words });
+            return error.FrameTooLarge;
+        }
 
         const body_bytes = std.math.mul(usize, total_words, 8) catch return error.InvalidFrame;
         const total_bytes = std.math.add(usize, header_bytes, body_bytes) catch return error.InvalidFrame;

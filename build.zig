@@ -664,6 +664,34 @@ pub fn build(b: *std.Build) void {
     });
     const run_rpc_peer_from_peer_zig_tests = b.addRunArtifact(rpc_peer_from_peer_zig_tests);
 
+    // Union runtime tests (low-level union discriminant round-trips)
+    const union_runtime_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/union_runtime_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_union_runtime_tests = b.addRunArtifact(union_runtime_tests);
+
+    // Codegen golden-file snapshot tests
+    const codegen_golden_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/codegen_golden_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_codegen_golden_tests = b.addRunArtifact(codegen_golden_tests);
+
     // RPC peer_control (from peer_control.zig) tests
     const rpc_peer_control_from_peer_control_zig_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -745,6 +773,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_peer_cleanup_tests.step);
     test_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
+    test_step.dependOn(&run_union_runtime_tests.step);
+    test_step.dependOn(&run_codegen_golden_tests.step);
     test_step.dependOn(&run_wasm_host_abi_tests.step);
 
     // Individual test steps
@@ -758,12 +788,14 @@ pub fn build(b: *std.Build) void {
     test_codegen_step.dependOn(&run_codegen_rpc_nested_tests.step);
     test_codegen_step.dependOn(&run_codegen_generated_runtime_tests.step);
     test_codegen_step.dependOn(&run_codegen_union_group_tests.step);
+    test_codegen_step.dependOn(&run_codegen_golden_tests.step);
 
     const test_integration_step = b.step("test-integration", "Run integration tests");
     test_integration_step.dependOn(&run_integration_tests.step);
 
     const test_interop_step = b.step("test-interop", "Run interop tests");
     test_interop_step.dependOn(&run_interop_tests.step);
+    test_interop_step.dependOn(&run_interop_roundtrip_tests.step);
 
     const test_real_world_step = b.step("test-real-world", "Run real-world schema tests");
     test_real_world_step.dependOn(&run_real_world_person_tests.step);
@@ -771,6 +803,7 @@ pub fn build(b: *std.Build) void {
 
     const test_union_step = b.step("test-union", "Run union tests");
     test_union_step.dependOn(&run_union_tests.step);
+    test_union_step.dependOn(&run_union_runtime_tests.step);
 
     const test_capnp_testdata_step = b.step("test-capnp-testdata", "Run Cap'n Proto official testdata fixtures");
     test_capnp_testdata_step.dependOn(&run_capnp_testdata_tests.step);

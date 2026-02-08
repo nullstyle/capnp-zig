@@ -182,6 +182,7 @@ pub const Person = struct {
         pub fn getEmail(self: Reader) ![]const u8 {
             return try self._reader.readText(1);
         }
+
     };
 
     pub const Builder = struct {
@@ -207,5 +208,7 @@ pub const Person = struct {
         pub fn setEmail(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(1, value);
         }
+
     };
 };
+
