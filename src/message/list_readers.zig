@@ -26,6 +26,8 @@ pub fn define(
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const stride = (@as(usize, self.data_words) + @as(usize, self.pointer_words)) * 8;
                 const offset = self.elements_offset + @as(usize, index) * stride;
+                const segment = self.message.segments[self.segment_id];
+                if (offset + stride > segment.len) return error.OutOfBounds;
                 return StructReaderType{
                     .message = self.message,
                     .segment_id = self.segment_id,
@@ -97,9 +99,11 @@ pub fn define(
                 return segment[offset];
             }
 
-            pub fn slice(self: U8ListReader) []const u8 {
+            pub fn slice(self: U8ListReader) ![]const u8 {
                 const segment = self.message.segments[self.segment_id];
-                return segment[self.elements_offset .. self.elements_offset + @as(usize, self.element_count)];
+                const end = self.elements_offset + @as(usize, self.element_count);
+                if (end > segment.len) return error.OutOfBounds;
+                return segment[self.elements_offset..end];
             }
         };
 

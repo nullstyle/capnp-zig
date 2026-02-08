@@ -1428,6 +1428,7 @@ pub const Peer = struct {
                 return;
             }
             log.debug("failed to decode inbound frame: {}", .{err});
+            self.sendAbortForError(err);
             return err;
         };
         defer decoded.deinit();
@@ -1454,6 +1455,18 @@ pub const Peer = struct {
             Peer.handleThirdPartyAnswer,
             Peer.sendUnimplemented,
         );
+    }
+
+    fn sendAbortForError(self: *Peer, err: anyerror) void {
+        if (err == error.OutOfMemory) return;
+        peer_outbound_control.sendAbort(
+            Peer,
+            self,
+            @errorName(err),
+            Peer.sendBuilder,
+        ) catch |abort_err| {
+            log.debug("failed to send abort: {}", .{abort_err});
+        };
     }
 
     fn sendUnimplemented(self: *Peer, original: message.AnyPointerReader) !void {

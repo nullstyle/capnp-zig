@@ -1725,6 +1725,8 @@ pub const MessageBuilder = struct {
         const pointer_segment = &self.segments.items[pointer_segment_id];
         if (pointer_pos + 8 > pointer_segment.items.len) return error.OutOfBounds;
 
+        if (text.len >= std.math.maxInt(u32)) return error.TextTooLong;
+
         const target_segment = &self.segments.items[target_segment_id];
         const padding = (8 - ((text.len + 1) % 8)) % 8;
         const text_offset = target_segment.items.len;
