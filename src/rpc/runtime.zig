@@ -124,11 +124,14 @@ pub const Listener = struct {
         const listener = self.?;
         const socket = res catch |err| {
             log.debug("accept failed: {}", .{err});
+            listener.queueAccept();
             return .disarm;
         };
 
         const conn_ptr = listener.allocator.create(Connection) catch |err| {
             log.debug("connection alloc failed: {}", .{err});
+            std.posix.close(socket.fd);
+            listener.queueAccept();
             return .disarm;
         };
 
@@ -140,6 +143,8 @@ pub const Listener = struct {
         ) catch |err| {
             log.debug("connection init failed: {}", .{err});
             listener.allocator.destroy(conn_ptr);
+            std.posix.close(socket.fd);
+            listener.queueAccept();
             return .disarm;
         };
 

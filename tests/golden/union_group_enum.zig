@@ -28,7 +28,7 @@ pub const Shape = struct {
             }
 
             pub fn get(self: @This(), index: u32) !EnumType {
-                return @enumFromInt(try self._list.get(index));
+                return std.meta.intToEnum(EnumType, try self._list.get(index)) catch return error.InvalidEnumValue;
             }
 
             pub fn raw(self: @This()) message.U16ListReader {
@@ -218,12 +218,12 @@ pub const Shape = struct {
             return .{ ._reader = reader };
         }
 
-        pub fn which(self: Reader) WhichTag {
-            return @enumFromInt(self._reader.readU16(2));
+        pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
+            return std.meta.intToEnum(WhichTag, self._reader.readU16(2)) catch return error.InvalidEnumValue;
         }
 
         pub fn getColor(self: Reader) !Color {
-            return @enumFromInt(self._reader.readU16(0));
+            return std.meta.intToEnum(Color, self._reader.readU16(0)) catch return error.InvalidEnumValue;
         }
 
         pub fn getCircle(self: Reader) !f64 {

@@ -580,6 +580,8 @@ pub const Message = struct {
 
         if (!far.landing_pad_is_double) {
             const landing_word = try self.readWord(far.segment_id, landing_pos);
+            const landing_type = @as(u2, @truncate(landing_word & 0x3));
+            if (landing_type != 1) return error.InvalidPointer;
             return try self.resolveInlineCompositeList(far.segment_id, landing_pos, landing_word);
         }
 

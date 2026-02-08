@@ -52,8 +52,11 @@ fn remapPayloadCapabilities(
         root.pointer_pos,
         root_word,
         map_inbound_cap,
+        max_traversal_depth,
     );
 }
+
+const max_traversal_depth: u32 = 64;
 
 fn remapPayloadCapabilityPointer(
     comptime PeerType: type,
@@ -65,7 +68,9 @@ fn remapPayloadCapabilityPointer(
     pointer_pos: usize,
     pointer_word: u64,
     map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?u32,
+    depth: u32,
 ) !void {
+    if (depth == 0) return error.RecursionLimitExceeded;
     if (pointer_word == 0) return;
     const resolved = try msg.resolvePointer(segment_id, pointer_pos, pointer_word, 8);
     if (resolved.pointer_word == 0) return;
@@ -97,6 +102,7 @@ fn remapPayloadCapabilityPointer(
                     child_pos,
                     child_word,
                     map_inbound_cap,
+                    depth - 1,
                 );
             }
         },
@@ -125,6 +131,7 @@ fn remapPayloadCapabilityPointer(
                         child_pos,
                         child_word,
                         map_inbound_cap,
+                        depth - 1,
                     );
                 }
             } else if (list.element_size == 7) {
@@ -156,6 +163,7 @@ fn remapPayloadCapabilityPointer(
                             child_pos,
                             child_word,
                             map_inbound_cap,
+                            depth - 1,
                         );
                     }
                 }

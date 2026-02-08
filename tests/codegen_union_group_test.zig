@@ -104,8 +104,8 @@ test "Codegen: union generates WhichTag enum and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "square = 1,"));
 
     // Should have which() method
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return @enumFromInt(self._reader.readU16(8))"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(WhichTag, self._reader.readU16(8)) catch return error.InvalidEnumValue;"));
 
     // Non-union field should NOT appear in WhichTag
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "area = "));
@@ -225,8 +225,8 @@ test "Codegen: union setter writes discriminant before value" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(0, 2)"));
 
     // which() method should read from correct offset
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return @enumFromInt(self._reader.readU16(0))"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;"));
 }
 
 test "Codegen: struct without union does not generate WhichTag" {

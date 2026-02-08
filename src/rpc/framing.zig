@@ -3,6 +3,7 @@ const log = std.log.scoped(.rpc_framing);
 
 pub const Framer = struct {
     pub const max_frame_words: usize = 8 * 1024 * 1024;
+    pub const max_segment_count: u32 = 512;
 
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8),
@@ -53,6 +54,7 @@ pub const Framer = struct {
 
         const segment_count_minus_one = std.mem.readInt(u32, self.buffer.items[0..4], .little);
         const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidFrame;
+        if (segment_count > max_segment_count) return error.InvalidFrame;
         const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidFrame;
         const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
         const header_words_no_padding = std.math.add(usize, 1, segment_count_usize) catch return error.InvalidFrame;

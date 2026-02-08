@@ -22,7 +22,7 @@ pub const AllTypes = struct {
             }
 
             pub fn get(self: @This(), index: u32) !EnumType {
-                return @enumFromInt(try self._list.get(index));
+                return std.meta.intToEnum(EnumType, try self._list.get(index)) catch return error.InvalidEnumValue;
             }
 
             pub fn raw(self: @This()) message.U16ListReader {

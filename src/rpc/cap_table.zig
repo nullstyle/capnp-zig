@@ -388,6 +388,8 @@ fn anyPointerReaderFromBuilder(
     };
 }
 
+const max_traversal_depth: u32 = 64;
+
 fn collectCapsFromPointer(
     outbound: *OutboundCapTable,
     table: *CapTable,
@@ -396,7 +398,9 @@ fn collectCapsFromPointer(
     segment_id: u32,
     pointer_pos: usize,
     pointer_word: u64,
+    depth: u32,
 ) !void {
+    if (depth == 0) return error.RecursionLimitExceeded;
     if (pointer_word == 0) return;
     const resolved = try msg.resolvePointer(segment_id, pointer_pos, pointer_word, 8);
     if (resolved.pointer_word == 0) return;
@@ -409,7 +413,7 @@ fn collectCapsFromPointer(
             while (idx < struct_reader.pointer_count) : (idx += 1) {
                 const pos = pointer_base + idx * 8;
                 const word = std.mem.readInt(u64, msg.segments[struct_reader.segment_id][pos..][0..8], .little);
-                try collectCapsFromPointer(outbound, table, msg, builder, struct_reader.segment_id, pos, word);
+                try collectCapsFromPointer(outbound, table, msg, builder, struct_reader.segment_id, pos, word, depth - 1);
             }
         },
         1 => {
@@ -419,7 +423,7 @@ fn collectCapsFromPointer(
                 while (idx < list.element_count) : (idx += 1) {
                     const pos = list.content_offset + @as(usize, idx) * 8;
                     const word = std.mem.readInt(u64, msg.segments[list.segment_id][pos..][0..8], .little);
-                    try collectCapsFromPointer(outbound, table, msg, builder, list.segment_id, pos, word);
+                    try collectCapsFromPointer(outbound, table, msg, builder, list.segment_id, pos, word, depth - 1);
                 }
             } else if (list.element_size == 7) {
                 const inline_list = try msg.resolveInlineCompositeList(resolved.segment_id, resolved.pointer_pos, resolved.pointer_word);
@@ -432,7 +436,7 @@ fn collectCapsFromPointer(
                     while (pidx < inline_list.pointer_words) : (pidx += 1) {
                         const pos = pointer_base + pidx * 8;
                         const word = std.mem.readInt(u64, msg.segments[inline_list.segment_id][pos..][0..8], .little);
-                        try collectCapsFromPointer(outbound, table, msg, builder, inline_list.segment_id, pos, word);
+                        try collectCapsFromPointer(outbound, table, msg, builder, inline_list.segment_id, pos, word, depth - 1);
                     }
                 }
             }
@@ -478,7 +482,7 @@ fn encodePayloadCaps(
         }
     }
 
-    try collectCapsFromPointer(&outbound, table, &view.msg, builder, any_reader.segment_id, any_reader.pointer_pos, any_reader.pointer_word);
+    try collectCapsFromPointer(&outbound, table, &view.msg, builder, any_reader.segment_id, any_reader.pointer_pos, any_reader.pointer_word, max_traversal_depth);
 
     var cap_list = try payload.writeStructList(
         protocol.PAYLOAD_CAP_TABLE_PTR,

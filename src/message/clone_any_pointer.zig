@@ -11,6 +11,8 @@ pub fn define(
     comptime decode_capability_pointer: *const fn (u64) anyerror!u32,
 ) type {
     return struct {
+        const max_depth: u32 = 64;
+
         pub fn cloneAnyPointerToBytes(allocator: std.mem.Allocator, src: AnyPointerReaderType) ![]const u8 {
             var builder = MessageBuilderType.init(allocator);
             defer builder.deinit();
@@ -28,6 +30,11 @@ pub fn define(
         }
 
         pub fn cloneAnyPointer(src: AnyPointerReaderType, dest: AnyPointerBuilderType) anyerror!void {
+            return cloneAnyPointerDepth(src, dest, max_depth);
+        }
+
+        fn cloneAnyPointerDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, depth: u32) anyerror!void {
+            if (depth == 0) return error.RecursionLimitExceeded;
             const resolved = try src.message.resolvePointer(src.segment_id, src.pointer_pos, src.pointer_word, 8);
             if (resolved.pointer_word == 0) {
                 try dest.setNull();
@@ -39,9 +46,9 @@ pub fn define(
                 0 => {
                     const src_struct = try src.message.resolveStructPointer(resolved.segment_id, resolved.pointer_pos, resolved.pointer_word);
                     const dest_struct = try dest.initStruct(src_struct.data_size, src_struct.pointer_count);
-                    try cloneStruct(src_struct, dest_struct);
+                    try cloneStructDepth(src_struct, dest_struct, depth - 1);
                 },
-                1 => try cloneList(src, dest, resolved.pointer_word),
+                1 => try cloneListDepth(src, dest, resolved.pointer_word, depth - 1),
                 3 => {
                     const cap_id = try decode_capability_pointer(resolved.pointer_word);
                     try dest.setCapability(.{ .id = cap_id });
@@ -50,7 +57,7 @@ pub fn define(
             }
         }
 
-        fn cloneStruct(src: StructReaderType, dest: StructBuilderType) anyerror!void {
+        fn cloneStructDepth(src: StructReaderType, dest: StructBuilderType, depth: u32) anyerror!void {
             const src_data = src.getDataSection();
             const dest_segment = &dest.builder.segments.items[dest.segment_id];
             const dest_start = dest.offset;
@@ -76,12 +83,12 @@ pub fn define(
                         .pointer_pos = pointer_pos,
                         .pointer_word = pointer_word,
                     };
-                    try cloneAnyPointer(src_ptr, dest_ptr);
+                    try cloneAnyPointerDepth(src_ptr, dest_ptr, depth);
                 }
             }
         }
 
-        fn cloneList(src: AnyPointerReaderType, dest: AnyPointerBuilderType, resolved_pointer_word: u64) anyerror!void {
+        fn cloneListDepth(src: AnyPointerReaderType, dest: AnyPointerBuilderType, resolved_pointer_word: u64, depth: u32) anyerror!void {
             const element_size = @as(u3, @truncate((resolved_pointer_word >> 32) & 0x7));
 
             if (element_size == 7) {
@@ -108,7 +115,7 @@ pub fn define(
                 while (idx < list.element_count) : (idx += 1) {
                     const src_elem = try src_list.get(idx);
                     const dest_elem = try dest_list.get(idx);
-                    try cloneStruct(src_elem, dest_elem);
+                    try cloneStructDepth(src_elem, dest_elem, depth);
                 }
                 return;
             }
@@ -141,7 +148,7 @@ pub fn define(
                     if (pointer_word == 0) {
                         try dest_ptr.setNull();
                     } else {
-                        try cloneAnyPointer(src_ptr, dest_ptr);
+                        try cloneAnyPointerDepth(src_ptr, dest_ptr, depth);
                     }
                 }
                 return;

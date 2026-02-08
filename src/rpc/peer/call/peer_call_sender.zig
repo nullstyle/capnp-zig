@@ -18,9 +18,11 @@ pub fn sendCallToImport(
     build: ?CallBuildFnType,
     on_return: QuestionCallbackType,
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
+    remove_question: *const fn (*PeerType, u32) void,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
+    errdefer remove_question(peer, question_id);
 
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -100,9 +102,11 @@ pub fn sendCallPromised(
     build: ?CallBuildFnType,
     on_return: QuestionCallbackType,
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
+    remove_question: *const fn (*PeerType, u32) void,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
+    errdefer remove_question(peer, question_id);
 
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -165,6 +169,8 @@ test "peer_call_sender sendCallToImport allocates question and encodes imported 
         }
 
         fn onReturn(_: *anyopaque, _: *State, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+
+        fn removeQuestion(_: *State, _: u32) void {}
     };
 
     var state = State.init(std.testing.allocator);
@@ -186,6 +192,7 @@ test "peer_call_sender sendCallToImport allocates question and encodes imported 
         null,
         Hooks.onReturn,
         Hooks.allocateQuestion,
+        Hooks.removeQuestion,
         Hooks.sendBuilder,
     );
 

@@ -635,6 +635,7 @@ pub const Peer = struct {
             .is_promise = true,
             .resolved = null,
         });
+        errdefer _ = self.exports.remove(id);
         try self.caps.markExportPromise(id);
         return id;
     }
@@ -747,6 +748,7 @@ pub const Peer = struct {
             build,
             on_return,
             Peer.allocateQuestion,
+            Peer.removeQuestion,
             Peer.sendBuilder,
         );
     }
@@ -778,6 +780,7 @@ pub const Peer = struct {
                 build,
                 on_return,
                 Peer.allocateQuestion,
+                Peer.removeQuestion,
                 Peer.sendBuilder,
             ),
             .promised => |promised| self.sendCallPromised(promised, interface_id, method_id, ctx, build, on_return),
@@ -832,6 +835,7 @@ pub const Peer = struct {
             build,
             on_return,
             Peer.allocateQuestion,
+            Peer.removeQuestion,
             Peer.sendBuilder,
         );
     }
@@ -1402,6 +1406,10 @@ pub const Peer = struct {
                 .is_loopback = false,
             },
         );
+    }
+
+    fn removeQuestion(self: *Peer, question_id: u32) void {
+        _ = self.questions.remove(question_id);
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {

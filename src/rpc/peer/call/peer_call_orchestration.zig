@@ -186,8 +186,8 @@ pub fn handleCallImportedTargetForPeer(
 
     switch (target_plan) {
         .unknown_capability => {
-            try send_return_exception(peer, call.question_id, "unknown capability");
             inbound_caps.deinit();
+            try send_return_exception(peer, call.question_id, "unknown capability");
             return;
         },
         .queue_promise_export => {

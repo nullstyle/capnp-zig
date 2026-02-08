@@ -122,7 +122,7 @@ pub const StructGenerator = struct {
         try writer.writeAll("                return self._list.len();\n");
         try writer.writeAll("            }\n\n");
         try writer.writeAll("            pub fn get(self: @This(), index: u32) !EnumType {\n");
-        try writer.writeAll("                return @enumFromInt(try self._list.get(index));\n");
+        try writer.writeAll("                return std.meta.intToEnum(EnumType, try self._list.get(index)) catch return error.InvalidEnumValue;\n");
         try writer.writeAll("            }\n\n");
         try writer.writeAll("            pub fn raw(self: @This()) message.U16ListReader {\n");
         try writer.writeAll("                return self._list;\n");
@@ -255,8 +255,8 @@ pub const StructGenerator = struct {
         // Generate which() method if this struct has a union
         if (struct_info.discriminant_count > 0) {
             const disc_byte_offset = struct_info.discriminant_offset * 2;
-            try writer.print("        pub fn which(self: Reader) WhichTag {{\n", .{});
-            try writer.print("            return @enumFromInt(self._reader.readU16({}));\n", .{disc_byte_offset});
+            try writer.print("        pub fn which(self: Reader) error{{InvalidEnumValue}}!WhichTag {{\n", .{});
+            try writer.print("            return std.meta.intToEnum(WhichTag, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{disc_byte_offset});
             try writer.writeAll("        }\n\n");
         }
 
@@ -343,21 +343,21 @@ pub const StructGenerator = struct {
                     if (try self.defaultLiteral(.uint16, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("            const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
-                        if (enum_name) |_| {
-                            try writer.writeAll("            return @enumFromInt(raw);\n");
+                        if (enum_name) |en| {
+                            try writer.print("            return std.meta.intToEnum({s}, raw) catch return error.InvalidEnumValue;\n", .{en});
                         } else {
                             try writer.writeAll("            return raw;\n");
                         }
                     } else {
-                        if (enum_name) |_| {
-                            try writer.print("            return @enumFromInt(self._reader.readU16({}));\n", .{byte_offset});
+                        if (enum_name) |en| {
+                            try writer.print("            return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
                         } else {
                             try writer.print("            return self._reader.readU16({});\n", .{byte_offset});
                         }
                     }
                 } else {
-                    if (enum_name) |_| {
-                        try writer.print("            return @enumFromInt(self._reader.readU16({}));\n", .{byte_offset});
+                    if (enum_name) |en| {
+                        try writer.print("            return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
                     } else {
                         try writer.print("            return self._reader.readU16({});\n", .{byte_offset});
                     }
@@ -615,20 +615,49 @@ pub const StructGenerator = struct {
             => {
                 const read_fn = self.readFnForType(slot.type);
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                if (self.isUnsigned(slot.type)) {
-                    try writer.print("                return self._reader.{s}({});\n", .{ read_fn, byte_offset });
+                if (slot.default_value) |default_value| {
+                    if (try self.defaultLiteral(slot.type, default_value)) |literal| {
+                        defer self.allocator.free(literal);
+                        try writer.print("                const raw = self._reader.{s}({});\n", .{ read_fn, byte_offset });
+                        try writer.print("                const value = raw ^ {s};\n", .{literal});
+                        if (self.isUnsigned(slot.type)) {
+                            try writer.writeAll("                return value;\n");
+                        } else {
+                            try writer.writeAll("                return @bitCast(value);\n");
+                        }
+                    } else {
+                        try self.writeNumericGroupGetterWithoutDefault(slot.type, byte_offset, writer);
+                    }
                 } else {
-                    try writer.print("                return @bitCast(self._reader.{s}({}));\n", .{ read_fn, byte_offset });
+                    try self.writeNumericGroupGetterWithoutDefault(slot.type, byte_offset, writer);
                 }
             },
             .@"enum" => |enum_info| {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
-                if (enum_name) |_| {
-                    try writer.print("                return @enumFromInt(self._reader.readU16({}));\n", .{byte_offset});
+                if (slot.default_value) |default_value| {
+                    if (try self.defaultLiteral(.uint16, default_value)) |literal| {
+                        defer self.allocator.free(literal);
+                        try writer.print("                const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
+                        if (enum_name) |en| {
+                            try writer.print("                return std.meta.intToEnum({s}, raw) catch return error.InvalidEnumValue;\n", .{en});
+                        } else {
+                            try writer.writeAll("                return raw;\n");
+                        }
+                    } else {
+                        if (enum_name) |en| {
+                            try writer.print("                return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
+                        } else {
+                            try writer.print("                return self._reader.readU16({});\n", .{byte_offset});
+                        }
+                    }
                 } else {
-                    try writer.print("                return self._reader.readU16({});\n", .{byte_offset});
+                    if (enum_name) |en| {
+                        try writer.print("                return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
+                    } else {
+                        try writer.print("                return self._reader.readU16({});\n", .{byte_offset});
+                    }
                 }
             },
             .text => {
@@ -689,30 +718,38 @@ pub const StructGenerator = struct {
             .bool => {
                 const byte_offset = slot.offset / 8;
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
-                try writer.print("                self._builder.writeBool({}, {}, value);\n", .{ byte_offset, bit_offset });
+                if (slot.default_value) |default_value| {
+                    const default_bool = self.defaultBool(default_value);
+                    try writer.print("                self._builder.writeBool({}, {}, value != {s});\n", .{
+                        byte_offset,
+                        bit_offset,
+                        if (default_bool) "true" else "false",
+                    });
+                } else {
+                    try writer.print("                self._builder.writeBool({}, {}, value);\n", .{ byte_offset, bit_offset });
+                }
             },
-            .int8, .uint8 => {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                try writer.print("                self._builder.writeU8({}, @bitCast(value));\n", .{byte_offset});
-            },
-            .int16, .uint16 => {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                try writer.print("                self._builder.writeU16({}, @bitCast(value));\n", .{byte_offset});
-            },
-            .int32, .uint32, .float32 => {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                try writer.print("                self._builder.writeU32({}, @bitCast(value));\n", .{byte_offset});
-            },
-            .int64, .uint64, .float64 => {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                try writer.print("                self._builder.writeU64({}, @bitCast(value));\n", .{byte_offset});
-            },
+            .int8, .uint8 => try self.writeNumericGroupSetterBody(slot, "writeU8", "u8", writer),
+            .int16, .uint16 => try self.writeNumericGroupSetterBody(slot, "writeU16", "u16", writer),
+            .int32, .uint32, .float32 => try self.writeNumericGroupSetterBody(slot, "writeU32", "u32", writer),
+            .int64, .uint64, .float64 => try self.writeNumericGroupSetterBody(slot, "writeU64", "u64", writer),
             .@"enum" => |enum_info| {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
-                try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
+                if (slot.default_value) |default_value| {
+                    if (try self.defaultLiteral(.uint16, default_value)) |literal| {
+                        defer self.allocator.free(literal);
+                        try writer.print("                const raw = {s};\n", .{raw_expr});
+                        try writer.print("                const stored = raw ^ {s};\n", .{literal});
+                        try writer.print("                self._builder.writeU16({}, stored);\n", .{byte_offset});
+                    } else {
+                        try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
+                    }
+                } else {
+                    try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
+                }
             },
             .text => try writer.print("                try self._builder.writeText({}, value);\n", .{slot.offset}),
             .data => try writer.print("                try self._builder.writeData({}, value);\n", .{slot.offset}),
@@ -1376,6 +1413,15 @@ pub const StructGenerator = struct {
         }
     }
 
+    fn writeNumericGroupGetterWithoutDefault(self: *StructGenerator, typ: schema.Type, byte_offset: u32, writer: anytype) !void {
+        const read_fn = self.readFnForType(typ);
+        if (self.isUnsigned(typ)) {
+            try writer.print("                return self._reader.{s}({});\n", .{ read_fn, byte_offset });
+        } else {
+            try writer.print("                return @bitCast(self._reader.{s}({}));\n", .{ read_fn, byte_offset });
+        }
+    }
+
     /// Emit the opening boilerplate for a group's inner Reader or Builder struct,
     /// including the wrapped field and its `wrap` constructor.
     fn writeGroupWrapStruct(
@@ -1481,5 +1527,25 @@ pub const StructGenerator = struct {
             }
         }
         try writer.print("            self._builder.{s}({}, @bitCast(value));\n", .{ write_fn, byte_offset });
+    }
+
+    /// Emit a numeric setter body for group fields (4-level indent) with optional XOR-default handling.
+    fn writeNumericGroupSetterBody(
+        self: *StructGenerator,
+        slot: schema.FieldSlot,
+        write_fn: []const u8,
+        cast_width: []const u8,
+        writer: anytype,
+    ) !void {
+        const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+        if (slot.default_value) |default_value| {
+            if (try self.defaultLiteral(slot.type, default_value)) |literal| {
+                defer self.allocator.free(literal);
+                try writer.print("                const stored = @as({s}, @bitCast(value)) ^ {s};\n", .{ cast_width, literal });
+                try writer.print("                self._builder.{s}({}, stored);\n", .{ write_fn, byte_offset });
+                return;
+            }
+        }
+        try writer.print("                self._builder.{s}({}, @bitCast(value));\n", .{ write_fn, byte_offset });
     }
 };

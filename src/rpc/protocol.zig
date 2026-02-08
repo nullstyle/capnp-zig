@@ -85,7 +85,7 @@ pub const CapDescriptor = struct {
 
     pub fn fromReader(reader: message.StructReader) !CapDescriptor {
         const tag_value = reader.readUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES);
-        const tag: CapDescriptorTag = @enumFromInt(tag_value);
+        const tag = std.meta.intToEnum(CapDescriptorTag, tag_value) catch return error.InvalidDiscriminant;
         var id: ?u32 = null;
         var promised_answer: ?PromisedAnswer = null;
         var third_party: ?ThirdPartyCapDescriptor = null;
@@ -540,7 +540,7 @@ pub const SendResultsTo = struct {
 
     fn fromReader(reader: message.StructReader) !SendResultsTo {
         const tag_value = reader.readUnionDiscriminant(CALL_SEND_RESULTS_TO_DISCRIMINANT_OFFSET_BYTES);
-        const tag: SendResultsToTag = @enumFromInt(tag_value);
+        const tag = std.meta.intToEnum(SendResultsToTag, tag_value) catch return error.InvalidDiscriminant;
 
         var third_party: ?message.AnyPointerReader = null;
         if (tag == .third_party) {
@@ -577,7 +577,7 @@ pub const Return = struct {
         const no_finish_needed = reader.readBool(no_finish_bits.byte, no_finish_bits.bit);
 
         const tag_value = reader.readUnionDiscriminant(RETURN_DISCRIMINANT_OFFSET_BYTES);
-        const tag: ReturnTag = @enumFromInt(tag_value);
+        const tag = std.meta.intToEnum(ReturnTag, tag_value) catch return error.InvalidDiscriminant;
 
         var results: ?Payload = null;
         var exception: ?Exception = null;
@@ -644,7 +644,7 @@ pub const MessageTarget = struct {
 
     fn fromReader(reader: message.StructReader) !MessageTarget {
         const tag_value = reader.readUnionDiscriminant(MESSAGE_TARGET_DISCRIMINANT_OFFSET_BYTES);
-        const tag: MessageTargetTag = @enumFromInt(tag_value);
+        const tag = std.meta.intToEnum(MessageTargetTag, tag_value) catch return error.InvalidDiscriminant;
         var imported_cap: ?u32 = null;
         var promised_answer: ?PromisedAnswer = null;
         switch (tag) {
@@ -686,7 +686,7 @@ pub const PromisedAnswerTransform = struct {
     pub fn get(self: PromisedAnswerTransform, index: u32) !PromisedAnswerOp {
         const list = self.list orelse return error.OutOfBounds;
         const reader = try list.get(index);
-        return PromisedAnswerOp.fromReader(reader);
+        return try PromisedAnswerOp.fromReader(reader);
     }
 };
 
@@ -694,9 +694,9 @@ pub const PromisedAnswerOp = struct {
     tag: PromisedAnswerOpTag,
     pointer_index: u16,
 
-    fn fromReader(reader: message.StructReader) PromisedAnswerOp {
+    fn fromReader(reader: message.StructReader) !PromisedAnswerOp {
         const disc = reader.readUnionDiscriminant(PROMISED_ANSWER_OP_DISCRIMINANT_OFFSET_BYTES);
-        const tag: PromisedAnswerOpTag = @enumFromInt(disc);
+        const tag = std.meta.intToEnum(PromisedAnswerOpTag, disc) catch return error.InvalidDiscriminant;
         const pointer_index = switch (tag) {
             .get_pointer_field => reader.readU16(PROMISED_ANSWER_OP_GET_POINTER_FIELD_OFFSET_BYTES),
             else => 0,
@@ -827,7 +827,7 @@ pub const Resolve = struct {
     fn fromReader(reader: message.StructReader) !Resolve {
         const promise_id = reader.readU32(byteOffsetU32(RESOLVE_PROMISE_ID_OFFSET));
         const tag_value = reader.readUnionDiscriminant(RESOLVE_DISCRIMINANT_OFFSET_BYTES);
-        const tag: ResolveTag = @enumFromInt(tag_value);
+        const tag = std.meta.intToEnum(ResolveTag, tag_value) catch return error.InvalidDiscriminant;
         var cap: ?CapDescriptor = null;
         var exception: ?Exception = null;
 
@@ -864,7 +864,7 @@ pub const Disembargo = struct {
         const target = try MessageTarget.fromReader(target_reader);
 
         const tag_value = reader.readUnionDiscriminant(DISEMBARGO_DISCRIMINANT_OFFSET_BYTES);
-        const context_tag: DisembargoContextTag = @enumFromInt(tag_value);
+        const context_tag = std.meta.intToEnum(DisembargoContextTag, tag_value) catch return error.InvalidDiscriminant;
         var embargo_id: ?u32 = null;
         var accept: ?[]const u8 = null;
 

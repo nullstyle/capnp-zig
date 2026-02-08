@@ -42,7 +42,7 @@ clean:
 
 # Format code
 fmt:
-    zig fmt src/ tests/
+    zig fmt --exclude tests/golden src/ tests/ bench/ tools/
 
 # Run example schema compilation
 example: build
