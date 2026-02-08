@@ -759,6 +759,7 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        self.assertThreadAffinity();
         return switch (target) {
             .imported => |cap| peer_call_sender.sendCallToImport(
                 Peer,
@@ -813,6 +814,7 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        self.assertThreadAffinity();
         return peer_call_sender.sendCallPromised(
             Peer,
             CallBuildFn,

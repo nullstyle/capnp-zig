@@ -12,9 +12,15 @@ pub fn queueEmbargoedAccept(
     // Maintain both lookup directions:
     // - embargo key -> pending accept list
     // - answer id -> embargo key (for finish/cancel cleanup)
+    //
+    // Register the question→embargo mapping first so that if the embargo→accepts
+    // update fails we can undo it without leaving a partial commit.
     const embargo_copy = try allocator.alloc(u8, embargo.len);
     errdefer allocator.free(embargo_copy);
     std.mem.copyForwards(u8, embargo_copy, embargo);
+
+    try pending_accept_embargo_by_question.put(answer_id, embargo_copy);
+    errdefer _ = pending_accept_embargo_by_question.remove(answer_id);
 
     if (pending_accepts_by_embargo.getPtr(embargo)) |pending| {
         try pending.append(allocator, .{
@@ -34,8 +40,6 @@ pub fn queueEmbargoedAccept(
         });
         try pending_accepts_by_embargo.put(key, pending);
     }
-
-    try pending_accept_embargo_by_question.put(answer_id, embargo_copy);
 }
 
 pub fn queueEmbargoedAcceptForPeer(

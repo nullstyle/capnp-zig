@@ -210,7 +210,9 @@ pub const InboundCapTable = struct {
         const list = list_opt.?;
         const count = list.len();
         var entries = try allocator.alloc(ResolvedCap, count);
+        errdefer allocator.free(entries);
         const retained = try allocator.alloc(bool, count);
+        errdefer allocator.free(retained);
         @memset(retained, false);
         var idx: u32 = 0;
         while (idx < count) : (idx += 1) {

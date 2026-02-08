@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_peer);
 const cap_table = @import("../cap_table.zig");
 const message = @import("../../message.zig");
 const peer_forwarded_return_logic = @import("forward/peer_forwarded_return_logic.zig");
@@ -401,7 +402,10 @@ pub fn handleDisembargoWithOps(
         .receiver_loopback => {
             // ReceiverLoopback completes the local embargo lifecycle for that promise id.
             const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
-            const promise_id = ops.take_pending_embargo_promise(peer, embargo_id) orelse return;
+            const promise_id = ops.take_pending_embargo_promise(peer, embargo_id) orelse {
+                log.warn("disembargo receiver_loopback for unknown embargo id={}", .{embargo_id});
+                return;
+            };
             ops.clear_resolved_import_embargo(peer, promise_id);
         },
         .accept => {

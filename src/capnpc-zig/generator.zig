@@ -2,7 +2,8 @@ const std = @import("std");
 const log = std.log.scoped(.codegen);
 const schema = @import("../schema.zig");
 const StructGenerator = @import("struct_gen.zig").StructGenerator;
-pub const TypeGenerator = @import("types.zig").TypeGenerator;
+const types = @import("types.zig");
+pub const TypeGenerator = types.TypeGenerator;
 
 /// Code generation driver that turns a set of parsed Cap'n Proto schema nodes
 /// into idiomatic Zig source code with Reader and Builder types for each struct.
@@ -315,6 +316,8 @@ pub const Generator = struct {
             defer self.allocator.free(zig_name);
             const method_field = try self.lowerFirst(zig_name);
             defer self.allocator.free(method_field);
+            const escaped_method_field = try types.escapeZigKeyword(self.allocator, method_field);
+            defer self.allocator.free(escaped_method_field);
             const param_name = try self.resolveNodeName(method.param_struct_type);
             defer self.allocator.free(param_name);
             const result_name = try self.resolveNodeName(method.result_struct_type);
@@ -410,7 +413,7 @@ pub const Generator = struct {
                 result_layout.pointer_words,
             });
             try writer.writeAll("            var results = Results.Builder.wrap(results_builder);\n");
-            try writer.print("            try ctx.server.vtable.{s}(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);\n", .{method_field});
+            try writer.print("            try ctx.server.vtable.{s}(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);\n", .{escaped_method_field});
             try writer.writeAll("            try ret.setEmptyCapTable();\n");
             try writer.writeAll("        }\n");
 
@@ -512,7 +515,9 @@ pub const Generator = struct {
             defer self.allocator.free(zig_name);
             const method_field = try self.lowerFirst(zig_name);
             defer self.allocator.free(method_field);
-            try writer.print("        {s}: {s}.Handler,\n", .{ method_field, zig_name });
+            const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
+            defer self.allocator.free(escaped_field);
+            try writer.print("        {s}: {s}.Handler,\n", .{ escaped_field, zig_name });
         }
         try writer.writeAll("    };\n\n");
 

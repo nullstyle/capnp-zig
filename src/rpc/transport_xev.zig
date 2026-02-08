@@ -172,6 +172,7 @@ pub const Transport = struct {
         errdefer self.allocator.destroy(op);
 
         const owned = try self.allocator.alloc(u8, bytes.len);
+        errdefer self.allocator.free(owned);
         std.mem.copyForwards(u8, owned, bytes);
 
         op.* = .{

@@ -1,6 +1,7 @@
 const std = @import("std");
 const schema = @import("../schema.zig");
-const TypeGenerator = @import("types.zig").TypeGenerator;
+const types = @import("types.zig");
+const TypeGenerator = types.TypeGenerator;
 
 /// Generates Zig source code for a single Cap'n Proto struct node, emitting
 /// a `Reader` type (zero-copy field accessors) and a `Builder` type (field
@@ -77,7 +78,9 @@ pub const StructGenerator = struct {
             if (field.discriminant_value == 0xFFFF) continue;
             const zig_name = try self.type_gen.toZigIdentifier(field.name);
             defer self.allocator.free(zig_name);
-            try writer.print("        {s} = {},\n", .{ zig_name, field.discriminant_value });
+            const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+            defer self.allocator.free(escaped_name);
+            try writer.print("        {s} = {},\n", .{ escaped_name, field.discriminant_value });
         }
         try writer.writeAll("    };\n\n");
     }

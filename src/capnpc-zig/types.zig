@@ -1,6 +1,36 @@
 const std = @import("std");
 const schema = @import("../schema.zig");
 
+/// Zig keywords that must be escaped with @"..." when used as identifiers.
+pub const zig_keywords = std.StaticStringMap(void).initComptime(.{
+    .{ "addrspace", {} }, .{ "align", {} },       .{ "allowzero", {} },
+    .{ "and", {} },       .{ "anyframe", {} },    .{ "anytype", {} },
+    .{ "asm", {} },       .{ "async", {} },       .{ "await", {} },
+    .{ "break", {} },     .{ "callconv", {} },    .{ "catch", {} },
+    .{ "comptime", {} },  .{ "const", {} },       .{ "continue", {} },
+    .{ "defer", {} },     .{ "else", {} },        .{ "enum", {} },
+    .{ "errdefer", {} },  .{ "error", {} },       .{ "export", {} },
+    .{ "extern", {} },    .{ "fn", {} },          .{ "for", {} },
+    .{ "if", {} },        .{ "inline", {} },      .{ "linksection", {} },
+    .{ "noalias", {} },   .{ "nosuspend", {} },   .{ "noinline", {} },
+    .{ "opaque", {} },    .{ "or", {} },          .{ "orelse", {} },
+    .{ "packed", {} },    .{ "pub", {} },         .{ "resume", {} },
+    .{ "return", {} },    .{ "struct", {} },      .{ "suspend", {} },
+    .{ "switch", {} },    .{ "test", {} },        .{ "threadlocal", {} },
+    .{ "try", {} },       .{ "type", {} },        .{ "undefined", {} },
+    .{ "union", {} },     .{ "unreachable", {} }, .{ "var", {} },
+    .{ "volatile", {} },  .{ "while", {} },       .{ "true", {} },
+    .{ "false", {} },     .{ "null", {} },
+});
+
+/// Escape a name with @"..." if it collides with a Zig keyword.
+pub fn escapeZigKeyword(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    if (zig_keywords.has(name)) {
+        return std.fmt.allocPrint(allocator, "@\"{s}\"", .{name});
+    }
+    return allocator.dupe(u8, name);
+}
+
 /// Generate Zig type code for Cap'n Proto types
 pub const TypeGenerator = struct {
     allocator: std.mem.Allocator,

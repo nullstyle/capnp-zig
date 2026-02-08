@@ -874,7 +874,7 @@ pub const Message = struct {
 
         const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
         const total_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
-        if (total_words_u64 > std.math.maxInt(usize)) return error.ListTooLarge;
+        if (total_words_u64 > std.math.maxInt(usize) / 8) return error.ListTooLarge;
         const total_words = @as(usize, @intCast(total_words_u64));
 
         const segment = self.segments[segment_id];

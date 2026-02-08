@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_peer);
 const protocol = @import("../protocol.zig");
 
 pub fn releaseImport(
@@ -52,7 +53,7 @@ pub fn noteExportRef(
     id: u32,
 ) !void {
     var entry = exports.getEntry(id) orelse return error.UnknownExport;
-    entry.value_ptr.ref_count +%= 1;
+    entry.value_ptr.ref_count = std.math.add(u32, entry.value_ptr.ref_count, 1) catch return error.RefCountOverflow;
 }
 
 pub fn releaseExport(
@@ -70,7 +71,10 @@ pub fn releaseExport(
     deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
 ) void {
     if (count == 0) return;
-    var entry = exports.getEntry(id) orelse return;
+    var entry = exports.getEntry(id) orelse {
+        log.warn("release for unknown export id={}", .{id});
+        return;
+    };
 
     if (bootstrap_export_id) |bootstrap_id| {
         if (bootstrap_id == id) {
