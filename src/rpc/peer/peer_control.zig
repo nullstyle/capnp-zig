@@ -1176,23 +1176,24 @@ pub fn handleReturnRegular(
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
     take_adopted_answer_original: *const fn (*PeerType, u32) ?u32,
-    dispatch_question_return: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) void,
+    dispatch_question_return: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *const InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-    maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) void,
-) void {
+    maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
+) !void {
     var callback_ret = ret;
     if (take_adopted_answer_original(peer, ret.answer_id)) |original_answer_id| {
         callback_ret.answer_id = original_answer_id;
     }
 
-    dispatch_question_return(peer, question, callback_ret, inbound_caps);
+    try dispatch_question_return(peer, question, callback_ret, inbound_caps);
 
     if (ret.tag == .results and ret.results != null) {
         release_inbound_caps(peer, inbound_caps) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             report_nonfatal_error(peer, err);
         };
     }
 
-    maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
+    try maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
 }

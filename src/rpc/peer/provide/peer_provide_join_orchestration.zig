@@ -66,7 +66,8 @@ pub fn handleProvide(
         try send_abort(peer, "provide missing recipient");
         return error.MissingThirdPartyPayload;
     };
-    errdefer free_payload(peer, key_bytes);
+    var key_owned = true;
+    errdefer if (key_owned) free_payload(peer, key_bytes);
 
     if (peer_provides_state.hasProvideQuestion(ProvideEntryType, provides_by_question, provide.question_id)) {
         try send_abort(peer, "duplicate provide question");
@@ -92,6 +93,9 @@ pub fn handleProvide(
         key_bytes,
         target,
     );
+    // Ownership of key_bytes has transferred to provides_by_question.
+    // clearProvide will free it on error from here on.
+    key_owned = false;
     errdefer peer_provides_state.clearProvide(
         ProvideEntryType,
         ProvideTargetType,

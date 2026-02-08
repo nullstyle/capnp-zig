@@ -84,8 +84,9 @@ pub fn dispatchQuestionReturn(
     inbound_caps: *const InboundCapsType,
     question_return_fn: *const fn (QuestionType, *PeerType, protocol.Return, *const InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-) void {
+) !void {
     question_return_fn(question, peer, ret, inbound_caps) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         report_nonfatal_error(peer, err);
     };
 }
@@ -98,8 +99,8 @@ pub fn dispatchQuestionReturnForPeer(
     question: QuestionType,
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
-) void {
-    dispatchQuestionReturn(
+) !void {
+    try dispatchQuestionReturn(
         PeerType,
         QuestionType,
         InboundCapsType,
@@ -116,15 +117,15 @@ pub fn dispatchQuestionReturnForPeerFn(
     comptime PeerType: type,
     comptime QuestionType: type,
     comptime InboundCapsType: type,
-) *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) void {
+) *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void {
     return struct {
         fn call(
             peer: *PeerType,
             question: QuestionType,
             ret: protocol.Return,
             inbound_caps: *const InboundCapsType,
-        ) void {
-            dispatchQuestionReturnForPeer(
+        ) anyerror!void {
+            try dispatchQuestionReturnForPeer(
                 PeerType,
                 QuestionType,
                 InboundCapsType,
@@ -175,9 +176,10 @@ pub fn maybeSendAutoFinish(
     no_finish_needed: bool,
     send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
-) void {
+) !void {
     if (!question.is_loopback and !question.suppress_auto_finish and !no_finish_needed) {
         send_finish(peer, answer_id, false) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             report_nonfatal_error(peer, err);
         };
     }
@@ -187,10 +189,10 @@ pub fn maybeSendAutoFinishForPeerFn(
     comptime PeerType: type,
     comptime QuestionType: type,
     comptime send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
-) *const fn (*PeerType, QuestionType, u32, bool) void {
+) *const fn (*PeerType, QuestionType, u32, bool) anyerror!void {
     return struct {
-        fn call(peer: *PeerType, question: QuestionType, answer_id: u32, no_finish_needed: bool) void {
-            maybeSendAutoFinish(
+        fn call(peer: *PeerType, question: QuestionType, answer_id: u32, no_finish_needed: bool) anyerror!void {
+            try maybeSendAutoFinish(
                 PeerType,
                 QuestionType,
                 peer,

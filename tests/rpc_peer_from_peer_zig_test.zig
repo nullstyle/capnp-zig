@@ -3122,13 +3122,9 @@ fn embargoAcceptQueueOomImpl(allocator: std.mem.Allocator) !void {
     try std.testing.expectEqual(@as(usize, 1), peer.pending_accept_embargo_by_question.count());
 }
 
-// TODO: re-enable once production errdefer double-free in handleProvide is resolved.
-// The current test hits a double free when checkAllAllocationFailures triggers OOM
-// between putProvideByQuestion and putProvideByKey: both the outer errdefer
-// (free_payload) and the inner errdefer (clearProvide) free the same key_bytes.
-// test "peer embargo accept queue path propagates OOM without leaks" {
-//     try std.testing.checkAllAllocationFailures(std.testing.allocator, embargoAcceptQueueOomImpl, .{});
-// }
+test "peer embargo accept queue path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, embargoAcceptQueueOomImpl, .{});
+}
 
 fn sendResultsToThirdPartyLocalExportOomImpl(allocator: std.mem.Allocator) !void {
     const NoopHandler = struct {
@@ -3353,15 +3349,10 @@ fn forwardResolvedCallThirdPartyContextOomImpl(allocator: std.mem.Allocator) !vo
     try peer.handleFrame(ret_frame);
 }
 
-// TODO: re-enable once production errdefer in forwardResolvedCall properly frees
-// send_results_to_third_party_payload when sendCallResolved fails with OOM.
-// The current test leaks the captured third-party payload bytes because the
-// errdefer at the create(ForwardCallContext) scope only destroys the context
-// struct, not its owned payload slice.
-// test "peer forwardResolvedCall third-party context path propagates OOM without leaks" {
-//     try std.testing.checkAllAllocationFailures(
-//         std.testing.allocator,
-//         forwardResolvedCallThirdPartyContextOomImpl,
-//         .{},
-//     );
-// }
+test "peer forwardResolvedCall third-party context path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        forwardResolvedCallThirdPartyContextOomImpl,
+        .{},
+    );
+}

@@ -86,9 +86,12 @@ const ResolvedImport = struct {
     embargoed: bool = false,
 };
 
+const QuestionDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
+
 const Question = struct {
     ctx: *anyopaque,
     on_return: QuestionCallback,
+    deinit_ctx: ?QuestionDeinitCtxFn = null,
     is_loopback: bool = false,
     suppress_auto_finish: bool = false,
 };
@@ -106,6 +109,12 @@ const ForwardCallContext = struct {
     send_results_to_third_party_payload: ?[]u8 = null,
     answer_id: u32,
     mode: ForwardReturnMode,
+
+    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+        const ctx: *ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));
+        if (ctx.send_results_to_third_party_payload) |payload| allocator.free(payload);
+        allocator.destroy(ctx);
+    }
 };
 
 const ForwardReturnBuildContext = struct {
@@ -496,6 +505,12 @@ pub const Peer = struct {
             self.allocator,
             &self.resolved_answers,
         );
+        {
+            var q_it = self.questions.valueIterator();
+            while (q_it.next()) |q| {
+                if (q.deinit_ctx) |deinit_ctx| deinit_ctx(self.allocator, q.ctx);
+            }
+        }
         self.questions.deinit();
         self.exports.deinit();
         self.forwarded_questions.deinit();
@@ -811,7 +826,17 @@ pub const Peer = struct {
         mode: ForwardReturnMode,
     ) !void {
         const ctx = try self.allocator.create(ForwardCallContext);
-        errdefer self.allocator.destroy(ctx);
+        ctx.* = .{
+            .peer = self,
+            .payload = call.params,
+            .inbound_caps = inbound_caps,
+            .send_results_to = .caller,
+            .send_results_to_third_party_payload = null,
+            .answer_id = call.question_id,
+            .mode = mode,
+        };
+        var ctx_owned = true;
+        errdefer if (ctx_owned) ForwardCallContext.deinit(self.allocator, ctx);
 
         const forwarded_plan = try peer_forward_orchestration.buildForwardCallPlan(
             Peer,
@@ -820,16 +845,8 @@ pub const Peer = struct {
             call.send_results_to.third_party,
             peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
         );
-
-        ctx.* = .{
-            .peer = self,
-            .payload = call.params,
-            .inbound_caps = inbound_caps,
-            .send_results_to = forwarded_plan.send_results_to,
-            .send_results_to_third_party_payload = forwarded_plan.send_results_to_third_party_payload,
-            .answer_id = call.question_id,
-            .mode = mode,
-        };
+        ctx.send_results_to = forwarded_plan.send_results_to;
+        ctx.send_results_to_third_party_payload = forwarded_plan.send_results_to_third_party_payload;
 
         const forwarded_question_id = try self.sendCallResolved(
             target,
@@ -839,6 +856,12 @@ pub const Peer = struct {
             buildForwardedCall,
             onForwardedReturn,
         );
+        // Once the question is registered, its deinit_ctx handles cleanup
+        // on peer.deinit(); the local errdefer must no longer fire.
+        if (self.questions.getPtr(forwarded_question_id)) |q| {
+            q.deinit_ctx = ForwardCallContext.deinit;
+        }
+        ctx_owned = false;
         const completion = try peer_forward_orchestration.finishForwardResolvedCall(
             Question,
             mode,

@@ -94,8 +94,8 @@ pub fn handleReturnRegularForPeer(
     question: QuestionType,
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
-) void {
-    peer_control.handleReturnRegular(
+) !void {
+    try peer_control.handleReturnRegular(
         PeerType,
         QuestionType,
         InboundCapsType,
@@ -117,15 +117,15 @@ pub fn handleReturnRegularForPeerFn(
     comptime InboundCapsType: type,
     comptime release_inbound_caps_mut: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     comptime send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
-) *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) void {
+) *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void {
     return struct {
         fn call(
             peer: *PeerType,
             question: QuestionType,
             ret: protocol.Return,
             inbound_caps: *const InboundCapsType,
-        ) void {
-            handleReturnRegularForPeer(
+        ) anyerror!void {
+            try handleReturnRegularForPeer(
                 PeerType,
                 QuestionType,
                 InboundCapsType,
@@ -152,8 +152,8 @@ pub fn handleReturn(
     init_inbound_caps: *const fn (*PeerType, protocol.Return) anyerror!InboundCapsType,
     deinit_inbound_caps: *const fn (*InboundCapsType) void,
     handle_return_accept_from_third_party: *const fn (*PeerType, u32, QuestionType, ?message.AnyPointerReader, *const InboundCapsType) anyerror!void,
-    maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) void,
-    handle_return_regular: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) void,
+    maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
+    handle_return_regular: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void,
 ) anyerror!void {
     // Return delivery is two-phase: first locate and remove the waiting question, then
     // build inbound caps scoped to this return for callback dispatch and cleanup.
@@ -175,11 +175,11 @@ pub fn handleReturn(
             ret.accept_from_third_party,
             &inbound_caps,
         );
-        maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
+        try maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
         return;
     }
 
-    handle_return_regular(peer, question, ret, &inbound_caps);
+    try handle_return_regular(peer, question, ret, &inbound_caps);
 }
 
 test "peer_return_orchestration handles missing question via callback" {
