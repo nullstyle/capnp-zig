@@ -3,6 +3,47 @@ const cap_table = @import("../../cap_table.zig");
 const peer_join_state = @import("peer_join_state.zig");
 const peer_provides_state = @import("peer_provides_state.zig");
 const protocol = @import("../../protocol.zig");
+const message = @import("../../../message.zig");
+
+pub fn captureProvideRecipientForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    provide: protocol.Provide,
+    capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+) !?[]u8 {
+    return capture_payload(peer, provide.recipient);
+}
+
+pub fn captureProvideRecipientForPeerFn(
+    comptime PeerType: type,
+    comptime capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+) *const fn (*PeerType, protocol.Provide) anyerror!?[]u8 {
+    return struct {
+        fn call(peer: *PeerType, provide: protocol.Provide) anyerror!?[]u8 {
+            return try captureProvideRecipientForPeer(PeerType, peer, provide, capture_payload);
+        }
+    }.call;
+}
+
+pub fn captureAcceptProvisionForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    accept: protocol.Accept,
+    capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+) !?[]u8 {
+    return capture_payload(peer, accept.provision);
+}
+
+pub fn captureAcceptProvisionForPeerFn(
+    comptime PeerType: type,
+    comptime capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+) *const fn (*PeerType, protocol.Accept) anyerror!?[]u8 {
+    return struct {
+        fn call(peer: *PeerType, accept: protocol.Accept) anyerror!?[]u8 {
+            return try captureAcceptProvisionForPeer(PeerType, peer, accept, capture_payload);
+        }
+    }.call;
+}
 
 pub fn handleProvide(
     comptime PeerType: type,
@@ -457,4 +498,55 @@ test "peer_provide_join_orchestration handleJoin rejects duplicate join question
         ),
     );
     try std.testing.expectEqual(@as(usize, 1), state.abort_calls);
+}
+
+test "peer_provide_join_orchestration capture recipient/provision helper factories use expected pointer fields" {
+    const State = struct {
+        capture_calls: usize = 0,
+        saw_non_null: bool = false,
+
+        fn capture(self: *@This(), ptr: ?message.AnyPointerReader) !?[]u8 {
+            self.capture_calls += 1;
+            if (ptr) |p| self.saw_non_null = !p.isNull();
+            return try std.testing.allocator.dupe(u8, "captured");
+        }
+    };
+
+    var msg_builder = message.MessageBuilder.init(std.testing.allocator);
+    defer msg_builder.deinit();
+    const root = try msg_builder.initRootAnyPointer();
+    try root.setText("hello");
+    const payload = try msg_builder.toBytes();
+    defer std.testing.allocator.free(payload);
+
+    var msg = try message.Message.init(std.testing.allocator, payload);
+    defer msg.deinit();
+    const ptr = try msg.getRootAnyPointer();
+
+    var state = State{};
+    const capture_recipient = captureProvideRecipientForPeerFn(State, State.capture);
+    const capture_provision = captureAcceptProvisionForPeerFn(State, State.capture);
+
+    const recipient_key = try capture_recipient(&state, .{
+        .question_id = 1,
+        .target = .{
+            .tag = .imported_cap,
+            .imported_cap = 1,
+            .promised_answer = null,
+        },
+        .recipient = ptr,
+    });
+    defer std.testing.allocator.free(recipient_key.?);
+
+    const provision_key = try capture_provision(&state, .{
+        .question_id = 2,
+        .embargo = null,
+        .provision = ptr,
+    });
+    defer std.testing.allocator.free(provision_key.?);
+
+    try std.testing.expectEqual(@as(usize, 2), state.capture_calls);
+    try std.testing.expect(state.saw_non_null);
+    try std.testing.expectEqualStrings("captured", recipient_key.?);
+    try std.testing.expectEqualStrings("captured", provision_key.?);
 }

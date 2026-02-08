@@ -576,6 +576,142 @@ test "peer pipelined call to embargoed accept answer waits for disembargo.accept
     try std.testing.expectEqualStrings("ordered", ex.reason);
 }
 
+test "peer handleFrame embargoed accept + promised calls preserve ordering under stress" {
+    const allocator = std.testing.allocator;
+
+    const ServerCtx = struct {
+        called: usize = 0,
+    };
+    const Handlers = struct {
+        fn onCall(
+            ctx: *anyopaque,
+            called_peer: *Peer,
+            call: protocol.Call,
+            inbound_caps: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            _ = inbound_caps;
+            const state: *ServerCtx = @ptrCast(@alignCast(ctx));
+            state.called += 1;
+            try called_peer.sendReturnException(call.question_id, "stress-ordered");
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var server_ctx = ServerCtx{};
+    const export_id = try peer.addExport(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var recipient = try TextPointer.init(allocator, "stress-accept-recipient");
+    defer recipient.deinit(allocator);
+
+    var provide_builder = protocol.MessageBuilder.init(allocator);
+    defer provide_builder.deinit();
+    try provide_builder.buildProvide(
+        1200,
+        .{
+            .tag = .imported_cap,
+            .imported_cap = export_id,
+            .promised_answer = null,
+        },
+        try recipient.any(),
+    );
+    const provide_frame = try provide_builder.finish();
+    defer allocator.free(provide_frame);
+    try peer.handleFrame(provide_frame);
+
+    const embargo = "stress-accept-embargo";
+    const rounds: u32 = 64;
+    var round: u32 = 0;
+    while (round < rounds) : (round += 1) {
+        const frame_start = capture.frames.items.len;
+        const accept_qid: u32 = 1300 + round * 2;
+        const call_qid: u32 = accept_qid + 1;
+
+        var accept_builder = protocol.MessageBuilder.init(allocator);
+        defer accept_builder.deinit();
+        try accept_builder.buildAccept(accept_qid, try recipient.any(), embargo);
+        const accept_frame = try accept_builder.finish();
+        defer allocator.free(accept_frame);
+        try peer.handleFrame(accept_frame);
+
+        var pipelined_builder = protocol.MessageBuilder.init(allocator);
+        defer pipelined_builder.deinit();
+        var pipelined_call = try pipelined_builder.beginCall(call_qid, 0x1234, 1);
+        try pipelined_call.setTargetPromisedAnswer(accept_qid);
+        try pipelined_call.setEmptyCapTable();
+        const pipelined_frame = try pipelined_builder.finish();
+        defer allocator.free(pipelined_frame);
+        try peer.handleFrame(pipelined_frame);
+
+        try std.testing.expect(peer.pending_promises.contains(accept_qid));
+        try std.testing.expectEqual(frame_start, capture.frames.items.len);
+        try std.testing.expectEqual(round, @as(u32, @intCast(server_ctx.called)));
+
+        var disembargo_builder = protocol.MessageBuilder.init(allocator);
+        defer disembargo_builder.deinit();
+        try disembargo_builder.buildDisembargoAccept(
+            .{
+                .tag = .imported_cap,
+                .imported_cap = export_id,
+                .promised_answer = null,
+            },
+            embargo,
+        );
+        const disembargo_frame = try disembargo_builder.finish();
+        defer allocator.free(disembargo_frame);
+        try peer.handleFrame(disembargo_frame);
+
+        try std.testing.expectEqual(frame_start + 2, capture.frames.items.len);
+        try std.testing.expect(!peer.pending_promises.contains(accept_qid));
+        try std.testing.expectEqual(round + 1, @as(u32, @intCast(server_ctx.called)));
+
+        var accept_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start]);
+        defer accept_ret.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.return_, accept_ret.tag);
+        const accept_return = try accept_ret.asReturn();
+        try std.testing.expectEqual(accept_qid, accept_return.answer_id);
+        try std.testing.expectEqual(protocol.ReturnTag.results, accept_return.tag);
+
+        var pipelined_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 1]);
+        defer pipelined_ret.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.return_, pipelined_ret.tag);
+        const replayed_return = try pipelined_ret.asReturn();
+        try std.testing.expectEqual(call_qid, replayed_return.answer_id);
+        try std.testing.expectEqual(protocol.ReturnTag.exception, replayed_return.tag);
+        const ex = replayed_return.exception orelse return error.MissingException;
+        try std.testing.expectEqualStrings("stress-ordered", ex.reason);
+
+        var accept_finish_builder = protocol.MessageBuilder.init(allocator);
+        defer accept_finish_builder.deinit();
+        try accept_finish_builder.buildFinish(accept_qid, false, false);
+        const accept_finish_frame = try accept_finish_builder.finish();
+        defer allocator.free(accept_finish_frame);
+        try peer.handleFrame(accept_finish_frame);
+
+        var call_finish_builder = protocol.MessageBuilder.init(allocator);
+        defer call_finish_builder.deinit();
+        try call_finish_builder.buildFinish(call_qid, false, false);
+        const call_finish_frame = try call_finish_builder.finish();
+        defer allocator.free(call_finish_frame);
+        try peer.handleFrame(call_finish_frame);
+    }
+
+    try std.testing.expectEqual(rounds, @as(u32, @intCast(server_ctx.called)));
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_accepts_by_embargo.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_accept_embargo_by_question.count());
+}
+
 test "peer duplicate provide recipient sends abort" {
     const allocator = std.testing.allocator;
 
@@ -762,6 +898,92 @@ test "peer join returns provided capability" {
     const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
     try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
     try std.testing.expectEqual(export_id, descriptor.id.?);
+}
+
+test "peer handleFrame join aggregates parts and returns capability for each part" {
+    const allocator = std.testing.allocator;
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var key0 = try JoinKeyPartPointer.init(allocator, 0xB2, 2, 0);
+    defer key0.deinit(allocator);
+
+    var join0_builder = protocol.MessageBuilder.init(allocator);
+    defer join0_builder.deinit();
+    try join0_builder.buildJoin(
+        910,
+        .{
+            .tag = .imported_cap,
+            .imported_cap = export_id,
+            .promised_answer = null,
+        },
+        try key0.any(),
+    );
+    const join0_frame = try join0_builder.finish();
+    defer allocator.free(join0_frame);
+    try peer.handleFrame(join0_frame);
+    try std.testing.expectEqual(@as(usize, 0), capture.frames.items.len);
+
+    var key1 = try JoinKeyPartPointer.init(allocator, 0xB2, 2, 1);
+    defer key1.deinit(allocator);
+
+    var join1_builder = protocol.MessageBuilder.init(allocator);
+    defer join1_builder.deinit();
+    try join1_builder.buildJoin(
+        911,
+        .{
+            .tag = .imported_cap,
+            .imported_cap = export_id,
+            .promised_answer = null,
+        },
+        try key1.any(),
+    );
+    const join1_frame = try join1_builder.finish();
+    defer allocator.free(join1_frame);
+    try peer.handleFrame(join1_frame);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+
+    var seen_910 = false;
+    var seen_911 = false;
+    for (capture.frames.items) |out_frame| {
+        var out_decoded = try protocol.DecodedMessage.init(allocator, out_frame);
+        defer out_decoded.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+        const ret = try out_decoded.asReturn();
+        try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+
+        if (ret.answer_id == 910) {
+            seen_910 = true;
+        } else if (ret.answer_id == 911) {
+            seen_911 = true;
+        } else {
+            return error.UnexpectedQuestionId;
+        }
+
+        const payload = ret.results orelse return error.MissingPayload;
+        const cap = try payload.content.getCapability();
+        const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
+        const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
+        try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+        try std.testing.expectEqual(export_id, descriptor.id.?);
+    }
+    try std.testing.expect(seen_910);
+    try std.testing.expect(seen_911);
 }
 
 test "peer duplicate join question sends abort" {
@@ -1201,4 +1423,8 @@ test "peer duplicate awaitFromThirdParty completion sends abort" {
     try std.testing.expectEqual(protocol.MessageTag.abort, decoded.tag);
     const abort = try decoded.asAbort();
     try std.testing.expectEqualStrings("duplicate awaitFromThirdParty completion", abort.exception.reason);
+}
+
+test {
+    _ = @import("rpc_peer_control_from_peer_control_zig_test.zig");
 }

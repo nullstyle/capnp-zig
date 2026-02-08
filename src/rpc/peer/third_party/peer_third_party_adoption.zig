@@ -102,6 +102,64 @@ pub fn handleThirdPartyAnswer(
     owns_completion_key = false;
 }
 
+pub fn captureThirdPartyCompletionForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    third_party_answer: protocol.ThirdPartyAnswer,
+    capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+) !?[]u8 {
+    return capture_payload(peer, third_party_answer.completion);
+}
+
+pub fn captureThirdPartyCompletionForPeerFn(
+    comptime PeerType: type,
+    comptime capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+) *const fn (*PeerType, protocol.ThirdPartyAnswer) anyerror!?[]u8 {
+    return struct {
+        fn call(peer: *PeerType, third_party_answer: protocol.ThirdPartyAnswer) anyerror!?[]u8 {
+            return try captureThirdPartyCompletionForPeer(PeerType, peer, third_party_answer, capture_payload);
+        }
+    }.call;
+}
+
+pub fn adoptPendingAwaitEntryForPeer(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+    comptime PendingAwaitType: type,
+    peer: *PeerType,
+    adopted_answer_id: u32,
+    pending_await: PendingAwaitType,
+    adopt_third_party_answer: *const fn (*PeerType, u32, u32, QuestionType) anyerror!void,
+) !void {
+    try adopt_third_party_answer(
+        peer,
+        pending_await.question_id,
+        adopted_answer_id,
+        pending_await.question,
+    );
+}
+
+pub fn adoptPendingAwaitEntryForPeerFn(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+    comptime PendingAwaitType: type,
+    comptime adopt_third_party_answer: *const fn (*PeerType, u32, u32, QuestionType) anyerror!void,
+) *const fn (*PeerType, u32, PendingAwaitType) anyerror!void {
+    return struct {
+        fn call(peer: *PeerType, adopted_answer_id: u32, pending_await: PendingAwaitType) anyerror!void {
+            try adoptPendingAwaitEntryForPeer(
+                PeerType,
+                QuestionType,
+                PendingAwaitType,
+                peer,
+                adopted_answer_id,
+                pending_await,
+                adopt_third_party_answer,
+            );
+        }
+    }.call;
+}
+
 pub fn handleReturnAcceptFromThirdParty(
     comptime PeerType: type,
     comptime QuestionType: type,
@@ -143,6 +201,53 @@ pub fn handleReturnAcceptFromThirdParty(
         );
         owns_completion_key = false;
     }
+}
+
+pub fn handleReturnAcceptFromThirdPartyForPeerFn(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+    comptime PendingAwaitType: type,
+    comptime InboundCapsType: type,
+    comptime capture_completion_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
+    comptime free_payload: *const fn (*PeerType, []u8) void,
+    comptime send_abort: *const fn (*PeerType, []const u8) anyerror!void,
+    comptime adopt_third_party_answer: *const fn (*PeerType, u32, u32, QuestionType) anyerror!void,
+) *const fn (*PeerType, u32, QuestionType, ?message.AnyPointerReader, *const InboundCapsType) anyerror!void {
+    return struct {
+        fn makePendingAwait(question_id: u32, question: QuestionType) PendingAwaitType {
+            return .{
+                .question_id = question_id,
+                .question = question,
+            };
+        }
+
+        fn call(
+            peer: *PeerType,
+            answer_id: u32,
+            question: QuestionType,
+            accept_from_third_party: ?message.AnyPointerReader,
+            inbound_caps: *const InboundCapsType,
+        ) anyerror!void {
+            _ = inbound_caps;
+            try handleReturnAcceptFromThirdParty(
+                PeerType,
+                QuestionType,
+                PendingAwaitType,
+                peer.allocator,
+                peer,
+                answer_id,
+                question,
+                accept_from_third_party,
+                &peer.pending_third_party_awaits,
+                &peer.pending_third_party_answers,
+                capture_completion_payload,
+                free_payload,
+                send_abort,
+                adopt_third_party_answer,
+                makePendingAwait,
+            );
+        }
+    }.call;
 }
 
 test "peer_third_party_adoption adoptThirdPartyAnswer records adoption and replays pending return" {
@@ -365,4 +470,167 @@ test "peer_third_party_adoption handleThirdPartyAnswer adopts pending await" {
     try std.testing.expectEqual(@as(u32, 0x4000_0042), state.adopted_answer_id);
     try std.testing.expectEqual(@as(u32, 7), state.adopted_question_id);
     try std.testing.expectEqual(@as(u32, 13), state.adopted_question);
+}
+
+test "peer_third_party_adoption captureThirdPartyCompletionForPeerFn forwards completion pointer payload" {
+    const FakePeer = struct {
+        capture_calls: usize = 0,
+        saw_non_null_completion: bool = false,
+
+        fn capturePayload(self: *@This(), maybe_ptr: ?message.AnyPointerReader) !?[]u8 {
+            self.capture_calls += 1;
+            if (maybe_ptr) |ptr| {
+                self.saw_non_null_completion = !ptr.isNull();
+            }
+            return try std.testing.allocator.dupe(u8, "captured");
+        }
+    };
+
+    var peer = FakePeer{};
+    const capture = captureThirdPartyCompletionForPeerFn(FakePeer, FakePeer.capturePayload);
+
+    var completion_builder = message.MessageBuilder.init(std.testing.allocator);
+    defer completion_builder.deinit();
+    const completion_root = try completion_builder.initRootAnyPointer();
+    try completion_root.setText("done");
+    const completion_payload = try completion_builder.toBytes();
+    defer std.testing.allocator.free(completion_payload);
+
+    var completion_msg = try message.Message.init(std.testing.allocator, completion_payload);
+    defer completion_msg.deinit();
+    const completion_ptr = try completion_msg.getRootAnyPointer();
+
+    const captured = try capture(&peer, .{
+        .answer_id = 0x4000_0077,
+        .completion = completion_ptr,
+    });
+    defer std.testing.allocator.free(captured.?);
+
+    try std.testing.expectEqual(@as(usize, 1), peer.capture_calls);
+    try std.testing.expect(peer.saw_non_null_completion);
+    try std.testing.expectEqualStrings("captured", captured.?);
+}
+
+test "peer_third_party_adoption adoptPendingAwaitEntryForPeerFn maps pending await fields to adopter callback" {
+    const PendingAwait = struct {
+        question_id: u32,
+        question: u32,
+    };
+    const FakePeer = struct {
+        adopted_question_id: u32 = 0,
+        adopted_answer_id: u32 = 0,
+        adopted_question: u32 = 0,
+
+        fn adopt(self: *@This(), question_id: u32, adopted_answer_id: u32, question: u32) !void {
+            self.adopted_question_id = question_id;
+            self.adopted_answer_id = adopted_answer_id;
+            self.adopted_question = question;
+        }
+    };
+
+    var peer = FakePeer{};
+    const adopt_pending = adoptPendingAwaitEntryForPeerFn(
+        FakePeer,
+        u32,
+        PendingAwait,
+        FakePeer.adopt,
+    );
+
+    try adopt_pending(&peer, 0x4000_0099, .{
+        .question_id = 55,
+        .question = 88,
+    });
+
+    try std.testing.expectEqual(@as(u32, 55), peer.adopted_question_id);
+    try std.testing.expectEqual(@as(u32, 0x4000_0099), peer.adopted_answer_id);
+    try std.testing.expectEqual(@as(u32, 88), peer.adopted_question);
+}
+
+test "peer_third_party_adoption handleReturnAcceptFromThirdPartyForPeerFn adopts pending answer id" {
+    const PendingAwait = struct {
+        question_id: u32,
+        question: u32,
+    };
+    const InboundCaps = struct {};
+    const FakePeer = struct {
+        allocator: std.mem.Allocator,
+        pending_third_party_awaits: std.StringHashMap(PendingAwait),
+        pending_third_party_answers: std.StringHashMap(u32),
+        adopted_question_id: u32 = 0,
+        adopted_answer_id: u32 = 0,
+        adopted_question: u32 = 0,
+
+        fn init(allocator: std.mem.Allocator) @This() {
+            return .{
+                .allocator = allocator,
+                .pending_third_party_awaits = std.StringHashMap(PendingAwait).init(allocator),
+                .pending_third_party_answers = std.StringHashMap(u32).init(allocator),
+            };
+        }
+
+        fn deinit(self: *@This()) void {
+            var await_it = self.pending_third_party_awaits.iterator();
+            while (await_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+            self.pending_third_party_awaits.deinit();
+
+            var answer_it = self.pending_third_party_answers.iterator();
+            while (answer_it.next()) |entry| self.allocator.free(entry.key_ptr.*);
+            self.pending_third_party_answers.deinit();
+        }
+
+        fn captureCompletionPayload(
+            self: *@This(),
+            await_ptr: ?message.AnyPointerReader,
+        ) !?[]u8 {
+            _ = await_ptr;
+            return try self.allocator.dupe(u8, "completion-key");
+        }
+
+        fn freePayload(self: *@This(), payload: []u8) void {
+            self.allocator.free(payload);
+        }
+
+        fn sendAbort(self: *@This(), reason: []const u8) !void {
+            _ = self;
+            _ = reason;
+            return error.TestUnexpectedResult;
+        }
+
+        fn adoptThirdPartyAnswer(
+            self: *@This(),
+            question_id: u32,
+            adopted_answer_id: u32,
+            question: u32,
+        ) !void {
+            self.adopted_question_id = question_id;
+            self.adopted_answer_id = adopted_answer_id;
+            self.adopted_question = question;
+        }
+    };
+
+    var peer = FakePeer.init(std.testing.allocator);
+    defer peer.deinit();
+
+    const key = try std.testing.allocator.dupe(u8, "completion-key");
+    try peer.pending_third_party_answers.put(key, 0x4000_00AA);
+
+    const handle_accept = handleReturnAcceptFromThirdPartyForPeerFn(
+        FakePeer,
+        u32,
+        PendingAwait,
+        InboundCaps,
+        FakePeer.captureCompletionPayload,
+        FakePeer.freePayload,
+        FakePeer.sendAbort,
+        FakePeer.adoptThirdPartyAnswer,
+    );
+
+    const inbound = InboundCaps{};
+    try handle_accept(&peer, 55, 99, null, &inbound);
+
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_awaits.count());
+    try std.testing.expectEqual(@as(u32, 55), peer.adopted_question_id);
+    try std.testing.expectEqual(@as(u32, 0x4000_00AA), peer.adopted_answer_id);
+    try std.testing.expectEqual(@as(u32, 99), peer.adopted_question);
 }

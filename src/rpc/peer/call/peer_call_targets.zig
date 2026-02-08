@@ -55,6 +55,21 @@ pub fn planPromisedTarget(
     return .{ .handle_resolved = resolved };
 }
 
+pub fn hasUnresolvedPromiseExportForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) bool {
+    if (peer.exports.getEntry(export_id)) |entry| {
+        return entry.value_ptr.is_promise and entry.value_ptr.resolved == null;
+    }
+    return false;
+}
+
+pub fn hasUnresolvedPromiseExportForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) bool {
+    return struct {
+        fn call(peer: *PeerType, export_id: u32) bool {
+            return hasUnresolvedPromiseExportForPeer(PeerType, peer, export_id);
+        }
+    }.call;
+}
+
 test "peer_call_targets imported target planning covers all branches" {
     try std.testing.expectEqual(
         ImportedTargetPlan.unknown_capability,
@@ -202,4 +217,39 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
             else => return error.TestExpectedEqual,
         }
     }
+}
+
+test "peer_call_targets hasUnresolvedPromiseExportForPeerFn inspects export promise resolution state" {
+    const FakeEntry = struct {
+        is_promise: bool = false,
+        resolved: ?cap_table.ResolvedCap = null,
+    };
+    const FakePeer = struct {
+        exports: std.AutoHashMap(u32, FakeEntry),
+
+        fn init(allocator: std.mem.Allocator) @This() {
+            return .{
+                .exports = std.AutoHashMap(u32, FakeEntry).init(allocator),
+            };
+        }
+
+        fn deinit(self: *@This()) void {
+            self.exports.deinit();
+        }
+    };
+
+    var peer = FakePeer.init(std.testing.allocator);
+    defer peer.deinit();
+    const has_unresolved = hasUnresolvedPromiseExportForPeerFn(FakePeer);
+
+    try std.testing.expect(!has_unresolved(&peer, 1));
+
+    try peer.exports.put(1, .{ .is_promise = false, .resolved = null });
+    try std.testing.expect(!has_unresolved(&peer, 1));
+
+    try peer.exports.put(1, .{ .is_promise = true, .resolved = null });
+    try std.testing.expect(has_unresolved(&peer, 1));
+
+    try peer.exports.put(1, .{ .is_promise = true, .resolved = .none });
+    try std.testing.expect(!has_unresolved(&peer, 1));
 }

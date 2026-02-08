@@ -1,6 +1,13 @@
 const std = @import("std");
+const list_reader_module = @import("message/list_readers.zig");
+const list_builder_module = @import("message/list_builders.zig");
+const any_pointer_reader_module = @import("message/any_pointer_reader.zig");
+const any_pointer_builder_module = @import("message/any_pointer_builder.zig");
+const struct_builder_module = @import("message/struct_builder.zig");
+const clone_any_pointer_module = @import("message/clone_any_pointer.zig");
 
 fn decodeOffsetWords(pointer_word: u64) i32 {
+    // Cap'n Proto stores a 30-bit signed offset in words (two's complement).
     const raw: u32 = @truncate((pointer_word >> 2) & 0x3FFFFFFF);
     if ((raw & 0x20000000) != 0) {
         return @as(i32, @intCast(raw)) - (@as(i32, 1) << 30);
@@ -86,6 +93,7 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
         index += 1;
 
         if (tag == 0x00) {
+            // Zero tag: emit current all-zero word plus run-length encoded extra zero words.
             try out.appendNTimes(allocator, 0, 8);
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
@@ -97,6 +105,7 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
         }
 
         if (tag == 0xFF) {
+            // 0xFF tag: current word is literal and may be followed by literal run words.
             if (index + 8 > packed_bytes.len) return error.UnexpectedEof;
             try out.appendSlice(allocator, packed_bytes[index .. index + 8]);
             index += 8;
@@ -149,6 +158,7 @@ fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
         }
 
         if (tag == 0x00) {
+            // Collapse consecutive zero words into a single run record.
             var run: usize = 1;
             var scan = index + 8;
             while (run < 256 and scan + 8 <= bytes.len) : (scan += 8) {
@@ -171,6 +181,7 @@ fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
         }
 
         if (tag == 0xFF) {
+            // Collapse consecutive all-nonzero words into a literal run record.
             var run: usize = 1;
             var scan = index + 8;
             while (run < 256 and scan + 8 <= bytes.len) : (scan += 8) {
@@ -360,10 +371,12 @@ pub const Message = struct {
         if (landing_pos + 8 > landing_segment.len) return error.OutOfBounds;
 
         if (!far.landing_pad_is_double) {
+            // Single-far: landing pad directly stores the pointed-to pointer word.
             const landing_word = try self.readWord(far.segment_id, landing_pos);
             return try self.resolvePointer(far.segment_id, landing_pos, landing_word, depth - 1);
         }
 
+        // Double-far: landing pad has [far-to-content, tag-word].
         if (landing_pos + 16 > landing_segment.len) return error.OutOfBounds;
 
         const landing_word = try self.readWord(far.segment_id, landing_pos);
@@ -1198,563 +1211,42 @@ pub const StructReader = struct {
     }
 };
 
-pub const StructListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-    data_words: u16,
-    pointer_words: u16,
-
-    pub fn len(self: StructListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: StructListReader, index: u32) !StructReader {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const stride = (@as(usize, self.data_words) + @as(usize, self.pointer_words)) * 8;
-        const offset = self.elements_offset + @as(usize, index) * stride;
-        return StructReader{
-            .message = self.message,
-            .segment_id = self.segment_id,
-            .offset = offset,
-            .data_size = self.data_words,
-            .pointer_count = self.pointer_words,
-        };
-    }
-};
-
-pub const TextListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: TextListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: TextListReader, index: u32) ![]const u8 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        const segment = self.message.segments[self.segment_id];
-        if (pointer_pos + 8 > segment.len) return error.OutOfBounds;
-
-        const pointer_word = std.mem.readInt(u64, segment[pointer_pos..][0..8], .little);
-        if (pointer_word == 0) return "";
-
-        const list = try self.message.resolveListPointer(self.segment_id, pointer_pos, pointer_word);
-        if (list.element_size != 2) return error.InvalidTextPointer;
-
-        const list_segment = self.message.segments[list.segment_id];
-        if (list.content_offset + list.element_count > list_segment.len) return error.OutOfBounds;
-
-        const text_data = list_segment[list.content_offset .. list.content_offset + list.element_count];
-        if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
-            return text_data[0 .. text_data.len - 1];
-        }
-        return text_data;
-    }
-};
-
-pub const U8ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U8ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: U8ListReader, index: u32) !u8 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index);
-        const segment = self.message.segments[self.segment_id];
-        if (offset >= segment.len) return error.OutOfBounds;
-        return segment[offset];
-    }
-
-    pub fn slice(self: U8ListReader) []const u8 {
-        const segment = self.message.segments[self.segment_id];
-        return segment[self.elements_offset .. self.elements_offset + @as(usize, self.element_count)];
-    }
-};
-
-pub const I8ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I8ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: I8ListReader, index: u32) !i8 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index);
-        const segment = self.message.segments[self.segment_id];
-        if (offset >= segment.len) return error.OutOfBounds;
-        return @bitCast(segment[offset]);
-    }
-};
-
-pub const U16ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U16ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: U16ListReader, index: u32) !u16 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 2;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 2 > segment.len) return error.OutOfBounds;
-        return std.mem.readInt(u16, segment[offset..][0..2], .little);
-    }
-};
-
-pub const I16ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I16ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: I16ListReader, index: u32) !i16 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 2;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 2 > segment.len) return error.OutOfBounds;
-        return std.mem.readInt(i16, segment[offset..][0..2], .little);
-    }
-};
-
-pub const U32ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U32ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: U32ListReader, index: u32) !u32 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 4;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 4 > segment.len) return error.OutOfBounds;
-        return std.mem.readInt(u32, segment[offset..][0..4], .little);
-    }
-};
-
-pub const I32ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I32ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: I32ListReader, index: u32) !i32 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 4;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 4 > segment.len) return error.OutOfBounds;
-        return std.mem.readInt(i32, segment[offset..][0..4], .little);
-    }
-};
-
-pub const F32ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: F32ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: F32ListReader, index: u32) !f32 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 4;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 4 > segment.len) return error.OutOfBounds;
-        const raw = std.mem.readInt(u32, segment[offset..][0..4], .little);
-        return @bitCast(raw);
-    }
-};
-
-pub const U64ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U64ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: U64ListReader, index: u32) !u64 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 8;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 8 > segment.len) return error.OutOfBounds;
-        return std.mem.readInt(u64, segment[offset..][0..8], .little);
-    }
-};
-
-pub const I64ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I64ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: I64ListReader, index: u32) !i64 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 8;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 8 > segment.len) return error.OutOfBounds;
-        return std.mem.readInt(i64, segment[offset..][0..8], .little);
-    }
-};
-
-pub const F64ListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: F64ListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: F64ListReader, index: u32) !f64 {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 8;
-        const segment = self.message.segments[self.segment_id];
-        if (offset + 8 > segment.len) return error.OutOfBounds;
-        const raw = std.mem.readInt(u64, segment[offset..][0..8], .little);
-        return @bitCast(raw);
-    }
-};
-
-pub const BoolListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: BoolListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: BoolListReader, index: u32) !bool {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const byte_index = @as(usize, index / 8);
-        const bit_index: u3 = @intCast(index % 8);
-        const offset = self.elements_offset + byte_index;
-        const segment = self.message.segments[self.segment_id];
-        if (offset >= segment.len) return error.OutOfBounds;
-        return (segment[offset] & (@as(u8, 1) << bit_index)) != 0;
-    }
-};
-
-pub const VoidListReader = struct {
-    element_count: u32,
-
-    pub fn len(self: VoidListReader) u32 {
-        return self.element_count;
-    }
-
-    pub fn get(self: VoidListReader, index: u32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-    }
-};
-
-pub const PointerListReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: PointerListReader) u32 {
-        return self.element_count;
-    }
-
-    fn readPointer(self: PointerListReader, index: u32) !struct { pos: usize, word: u64 } {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        const segment = self.message.segments[self.segment_id];
-        if (pointer_pos + 8 > segment.len) return error.OutOfBounds;
-        const pointer_word = std.mem.readInt(u64, segment[pointer_pos..][0..8], .little);
-        return .{ .pos = pointer_pos, .word = pointer_word };
-    }
-
-    fn readList(self: PointerListReader, index: u32) !Message.ResolvedListPointer {
-        const ptr = try self.readPointer(index);
-        if (ptr.word == 0) return error.InvalidPointer;
-        return self.message.resolveListPointer(self.segment_id, ptr.pos, ptr.word);
-    }
-
-    pub fn getText(self: PointerListReader, index: u32) ![]const u8 {
-        const ptr = try self.readPointer(index);
-        if (ptr.word == 0) return "";
-
-        const list = try self.message.resolveListPointer(self.segment_id, ptr.pos, ptr.word);
-        if (list.element_size != 2) return error.InvalidTextPointer;
-
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + list.element_count > segment.len) return error.OutOfBounds;
-
-        const text_data = segment[list.content_offset .. list.content_offset + list.element_count];
-        if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
-            return text_data[0 .. text_data.len - 1];
-        }
-        return text_data;
-    }
-
-    pub fn getStruct(self: PointerListReader, index: u32) !StructReader {
-        const ptr = try self.readPointer(index);
-        if (ptr.word == 0) return error.InvalidPointer;
-        return self.message.resolveStructPointer(self.segment_id, ptr.pos, ptr.word);
-    }
-
-    pub fn getCapability(self: PointerListReader, index: u32) !Capability {
-        const ptr = try self.readPointer(index);
-        if (ptr.word == 0) return error.InvalidPointer;
-        const any = AnyPointerReader{
-            .message = self.message,
-            .segment_id = self.segment_id,
-            .pointer_pos = ptr.pos,
-            .pointer_word = ptr.word,
-        };
-        return any.getCapability();
-    }
-
-    pub fn getData(self: PointerListReader, index: u32) ![]const u8 {
-        const list = try self.readList(index);
-        if (list.element_size != 2) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return segment[list.content_offset .. list.content_offset + total_bytes];
-    }
-
-    pub fn getU8List(self: PointerListReader, index: u32) !U8ListReader {
-        const list = try self.readList(index);
-        if (list.element_size != 2) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getI8List(self: PointerListReader, index: u32) !I8ListReader {
-        const list = try self.getU8List(index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getU16List(self: PointerListReader, index: u32) !U16ListReader {
-        const list = try self.readList(index);
-        if (list.element_size != 3) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getI16List(self: PointerListReader, index: u32) !I16ListReader {
-        const list = try self.getU16List(index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getU32List(self: PointerListReader, index: u32) !U32ListReader {
-        const list = try self.readList(index);
-        if (list.element_size != 4) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getI32List(self: PointerListReader, index: u32) !I32ListReader {
-        const list = try self.getU32List(index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getF32List(self: PointerListReader, index: u32) !F32ListReader {
-        const list = try self.getU32List(index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getU64List(self: PointerListReader, index: u32) !U64ListReader {
-        const list = try self.readList(index);
-        if (list.element_size != 5) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getI64List(self: PointerListReader, index: u32) !I64ListReader {
-        const list = try self.getU64List(index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getF64List(self: PointerListReader, index: u32) !F64ListReader {
-        const list = try self.getU64List(index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getBoolList(self: PointerListReader, index: u32) !BoolListReader {
-        const list = try self.readList(index);
-        if (list.element_size != 1) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
-    }
-};
-
-pub const AnyPointerReader = struct {
-    message: *const Message,
-    segment_id: u32,
-    pointer_pos: usize,
-    pointer_word: u64,
-
-    pub fn isNull(self: AnyPointerReader) bool {
-        return self.pointer_word == 0;
-    }
-
-    pub fn getStruct(self: AnyPointerReader) !StructReader {
-        if (self.pointer_word == 0) return error.InvalidPointer;
-        return self.message.resolveStructPointer(self.segment_id, self.pointer_pos, self.pointer_word);
-    }
-
-    pub fn getList(self: AnyPointerReader) !Message.ResolvedListPointer {
-        if (self.pointer_word == 0) return error.InvalidPointer;
-        return self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
-    }
-
-    pub fn getInlineCompositeList(self: AnyPointerReader) !InlineCompositeList {
-        if (self.pointer_word == 0) return error.InvalidPointer;
-        return self.message.resolveInlineCompositeList(self.segment_id, self.pointer_pos, self.pointer_word);
-    }
-
-    pub fn getText(self: AnyPointerReader) ![]const u8 {
-        if (self.pointer_word == 0) return "";
-        const list = try self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
-        if (list.element_size != 2) return error.InvalidTextPointer;
-
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + list.element_count > segment.len) return error.OutOfBounds;
-
-        const text_data = segment[list.content_offset .. list.content_offset + list.element_count];
-        if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
-            return text_data[0 .. text_data.len - 1];
-        }
-        return text_data;
-    }
-
-    pub fn getData(self: AnyPointerReader) ![]const u8 {
-        if (self.pointer_word == 0) return "";
-        const list = try self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
-        if (list.element_size != 2) return error.InvalidPointer;
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-        return segment[list.content_offset .. list.content_offset + total_bytes];
-    }
-
-    pub fn getPointerList(self: AnyPointerReader) !PointerListReader {
-        const list = try self.getList();
-        if (list.element_size != 6) return error.InvalidPointer;
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
-    }
-
-    pub fn getCapability(self: AnyPointerReader) !Capability {
-        if (self.pointer_word == 0) return error.InvalidPointer;
-        const resolved = try self.message.resolvePointer(self.segment_id, self.pointer_pos, self.pointer_word, 8);
-        if (resolved.pointer_word == 0) return error.InvalidPointer;
-        return .{ .id = try decodeCapabilityPointer(resolved.pointer_word) };
-    }
-};
+const list_reader_defs = list_reader_module.define(
+    Message,
+    StructReader,
+    Capability,
+    InlineCompositeList,
+    listContentBytes,
+    listContentWords,
+    decodeCapabilityPointer,
+);
+
+pub const StructListReader = list_reader_defs.StructListReader;
+pub const TextListReader = list_reader_defs.TextListReader;
+pub const U8ListReader = list_reader_defs.U8ListReader;
+pub const I8ListReader = list_reader_defs.I8ListReader;
+pub const U16ListReader = list_reader_defs.U16ListReader;
+pub const I16ListReader = list_reader_defs.I16ListReader;
+pub const U32ListReader = list_reader_defs.U32ListReader;
+pub const I32ListReader = list_reader_defs.I32ListReader;
+pub const F32ListReader = list_reader_defs.F32ListReader;
+pub const U64ListReader = list_reader_defs.U64ListReader;
+pub const I64ListReader = list_reader_defs.I64ListReader;
+pub const F64ListReader = list_reader_defs.F64ListReader;
+pub const BoolListReader = list_reader_defs.BoolListReader;
+pub const VoidListReader = list_reader_defs.VoidListReader;
+pub const PointerListReader = list_reader_defs.PointerListReader;
+const any_pointer_reader_defs = any_pointer_reader_module.define(
+    Message,
+    StructReader,
+    PointerListReader,
+    InlineCompositeList,
+    Capability,
+    listContentBytes,
+    decodeCapabilityPointer,
+);
+
+pub const AnyPointerReader = any_pointer_reader_defs.AnyPointerReader;
 
 pub const AnyPointerBuilder = struct {
     builder: *MessageBuilder,
@@ -1762,36 +1254,25 @@ pub const AnyPointerBuilder = struct {
     pointer_pos: usize,
 
     pub fn setNull(self: AnyPointerBuilder) !void {
-        if (self.segment_id >= self.builder.segments.items.len) return error.InvalidSegmentId;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (self.pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u64, segment.items[self.pointer_pos..][0..8], 0, .little);
+        return any_pointer_builder_module.setNull(self.builder, self.segment_id, self.pointer_pos);
     }
 
     pub fn setText(self: AnyPointerBuilder, text: []const u8) !void {
-        try self.builder.writeTextPointer(self.segment_id, self.pointer_pos, text, self.segment_id);
+        return any_pointer_builder_module.setText(self.builder, self.segment_id, self.pointer_pos, text);
     }
 
     pub fn setData(self: AnyPointerBuilder, data: []const u8) !void {
-        if (data.len > std.math.maxInt(u32)) return error.ElementCountTooLarge;
-        const offset = try self.builder.writeListPointer(
-            self.segment_id,
-            self.pointer_pos,
-            2,
-            @as(u32, @intCast(data.len)),
-            self.segment_id,
-        );
-        const segment = &self.builder.segments.items[self.segment_id];
-        const slice = segment.items[offset .. offset + data.len];
-        std.mem.copyForwards(u8, slice, data);
+        return any_pointer_builder_module.setData(self.builder, self.segment_id, self.pointer_pos, data);
     }
 
     pub fn setCapability(self: AnyPointerBuilder, cap: Capability) !void {
-        if (self.segment_id >= self.builder.segments.items.len) return error.InvalidSegmentId;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (self.pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-        const pointer_word = try makeCapabilityPointer(cap.id);
-        std.mem.writeInt(u64, segment.items[self.pointer_pos..][0..8], pointer_word, .little);
+        return any_pointer_builder_module.setCapability(
+            self.builder,
+            self.segment_id,
+            self.pointer_pos,
+            cap,
+            makeCapabilityPointer,
+        );
     }
 
     pub fn initStruct(self: AnyPointerBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
@@ -1811,7 +1292,7 @@ pub const AnyPointerBuilder = struct {
     }
 
     pub fn initPointerList(self: AnyPointerBuilder, element_count: u32) !PointerListBuilder {
-        const offset = try self.builder.writeListPointer(self.segment_id, self.pointer_pos, 6, element_count, self.segment_id);
+        const offset = try any_pointer_builder_module.initList(self.builder, self.segment_id, self.pointer_pos, 6, element_count);
         return .{
             .builder = self.builder,
             .segment_id = self.segment_id,
@@ -1821,7 +1302,7 @@ pub const AnyPointerBuilder = struct {
     }
 
     fn initList(self: AnyPointerBuilder, element_size: u3, element_count: u32) !struct { offset: usize } {
-        const offset = try self.builder.writeListPointer(self.segment_id, self.pointer_pos, element_size, element_count, self.segment_id);
+        const offset = try any_pointer_builder_module.initList(self.builder, self.segment_id, self.pointer_pos, element_size, element_count);
         return .{ .offset = offset };
     }
 
@@ -2013,7 +1494,7 @@ pub const MessageBuilder = struct {
         };
     }
 
-    fn writeTextPointer(
+    pub fn writeTextPointer(
         self: *MessageBuilder,
         pointer_segment_id: u32,
         pointer_pos: usize,
@@ -2058,7 +1539,7 @@ pub const MessageBuilder = struct {
         std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], far_ptr, .little);
     }
 
-    fn writeStructPointer(
+    pub fn writeStructPointer(
         self: *MessageBuilder,
         pointer_segment_id: u32,
         pointer_pos: usize,
@@ -2117,7 +1598,7 @@ pub const MessageBuilder = struct {
         };
     }
 
-    fn writeListPointer(
+    pub fn writeListPointer(
         self: *MessageBuilder,
         pointer_segment_id: u32,
         pointer_pos: usize,
@@ -2173,7 +1654,7 @@ pub const MessageBuilder = struct {
         return list_offset;
     }
 
-    fn writeStructListPointer(
+    pub fn writeStructListPointer(
         self: *MessageBuilder,
         pointer_segment_id: u32,
         pointer_pos: usize,
@@ -2420,1278 +1901,61 @@ pub const StructListBuilder = struct {
     }
 };
 
-pub const TextListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: TextListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: TextListBuilder, index: u32, value: []const u8) !void {
-        return self.setInSegment(index, value, self.segment_id);
-    }
-
-    pub fn setInSegment(self: TextListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        try self.builder.writeTextPointer(self.segment_id, pointer_pos, value, target_segment_id);
-    }
-};
-
-pub const VoidListBuilder = struct {
-    element_count: u32,
-
-    pub fn len(self: VoidListBuilder) u32 {
-        return self.element_count;
-    }
-};
-
-pub const U8ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U8ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: U8ListBuilder, index: u32, value: u8) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index);
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset >= segment.items.len) return error.OutOfBounds;
-        segment.items[offset] = value;
-    }
-
-    pub fn setAll(self: U8ListBuilder, data: []const u8) !void {
-        if (data.len != self.element_count) return error.InvalidLength;
-        const segment = &self.builder.segments.items[self.segment_id];
-        const slice = segment.items[self.elements_offset .. self.elements_offset + data.len];
-        std.mem.copyForwards(u8, slice, data);
-    }
-};
-
-pub const I8ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I8ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: I8ListBuilder, index: u32, value: i8) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index);
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset >= segment.items.len) return error.OutOfBounds;
-        segment.items[offset] = @bitCast(value);
-    }
-};
-
-pub const U16ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U16ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: U16ListBuilder, index: u32, value: u16) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 2;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 2 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u16, segment.items[offset..][0..2], value, .little);
-    }
-};
-
-pub const I16ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I16ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: I16ListBuilder, index: u32, value: i16) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 2;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 2 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(i16, segment.items[offset..][0..2], value, .little);
-    }
-};
-
-pub const U32ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U32ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: U32ListBuilder, index: u32, value: u32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 4;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 4 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u32, segment.items[offset..][0..4], value, .little);
-    }
-};
-
-pub const I32ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I32ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: I32ListBuilder, index: u32, value: i32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 4;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 4 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(i32, segment.items[offset..][0..4], value, .little);
-    }
-};
-
-pub const F32ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: F32ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: F32ListBuilder, index: u32, value: f32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 4;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 4 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u32, segment.items[offset..][0..4], @bitCast(value), .little);
-    }
-};
-
-pub const U64ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: U64ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: U64ListBuilder, index: u32, value: u64) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 8;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 8 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u64, segment.items[offset..][0..8], value, .little);
-    }
-};
-
-pub const I64ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: I64ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: I64ListBuilder, index: u32, value: i64) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 8;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 8 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(i64, segment.items[offset..][0..8], value, .little);
-    }
-};
-
-pub const F64ListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: F64ListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: F64ListBuilder, index: u32, value: f64) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const offset = self.elements_offset + @as(usize, index) * 8;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset + 8 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u64, segment.items[offset..][0..8], @bitCast(value), .little);
-    }
-};
-
-pub const BoolListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: BoolListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn set(self: BoolListBuilder, index: u32, value: bool) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const byte_index = @as(usize, index / 8);
-        const bit_index: u3 = @intCast(index % 8);
-        const offset = self.elements_offset + byte_index;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (offset >= segment.items.len) return error.OutOfBounds;
-        const mask = @as(u8, 1) << bit_index;
-        if (value) {
-            segment.items[offset] |= mask;
-        } else {
-            segment.items[offset] &= ~mask;
-        }
-    }
-};
-
-pub const PointerListBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    elements_offset: usize,
-    element_count: u32,
-
-    pub fn len(self: PointerListBuilder) u32 {
-        return self.element_count;
-    }
-
-    pub fn setNull(self: PointerListBuilder, index: u32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-        std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
-    }
-
-    pub fn setCapability(self: PointerListBuilder, index: u32, cap: Capability) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        const segment = &self.builder.segments.items[self.segment_id];
-        if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-        const pointer_word = try makeCapabilityPointer(cap.id);
-        std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
-    }
-
-    pub fn setText(self: PointerListBuilder, index: u32, value: []const u8) !void {
-        return self.setTextInSegment(index, value, self.segment_id);
-    }
-
-    pub fn setTextInSegment(self: PointerListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        try self.builder.writeTextPointer(self.segment_id, pointer_pos, value, target_segment_id);
-    }
-
-    pub fn setData(self: PointerListBuilder, index: u32, value: []const u8) !void {
-        return self.setDataInSegment(index, value, self.segment_id);
-    }
-
-    pub fn setDataInSegment(self: PointerListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        if (value.len > std.math.maxInt(u32)) return error.ElementCountTooLarge;
-
-        while (self.builder.segments.items.len <= target_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        const offset = try self.builder.writeListPointer(
-            self.segment_id,
-            pointer_pos,
-            2,
-            @as(u32, @intCast(value.len)),
-            target_segment_id,
-        );
-
-        const segment = &self.builder.segments.items[target_segment_id];
-        const slice = segment.items[offset .. offset + value.len];
-        std.mem.copyForwards(u8, slice, value);
-    }
-
-    pub fn initStruct(self: PointerListBuilder, index: u32, data_words: u16, pointer_words: u16) !StructBuilder {
-        return self.initStructInSegment(index, data_words, pointer_words, self.segment_id);
-    }
-
-    pub fn initStructInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        data_words: u16,
-        pointer_words: u16,
-        target_segment_id: u32,
-    ) !StructBuilder {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        return self.builder.writeStructPointer(self.segment_id, pointer_pos, data_words, pointer_words, target_segment_id);
-    }
-
-    fn initListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_size: u3,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !struct { segment_id: u32, offset: usize } {
-        if (index >= self.element_count) return error.IndexOutOfBounds;
-        while (self.builder.segments.items.len <= target_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const pointer_pos = self.elements_offset + @as(usize, index) * 8;
-        const offset = try self.builder.writeListPointer(self.segment_id, pointer_pos, element_size, element_count, target_segment_id);
-        return .{ .segment_id = target_segment_id, .offset = offset };
-    }
-
-    pub fn initU8List(self: PointerListBuilder, index: u32, element_count: u32) !U8ListBuilder {
-        return self.initU8ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initU8ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U8ListBuilder {
-        const info = try self.initListInSegment(index, 2, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initI8List(self: PointerListBuilder, index: u32, element_count: u32) !I8ListBuilder {
-        return self.initI8ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initI8ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I8ListBuilder {
-        const info = try self.initListInSegment(index, 2, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initU16List(self: PointerListBuilder, index: u32, element_count: u32) !U16ListBuilder {
-        return self.initU16ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initU16ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U16ListBuilder {
-        const info = try self.initListInSegment(index, 3, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initI16List(self: PointerListBuilder, index: u32, element_count: u32) !I16ListBuilder {
-        return self.initI16ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initI16ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I16ListBuilder {
-        const info = try self.initListInSegment(index, 3, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initU32List(self: PointerListBuilder, index: u32, element_count: u32) !U32ListBuilder {
-        return self.initU32ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initU32ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U32ListBuilder {
-        const info = try self.initListInSegment(index, 4, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initI32List(self: PointerListBuilder, index: u32, element_count: u32) !I32ListBuilder {
-        return self.initI32ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initI32ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I32ListBuilder {
-        const info = try self.initListInSegment(index, 4, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initF32List(self: PointerListBuilder, index: u32, element_count: u32) !F32ListBuilder {
-        return self.initF32ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initF32ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !F32ListBuilder {
-        const info = try self.initListInSegment(index, 4, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initU64List(self: PointerListBuilder, index: u32, element_count: u32) !U64ListBuilder {
-        return self.initU64ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initU64ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U64ListBuilder {
-        const info = try self.initListInSegment(index, 5, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initI64List(self: PointerListBuilder, index: u32, element_count: u32) !I64ListBuilder {
-        return self.initI64ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initI64ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I64ListBuilder {
-        const info = try self.initListInSegment(index, 5, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initF64List(self: PointerListBuilder, index: u32, element_count: u32) !F64ListBuilder {
-        return self.initF64ListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initF64ListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !F64ListBuilder {
-        const info = try self.initListInSegment(index, 5, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn initBoolList(self: PointerListBuilder, index: u32, element_count: u32) !BoolListBuilder {
-        return self.initBoolListInSegment(index, element_count, self.segment_id);
-    }
-
-    pub fn initBoolListInSegment(
-        self: PointerListBuilder,
-        index: u32,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !BoolListBuilder {
-        const info = try self.initListInSegment(index, 1, element_count, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-};
-
+const list_builder_defs = list_builder_module.define(
+    MessageBuilder,
+);
+
+pub const TextListBuilder = list_builder_defs.TextListBuilder;
+pub const VoidListBuilder = list_builder_defs.VoidListBuilder;
+pub const U8ListBuilder = list_builder_defs.U8ListBuilder;
+pub const I8ListBuilder = list_builder_defs.I8ListBuilder;
+pub const U16ListBuilder = list_builder_defs.U16ListBuilder;
+pub const I16ListBuilder = list_builder_defs.I16ListBuilder;
+pub const U32ListBuilder = list_builder_defs.U32ListBuilder;
+pub const I32ListBuilder = list_builder_defs.I32ListBuilder;
+pub const F32ListBuilder = list_builder_defs.F32ListBuilder;
+pub const U64ListBuilder = list_builder_defs.U64ListBuilder;
+pub const I64ListBuilder = list_builder_defs.I64ListBuilder;
+pub const F64ListBuilder = list_builder_defs.F64ListBuilder;
+pub const BoolListBuilder = list_builder_defs.BoolListBuilder;
+
+const struct_builder_defs = struct_builder_module.define(
+    MessageBuilder,
+    AnyPointerBuilder,
+    StructListBuilder,
+    TextListBuilder,
+    VoidListBuilder,
+    U8ListBuilder,
+    I8ListBuilder,
+    U16ListBuilder,
+    I16ListBuilder,
+    U32ListBuilder,
+    I32ListBuilder,
+    F32ListBuilder,
+    U64ListBuilder,
+    I64ListBuilder,
+    F64ListBuilder,
+    BoolListBuilder,
+    Capability,
+    makeCapabilityPointer,
+    makeListPointer,
+    makeFarPointer,
+);
+
+pub const PointerListBuilder = struct_builder_defs.PointerListBuilder;
 /// Struct builder for creating Cap'n Proto structs
-pub const StructBuilder = struct {
-    builder: *MessageBuilder,
-    segment_id: u32,
-    offset: usize,
-    data_size: u16,
-    pointer_count: u16,
-
-    fn getDataSection(self: StructBuilder) []u8 {
-        const segment = &self.builder.segments.items[self.segment_id];
-        const start = self.offset;
-        const end = start + @as(usize, self.data_size) * 8;
-        return segment.items[start..end];
-    }
-
-    pub fn writeU64(self: StructBuilder, byte_offset: usize, value: u64) void {
-        const data = self.getDataSection();
-        if (byte_offset + 8 > data.len) return;
-        std.mem.writeInt(u64, data[byte_offset..][0..8], value, .little);
-    }
-
-    pub fn writeU32(self: StructBuilder, byte_offset: usize, value: u32) void {
-        const data = self.getDataSection();
-        if (byte_offset + 4 > data.len) return;
-        std.mem.writeInt(u32, data[byte_offset..][0..4], value, .little);
-    }
-
-    pub fn writeU16(self: StructBuilder, byte_offset: usize, value: u16) void {
-        const data = self.getDataSection();
-        if (byte_offset + 2 > data.len) return;
-        std.mem.writeInt(u16, data[byte_offset..][0..2], value, .little);
-    }
-
-    pub fn writeU8(self: StructBuilder, byte_offset: usize, value: u8) void {
-        const data = self.getDataSection();
-        if (byte_offset >= data.len) return;
-        data[byte_offset] = value;
-    }
-
-    pub fn writeBool(self: StructBuilder, byte_offset: usize, bit_offset: u3, value: bool) void {
-        const data = self.getDataSection();
-        if (byte_offset >= data.len) return;
-        const mask = @as(u8, 1) << bit_offset;
-        if (value) {
-            data[byte_offset] |= mask;
-        } else {
-            data[byte_offset] &= ~mask;
-        }
-    }
-
-    /// Write a union discriminant (which field is set)
-    pub fn writeUnionDiscriminant(self: StructBuilder, byte_offset: usize, value: u16) void {
-        self.writeU16(byte_offset, value);
-    }
-
-    pub fn writeText(self: StructBuilder, pointer_index: usize, text: []const u8) !void {
-        return self.writeTextInSegment(pointer_index, text, self.segment_id);
-    }
-
-    pub fn writeTextInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        text: []const u8,
-        target_segment_id: u32,
-    ) !void {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-        if (self.segment_id >= self.builder.segments.items.len) return error.InvalidSegmentId;
-        if (target_segment_id >= self.builder.segments.items.len) return error.InvalidSegmentId;
-
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        try self.builder.writeTextPointer(self.segment_id, pointer_pos, text, target_segment_id);
-    }
-
-    pub fn initStruct(self: StructBuilder, pointer_index: usize, data_words: u16, pointer_words: u16) !StructBuilder {
-        return self.initStructInSegment(pointer_index, data_words, pointer_words, self.segment_id);
-    }
-
-    pub fn initStructInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        data_words: u16,
-        pointer_words: u16,
-        target_segment_id: u32,
-    ) !StructBuilder {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-        while (self.builder.segments.items.len <= target_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const source_segment = &self.builder.segments.items[self.segment_id];
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
-
-        return self.builder.writeStructPointer(self.segment_id, pointer_pos, data_words, pointer_words, target_segment_id);
-    }
-
-    pub fn getAnyPointer(self: StructBuilder, pointer_index: usize) !AnyPointerBuilder {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-
-        const segment = &self.builder.segments.items[self.segment_id];
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .pointer_pos = pointer_pos,
-        };
-    }
-
-    fn writePrimitiveListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        element_size: u3,
-        target_segment_id: u32,
-    ) !struct { segment_id: u32, offset: usize } {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-
-        while (self.builder.segments.items.len <= target_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const source_segment = &self.builder.segments.items[self.segment_id];
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
-
-        const offset = try self.builder.writeListPointer(self.segment_id, pointer_pos, element_size, element_count, target_segment_id);
-        return .{ .segment_id = target_segment_id, .offset = offset };
-    }
-
-    pub fn writeData(self: StructBuilder, pointer_index: usize, data: []const u8) !void {
-        return self.writeDataInSegment(pointer_index, data, self.segment_id);
-    }
-
-    pub fn writeDataInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        data: []const u8,
-        target_segment_id: u32,
-    ) !void {
-        if (data.len > std.math.maxInt(u32)) return error.ElementCountTooLarge;
-        const info = try self.writePrimitiveListInSegment(pointer_index, @as(u32, @intCast(data.len)), 2, target_segment_id);
-        const segment = &self.builder.segments.items[info.segment_id];
-        const slice = segment.items[info.offset .. info.offset + data.len];
-        std.mem.copyForwards(u8, slice, data);
-    }
-
-    pub fn writeVoidList(self: StructBuilder, pointer_index: usize, element_count: u32) !VoidListBuilder {
-        return self.writeVoidListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeVoidListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !VoidListBuilder {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-
-        while (self.builder.segments.items.len <= target_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const source_segment = &self.builder.segments.items[self.segment_id];
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
-
-        _ = try self.builder.writeListPointer(self.segment_id, pointer_pos, 0, element_count, target_segment_id);
-        return .{ .element_count = element_count };
-    }
-
-    pub fn writeU8List(self: StructBuilder, pointer_index: usize, element_count: u32) !U8ListBuilder {
-        return self.writeU8ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeU8ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U8ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 2, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeI8List(self: StructBuilder, pointer_index: usize, element_count: u32) !I8ListBuilder {
-        return self.writeI8ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeI8ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I8ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 2, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeU16List(self: StructBuilder, pointer_index: usize, element_count: u32) !U16ListBuilder {
-        return self.writeU16ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeU16ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U16ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 3, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeI16List(self: StructBuilder, pointer_index: usize, element_count: u32) !I16ListBuilder {
-        return self.writeI16ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeI16ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I16ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 3, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeU32List(self: StructBuilder, pointer_index: usize, element_count: u32) !U32ListBuilder {
-        return self.writeU32ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeU32ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U32ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 4, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeI32List(self: StructBuilder, pointer_index: usize, element_count: u32) !I32ListBuilder {
-        return self.writeI32ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeI32ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I32ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 4, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeF32List(self: StructBuilder, pointer_index: usize, element_count: u32) !F32ListBuilder {
-        return self.writeF32ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeF32ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !F32ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 4, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeU64List(self: StructBuilder, pointer_index: usize, element_count: u32) !U64ListBuilder {
-        return self.writeU64ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeU64ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !U64ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 5, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeI64List(self: StructBuilder, pointer_index: usize, element_count: u32) !I64ListBuilder {
-        return self.writeI64ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeI64ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !I64ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 5, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeF64List(self: StructBuilder, pointer_index: usize, element_count: u32) !F64ListBuilder {
-        return self.writeF64ListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeF64ListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !F64ListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 5, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeBoolList(self: StructBuilder, pointer_index: usize, element_count: u32) !BoolListBuilder {
-        return self.writeBoolListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writeBoolListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !BoolListBuilder {
-        const info = try self.writePrimitiveListInSegment(pointer_index, element_count, 1, target_segment_id);
-        return .{
-            .builder = self.builder,
-            .segment_id = info.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writeStructList(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        data_words: u16,
-        pointer_words: u16,
-    ) !StructListBuilder {
-        return self.writeStructListInSegments(pointer_index, element_count, data_words, pointer_words, self.segment_id, self.segment_id);
-    }
-
-    pub fn writeStructListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        data_words: u16,
-        pointer_words: u16,
-        target_segment_id: u32,
-    ) !StructListBuilder {
-        return self.writeStructListInSegments(pointer_index, element_count, data_words, pointer_words, target_segment_id, target_segment_id);
-    }
-
-    pub fn writeStructListInSegments(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        data_words: u16,
-        pointer_words: u16,
-        landing_segment_id: u32,
-        content_segment_id: u32,
-    ) !StructListBuilder {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        return self.builder.writeStructListPointer(
-            self.segment_id,
-            pointer_pos,
-            element_count,
-            data_words,
-            pointer_words,
-            landing_segment_id,
-            content_segment_id,
-        );
-    }
-
-    pub fn writeTextList(self: StructBuilder, pointer_index: usize, element_count: u32) !TextListBuilder {
-        return self.writeTextListInSegments(pointer_index, element_count, self.segment_id, self.segment_id);
-    }
-
-    pub fn writeTextListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !TextListBuilder {
-        return self.writeTextListInSegments(pointer_index, element_count, target_segment_id, target_segment_id);
-    }
-
-    pub fn writeTextListInSegments(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        landing_segment_id: u32,
-        content_segment_id: u32,
-    ) !TextListBuilder {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-
-        const total_bytes = @as(usize, element_count) * 8;
-
-        while (self.builder.segments.items.len <= landing_segment_id or self.builder.segments.items.len <= content_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const source_segment = &self.builder.segments.items[self.segment_id];
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
-
-        if (landing_segment_id == content_segment_id) {
-            const target_segment = &self.builder.segments.items[landing_segment_id];
-            const landing_pad_pos = if (self.segment_id == landing_segment_id) null else target_segment.items.len;
-            if (landing_pad_pos) |_| {
-                try target_segment.appendNTimes(self.builder.allocator, 0, 8);
-            }
-
-            const elements_offset = target_segment.items.len;
-            try target_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
-
-            if (self.segment_id == landing_segment_id) {
-                const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(elements_offset)) - @as(isize, @intCast(pointer_pos)) - 8, 8)));
-                const list_ptr = makeListPointer(rel_offset, 6, element_count);
-                std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], list_ptr, .little);
-            } else {
-                const landing_pos = landing_pad_pos.?;
-                const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(elements_offset)) - @as(isize, @intCast(landing_pos)) - 8, 8)));
-                const list_ptr = makeListPointer(rel_offset, 6, element_count);
-                std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
-
-                const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
-                std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
-            }
-
-            return TextListBuilder{
-                .builder = self.builder,
-                .segment_id = landing_segment_id,
-                .elements_offset = elements_offset,
-                .element_count = element_count,
-            };
-        }
-
-        const landing_segment = &self.builder.segments.items[landing_segment_id];
-        const landing_pad_pos = landing_segment.items.len;
-        try landing_segment.appendNTimes(self.builder.allocator, 0, 16);
-
-        const content_segment = &self.builder.segments.items[content_segment_id];
-        const elements_offset = content_segment.items.len;
-        try content_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
-
-        const landing_far = makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
-        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
-
-        const tag_word = makeListPointer(0, 6, element_count);
-        std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
-
-        const far_ptr = makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
-        std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
-
-        return TextListBuilder{
-            .builder = self.builder,
-            .segment_id = content_segment_id,
-            .elements_offset = elements_offset,
-            .element_count = element_count,
-        };
-    }
-
-    pub fn writePointerList(self: StructBuilder, pointer_index: usize, element_count: u32) !PointerListBuilder {
-        return self.writePointerListInSegment(pointer_index, element_count, self.segment_id);
-    }
-
-    pub fn writePointerListInSegment(
-        self: StructBuilder,
-        pointer_index: usize,
-        element_count: u32,
-        target_segment_id: u32,
-    ) !PointerListBuilder {
-        if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-
-        const total_bytes = @as(usize, element_count) * 8;
-
-        while (self.builder.segments.items.len <= target_segment_id) {
-            _ = try self.builder.createSegment();
-        }
-
-        const source_segment = &self.builder.segments.items[self.segment_id];
-        const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
-
-        const target_segment = &self.builder.segments.items[target_segment_id];
-        const landing_pad_pos = if (self.segment_id == target_segment_id) null else target_segment.items.len;
-        if (landing_pad_pos) |_| {
-            try target_segment.appendNTimes(self.builder.allocator, 0, 8);
-        }
-
-        const elements_offset = target_segment.items.len;
-        try target_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
-
-        if (self.segment_id == target_segment_id) {
-            const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(elements_offset)) - @as(isize, @intCast(pointer_pos)) - 8, 8)));
-            const list_ptr = makeListPointer(rel_offset, 6, element_count);
-            std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], list_ptr, .little);
-        } else {
-            const landing_pos = landing_pad_pos.?;
-            const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(elements_offset)) - @as(isize, @intCast(landing_pos)) - 8, 8)));
-            const list_ptr = makeListPointer(rel_offset, 6, element_count);
-            std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
-
-            const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
-            std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
-        }
-
-        return PointerListBuilder{
-            .builder = self.builder,
-            .segment_id = target_segment_id,
-            .elements_offset = elements_offset,
-            .element_count = element_count,
-        };
-    }
-};
-
-pub fn cloneAnyPointerToBytes(allocator: std.mem.Allocator, src: AnyPointerReader) ![]const u8 {
-    var builder = MessageBuilder.init(allocator);
-    defer builder.deinit();
-
-    const root = try builder.initRootAnyPointer();
-    try cloneAnyPointer(src, root);
-
-    if (builder.segments.items.len == 0) {
-        return allocator.alloc(u8, 0);
-    }
-    const segment = builder.segments.items[0].items;
-    const out = try allocator.alloc(u8, segment.len);
-    std.mem.copyForwards(u8, out, segment);
-    return out;
-}
-
-pub fn cloneAnyPointer(src: AnyPointerReader, dest: AnyPointerBuilder) anyerror!void {
-    const resolved = try src.message.resolvePointer(src.segment_id, src.pointer_pos, src.pointer_word, 8);
-    if (resolved.pointer_word == 0) {
-        try dest.setNull();
-        return;
-    }
-
-    const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
-    switch (pointer_type) {
-        0 => {
-            const src_struct = try src.message.resolveStructPointer(resolved.segment_id, resolved.pointer_pos, resolved.pointer_word);
-            const dest_struct = try dest.initStruct(src_struct.data_size, src_struct.pointer_count);
-            try cloneStruct(src_struct, dest_struct);
-        },
-        1 => try cloneList(src, dest, resolved),
-        3 => {
-            const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
-            try dest.setCapability(.{ .id = cap_id });
-        },
-        else => return error.InvalidPointer,
-    }
-}
-
-fn cloneStruct(src: StructReader, dest: StructBuilder) anyerror!void {
-    const src_data = src.getDataSection();
-    const dest_segment = &dest.builder.segments.items[dest.segment_id];
-    const dest_start = dest.offset;
-    const dest_end = dest_start + src_data.len;
-    if (dest_end > dest_segment.items.len) return error.OutOfBounds;
-    std.mem.copyForwards(u8, dest_segment.items[dest_start..dest_end], src_data);
-
-    const pointer_section = src.getPointerSection();
-    var ptr_index: u16 = 0;
-    while (ptr_index < src.pointer_count) : (ptr_index += 1) {
-        const pointer_offset = @as(usize, ptr_index) * 8;
-        if (pointer_offset + 8 > pointer_section.len) return error.OutOfBounds;
-        const pointer_word = std.mem.readInt(u64, pointer_section[pointer_offset..][0..8], .little);
-        const pointer_pos = src.offset + @as(usize, src.data_size) * 8 + pointer_offset;
-        var dest_ptr = try dest.getAnyPointer(ptr_index);
-
-        if (pointer_word == 0) {
-            try dest_ptr.setNull();
-        } else {
-            const src_ptr = AnyPointerReader{
-                .message = src.message,
-                .segment_id = src.segment_id,
-                .pointer_pos = pointer_pos,
-                .pointer_word = pointer_word,
-            };
-            try cloneAnyPointer(src_ptr, dest_ptr);
-        }
-    }
-}
-
-fn cloneList(src: AnyPointerReader, dest: AnyPointerBuilder, resolved: Message.ResolvedPointer) anyerror!void {
-    const element_size = @as(u3, @truncate((resolved.pointer_word >> 32) & 0x7));
-
-    if (element_size == 7) {
-        const list = try src.message.resolveInlineCompositeList(src.segment_id, src.pointer_pos, src.pointer_word);
-        var fake = StructBuilder{
-            .builder = dest.builder,
-            .segment_id = dest.segment_id,
-            .offset = dest.pointer_pos,
-            .data_size = 0,
-            .pointer_count = 1,
-        };
-        var dest_list = try fake.writeStructListInSegments(0, list.element_count, list.data_words, list.pointer_words, dest.segment_id, dest.segment_id);
-
-        const src_list = StructListReader{
-            .message = src.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-            .data_words = list.data_words,
-            .pointer_words = list.pointer_words,
-        };
-
-        var idx: u32 = 0;
-        while (idx < list.element_count) : (idx += 1) {
-            const src_elem = try src_list.get(idx);
-            const dest_elem = try dest_list.get(idx);
-            try cloneStruct(src_elem, dest_elem);
-        }
-        return;
-    }
-
-    const list = try src.message.resolveListPointer(src.segment_id, src.pointer_pos, src.pointer_word);
-    const element_count = list.element_count;
-
-    if (element_size == 6) {
-        const dest_offset = try dest.builder.writeListPointer(dest.segment_id, dest.pointer_pos, 6, element_count, dest.segment_id);
-        const src_segment = src.message.segments[list.segment_id];
-        var idx: u32 = 0;
-        while (idx < element_count) : (idx += 1) {
-            const src_ptr_pos = list.content_offset + @as(usize, idx) * 8;
-            if (src_ptr_pos + 8 > src_segment.len) return error.OutOfBounds;
-            const pointer_word = std.mem.readInt(u64, src_segment[src_ptr_pos..][0..8], .little);
-            const src_ptr = AnyPointerReader{
-                .message = src.message,
-                .segment_id = list.segment_id,
-                .pointer_pos = src_ptr_pos,
-                .pointer_word = pointer_word,
-            };
-
-            const dest_ptr_pos = dest_offset + @as(usize, idx) * 8;
-            const dest_ptr = AnyPointerBuilder{
-                .builder = dest.builder,
-                .segment_id = dest.segment_id,
-                .pointer_pos = dest_ptr_pos,
-            };
-
-            if (pointer_word == 0) {
-                try dest_ptr.setNull();
-            } else {
-                try cloneAnyPointer(src_ptr, dest_ptr);
-            }
-        }
-        return;
-    }
-
-    const total_bytes = try listContentBytes(element_size, element_count);
-    const dest_offset = try dest.builder.writeListPointer(dest.segment_id, dest.pointer_pos, element_size, element_count, dest.segment_id);
-    if (total_bytes == 0) return;
-    const src_segment = src.message.segments[list.segment_id];
-    if (list.content_offset + total_bytes > src_segment.len) return error.OutOfBounds;
-
-    const dest_segment = &dest.builder.segments.items[dest.segment_id];
-    if (dest_offset + total_bytes > dest_segment.items.len) return error.OutOfBounds;
-    std.mem.copyForwards(
-        u8,
-        dest_segment.items[dest_offset .. dest_offset + total_bytes],
-        src_segment[list.content_offset .. list.content_offset + total_bytes],
-    );
-}
+pub const StructBuilder = struct_builder_defs.StructBuilder;
+
+const clone_defs = clone_any_pointer_module.define(
+    MessageBuilder,
+    AnyPointerReader,
+    AnyPointerBuilder,
+    StructReader,
+    StructBuilder,
+    StructListReader,
+    listContentBytes,
+    decodeCapabilityPointer,
+);
+
+pub const cloneAnyPointerToBytes = clone_defs.cloneAnyPointerToBytes;
+pub const cloneAnyPointer = clone_defs.cloneAnyPointer;

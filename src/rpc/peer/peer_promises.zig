@@ -22,6 +22,23 @@ pub fn queuePendingCall(
     try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps });
 }
 
+pub fn deinitPendingCallOwnedFrame(comptime PendingCallType: type, pending_call: *PendingCallType, allocator: std.mem.Allocator) void {
+    pending_call.caps.deinit();
+    allocator.free(pending_call.frame);
+}
+
+pub fn deinitPendingCallOwnedFrameForPeerFn(
+    comptime PeerType: type,
+    comptime PendingCallType: type,
+) *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void {
+    return struct {
+        fn call(peer: *PeerType, pending_call: *PendingCallType, allocator: std.mem.Allocator) void {
+            _ = peer;
+            deinitPendingCallOwnedFrame(PendingCallType, pending_call, allocator);
+        }
+    }.call;
+}
+
 pub fn recordResolvedAnswer(
     comptime PeerType: type,
     comptime ResolvedAnswerType: type,
@@ -157,6 +174,36 @@ test "peer_promises queuePendingCall clones frame and appends" {
     try std.testing.expectEqual(@as(usize, 2), entry.items.len);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, entry.items[0].frame);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, entry.items[1].frame);
+}
+
+test "peer_promises deinitPendingCallOwnedFrameForPeerFn releases caps and frame" {
+    const State = struct {
+        deinit_calls: usize = 0,
+    };
+    const DummyCaps = struct {
+        state: *State,
+
+        fn deinit(self: *@This()) void {
+            self.state.deinit_calls += 1;
+        }
+    };
+    const PendingCall = struct {
+        frame: []u8,
+        caps: DummyCaps,
+    };
+    const Peer = struct {};
+
+    var state = State{};
+    const frame = try std.testing.allocator.alloc(u8, 3);
+    var pending_call = PendingCall{
+        .frame = frame,
+        .caps = .{ .state = &state },
+    };
+    var peer = Peer{};
+
+    const deinit_pending = deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall);
+    deinit_pending(&peer, &pending_call, std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
 }
 
 test "peer_promises replayResolvedPromiseExport none sends exception and releases caps" {

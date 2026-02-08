@@ -1,9 +1,10 @@
 .{
     .name = .capnpc_zig,
-    .version = "0.15.2",
+    .version = "0.1.0",
     .dependencies = .{
         .libxev = .{
-            .path = "vendor/ext/libxev",
+            .url = "https://github.com/mitchellh/libxev/archive/42d4ead52667e03619dcd5b1a3ca8ef7d5dd24ed.tar.gz",
+            .hash = "libxev-0.0.0-86vtc0IbEwBzMSXa-ZPZ8JpcV4Mw1SrsTuvtJmFAQ7Uu",
         },
     },
     .paths = .{""},

@@ -22,11 +22,11 @@ pub const OwnedPromisedAnswer = struct {
     question_id: u32,
     ops: []protocol.PromisedAnswerOp,
 
-    fn deinit(self: OwnedPromisedAnswer, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: OwnedPromisedAnswer, allocator: std.mem.Allocator) void {
         allocator.free(self.ops);
     }
 
-    fn fromPromised(allocator: std.mem.Allocator, promised: protocol.PromisedAnswer) !OwnedPromisedAnswer {
+    pub fn fromPromised(allocator: std.mem.Allocator, promised: protocol.PromisedAnswer) !OwnedPromisedAnswer {
         const ops = try promised_answer_copy.cloneOpsFromPromised(allocator, promised);
 
         return .{

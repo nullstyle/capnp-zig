@@ -1,4 +1,5 @@
 const std = @import("std");
+const cap_table = @import("../../cap_table.zig");
 const message = @import("../../../message.zig");
 const peer_control = @import("../peer_control.zig");
 const protocol = @import("../../protocol.zig");
@@ -13,6 +14,14 @@ pub const ForwardReturnMode = enum {
 pub fn toControlMode(mode: ForwardReturnMode) peer_control.ForwardedReturnMode {
     return switch (mode) {
         .translate_to_caller => .translate_to_caller,
+        .sent_elsewhere => .sent_elsewhere,
+        .propagate_results_sent_elsewhere => .propagate_results_sent_elsewhere,
+        .propagate_accept_from_third_party => .propagate_accept_from_third_party,
+    };
+}
+
+pub fn fromControlResolvedMode(mode: peer_control.ForwardResolvedMode) ForwardReturnMode {
+    return switch (mode) {
         .sent_elsewhere => .sent_elsewhere,
         .propagate_results_sent_elsewhere => .propagate_results_sent_elsewhere,
         .propagate_accept_from_third_party => .propagate_accept_from_third_party,
@@ -109,6 +118,30 @@ pub fn removeSendResultsToYourselfForPeerFn(comptime PeerType: type) *const fn (
     return struct {
         fn call(peer: *PeerType, answer_id: u32) void {
             removeSendResultsToYourselfForPeer(PeerType, peer, answer_id);
+        }
+    }.call;
+}
+
+pub fn forwardResolvedCallForPeerFn(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    comptime forward_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, ForwardReturnMode) anyerror!void,
+) *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, peer_control.ForwardResolvedMode) anyerror!void {
+    return struct {
+        fn call(
+            peer: *PeerType,
+            call_msg: protocol.Call,
+            inbound_caps: *const InboundCapsType,
+            resolved: cap_table.ResolvedCap,
+            mode: peer_control.ForwardResolvedMode,
+        ) anyerror!void {
+            try forward_resolved_call(
+                peer,
+                call_msg,
+                inbound_caps,
+                resolved,
+                fromControlResolvedMode(mode),
+            );
         }
     }.call;
 }
@@ -273,4 +306,65 @@ test "peer_forward_orchestration peer-map helpers lookup/remove/take/remove-send
 
     removeSendResultsToYourselfForPeer(FakePeer, &peer, 50);
     try std.testing.expectEqual(@as(usize, 0), peer.send_results_to_yourself.count());
+}
+
+test "peer_forward_orchestration forwardResolvedCallForPeerFn maps control mode and forwards call" {
+    const InboundCaps = struct {};
+    const State = struct {
+        calls: usize = 0,
+        last_mode: ?ForwardReturnMode = null,
+
+        fn forwardResolvedCall(
+            self: *@This(),
+            call_msg: protocol.Call,
+            inbound_caps: *const InboundCaps,
+            resolved: cap_table.ResolvedCap,
+            mode: ForwardReturnMode,
+        ) !void {
+            _ = call_msg;
+            _ = inbound_caps;
+            _ = resolved;
+            self.calls += 1;
+            self.last_mode = mode;
+        }
+    };
+
+    const call_msg = protocol.Call{
+        .question_id = 5,
+        .target = .{
+            .tag = .imported_cap,
+            .imported_cap = 1,
+            .promised_answer = null,
+        },
+        .interface_id = 0,
+        .method_id = 0,
+        .params = .{
+            .content = undefined,
+            .cap_table = null,
+        },
+        .send_results_to = .{
+            .tag = .caller,
+            .third_party = null,
+        },
+    };
+    const inbound = InboundCaps{};
+
+    var state = State{};
+    const forward = forwardResolvedCallForPeerFn(
+        State,
+        InboundCaps,
+        State.forwardResolvedCall,
+    );
+
+    try forward(&state, call_msg, &inbound, .none, .sent_elsewhere);
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectEqual(ForwardReturnMode.sent_elsewhere, state.last_mode.?);
+
+    try forward(&state, call_msg, &inbound, .none, .propagate_results_sent_elsewhere);
+    try std.testing.expectEqual(@as(usize, 2), state.calls);
+    try std.testing.expectEqual(ForwardReturnMode.propagate_results_sent_elsewhere, state.last_mode.?);
+
+    try forward(&state, call_msg, &inbound, .none, .propagate_accept_from_third_party);
+    try std.testing.expectEqual(@as(usize, 3), state.calls);
+    try std.testing.expectEqual(ForwardReturnMode.propagate_accept_from_third_party, state.last_mode.?);
 }

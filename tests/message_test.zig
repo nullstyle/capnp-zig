@@ -634,6 +634,85 @@ test "MessageBuilder: text list with double-far pointer" {
     try testing.expectEqualStrings("right", try list_reader.get(1));
 }
 
+test "Message: cloneAnyPointer clones text list behind far pointer" {
+    var src_builder = message.MessageBuilder.init(testing.allocator);
+    defer src_builder.deinit();
+
+    var src_struct = try src_builder.allocateStruct(0, 1);
+    const list_segment = try src_builder.createSegment();
+    var src_list = try src_struct.writeTextListInSegment(0, 2, list_segment);
+    try src_list.set(0, "north");
+    try src_list.set(1, "south");
+
+    const src_bytes = try src_builder.toBytes();
+    defer testing.allocator.free(src_bytes);
+
+    var src_msg = try message.Message.init(testing.allocator, src_bytes);
+    defer src_msg.deinit();
+
+    const src_root = try src_msg.getRootStruct();
+    const src_any = try src_root.readAnyPointer(0);
+    try testing.expectEqual(@as(u2, 2), @as(u2, @truncate(src_any.pointer_word & 0x3)));
+    try testing.expectEqual(@as(u1, 0), @as(u1, @truncate((src_any.pointer_word >> 2) & 0x1)));
+
+    var dest_builder = message.MessageBuilder.init(testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try message.cloneAnyPointer(src_any, dest_root);
+
+    const dest_bytes = try dest_builder.toBytes();
+    defer testing.allocator.free(dest_bytes);
+
+    var dest_msg = try message.Message.init(testing.allocator, dest_bytes);
+    defer dest_msg.deinit();
+
+    const dest_any = try dest_msg.getRootAnyPointer();
+    const dest_list = try dest_any.getPointerList();
+    try testing.expectEqual(@as(u32, 2), dest_list.len());
+    try testing.expectEqualStrings("north", try dest_list.getText(0));
+    try testing.expectEqualStrings("south", try dest_list.getText(1));
+}
+
+test "Message: cloneAnyPointer clones text list behind double-far pointer" {
+    var src_builder = message.MessageBuilder.init(testing.allocator);
+    defer src_builder.deinit();
+
+    var src_struct = try src_builder.allocateStruct(0, 1);
+    const landing_segment = try src_builder.createSegment();
+    const content_segment = try src_builder.createSegment();
+    var src_list = try src_struct.writeTextListInSegments(0, 2, landing_segment, content_segment);
+    try src_list.set(0, "left");
+    try src_list.set(1, "right");
+
+    const src_bytes = try src_builder.toBytes();
+    defer testing.allocator.free(src_bytes);
+
+    var src_msg = try message.Message.init(testing.allocator, src_bytes);
+    defer src_msg.deinit();
+
+    const src_root = try src_msg.getRootStruct();
+    const src_any = try src_root.readAnyPointer(0);
+    try testing.expectEqual(@as(u2, 2), @as(u2, @truncate(src_any.pointer_word & 0x3)));
+    try testing.expectEqual(@as(u1, 1), @as(u1, @truncate((src_any.pointer_word >> 2) & 0x1)));
+
+    var dest_builder = message.MessageBuilder.init(testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try message.cloneAnyPointer(src_any, dest_root);
+
+    const dest_bytes = try dest_builder.toBytes();
+    defer testing.allocator.free(dest_bytes);
+
+    var dest_msg = try message.Message.init(testing.allocator, dest_bytes);
+    defer dest_msg.deinit();
+
+    const dest_any = try dest_msg.getRootAnyPointer();
+    const dest_list = try dest_any.getPointerList();
+    try testing.expectEqual(@as(u32, 2), dest_list.len());
+    try testing.expectEqualStrings("left", try dest_list.getText(0));
+    try testing.expectEqualStrings("right", try dest_list.getText(1));
+}
+
 test "MessageBuilder: text list elements stored in other segment" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();

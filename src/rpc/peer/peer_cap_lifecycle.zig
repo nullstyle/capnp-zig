@@ -22,6 +22,30 @@ pub fn releaseImport(
     try send_release(peer, import_id, count);
 }
 
+pub fn releaseImportRefForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) bool {
+    return peer.caps.releaseImport(import_id);
+}
+
+pub fn releaseImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) bool {
+    return struct {
+        fn call(peer: *PeerType, import_id: u32) bool {
+            return releaseImportRefForPeer(PeerType, peer, import_id);
+        }
+    }.call;
+}
+
+pub fn clearExportPromiseForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) void {
+    peer.caps.clearExportPromise(export_id);
+}
+
+pub fn clearExportPromiseForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) void {
+    return struct {
+        fn call(peer: *PeerType, export_id: u32) void {
+            clearExportPromiseForPeer(PeerType, peer, export_id);
+        }
+    }.call;
+}
+
 pub fn noteExportRef(
     comptime ExportEntryType: type,
     exports: *std.AutoHashMap(u32, ExportEntryType),
@@ -191,6 +215,52 @@ test "peer_cap_lifecycle releaseImport sends release and only releases resolved 
     try std.testing.expectEqual(@as(usize, 1), state.send_release_calls);
     try std.testing.expectEqual(@as(u32, 55), state.last_send_import);
     try std.testing.expectEqual(@as(u32, 3), state.last_send_count);
+}
+
+test "peer_cap_lifecycle releaseImportRefForPeerFn delegates to peer cap table" {
+    const Caps = struct {
+        calls: usize = 0,
+        last_import_id: u32 = 0,
+        removed: bool = false,
+
+        fn releaseImport(self: *@This(), import_id: u32) bool {
+            self.calls += 1;
+            self.last_import_id = import_id;
+            return self.removed;
+        }
+    };
+    const Peer = struct {
+        caps: Caps,
+    };
+
+    var peer = Peer{
+        .caps = .{ .removed = true },
+    };
+    const release_import = releaseImportRefForPeerFn(Peer);
+    try std.testing.expect(release_import(&peer, 42));
+    try std.testing.expectEqual(@as(usize, 1), peer.caps.calls);
+    try std.testing.expectEqual(@as(u32, 42), peer.caps.last_import_id);
+}
+
+test "peer_cap_lifecycle clearExportPromiseForPeerFn delegates to peer cap table" {
+    const Caps = struct {
+        calls: usize = 0,
+        last_export_id: u32 = 0,
+
+        fn clearExportPromise(self: *@This(), export_id: u32) void {
+            self.calls += 1;
+            self.last_export_id = export_id;
+        }
+    };
+    const Peer = struct {
+        caps: Caps,
+    };
+
+    var peer = Peer{ .caps = .{} };
+    const clear_export = clearExportPromiseForPeerFn(Peer);
+    clear_export(&peer, 71);
+    try std.testing.expectEqual(@as(usize, 1), peer.caps.calls);
+    try std.testing.expectEqual(@as(u32, 71), peer.caps.last_export_id);
 }
 
 test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-promise ids" {

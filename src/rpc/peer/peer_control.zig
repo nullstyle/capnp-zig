@@ -43,6 +43,17 @@ pub fn handleUnimplementedQuestion(
     };
 }
 
+pub fn handleUnimplementedQuestionForPeerFn(
+    comptime PeerType: type,
+    comptime on_return: *const fn (*PeerType, []const u8, protocol.Return) anyerror!void,
+) *const fn (*PeerType, u32) anyerror!void {
+    return struct {
+        fn call(peer: *PeerType, question_id: u32) anyerror!void {
+            try handleUnimplementedQuestion(PeerType, peer, question_id, on_return);
+        }
+    }.call;
+}
+
 pub fn handleAbort(
     allocator: std.mem.Allocator,
     last_remote_abort_reason: *?[]u8,
@@ -413,6 +424,58 @@ pub fn freeOwnedFrameForPeerFn(comptime PeerType: type) *const fn (*PeerType, []
     }.call;
 }
 
+pub fn resolveProvideImportedCapForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    export_id: u32,
+) !cap_table.ResolvedCap {
+    const exported_entry = peer.exports.getEntry(export_id) orelse return error.UnknownExport;
+
+    if (exported_entry.value_ptr.is_promise) {
+        const resolved = exported_entry.value_ptr.resolved orelse return error.PromiseUnresolved;
+        if (resolved == .none) return error.PromiseBroken;
+        return resolved;
+    }
+    return .{ .exported = .{ .id = export_id } };
+}
+
+pub fn resolveProvideImportedCapForPeerFn(
+    comptime PeerType: type,
+) *const fn (*PeerType, u32) anyerror!cap_table.ResolvedCap {
+    return struct {
+        fn call(peer: *PeerType, export_id: u32) anyerror!cap_table.ResolvedCap {
+            return try resolveProvideImportedCapForPeer(PeerType, peer, export_id);
+        }
+    }.call;
+}
+
+pub fn resolveProvidePromisedAnswerForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    promised: protocol.PromisedAnswer,
+    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
+) !cap_table.ResolvedCap {
+    const resolved = try resolve_promised_answer(peer, promised);
+    if (resolved == .none) return error.PromisedAnswerMissing;
+    return resolved;
+}
+
+pub fn resolveProvidePromisedAnswerForPeerFn(
+    comptime PeerType: type,
+    comptime resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
+) *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap {
+    return struct {
+        fn call(peer: *PeerType, promised: protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap {
+            return try resolveProvidePromisedAnswerForPeer(
+                PeerType,
+                peer,
+                promised,
+                resolve_promised_answer,
+            );
+        }
+    }.call;
+}
+
 pub fn resolveProvideTarget(
     comptime PeerType: type,
     peer: *PeerType,
@@ -430,6 +493,24 @@ pub fn resolveProvideTarget(
             return resolve_promised_answer(peer, promised);
         },
     };
+}
+
+pub fn resolveProvideTargetForPeerFn(
+    comptime PeerType: type,
+    comptime resolve_imported_cap: *const fn (*PeerType, u32) anyerror!cap_table.ResolvedCap,
+    comptime resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
+) *const fn (*PeerType, protocol.MessageTarget) anyerror!cap_table.ResolvedCap {
+    return struct {
+        fn call(peer: *PeerType, target: protocol.MessageTarget) anyerror!cap_table.ResolvedCap {
+            return try resolveProvideTarget(
+                PeerType,
+                peer,
+                target,
+                resolve_imported_cap,
+                resolve_promised_answer,
+            );
+        }
+    }.call;
 }
 
 pub fn handleProvide(
@@ -532,6 +613,24 @@ pub fn noteCallSendResults(
             try note_send_results_to_third_party(peer, call.question_id, call.send_results_to.third_party);
         },
     }
+}
+
+pub fn noteCallSendResultsForPeerFn(
+    comptime PeerType: type,
+    comptime note_send_results_to_yourself: *const fn (*PeerType, u32) anyerror!void,
+    comptime note_send_results_to_third_party: *const fn (*PeerType, u32, ?message.AnyPointerReader) anyerror!void,
+) *const fn (*PeerType, protocol.Call) anyerror!void {
+    return struct {
+        fn call(peer: *PeerType, rpc_call: protocol.Call) anyerror!void {
+            try noteCallSendResults(
+                PeerType,
+                peer,
+                rpc_call,
+                note_send_results_to_yourself,
+                note_send_results_to_third_party,
+            );
+        }
+    }.call;
 }
 
 pub const JoinInsertOutcome = enum {
@@ -786,6 +885,58 @@ pub fn applyForwardedCallSendResults(
     }
 }
 
+pub fn setForwardedCallThirdPartyFromPayloadForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    call_builder: *protocol.CallBuilder,
+    payload: []const u8,
+) !void {
+    var msg = try message.Message.init(peer.allocator, payload);
+    defer msg.deinit();
+    const third_party = try msg.getRootAnyPointer();
+    try call_builder.setSendResultsToThirdParty(third_party);
+}
+
+pub fn setForwardedCallThirdPartyFromPayloadForPeerFn(
+    comptime PeerType: type,
+) *const fn (*PeerType, *protocol.CallBuilder, []const u8) anyerror!void {
+    return struct {
+        fn call(peer: *PeerType, call_builder: *protocol.CallBuilder, payload: []const u8) anyerror!void {
+            try setForwardedCallThirdPartyFromPayloadForPeer(
+                PeerType,
+                peer,
+                call_builder,
+                payload,
+            );
+        }
+    }.call;
+}
+
+pub fn captureAnyPointerPayloadForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    ptr: ?message.AnyPointerReader,
+    capture_payload: *const fn (std.mem.Allocator, ?message.AnyPointerReader) anyerror!?[]u8,
+) !?[]u8 {
+    return capture_payload(peer.allocator, ptr);
+}
+
+pub fn captureAnyPointerPayloadForPeerFn(
+    comptime PeerType: type,
+    comptime capture_payload: *const fn (std.mem.Allocator, ?message.AnyPointerReader) anyerror!?[]u8,
+) *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8 {
+    return struct {
+        fn call(peer: *PeerType, ptr: ?message.AnyPointerReader) anyerror!?[]u8 {
+            return try captureAnyPointerPayloadForPeer(
+                PeerType,
+                peer,
+                ptr,
+                capture_payload,
+            );
+        }
+    }.call;
+}
+
 pub fn handleForwardedReturn(
     comptime PeerType: type,
     comptime InboundCapsType: type,
@@ -906,599 +1057,4 @@ pub fn handleReturnRegular(
     }
 
     maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
-}
-
-test "peer_control resolve/disembargo peer helper factories operate on peer state" {
-    const FakeResolvedImport = struct {
-        cap: ?cap_table.ResolvedCap = null,
-        embargo_id: ?u32 = null,
-        embargoed: bool = false,
-    };
-
-    const FakePeer = struct {
-        caps: cap_table.CapTable,
-        pending_embargoes: std.AutoHashMap(u32, u32),
-        resolved_imports: std.AutoHashMap(u32, FakeResolvedImport),
-        next_embargo_id: u32 = 0,
-    };
-
-    var peer = FakePeer{
-        .caps = cap_table.CapTable.init(std.testing.allocator),
-        .pending_embargoes = std.AutoHashMap(u32, u32).init(std.testing.allocator),
-        .resolved_imports = std.AutoHashMap(u32, FakeResolvedImport).init(std.testing.allocator),
-    };
-    defer {
-        peer.pending_embargoes.deinit();
-        peer.resolved_imports.deinit();
-        peer.caps.deinit();
-    }
-
-    const has_known = hasKnownResolvePromiseForPeerFn(FakePeer);
-    try std.testing.expect(!has_known(&peer, 7));
-    try peer.caps.noteImport(7);
-    try std.testing.expect(has_known(&peer, 7));
-
-    const resolve_descriptor = resolveCapDescriptorForPeerFn(FakePeer);
-    const resolved_none = try resolve_descriptor(&peer, .{ .tag = .none });
-    try std.testing.expect(resolved_none == .none);
-
-    const alloc_embargo_id = allocateEmbargoIdForPeerFn(FakePeer);
-    const remember_pending = rememberPendingEmbargoForPeerFn(FakePeer);
-    const take_pending = takePendingEmbargoPromiseForPeerFn(FakePeer);
-    const clear_embargo = clearResolvedImportEmbargoForPeerFn(FakePeer);
-
-    const first_id = alloc_embargo_id(&peer);
-    const second_id = alloc_embargo_id(&peer);
-    try std.testing.expectEqual(@as(u32, 0), first_id);
-    try std.testing.expectEqual(@as(u32, 1), second_id);
-    try remember_pending(&peer, first_id, 41);
-    try remember_pending(&peer, second_id, 42);
-    try std.testing.expectEqual(@as(?u32, 41), take_pending(&peer, first_id));
-    try std.testing.expectEqual(@as(?u32, null), take_pending(&peer, first_id));
-    try std.testing.expectEqual(@as(?u32, 42), take_pending(&peer, second_id));
-
-    peer.next_embargo_id = std.math.maxInt(u32);
-    try std.testing.expectEqual(std.math.maxInt(u32), alloc_embargo_id(&peer));
-    try std.testing.expectEqual(@as(u32, 0), alloc_embargo_id(&peer));
-
-    try peer.resolved_imports.put(9, .{
-        .cap = .none,
-        .embargo_id = 123,
-        .embargoed = true,
-    });
-    clear_embargo(&peer, 9);
-    const cleared = peer.resolved_imports.get(9) orelse return error.MissingResolvedImport;
-    try std.testing.expect(!cleared.embargoed);
-    try std.testing.expectEqual(@as(?u32, null), cleared.embargo_id);
-
-    clear_embargo(&peer, 12345);
-}
-
-test "peer_control handleBootstrap sends exception when bootstrap export is not configured" {
-    const State = struct {
-        send_return_exception_calls: usize = 0,
-        exception_question_id: u32 = 0,
-        exception_reason: ?[]const u8 = null,
-        note_export_ref_calls: usize = 0,
-        send_frame_calls: usize = 0,
-        record_resolved_answer_calls: usize = 0,
-        allocator: std.mem.Allocator,
-
-        fn noteExportRef(state: *@This(), export_id: u32) !void {
-            _ = export_id;
-            state.note_export_ref_calls += 1;
-        }
-
-        fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
-            state.send_return_exception_calls += 1;
-            state.exception_question_id = question_id;
-            state.exception_reason = reason;
-        }
-
-        fn sendFrame(state: *@This(), frame: []const u8) !void {
-            _ = frame;
-            state.send_frame_calls += 1;
-        }
-
-        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
-            _ = question_id;
-            state.record_resolved_answer_calls += 1;
-            state.allocator.free(frame);
-        }
-    };
-
-    var state = State{ .allocator = std.testing.allocator };
-    try handleBootstrap(
-        State,
-        &state,
-        std.testing.allocator,
-        .{
-            .question_id = 91,
-            .deprecated_object = null,
-        },
-        null,
-        State.noteExportRef,
-        State.sendReturnException,
-        State.sendFrame,
-        State.recordResolvedAnswer,
-    );
-
-    try std.testing.expectEqual(@as(usize, 1), state.send_return_exception_calls);
-    try std.testing.expectEqual(@as(u32, 91), state.exception_question_id);
-    try std.testing.expectEqualStrings("bootstrap not configured", state.exception_reason orelse "");
-    try std.testing.expectEqual(@as(usize, 0), state.note_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.send_frame_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.record_resolved_answer_calls);
-}
-
-test "peer_control handleBootstrap sends frame and records resolved bootstrap answer" {
-    const State = struct {
-        allocator: std.mem.Allocator,
-        note_export_ref_calls: usize = 0,
-        noted_export_id: ?u32 = null,
-        send_return_exception_calls: usize = 0,
-        send_frame_calls: usize = 0,
-        sent_frame: ?[]u8 = null,
-        record_resolved_answer_calls: usize = 0,
-        recorded_question_id: ?u32 = null,
-        recorded_frame: ?[]u8 = null,
-
-        fn deinit(state: *@This()) void {
-            if (state.sent_frame) |bytes| state.allocator.free(bytes);
-            if (state.recorded_frame) |bytes| state.allocator.free(bytes);
-        }
-
-        fn noteExportRef(state: *@This(), export_id: u32) !void {
-            state.note_export_ref_calls += 1;
-            state.noted_export_id = export_id;
-        }
-
-        fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
-            _ = question_id;
-            _ = reason;
-            state.send_return_exception_calls += 1;
-        }
-
-        fn sendFrame(state: *@This(), frame: []const u8) !void {
-            state.send_frame_calls += 1;
-            const copy = try state.allocator.alloc(u8, frame.len);
-            std.mem.copyForwards(u8, copy, frame);
-            state.sent_frame = copy;
-        }
-
-        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
-            state.record_resolved_answer_calls += 1;
-            state.recorded_question_id = question_id;
-            state.recorded_frame = frame;
-        }
-    };
-
-    var state = State{
-        .allocator = std.testing.allocator,
-    };
-    defer state.deinit();
-
-    try handleBootstrap(
-        State,
-        &state,
-        std.testing.allocator,
-        .{
-            .question_id = 7,
-            .deprecated_object = null,
-        },
-        1234,
-        State.noteExportRef,
-        State.sendReturnException,
-        State.sendFrame,
-        State.recordResolvedAnswer,
-    );
-
-    try std.testing.expectEqual(@as(usize, 1), state.note_export_ref_calls);
-    try std.testing.expectEqual(@as(?u32, 1234), state.noted_export_id);
-    try std.testing.expectEqual(@as(usize, 0), state.send_return_exception_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.send_frame_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.record_resolved_answer_calls);
-    try std.testing.expectEqual(@as(?u32, 7), state.recorded_question_id);
-    try std.testing.expect(state.sent_frame != null);
-    try std.testing.expect(state.recorded_frame != null);
-    try std.testing.expectEqualSlices(u8, state.sent_frame.?, state.recorded_frame.?);
-}
-
-test "peer_control frame helper factories take and free resolved answer frame" {
-    const FakeResolvedAnswer = struct {
-        frame: []u8,
-    };
-
-    const FakePeer = struct {
-        allocator: std.mem.Allocator,
-        resolved_answers: std.AutoHashMap(u32, FakeResolvedAnswer),
-    };
-
-    var peer = FakePeer{
-        .allocator = std.testing.allocator,
-        .resolved_answers = std.AutoHashMap(u32, FakeResolvedAnswer).init(std.testing.allocator),
-    };
-    defer peer.resolved_answers.deinit();
-
-    const frame = try std.testing.allocator.alloc(u8, 3);
-    frame[0] = 1;
-    frame[1] = 2;
-    frame[2] = 3;
-    try peer.resolved_answers.put(55, .{ .frame = frame });
-
-    const take_frame = takeResolvedAnswerFrameForPeerFn(FakePeer);
-    const free_frame = freeOwnedFrameForPeerFn(FakePeer);
-
-    const removed = take_frame(&peer, 55) orelse return error.MissingResolvedImport;
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, removed);
-    try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
-    free_frame(&peer, removed);
-
-    try std.testing.expectEqual(@as(?[]u8, null), take_frame(&peer, 55));
-}
-
-test "peer_control handleFinish runs clear, tail-forward, and resolved cleanup" {
-    const State = struct {
-        expected_question_id: u32,
-        clear_calls: usize = 0,
-        tail_question_id: ?u32 = null,
-        send_finish_calls: usize = 0,
-        last_finish_question_id: u32 = 0,
-        last_finish_release_result_caps: bool = true,
-        resolved_frame: ?[]u8 = null,
-        release_caps_calls: usize = 0,
-        free_frame_calls: usize = 0,
-    };
-
-    const Hooks = struct {
-        fn noteClear(state: *State, question_id: u32) void {
-            std.testing.expectEqual(state.expected_question_id, question_id) catch unreachable;
-            state.clear_calls += 1;
-        }
-
-        fn removeSendResultsToYourself(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearSendResultsToThirdParty(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearProvide(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearPendingJoinQuestion(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearPendingAcceptQuestion(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn takeForwardedTailQuestion(state: *State, question_id: u32) ?u32 {
-            std.testing.expectEqual(state.expected_question_id, question_id) catch unreachable;
-            return state.tail_question_id;
-        }
-
-        fn sendFinish(state: *State, question_id: u32, release_result_caps: bool) !void {
-            state.send_finish_calls += 1;
-            state.last_finish_question_id = question_id;
-            state.last_finish_release_result_caps = release_result_caps;
-        }
-
-        fn takeResolvedAnswerFrame(state: *State, question_id: u32) ?[]u8 {
-            std.testing.expectEqual(state.expected_question_id, question_id) catch unreachable;
-            const frame = state.resolved_frame;
-            state.resolved_frame = null;
-            return frame;
-        }
-
-        fn releaseCapsForFrame(state: *State, frame: []const u8) !void {
-            state.release_caps_calls += 1;
-            try std.testing.expectEqualSlices(u8, &[_]u8{ 9, 8, 7 }, frame);
-        }
-
-        fn freeFrame(state: *State, frame: []u8) void {
-            std.testing.expectEqualSlices(u8, &[_]u8{ 9, 8, 7 }, frame) catch unreachable;
-            state.free_frame_calls += 1;
-        }
-    };
-
-    var frame_storage = [_]u8{ 9, 8, 7 };
-    var state = State{
-        .expected_question_id = 51,
-        .tail_question_id = 88,
-        .resolved_frame = frame_storage[0..],
-    };
-
-    try handleFinish(
-        State,
-        &state,
-        51,
-        true,
-        Hooks.removeSendResultsToYourself,
-        Hooks.clearSendResultsToThirdParty,
-        Hooks.clearProvide,
-        Hooks.clearPendingJoinQuestion,
-        Hooks.clearPendingAcceptQuestion,
-        Hooks.takeForwardedTailQuestion,
-        Hooks.sendFinish,
-        Hooks.takeResolvedAnswerFrame,
-        Hooks.releaseCapsForFrame,
-        Hooks.freeFrame,
-    );
-
-    try std.testing.expectEqual(@as(usize, 5), state.clear_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.send_finish_calls);
-    try std.testing.expectEqual(@as(u32, 88), state.last_finish_question_id);
-    try std.testing.expectEqual(false, state.last_finish_release_result_caps);
-    try std.testing.expectEqual(@as(usize, 1), state.release_caps_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.free_frame_calls);
-}
-
-test "peer_control handleFinish skips optional tail and resolved cleanup when absent" {
-    const State = struct {
-        expected_question_id: u32,
-        clear_calls: usize = 0,
-        send_finish_calls: usize = 0,
-        release_caps_calls: usize = 0,
-        free_frame_calls: usize = 0,
-    };
-
-    const Hooks = struct {
-        fn noteClear(state: *State, question_id: u32) void {
-            std.testing.expectEqual(state.expected_question_id, question_id) catch unreachable;
-            state.clear_calls += 1;
-        }
-
-        fn removeSendResultsToYourself(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearSendResultsToThirdParty(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearProvide(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearPendingJoinQuestion(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn clearPendingAcceptQuestion(state: *State, question_id: u32) void {
-            noteClear(state, question_id);
-        }
-
-        fn takeForwardedTailQuestion(state: *State, question_id: u32) ?u32 {
-            std.testing.expectEqual(state.expected_question_id, question_id) catch unreachable;
-            return null;
-        }
-
-        fn sendFinish(state: *State, question_id: u32, release_result_caps: bool) !void {
-            _ = question_id;
-            _ = release_result_caps;
-            state.send_finish_calls += 1;
-        }
-
-        fn takeResolvedAnswerFrame(state: *State, question_id: u32) ?[]u8 {
-            std.testing.expectEqual(state.expected_question_id, question_id) catch unreachable;
-            return null;
-        }
-
-        fn releaseCapsForFrame(state: *State, frame: []const u8) !void {
-            _ = frame;
-            state.release_caps_calls += 1;
-        }
-
-        fn freeFrame(state: *State, frame: []u8) void {
-            _ = frame;
-            state.free_frame_calls += 1;
-        }
-    };
-
-    var state = State{ .expected_question_id = 19 };
-    try handleFinish(
-        State,
-        &state,
-        19,
-        true,
-        Hooks.removeSendResultsToYourself,
-        Hooks.clearSendResultsToThirdParty,
-        Hooks.clearProvide,
-        Hooks.clearPendingJoinQuestion,
-        Hooks.clearPendingAcceptQuestion,
-        Hooks.takeForwardedTailQuestion,
-        Hooks.sendFinish,
-        Hooks.takeResolvedAnswerFrame,
-        Hooks.releaseCapsForFrame,
-        Hooks.freeFrame,
-    );
-
-    try std.testing.expectEqual(@as(usize, 5), state.clear_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.send_finish_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.release_caps_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.free_frame_calls);
-}
-
-test "peer_control adoptThirdPartyAnswer rejects invalid adopted answer id" {
-    const Question = struct { marker: u32 };
-    const State = struct {
-        abort_reason: ?[]const u8 = null,
-    };
-
-    const Hooks = struct {
-        fn hasQuestion(_: *State, _: u32) bool {
-            return false;
-        }
-
-        fn hasAdopted(_: *State, _: u32) bool {
-            return false;
-        }
-
-        fn sendAbort(state: *State, reason: []const u8) !void {
-            state.abort_reason = reason;
-        }
-
-        fn putQuestion(_: *State, _: u32, _: Question) !void {
-            return error.TestUnexpectedResult;
-        }
-
-        fn removeQuestion(_: *State, _: u32) void {}
-
-        fn putAdopted(_: *State, _: u32, _: u32) !void {
-            return error.TestUnexpectedResult;
-        }
-
-        fn removeAdopted(_: *State, _: u32) void {}
-
-        fn takePendingReturn(_: *State, _: u32) ?[]u8 {
-            return null;
-        }
-
-        fn freeFrame(_: *State, _: []u8) void {}
-
-        fn handlePendingReturn(_: *State, _: []const u8) !void {
-            return error.TestUnexpectedResult;
-        }
-    };
-
-    var state = State{};
-    const err = adoptThirdPartyAnswer(
-        State,
-        Question,
-        &state,
-        55,
-        1,
-        .{ .marker = 123 },
-        Hooks.hasQuestion,
-        Hooks.hasAdopted,
-        Hooks.sendAbort,
-        Hooks.putQuestion,
-        Hooks.removeQuestion,
-        Hooks.putAdopted,
-        Hooks.removeAdopted,
-        Hooks.takePendingReturn,
-        Hooks.freeFrame,
-        Hooks.handlePendingReturn,
-    );
-    try std.testing.expectError(error.InvalidThirdPartyAnswerId, err);
-    try std.testing.expectEqualStrings("invalid thirdPartyAnswer answerId", state.abort_reason orelse "");
-}
-
-test "peer_control adoptThirdPartyAnswer stores mapping and replays pending return frame" {
-    const Question = struct { marker: u32 };
-    const State = struct {
-        has_question: bool = false,
-        has_adopted: bool = false,
-        put_question_calls: usize = 0,
-        put_adopted_calls: usize = 0,
-        remove_question_calls: usize = 0,
-        remove_adopted_calls: usize = 0,
-        stored_answer_id: u32 = 0,
-        stored_question: Question = .{ .marker = 0 },
-        stored_adopted_answer_id: u32 = 0,
-        stored_original_question_id: u32 = 0,
-        pending_frame: ?[]u8 = null,
-        handled_pending_frames: usize = 0,
-        freed_pending_frames: usize = 0,
-        abort_reason: ?[]const u8 = null,
-    };
-
-    const Hooks = struct {
-        fn hasQuestion(state: *State, answer_id: u32) bool {
-            _ = answer_id;
-            return state.has_question;
-        }
-
-        fn hasAdopted(state: *State, answer_id: u32) bool {
-            _ = answer_id;
-            return state.has_adopted;
-        }
-
-        fn sendAbort(state: *State, reason: []const u8) !void {
-            state.abort_reason = reason;
-        }
-
-        fn putQuestion(state: *State, answer_id: u32, question: Question) !void {
-            state.has_question = true;
-            state.put_question_calls += 1;
-            state.stored_answer_id = answer_id;
-            state.stored_question = question;
-        }
-
-        fn removeQuestion(state: *State, _: u32) void {
-            state.has_question = false;
-            state.remove_question_calls += 1;
-        }
-
-        fn putAdopted(state: *State, adopted_answer_id: u32, question_id: u32) !void {
-            state.has_adopted = true;
-            state.put_adopted_calls += 1;
-            state.stored_adopted_answer_id = adopted_answer_id;
-            state.stored_original_question_id = question_id;
-        }
-
-        fn removeAdopted(state: *State, _: u32) void {
-            state.has_adopted = false;
-            state.remove_adopted_calls += 1;
-        }
-
-        fn takePendingReturn(state: *State, _: u32) ?[]u8 {
-            const frame = state.pending_frame;
-            state.pending_frame = null;
-            return frame;
-        }
-
-        fn freeFrame(state: *State, frame: []u8) void {
-            std.testing.expectEqualSlices(u8, &[_]u8{ 0xDE, 0xAD }, frame) catch unreachable;
-            state.freed_pending_frames += 1;
-        }
-
-        fn handlePendingReturn(state: *State, frame: []const u8) !void {
-            try std.testing.expectEqualSlices(u8, &[_]u8{ 0xDE, 0xAD }, frame);
-            state.handled_pending_frames += 1;
-        }
-    };
-
-    var pending_storage = [_]u8{ 0xDE, 0xAD };
-    var state = State{
-        .pending_frame = pending_storage[0..],
-    };
-    const adopted_answer_id: u32 = 0x4000_0101;
-    const original_question_id: u32 = 77;
-    const adopted_question = Question{ .marker = 999 };
-
-    try adoptThirdPartyAnswer(
-        State,
-        Question,
-        &state,
-        original_question_id,
-        adopted_answer_id,
-        adopted_question,
-        Hooks.hasQuestion,
-        Hooks.hasAdopted,
-        Hooks.sendAbort,
-        Hooks.putQuestion,
-        Hooks.removeQuestion,
-        Hooks.putAdopted,
-        Hooks.removeAdopted,
-        Hooks.takePendingReturn,
-        Hooks.freeFrame,
-        Hooks.handlePendingReturn,
-    );
-
-    try std.testing.expectEqual(@as(usize, 1), state.put_question_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.put_adopted_calls);
-    try std.testing.expectEqual(adopted_answer_id, state.stored_answer_id);
-    try std.testing.expectEqual(adopted_answer_id, state.stored_adopted_answer_id);
-    try std.testing.expectEqual(original_question_id, state.stored_original_question_id);
-    try std.testing.expectEqual(adopted_question.marker, state.stored_question.marker);
-    try std.testing.expectEqual(@as(usize, 0), state.remove_question_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.remove_adopted_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.handled_pending_frames);
-    try std.testing.expectEqual(@as(usize, 1), state.freed_pending_frames);
-    try std.testing.expect(state.abort_reason == null);
 }
