@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub fn define(
     comptime MessageType: type,
     comptime StructReaderType: type,
@@ -46,6 +48,16 @@ pub fn define(
                     return text_data[0 .. text_data.len - 1];
                 }
                 return text_data;
+            }
+
+            /// Like `getText`, but returns `error.InvalidUtf8` when the text
+            /// contains ill-formed UTF-8 byte sequences.
+            pub fn getTextStrict(self: AnyPointerReader) ![]const u8 {
+                const text = try self.getText();
+                if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
+                    return error.InvalidUtf8;
+                }
+                return text;
             }
 
             pub fn getData(self: AnyPointerReader) ![]const u8 {

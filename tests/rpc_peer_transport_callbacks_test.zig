@@ -1,7 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const callbacks = capnpc.rpc.peer_transport_callbacks;
+const callbacks = capnpc.rpc._internal.peer_transport_callbacks;
 
 test "peer_transport_callbacks onConnectionMessageFor forwards frame to peer handler" {
     const PeerState = struct {

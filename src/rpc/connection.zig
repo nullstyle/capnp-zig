@@ -4,13 +4,37 @@ const transport_xev = @import("transport_xev.zig");
 const xev = @import("xev");
 const message = @import("../message.zig");
 
+/// A framed Cap'n Proto connection over TCP.
+///
+/// Combines a `Transport` (raw TCP I/O) with a `Framer` (Cap'n Proto
+/// segment-based message framing) to deliver complete RPC messages to
+/// the `on_message` callback.
+///
+/// ## Callback context lifetime
+///
+/// The `ctx` pointer set via `start()` must remain valid until `deinit`
+/// is called. All callbacks (`on_message`, `on_error`, `on_close`) are
+/// invoked on the event-loop thread and may reference `ctx`.
+///
+/// ## Ownership
+///
+/// The `Connection` owns its `Transport` and `Framer`. Call `deinit` to
+/// release both (which also clears transport callbacks and drains pending
+/// writes). The `Connection` does **not** own the `ctx` pointer.
 pub const Connection = struct {
     allocator: std.mem.Allocator,
     transport: transport_xev.Transport,
     framer: framing.Framer,
+    /// Opaque context pointer passed to `start()`. Must remain valid until
+    /// `deinit`. All callbacks may dereference this pointer.
     ctx: ?*anyopaque = null,
+    /// Called for each complete inbound Cap'n Proto message frame.
     on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
+    /// Called on transport or framing errors. The connection may be
+    /// in a degraded state after an error callback.
     on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
+    /// Called exactly once when the transport closes (after any error
+    /// callback, if applicable).
     on_close: ?*const fn (conn: *Connection) void = null,
 
     pub const Options = struct {
@@ -98,7 +122,7 @@ pub const Connection = struct {
         }
     }
 
-    fn onTransportClose(ctx: *anyopaque, err: ?anyerror) void {
+    fn onTransportClose(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
         const conn: *Connection = @ptrCast(@alignCast(ctx));
         if (err) |e| {
             if (conn.on_error) |cb| cb(conn, e);
@@ -106,7 +130,7 @@ pub const Connection = struct {
         if (conn.on_close) |cb| cb(conn);
     }
 
-    fn onWriteDone(ctx: *anyopaque, err: ?anyerror) void {
+    fn onWriteDone(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
         if (err) |e| {
             const conn: *Connection = @ptrCast(@alignCast(ctx));
             if (conn.on_error) |cb| cb(conn, e);

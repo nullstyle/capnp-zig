@@ -1,7 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const cleanup = capnpc.rpc.peer_cleanup;
+const cleanup = capnpc.rpc._internal.peer_cleanup;
 
 test "peer_cleanup deinitPendingCallMapOwned releases frames and calls caps deinit" {
     var caps_deinit_count: usize = 0;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const protocol = @import("protocol.zig");
 const cap_table = @import("cap_table.zig");
 const message = @import("../message.zig");
@@ -121,48 +122,214 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
 ///
 /// `Peer` tracks exported capabilities, outstanding questions, promise
 /// resolution, and three-party handoff state. It is **not** thread-safe;
-/// all calls must be made from the same thread (or under external
-/// synchronization). Use `initDetached` for environments without a real
-/// transport (WASM, unit tests).
+/// all calls must be made from the thread that owns the associated event
+/// loop (or under external synchronization). In debug builds, key entry
+/// points assert thread affinity to catch violations early. Use
+/// `initDetached` for environments without a real transport (WASM, unit
+/// tests).
+///
+/// ## Peer lifecycle (state machine)
+///
+/// ```text
+///   +------------+     attachConnection / attachTransport     +----------+
+///   |  Detached  | ----------------------------------------> | Attached |
+///   | (no I/O)   | <---------------------------------------- | (idle)   |
+///   +------------+     detachConnection / detachTransport     +----------+
+///                                                                  |
+///                                                           start()
+///                                                                  v
+///                                                             +----------+
+///                                                             |  Active  |
+///                                                             | (r/w)    |
+///                                                             +----------+
+///                                                                  |
+///                                             transport close / error / deinit
+///                                                                  v
+///                                                             +----------+
+///                                                             |  Closed  |
+///                                                             +----------+
+/// ```
+///
+/// * **Detached** -- Created via `initDetached`. No transport is wired up;
+///   frames can still be injected manually via `handleFrame` and sent
+///   through a `setSendFrameOverride` callback.
+/// * **Attached** -- A transport (typically a `Connection`) has been bound
+///   via `attachConnection`/`attachTransport`, but `start()` has not been
+///   called yet. No I/O occurs.
+/// * **Active** -- After `start()`, the transport begins reading inbound
+///   frames and the peer processes them. Outbound calls, returns, and
+///   control messages flow through `sendFrame`.
+/// * **Closed** -- The transport signaled a close (EOF, error, or explicit
+///   `close`). The `on_close` callback fires. The peer should be
+///   `deinit`-ed after this.
+///
+/// ## State maps
+///
+/// The peer maintains many hash maps to track the RPC protocol state.
+/// Here is a summary of each:
+///
+/// | Map | Key | Value | Purpose |
+/// |-----|-----|-------|---------|
+/// | `exports` | export ID | `ExportEntry` | Local capabilities offered to the remote peer. Ref-counted; removed on Release. |
+/// | `questions` | question ID | `Question` | Outstanding outbound calls awaiting a Return. Removed when the Return arrives. |
+/// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Removed on Finish. |
+/// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
+/// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
+/// | `forwarded_questions` | original answer ID | forwarded question ID | Maps an inbound call's answer ID to the question ID of the forwarded outbound call. |
+/// | `forwarded_tail_questions` | original answer ID | forwarded question ID | Like `forwarded_questions` but for tail-call forwarding (takeFromOtherQuestion). |
+/// | `provides_by_question` | question ID | `ProvideEntry` | Active Provide operations indexed by their answer question ID. |
+/// | `provides_by_key` | recipient key (bytes) | question ID | Active Provide operations indexed by their recipient key for Accept lookup. |
+/// | `pending_joins` | join ID | `JoinState` | In-progress Join operations collecting parts from multiple peers. |
+/// | `pending_join_questions` | question ID | `PendingJoinQuestion` | Maps a Join answer's question ID back to its join ID and part number. |
+/// | `pending_accepts_by_embargo` | embargo key (bytes) | `ArrayList(PendingEmbargoedAccept)` | Accept messages waiting for a disembargo before delivery. |
+/// | `pending_accept_embargo_by_question` | question ID | embargo key (bytes) | Maps a question to its embargo key for cleanup on Finish. |
+/// | `pending_third_party_awaits` | recipient key (bytes) | `PendingThirdPartyAwait` | Outbound third-party handoffs awaiting a ThirdPartyAnswer. |
+/// | `pending_third_party_answers` | recipient key (bytes) | answer ID | Completed third-party answers awaiting adoption. |
+/// | `pending_third_party_returns` | question ID | frame (bytes) | Return frames for third-party questions received before adoption. |
+/// | `adopted_third_party_answers` | original question ID | adopted answer ID | Maps third-party questions to their locally adopted answer IDs. |
+/// | `resolved_imports` | promise ID | `ResolvedImport` | Resolved promise imports (after a Resolve message). Tracks embargo state. |
+/// | `pending_embargoes` | embargo ID | promise ID | In-flight disembargo operations, keyed by the embargo ID we allocated. |
+/// | `loopback_questions` | question ID | void | Questions whose Return should be delivered locally (loopback / exported-cap calls). |
+/// | `send_results_to_yourself` | answer ID | void | Inbound calls with `sendResultsTo = yourself`, meaning we send `resultsSentElsewhere`. |
+/// | `send_results_to_third_party` | answer ID | optional payload | Inbound calls with `sendResultsTo = thirdParty`. Payload is the serialized recipient. |
+///
+/// ## Invariants
+///
+/// * Question IDs are monotonically increasing (mod 2^32) and never reused
+///   within a single peer lifetime.
+/// * Each export ID has at most one entry in `exports`. The entry's
+///   `ref_count` tracks how many times the remote peer has received the
+///   capability in a message payload.
+/// * A question is removed from `questions` when its Return is fully
+///   handled, but its `resolved_answers` entry persists until Finish so
+///   that PromisedAnswer references can be resolved.
+/// * `pending_promises` entries are drained (replayed or errored) when the
+///   corresponding answer resolves, never left dangling.
 pub const Peer = struct {
     allocator: std.mem.Allocator,
+
+    // -- Transport binding --------------------------------------------------
+
+    /// Opaque pointer to the attached transport/connection. Must remain
+    /// valid from `attachTransport` until `detachTransport` or `deinit`.
     transport_ctx: ?*anyopaque = null,
     transport_start: ?TransportStartFn = null,
     transport_send: ?TransportSendFn = null,
     transport_close: ?TransportCloseFn = null,
     transport_is_closing: ?TransportIsClosingFn = null,
+
+    // -- Capability bookkeeping ---------------------------------------------
+
+    /// Central capability table shared with cap_table helpers.
     caps: cap_table.CapTable,
+    /// Exported (local) capabilities offered to the remote peer.
     exports: std.AutoHashMap(u32, ExportEntry),
+
+    // -- Question / answer tracking -----------------------------------------
+
+    /// Outstanding outbound calls (question ID -> callback).
     questions: std.AutoHashMap(u32, Question),
+    /// Cached Return frames for answered questions, kept until Finish.
     resolved_answers: std.AutoHashMap(u32, ResolvedAnswer),
+
+    // -- Promise queueing ---------------------------------------------------
+
+    /// Calls blocked on an unresolved PromisedAnswer (question ID -> queue).
     pending_promises: std.AutoHashMap(u32, std.ArrayList(PendingCall)),
+    /// Calls blocked on an unresolved promise export (export ID -> queue).
     pending_export_promises: std.AutoHashMap(u32, std.ArrayList(PendingCall)),
+
+    // -- Forwarding ---------------------------------------------------------
+
+    /// Maps an inbound answer ID to the outbound question ID it was forwarded to.
     forwarded_questions: std.AutoHashMap(u32, u32),
+    /// Same as `forwarded_questions` but for tail-call (takeFromOtherQuestion) forwarding.
     forwarded_tail_questions: std.AutoHashMap(u32, u32),
+
+    // -- Three-party handoff (provide / accept / join) ----------------------
+
+    /// Active Provide operations keyed by answer question ID.
     provides_by_question: std.AutoHashMap(u32, ProvideEntry),
+    /// Active Provide operations keyed by serialized recipient for Accept lookup.
     provides_by_key: std.StringHashMap(u32),
+    /// In-progress Join operations collecting parts.
     pending_joins: std.AutoHashMap(u32, JoinState),
+    /// Maps a Join answer's question ID to its join ID + part number.
     pending_join_questions: std.AutoHashMap(u32, PendingJoinQuestion),
+    /// Accept messages waiting for a disembargo.
     pending_accepts_by_embargo: std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)),
+    /// Maps question IDs to embargo keys for cleanup on Finish.
     pending_accept_embargo_by_question: std.AutoHashMap(u32, []u8),
+    /// Outbound third-party handoffs awaiting ThirdPartyAnswer.
     pending_third_party_awaits: std.StringHashMap(PendingThirdPartyAwait),
+    /// Completed third-party answers awaiting adoption.
     pending_third_party_answers: std.StringHashMap(u32),
+    /// Return frames for third-party questions received before adoption.
     pending_third_party_returns: std.AutoHashMap(u32, []u8),
+    /// Maps third-party questions to their adopted answer IDs.
     adopted_third_party_answers: std.AutoHashMap(u32, u32),
+
+    // -- Resolve / embargo --------------------------------------------------
+
+    /// Resolved promise imports (after Resolve). Tracks embargo state.
     resolved_imports: std.AutoHashMap(u32, ResolvedImport),
+    /// In-flight disembargo operations (embargo ID -> promise ID).
     pending_embargoes: std.AutoHashMap(u32, u32),
+
+    // -- Loopback / sendResultsTo routing -----------------------------------
+
+    /// Questions whose Return should be delivered locally (calls to our own exports).
     loopback_questions: std.AutoHashMap(u32, void),
+    /// Inbound calls with sendResultsTo=yourself.
     send_results_to_yourself: std.AutoHashMap(u32, void),
+    /// Inbound calls with sendResultsTo=thirdParty.
     send_results_to_third_party: std.AutoHashMap(u32, ?[]u8),
+
+    // -- Counters and scalars -----------------------------------------------
+
+    /// Monotonically increasing question ID counter.
     next_question_id: u32 = 0,
+    /// Monotonically increasing embargo ID counter.
     next_embargo_id: u32 = 0,
+    /// Export ID of the bootstrap capability, if set.
     bootstrap_export_id: ?u32 = null,
+
+    // -- Send frame override (for testing) ----------------------------------
+
     send_frame_ctx: ?*anyopaque = null,
     send_frame_override: ?SendFrameOverride = null,
+
+    // -- Lifecycle callbacks -------------------------------------------------
+
     on_error: ?*const fn (peer: *Peer, err: anyerror) void = null,
     on_close: ?*const fn (peer: *Peer) void = null,
+
+    // -- Diagnostics --------------------------------------------------------
+
+    /// Tag of the most recently decoded inbound message (for debugging).
     last_inbound_tag: ?protocol.MessageTag = null,
+    /// Reason string from the most recent remote Abort message, if any.
     last_remote_abort_reason: ?[]u8 = null,
+
+    // -- Thread-affinity check (debug only) ---------------------------------
+
+    /// Thread ID captured at init time. In debug builds, key entry points
+    /// assert that the current thread matches this value. Initialized to
+    /// null and set to the real thread ID in `initDetached`.
+    owner_thread_id: ?std.Thread.Id = null,
+
+    /// Assert that the caller is on the thread that created this peer.
+    /// This is a no-op in release builds. In debug builds, it panics
+    /// with a clear message if the current thread is not the owner.
+    fn assertThreadAffinity(self: *const Peer) void {
+        if (builtin.mode == .Debug) {
+            const owner = self.owner_thread_id orelse return;
+            const current = std.Thread.getCurrentId();
+            if (current != owner) {
+                @panic("Peer method called from wrong thread: Peer is not thread-safe, all calls must be on the owner thread");
+            }
+        }
+    }
 
     /// Create a peer and immediately attach it to a connection/transport.
     pub fn init(allocator: std.mem.Allocator, conn: anytype) Peer {
@@ -178,6 +345,7 @@ pub const Peer = struct {
     pub fn initDetached(allocator: std.mem.Allocator) Peer {
         return .{
             .allocator = allocator,
+            .owner_thread_id = std.Thread.getCurrentId(),
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),
@@ -206,6 +374,7 @@ pub const Peer = struct {
 
     /// Bind a typed connection to this peer, wiring up transport callbacks.
     pub fn attachConnection(self: *Peer, conn: anytype) void {
+        self.assertThreadAffinity();
         const ConnPtr = @TypeOf(conn);
         comptime {
             const info = @typeInfo(ConnPtr);
@@ -247,6 +416,7 @@ pub const Peer = struct {
     }
 
     pub fn detachConnection(self: *Peer) void {
+        self.assertThreadAffinity();
         self.detachTransport();
     }
 
@@ -258,6 +428,7 @@ pub const Peer = struct {
         close_fn: ?TransportCloseFn,
         is_closing: ?TransportIsClosingFn,
     ) void {
+        self.assertThreadAffinity();
         peer_transport_state.attachTransportForPeer(
             Peer,
             TransportStartFn,
@@ -309,6 +480,7 @@ pub const Peer = struct {
     /// Release all owned state: pending calls, resolved answers, export
     /// entries, and the capability table.
     pub fn deinit(self: *Peer) void {
+        self.assertThreadAffinity();
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
             self.allocator,
@@ -389,6 +561,7 @@ pub const Peer = struct {
         on_error: ?*const fn (peer: *Peer, err: anyerror) void,
         on_close: ?*const fn (peer: *Peer) void,
     ) void {
+        self.assertThreadAffinity();
         self.on_error = on_error;
         self.on_close = on_close;
         if (self.transport_start) |start_fn| {
@@ -412,7 +585,8 @@ pub const Peer = struct {
 
     /// Register a local capability for export and return its export ID.
     pub fn addExport(self: *Peer, exported: Export) !u32 {
-        const id = self.caps.allocExportId();
+        self.assertThreadAffinity();
+        const id = try self.caps.allocExportId();
         try self.exports.put(id, .{
             .handler = exported,
             .ref_count = 0,
@@ -425,7 +599,8 @@ pub const Peer = struct {
     /// Export a promise capability that will be resolved later via
     /// `resolvePromiseExportToExport` or `resolvePromiseExportToException`.
     pub fn addPromiseExport(self: *Peer) !u32 {
-        const id = self.caps.allocExportId();
+        self.assertThreadAffinity();
+        const id = try self.caps.allocExportId();
         try self.exports.put(id, .{
             .handler = null,
             .ref_count = 0,
@@ -441,6 +616,7 @@ pub const Peer = struct {
     /// Returns the export ID. The remote peer can obtain this capability
     /// by sending a Bootstrap message.
     pub fn setBootstrap(self: *Peer, exported: Export) !u32 {
+        self.assertThreadAffinity();
         const id = try self.addExport(exported);
         self.bootstrap_export_id = id;
         return id;
@@ -451,6 +627,7 @@ pub const Peer = struct {
     /// Returns the question ID. When the remote peer responds, `on_return`
     /// is invoked with the bootstrap capability in the return payload.
     pub fn sendBootstrap(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        self.assertThreadAffinity();
         const question_id = try self.allocateQuestion(ctx, on_return);
 
         var builder = protocol.MessageBuilder.init(self.allocator);
@@ -463,6 +640,7 @@ pub const Peer = struct {
 
     /// Resolve a previously exported promise to point at a concrete export.
     pub fn resolvePromiseExportToExport(self: *Peer, promise_id: u32, export_id: u32) !void {
+        self.assertThreadAffinity();
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
         if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
         if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
@@ -488,6 +666,7 @@ pub const Peer = struct {
 
     /// Resolve a previously exported promise to an exception.
     pub fn resolvePromiseExportToException(self: *Peer, promise_id: u32, reason: []const u8) !void {
+        self.assertThreadAffinity();
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
         if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
         if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
@@ -514,6 +693,7 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        self.assertThreadAffinity();
         if (self.resolved_imports.get(target_id)) |entry| {
             if (!entry.embargoed and entry.cap != null) {
                 return self.sendCallResolved(entry.cap.?, interface_id, method_id, ctx, build, on_return);
@@ -771,6 +951,7 @@ pub const Peer = struct {
 
     /// Send a return with results for a previously received call.
     pub fn sendReturnResults(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
+        self.assertThreadAffinity();
         // sendResultsTo routing is resolved in precedence order:
         // third-party handoff > local results-sent-elsewhere marker > normal results payload.
         if (self.send_results_to_third_party.fetchRemove(answer_id)) |entry| {
@@ -803,6 +984,7 @@ pub const Peer = struct {
     }
 
     pub fn sendPrebuiltReturnFrame(self: *Peer, ret: protocol.Return, frame: []const u8) !void {
+        self.assertThreadAffinity();
         try self.noteOutboundReturnCapRefs(ret);
         self.clearSendResultsRouting(ret.answer_id);
         try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
@@ -816,6 +998,7 @@ pub const Peer = struct {
 
     /// Send a return with an exception for a previously received call.
     pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
+        self.assertThreadAffinity();
         try peer_return_dispatch.sendReturnExceptionForPeer(
             Peer,
             self,
@@ -987,6 +1170,7 @@ pub const Peer = struct {
     /// Release references to an imported capability, sending a Release message
     /// to the remote peer when the reference count drops to zero.
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
+        self.assertThreadAffinity();
         try peer_cap_lifecycle.releaseImport(
             Peer,
             self,
@@ -999,6 +1183,7 @@ pub const Peer = struct {
     }
 
     pub fn sendReleaseForHost(self: *Peer, import_id: u32, count: u32) !void {
+        self.assertThreadAffinity();
         try peer_outbound_control.sendReleaseViaSendFrame(
             Peer,
             self,
@@ -1014,6 +1199,7 @@ pub const Peer = struct {
         release_result_caps: bool,
         require_early_cancellation: bool,
     ) !void {
+        self.assertThreadAffinity();
         try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
             self,
@@ -1179,6 +1365,7 @@ pub const Peer = struct {
     /// (call, return, finish, resolve, etc.). Unknown message types trigger
     /// an Unimplemented response per the Cap'n Proto RPC spec.
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {
+        self.assertThreadAffinity();
         var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| {
             if (err == error.InvalidMessageTag) {
                 try self.sendUnimplementedForFrame(frame);
@@ -1632,4 +1819,80 @@ pub const Peer = struct {
             ),
         );
     }
+
+    /// Exposed for integration tests that exercise internal Peer methods.
+    /// Not part of the public API.
+    pub const test_hooks = struct {
+        pub const ForwardCallContextType = ForwardCallContext;
+
+        pub fn sendFrame(self: *Peer, frame: []const u8) !void {
+            return Peer.sendFrame(self, frame);
+        }
+
+        pub fn collectReleaseCounts(
+            self: *Peer,
+            inbound: *cap_table.InboundCapTable,
+        ) !std.AutoHashMap(u32, u32) {
+            const release_import = peer_cap_lifecycle.releaseImportRefForPeerFn(Peer);
+            var releases = std.AutoHashMap(u32, u32).init(self.allocator);
+            errdefer releases.deinit();
+            var idx: u32 = 0;
+            while (idx < inbound.len()) : (idx += 1) {
+                if (inbound.isRetained(idx)) continue;
+                const entry = try inbound.get(idx);
+                switch (entry) {
+                    .imported => |cap| {
+                        const removed = release_import(self, cap.id);
+                        if (removed) {
+                            try Peer.releaseResolvedImport(self, cap.id);
+                        }
+                        const slot = try releases.getOrPut(cap.id);
+                        if (!slot.found_existing) {
+                            slot.value_ptr.* = 1;
+                        } else {
+                            slot.value_ptr.* +%= 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return releases;
+        }
+
+        pub fn clonePayloadWithRemappedCaps(
+            self: *Peer,
+            builder: *message.MessageBuilder,
+            payload_builder: message.StructBuilder,
+            source: protocol.Payload,
+            inbound_caps: *const cap_table.InboundCapTable,
+        ) !void {
+            return Peer.clonePayloadWithRemappedCaps(self, builder, payload_builder, source, inbound_caps);
+        }
+
+        pub fn onForwardedReturn(
+            ctx_ptr: *anyopaque,
+            self: *Peer,
+            ret: protocol.Return,
+            inbound_caps: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            return Peer.onForwardedReturn(ctx_ptr, self, ret, inbound_caps);
+        }
+
+        pub fn handleResolvedCall(
+            self: *Peer,
+            call: protocol.Call,
+            inbound_caps: *const cap_table.InboundCapTable,
+            resolved: cap_table.ResolvedCap,
+        ) !void {
+            return Peer.handleResolvedCall(self, call, inbound_caps, resolved);
+        }
+
+        pub fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
+            return Peer.handleFinish(self, finish);
+        }
+
+        pub fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
+            return Peer.handleCall(self, frame, call);
+        }
+    };
 };

@@ -3,7 +3,7 @@ const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
 const protocol = capnpc.rpc.protocol;
-const helpers = capnpc.rpc.peer_return_send_helpers;
+const helpers = capnpc.rpc._internal.peer_return_send_helpers;
 
 test "peer_return_send_helpers clearSendResultsRoutingForPeer clears maps and frees payload" {
     const State = struct {

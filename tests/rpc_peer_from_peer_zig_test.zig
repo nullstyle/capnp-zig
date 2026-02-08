@@ -5,8 +5,8 @@ const message = capnpc.message;
 const protocol = capnpc.rpc.protocol;
 const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.cap_table;
-const payload_remap = capnpc.rpc.payload_remap;
-const peer_embargo_accepts = capnpc.rpc.peer_embargo_accepts;
+const payload_remap = capnpc.rpc._internal.payload_remap;
+const peer_embargo_accepts = capnpc.rpc._internal.peer_embargo_accepts;
 const Connection = capnpc.rpc.connection.Connection;
 const Peer = peer_impl.Peer;
 const peer_test_hooks = Peer.test_hooks;
@@ -135,6 +135,7 @@ test "forwarded payload remaps capability index to local id" {
     var src_builder = protocol.MessageBuilder.init(allocator);
     defer src_builder.deinit();
     var src_call = try src_builder.beginCall(1, 0x01, 0x02);
+    try src_call.setTargetImportedCap(0);
     var src_payload = try src_call.payloadBuilder();
     var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
     try src_any.setCapability(.{ .id = 0 });
@@ -148,6 +149,7 @@ test "forwarded payload remaps capability index to local id" {
     var dst_builder = protocol.MessageBuilder.init(allocator);
     defer dst_builder.deinit();
     var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
+    try dst_call.setTargetImportedCap(0);
     const dst_payload = try dst_call.payloadBuilder();
     try peer_test_hooks.clonePayloadWithRemappedCaps(
         &peer,
@@ -184,6 +186,7 @@ test "forwarded payload converts none capability to null pointer" {
     var src_builder = protocol.MessageBuilder.init(allocator);
     defer src_builder.deinit();
     var src_call = try src_builder.beginCall(1, 0x01, 0x02);
+    try src_call.setTargetImportedCap(0);
     var src_payload = try src_call.payloadBuilder();
     var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
     try src_any.setCapability(.{ .id = 0 });
@@ -197,6 +200,7 @@ test "forwarded payload converts none capability to null pointer" {
     var dst_builder = protocol.MessageBuilder.init(allocator);
     defer dst_builder.deinit();
     var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
+    try dst_call.setTargetImportedCap(0);
     const dst_payload = try dst_call.payloadBuilder();
     try peer_test_hooks.clonePayloadWithRemappedCaps(
         &peer,
@@ -237,6 +241,7 @@ test "forwarded payload encodes promised capability descriptors as receiverAnswe
     var src_builder = protocol.MessageBuilder.init(allocator);
     defer src_builder.deinit();
     var src_call = try src_builder.beginCall(1, 0x01, 0x02);
+    try src_call.setTargetImportedCap(0);
     var src_payload = try src_call.payloadBuilder();
     var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
     try src_any.setCapability(.{ .id = 0 });
@@ -250,6 +255,7 @@ test "forwarded payload encodes promised capability descriptors as receiverAnswe
     var dst_builder = protocol.MessageBuilder.init(allocator);
     defer dst_builder.deinit();
     var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
+    try dst_call.setTargetImportedCap(0);
     const dst_payload = try dst_call.payloadBuilder();
     try peer_test_hooks.clonePayloadWithRemappedCaps(
         &peer,
@@ -588,34 +594,52 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
 test "forwarded return forwards awaitFromThirdParty to caller" {
     const allocator = std.testing.allocator;
 
-    const CallbackCtx = struct {
-        seen: bool = false,
-    };
-    const Handlers = struct {
-        fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
-            _ = peer;
-            _ = caps;
-            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
-            state.seen = true;
-            try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret.tag);
-            try std.testing.expect(ret.exception == null);
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
         }
     };
 
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
 
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8){},
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
     const upstream_answer_id: u32 = 400;
     const local_forwarded_question_id: u32 = 401;
 
-    var callback_ctx = CallbackCtx{};
+    // Register the upstream question as non-loopback so the return goes to the wire (capture).
     try peer.questions.put(upstream_answer_id, .{
-        .ctx = &callback_ctx,
-        .on_return = Handlers.onReturn,
-        .is_loopback = true,
+        .ctx = undefined,
+        .on_return = undefined,
+        .is_loopback = false,
     });
-    try peer.loopback_questions.put(upstream_answer_id, {});
     try peer.forwarded_questions.put(local_forwarded_question_id, upstream_answer_id);
+
+    // Build an AnyPointerReader with third-party payload data.
+    var third_builder = message.MessageBuilder.init(allocator);
+    defer third_builder.deinit();
+    const third_root = try third_builder.initRootAnyPointer();
+    try third_root.setText("await-destination");
+    const third_bytes = try third_builder.toBytes();
+    defer allocator.free(third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes);
+    defer third_msg.deinit();
+    const third_ptr = try third_msg.getRootAnyPointer();
 
     const forward_ctx = try allocator.create(ForwardCallContext);
     forward_ctx.* = .{
@@ -638,10 +662,19 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
         .results = null,
         .exception = null,
         .take_from_other_question = null,
+        .accept_from_third_party = third_ptr,
     };
     try peer_test_hooks.onForwardedReturn(forward_ctx, &peer, ret, &inbound);
 
-    try std.testing.expect(callback_ctx.seen);
+    // Verify the forwarded return was sent as accept_from_third_party with the payload.
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+    var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+    defer decoded.deinit();
+    const forwarded_ret = try decoded.asReturn();
+    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, forwarded_ret.tag);
+    try std.testing.expect(forwarded_ret.exception == null);
+    const await_ptr = forwarded_ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
+    try std.testing.expectEqualStrings("await-destination", try await_ptr.getText());
     try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
 }
 
@@ -831,9 +864,6 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
 test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promised target" {
     const allocator = std.testing.allocator;
 
-    const CallbackCtx = struct {
-        seen: bool = false,
-    };
     const Capture = struct {
         allocator: std.mem.Allocator,
         frames: std.ArrayList([]u8),
@@ -843,17 +873,6 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
-        }
-    };
-    const Handlers = struct {
-        fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
-            _ = peer;
-            _ = caps;
-            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
-            state.seen = true;
-            try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret.tag);
-            const await_ptr = ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
-            try std.testing.expectEqualStrings("third-party-destination", try await_ptr.getText());
         }
     };
 
@@ -870,13 +889,13 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     }
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
-    var callback_ctx = CallbackCtx{};
+    // Register the upstream question as non-loopback so the forwarded return
+    // goes to the wire (capture) instead of through the third-party adoption path.
     try peer.questions.put(800, .{
-        .ctx = &callback_ctx,
-        .on_return = Handlers.onReturn,
-        .is_loopback = true,
+        .ctx = undefined,
+        .on_return = undefined,
+        .is_loopback = false,
     });
-    try peer.loopback_questions.put(800, {});
 
     var inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
     defer inbound.deinit();
@@ -921,6 +940,9 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     try std.testing.expectEqualStrings("third-party-destination", try forwarded_third_party.getText());
     const forwarded_question_id = forwarded_call.question_id;
 
+    // Send a results_sent_elsewhere return to the forwarded question.
+    // In propagate_accept_from_third_party mode, this triggers sending an
+    // accept_from_third_party return to the upstream caller with the captured payload.
     var ret_builder = protocol.MessageBuilder.init(allocator);
     defer ret_builder.deinit();
     _ = try ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
@@ -928,7 +950,16 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     defer allocator.free(ret_frame);
     try peer.handleFrame(ret_frame);
 
-    try std.testing.expect(callback_ctx.seen);
+    // Verify the accept_from_third_party return was sent to the upstream caller.
+    // Frames: [0] forwarded call, [1] accept_from_third_party return, [2] auto-finish.
+    try std.testing.expectEqual(@as(usize, 3), capture.frames.items.len);
+    var ret_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
+    defer ret_decoded.deinit();
+    const forwarded_ret = try ret_decoded.asReturn();
+    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, forwarded_ret.tag);
+    try std.testing.expect(forwarded_ret.exception == null);
+    const await_ptr = forwarded_ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
+    try std.testing.expectEqualStrings("third-party-destination", try await_ptr.getText());
     try std.testing.expect(!peer.forwarded_questions.contains(forwarded_question_id));
 }
 
@@ -941,7 +972,6 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
     const ClientCtx = struct {
         returned: bool = false,
     };
-    const BuildCtx = struct {};
     const Handlers = struct {
         fn buildCall(ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
             _ = ctx;
@@ -982,12 +1012,11 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
 
     var client_ctx = ClientCtx{};
     client_ctx.returned = false;
-    var build_ctx = BuildCtx{};
     _ = try peer.sendCallResolved(
         .{ .exported = .{ .id = export_id } },
         0x99,
         0,
-        &build_ctx,
+        &client_ctx,
         Handlers.buildCall,
         Handlers.onReturn,
     );

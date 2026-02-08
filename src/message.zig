@@ -103,7 +103,7 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
             const count = packed_bytes[index];
             index += 1;
             const zero_bytes = (1 + @as(usize, count)) * 8;
-            const dest = out.addManyAsSlice(allocator, zero_bytes) catch unreachable;
+            const dest = try out.addManyAsSlice(allocator, zero_bytes);
             @memset(dest, 0);
             continue;
         }
@@ -111,7 +111,7 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
         if (tag == 0xFF) {
             // 0xFF tag: current word is literal and may be followed by literal run words.
             if (index + 8 > packed_bytes.len) return error.UnexpectedEof;
-            const dest = out.addManyAsSlice(allocator, 8) catch unreachable;
+            const dest = try out.addManyAsSlice(allocator, 8);
             @memcpy(dest, packed_bytes[index .. index + 8]);
             index += 8;
             if (index >= packed_bytes.len) return error.UnexpectedEof;
@@ -120,14 +120,14 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
             if (count > 0) {
                 const byte_count = @as(usize, count) * 8;
                 if (index + byte_count > packed_bytes.len) return error.UnexpectedEof;
-                const run_dest = out.addManyAsSlice(allocator, byte_count) catch unreachable;
+                const run_dest = try out.addManyAsSlice(allocator, byte_count);
                 @memcpy(run_dest, packed_bytes[index .. index + byte_count]);
                 index += byte_count;
             }
             continue;
         }
 
-        const dest = out.addManyAsSlice(allocator, 8) catch unreachable;
+        const dest = try out.addManyAsSlice(allocator, 8);
         @memset(dest, 0);
         var bit_index: u8 = 0;
         while (bit_index < 8) : (bit_index += 1) {
@@ -1382,6 +1382,18 @@ pub const StructReader = struct {
             return text_data[0 .. text_data.len - 1];
         }
         return text_data;
+    }
+
+    /// Read a text field with strict UTF-8 validation.
+    ///
+    /// Like `readText`, but returns `error.InvalidUtf8` when the text
+    /// contains ill-formed UTF-8 byte sequences.
+    pub fn readTextStrict(self: StructReader, pointer_index: usize) ![]const u8 {
+        const text = try self.readText(pointer_index);
+        if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
+            return error.InvalidUtf8;
+        }
+        return text;
     }
 };
 

@@ -67,6 +67,16 @@ pub fn define(
                 }
                 return text_data;
             }
+
+            /// Like `get`, but returns `error.InvalidUtf8` when the text
+            /// contains ill-formed UTF-8 byte sequences.
+            pub fn getStrict(self: TextListReader, index: u32) ![]const u8 {
+                const text = try self.get(index);
+                if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
+                    return error.InvalidUtf8;
+                }
+                return text;
+            }
         };
 
         pub const U8ListReader = struct {
@@ -339,6 +349,16 @@ pub fn define(
                     return text_data[0 .. text_data.len - 1];
                 }
                 return text_data;
+            }
+
+            /// Like `getText`, but returns `error.InvalidUtf8` when the text
+            /// contains ill-formed UTF-8 byte sequences.
+            pub fn getTextStrict(self: PointerListReader, index: u32) ![]const u8 {
+                const text = try self.getText(index);
+                if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
+                    return error.InvalidUtf8;
+                }
+                return text;
             }
 
             pub fn getStruct(self: PointerListReader, index: u32) !StructReaderType {

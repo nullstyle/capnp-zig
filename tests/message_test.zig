@@ -1072,3 +1072,56 @@ test "Message: fuzz malformed buffers do not crash decode" {
         _ = msg.validate(.{}) catch {};
     }
 }
+
+test "readTextStrict: valid UTF-8 passes" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    try struct_builder.writeText(0, "hello");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const text = try root.readTextStrict(0);
+    try testing.expectEqualStrings("hello", text);
+}
+
+test "readTextStrict: empty text passes" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    try struct_builder.writeText(0, "");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const text = try root.readTextStrict(0);
+    try testing.expectEqualStrings("", text);
+}
+
+test "readTextStrict: null pointer returns empty string" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    _ = try builder.allocateStruct(0, 1);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const text = try root.readTextStrict(0);
+    try testing.expectEqualStrings("", text);
+}

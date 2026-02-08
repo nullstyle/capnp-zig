@@ -1,7 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const transport_state = capnpc.rpc.peer_transport_state;
+const transport_state = capnpc.rpc._internal.peer_transport_state;
 
 test "peer_transport_state attach/detach toggles transport presence" {
     const StartFn = *const fn (*anyopaque, *u8) void;

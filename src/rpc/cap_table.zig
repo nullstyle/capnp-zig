@@ -57,6 +57,8 @@ pub const OwnedPromisedAnswer = struct {
 /// Manages import reference counts, export ID allocation, promise-export
 /// markers, and receiver-answer entries used for promise pipelining. Each
 /// `Peer` owns one `CapTable`.
+pub const max_table_size: u32 = 10_000;
+
 pub const CapTable = struct {
     allocator: std.mem.Allocator,
     imports: std.AutoHashMap(u32, ImportEntry),
@@ -83,9 +85,15 @@ pub const CapTable = struct {
         self.receiver_answers.deinit();
     }
 
+    pub fn totalEntries(self: *CapTable) u32 {
+        return @as(u32, @intCast(self.imports.count())) +
+            @as(u32, @intCast(self.promised_exports.count())) +
+            @as(u32, @intCast(self.receiver_answers.count()));
+    }
+
     /// Allocate a unique export ID that does not collide with any existing
     /// import, promise-export, or receiver-answer entry.
-    pub fn allocExportId(self: *CapTable) u32 {
+    pub fn allocExportId(self: *CapTable) error{CapTableFull}!u32 {
         return self.allocLocalCapId();
     }
 
@@ -102,7 +110,7 @@ pub const CapTable = struct {
     }
 
     pub fn noteReceiverAnswer(self: *CapTable, promised: protocol.PromisedAnswer) !u32 {
-        const id = self.allocLocalCapId();
+        const id = try self.allocLocalCapId();
         try self.receiver_answers.put(id, try OwnedPromisedAnswer.fromPromised(self.allocator, promised));
         return id;
     }
@@ -112,7 +120,7 @@ pub const CapTable = struct {
         question_id: u32,
         ops: []const protocol.PromisedAnswerOp,
     ) !u32 {
-        const id = self.allocLocalCapId();
+        const id = try self.allocLocalCapId();
         var owned = try OwnedPromisedAnswer.fromQuestionAndOps(self.allocator, question_id, ops);
         errdefer owned.deinit(self.allocator);
         try self.receiver_answers.put(id, owned);
@@ -146,8 +154,10 @@ pub const CapTable = struct {
         return true;
     }
 
-    fn allocLocalCapId(self: *CapTable) u32 {
-        while (true) {
+    fn allocLocalCapId(self: *CapTable) error{CapTableFull}!u32 {
+        if (self.totalEntries() >= max_table_size) return error.CapTableFull;
+        var iterations: u32 = 0;
+        while (iterations < max_table_size + 1) : (iterations += 1) {
             const id = self.next_export_id;
             self.next_export_id +%= 1;
             if (self.imports.contains(id)) continue;
@@ -155,6 +165,7 @@ pub const CapTable = struct {
             if (self.receiver_answers.contains(id)) continue;
             return id;
         }
+        return error.CapTableFull;
     }
 };
 
