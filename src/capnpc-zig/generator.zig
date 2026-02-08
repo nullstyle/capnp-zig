@@ -162,22 +162,28 @@ pub const Generator = struct {
         if (node.kind == .@"struct") {
             const simple_name = self.getSimpleName(node);
             const type_name = try self.toZigIdentifier(simple_name);
+            errdefer self.allocator.free(type_name);
             const type_export = try self.toSnakeCaseLower(simple_name);
             defer self.allocator.free(type_export);
+
+            const to_json = try std.fmt.allocPrint(
+                self.allocator,
+                "capnp_{s}_{s}_to_json",
+                .{ module_name, type_export },
+            );
+            errdefer self.allocator.free(to_json);
+            const from_json = try std.fmt.allocPrint(
+                self.allocator,
+                "capnp_{s}_{s}_from_json",
+                .{ module_name, type_export },
+            );
+            errdefer self.allocator.free(from_json);
 
             try entries.append(self.allocator, .{
                 .id = node.id,
                 .type_name = type_name,
-                .to_json_export = try std.fmt.allocPrint(
-                    self.allocator,
-                    "capnp_{s}_{s}_to_json",
-                    .{ module_name, type_export },
-                ),
-                .from_json_export = try std.fmt.allocPrint(
-                    self.allocator,
-                    "capnp_{s}_{s}_from_json",
-                    .{ module_name, type_export },
-                ),
+                .to_json_export = to_json,
+                .from_json_export = from_json,
             });
         }
 

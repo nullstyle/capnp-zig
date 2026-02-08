@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const log = std.log.scoped(.rpc_runtime);
 const xev = @import("xev");
 const Connection = @import("connection.zig").Connection;
 
@@ -121,11 +122,13 @@ pub const Listener = struct {
         res: xev.AcceptError!xev.TCP,
     ) xev.CallbackAction {
         const listener = self.?;
-        const socket = res catch {
+        const socket = res catch |err| {
+            log.debug("accept failed: {}", .{err});
             return .disarm;
         };
 
-        const conn_ptr = listener.allocator.create(Connection) catch {
+        const conn_ptr = listener.allocator.create(Connection) catch |err| {
+            log.debug("connection alloc failed: {}", .{err});
             return .disarm;
         };
 
@@ -134,7 +137,8 @@ pub const Listener = struct {
             listener.loop,
             socket,
             listener.conn_options,
-        ) catch {
+        ) catch |err| {
+            log.debug("connection init failed: {}", .{err});
             listener.allocator.destroy(conn_ptr);
             return .disarm;
         };

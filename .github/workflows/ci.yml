@@ -40,7 +40,7 @@ jobs:
           version: 0.15.2
 
       - name: Check formatting
-        run: zig fmt --check src/ tests/
+        run: zig fmt --check --exclude tests/golden src/ tests/ bench/ tools/
 
   bench-check:
     name: Benchmark regression check

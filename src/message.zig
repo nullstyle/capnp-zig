@@ -156,30 +156,30 @@ fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
         index += 1;
 
         if (tag == 0x00) {
-            total += 8; // The all-zero word itself.
+            total = std.math.add(usize, total, 8) catch return error.Overflow;
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
             index += 1;
-            total += @as(usize, count) * 8;
+            total = std.math.add(usize, total, @as(usize, count) * 8) catch return error.Overflow;
             continue;
         }
 
         if (tag == 0xFF) {
             if (index + 8 > packed_bytes.len) return error.UnexpectedEof;
-            total += 8; // The literal word.
+            total = std.math.add(usize, total, 8) catch return error.Overflow;
             index += 8;
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
             index += 1;
             const byte_count = @as(usize, count) * 8;
             if (index + byte_count > packed_bytes.len) return error.UnexpectedEof;
-            total += byte_count;
+            total = std.math.add(usize, total, byte_count) catch return error.Overflow;
             index += byte_count;
             continue;
         }
 
         // Regular tag: each set bit means one non-zero byte follows.
-        total += 8; // Always emits a full 8-byte word.
+        total = std.math.add(usize, total, 8) catch return error.Overflow;
         index += @popCount(tag);
     }
 
@@ -195,7 +195,25 @@ fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     var index: usize = 0;
     while (index < bytes.len) {
         const word = bytes[index .. index + 8];
+        const word_val = std.mem.readInt(u64, word[0..8], .little);
 
+        if (word_val == 0) {
+            // Collapse consecutive zero words into a single run record.
+            var run: usize = 1;
+            var scan = index + 8;
+            while (run < 256 and scan + 8 <= bytes.len) : (scan += 8) {
+                const next_val = std.mem.readInt(u64, bytes[scan..][0..8], .little);
+                if (next_val != 0) break;
+                run += 1;
+            }
+
+            try out.append(allocator, 0x00);
+            try out.append(allocator, @as(u8, @intCast(run - 1)));
+            index += run * 8;
+            continue;
+        }
+
+        // Build tag byte and collect nonzero bytes.
         var tag: u8 = 0;
         var nonzero: [8]u8 = undefined;
         var nonzero_len: usize = 0;
@@ -207,43 +225,20 @@ fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
             }
         }
 
-        if (tag == 0x00) {
-            // Collapse consecutive zero words into a single run record.
-            var run: usize = 1;
-            var scan = index + 8;
-            while (run < 256 and scan + 8 <= bytes.len) : (scan += 8) {
-                const next_word = bytes[scan .. scan + 8];
-                var all_zero = true;
-                for (next_word) |b| {
-                    if (b != 0) {
-                        all_zero = false;
-                        break;
-                    }
-                }
-                if (!all_zero) break;
-                run += 1;
-            }
-
-            try out.append(allocator, 0x00);
-            try out.append(allocator, @as(u8, @intCast(run - 1)));
-            index += run * 8;
-            continue;
-        }
-
         if (tag == 0xFF) {
             // Collapse consecutive all-nonzero words into a literal run record.
             var run: usize = 1;
             var scan = index + 8;
             while (run < 256 and scan + 8 <= bytes.len) : (scan += 8) {
                 const next_word = bytes[scan .. scan + 8];
-                var all_nonzero = true;
+                var has_zero = false;
                 for (next_word) |b| {
                     if (b == 0) {
-                        all_nonzero = false;
+                        has_zero = true;
                         break;
                     }
                 }
-                if (!all_nonzero) break;
+                if (has_zero) break;
                 run += 1;
             }
 

@@ -456,22 +456,27 @@ pub const Peer = struct {
     }
 
     pub fn detachTransport(self: *Peer) void {
+        self.assertThreadAffinity();
         peer_transport_state.detachTransportForPeer(Peer, self);
     }
 
     pub fn hasAttachedTransport(self: *const Peer) bool {
+        self.assertThreadAffinity();
         return peer_transport_state.hasAttachedTransportForPeer(Peer, self);
     }
 
     pub fn closeAttachedTransport(self: *Peer) void {
+        self.assertThreadAffinity();
         peer_transport_state.closeAttachedTransportForPeer(Peer, self);
     }
 
     pub fn isAttachedTransportClosing(self: *const Peer) bool {
+        self.assertThreadAffinity();
         return peer_transport_state.isAttachedTransportClosingForPeer(Peer, self);
     }
 
     pub fn takeAttachedConnection(self: *Peer, comptime ConnPtr: type) ?ConnPtr {
+        self.assertThreadAffinity();
         return peer_transport_state.takeAttachedConnectionForPeer(
             Peer,
             ConnPtr,
@@ -481,6 +486,7 @@ pub const Peer = struct {
     }
 
     pub fn getAttachedConnection(self: *const Peer, comptime ConnPtr: type) ?ConnPtr {
+        self.assertThreadAffinity();
         return peer_transport_state.getAttachedConnectionForPeer(
             Peer,
             ConnPtr,
@@ -588,15 +594,18 @@ pub const Peer = struct {
     }
 
     pub fn setSendFrameOverride(self: *Peer, ctx: ?*anyopaque, callback: ?SendFrameOverride) void {
+        self.assertThreadAffinity();
         self.send_frame_ctx = ctx;
         self.send_frame_override = callback;
     }
 
     pub fn getLastInboundTag(self: *const Peer) ?protocol.MessageTag {
+        self.assertThreadAffinity();
         return self.last_inbound_tag;
     }
 
     pub fn getLastRemoteAbortReason(self: *const Peer) ?[]const u8 {
+        self.assertThreadAffinity();
         return self.last_remote_abort_reason;
     }
 
@@ -1382,6 +1391,7 @@ pub const Peer = struct {
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         const id = self.next_question_id;
         self.next_question_id +%= 1;
+        if (self.questions.contains(id)) return error.QuestionIdExhausted;
         try self.questions.put(id, .{
             .ctx = ctx,
             .on_return = on_return,
@@ -1675,7 +1685,7 @@ pub const Peer = struct {
     }
 
     fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
-        try peer_call_orchestration.handleCallForPeer(
+        peer_call_orchestration.handleCallForPeer(
             Peer,
             self,
             frame,
@@ -1706,7 +1716,10 @@ pub const Peer = struct {
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
             ),
-        );
+        ) catch |err| {
+            log.debug("call routing error for question {}: {}", .{ call.question_id, err });
+            try self.sendReturnException(call.question_id, @errorName(err));
+        };
     }
 
     fn handleResolvedCall(

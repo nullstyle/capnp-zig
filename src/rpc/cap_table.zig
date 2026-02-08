@@ -112,7 +112,9 @@ pub const CapTable = struct {
 
     pub fn noteReceiverAnswer(self: *CapTable, promised: protocol.PromisedAnswer) !u32 {
         const id = try self.allocLocalCapId();
-        try self.receiver_answers.put(id, try OwnedPromisedAnswer.fromPromised(self.allocator, promised));
+        var owned = try OwnedPromisedAnswer.fromPromised(self.allocator, promised);
+        errdefer owned.deinit(self.allocator);
+        try self.receiver_answers.put(id, owned);
         return id;
     }
 
@@ -139,7 +141,7 @@ pub const CapTable = struct {
         if (!entry.found_existing) {
             entry.value_ptr.* = .{ .ref_count = 1 };
         } else {
-            entry.value_ptr.ref_count +%= 1;
+            entry.value_ptr.ref_count = std.math.add(u32, entry.value_ptr.ref_count, 1) catch return error.RefCountOverflow;
         }
     }
 
