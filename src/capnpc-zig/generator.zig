@@ -3,11 +3,14 @@ const schema = @import("../schema.zig");
 const StructGenerator = @import("struct_gen.zig").StructGenerator;
 pub const TypeGenerator = @import("types.zig").TypeGenerator;
 
+/// Code generation driver that turns a set of parsed Cap'n Proto schema nodes
+/// into idiomatic Zig source code with Reader and Builder types for each struct.
 pub const Generator = struct {
     allocator: std.mem.Allocator,
     nodes: []const schema.Node,
     node_map: std.AutoHashMap(schema.Id, usize),
 
+    /// Build a generator from the full set of schema nodes, indexing them by ID.
     pub fn init(allocator: std.mem.Allocator, nodes: []const schema.Node) !Generator {
         var node_map = std.AutoHashMap(schema.Id, usize).init(allocator);
         errdefer node_map.deinit();
@@ -33,7 +36,11 @@ pub const Generator = struct {
         return &self.nodes[index];
     }
 
-    /// Generate code for a requested file
+    /// Generate Zig source code for a single requested `.capnp` file.
+    ///
+    /// Walks the file node's nested declarations, emitting struct/enum/const
+    /// definitions. Returns an allocator-owned byte slice containing the
+    /// generated `.zig` source.
     pub fn generateFile(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
         var output = std.ArrayList(u8){};
         errdefer output.deinit(self.allocator);
@@ -229,6 +236,19 @@ pub const Generator = struct {
         if (generated.contains(id)) return;
         const node = self.getNode(id) orelse return;
         try generated.put(id, {});
+
+        // Mark group nodes as generated so they don't get generated as top-level types
+        // (they are generated inline by their parent struct)
+        if (node.kind == .@"struct") {
+            if (node.struct_node) |struct_node| {
+                for (struct_node.fields) |field| {
+                    if (field.group) |group| {
+                        try generated.put(group.type_id, {});
+                    }
+                }
+            }
+        }
+
         try self.generateNode(node, output);
         for (node.nested_nodes) |nested| {
             try self.generateNodeRecursive(nested.id, generated, output);

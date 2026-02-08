@@ -1,6 +1,11 @@
+/// Cap'n Proto schema type definitions mirroring `schema.capnp`.
+///
+/// These types are the in-memory representation of a parsed Cap'n Proto schema
+/// graph, produced by `request_reader` from a `CodeGeneratorRequest` and
+/// consumed by the code generator.
 const std = @import("std");
 
-/// Represents a 64-bit ID used throughout Cap'n Proto schemas
+/// Represents a 64-bit ID used throughout Cap'n Proto schemas.
 pub const Id = u64;
 
 /// Element size enumeration for lists
@@ -15,7 +20,7 @@ pub const ElementSize = enum(u16) {
     inline_composite = 7,
 };
 
-/// Type information
+/// Cap'n Proto type descriptor covering all built-in and user-defined types.
 pub const Type = union(enum) {
     void: void,
     bool: void,
@@ -69,6 +74,7 @@ pub const Value = union(enum) {
     any_pointer: PointerValue,
 };
 
+/// A pointer-typed default or constant value, stored as raw Cap'n Proto message bytes.
 pub const PointerValue = struct {
     message_bytes: []const u8,
 };
@@ -165,7 +171,8 @@ pub const AnnotationNode = struct {
     targets_annotation: bool,
 };
 
-/// Schema node
+/// A node in the Cap'n Proto schema graph (file, struct, enum, interface,
+/// const, or annotation).
 pub const Node = struct {
     id: Id,
     display_name: []const u8,
@@ -212,7 +219,8 @@ pub const CapnpVersion = struct {
     micro: u8,
 };
 
-/// Code generator request (main input structure)
+/// The top-level input to the code generator: all schema nodes plus the
+/// list of files the plugin was asked to generate code for.
 pub const CodeGeneratorRequest = struct {
     nodes: []Node,
     requested_files: []RequestedFile,

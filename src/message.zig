@@ -84,8 +84,13 @@ fn listContentWords(element_size: u3, element_count: u32) !usize {
 }
 
 fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
+    // Size-estimation pass: scan packed bytes to calculate exact output size.
+    const total_size = try estimateUnpackedSize(packed_bytes);
+
     var out = std.ArrayList(u8){};
     errdefer out.deinit(allocator);
+
+    try out.ensureTotalCapacity(allocator, total_size);
 
     var index: usize = 0;
     while (index < packed_bytes.len) {
@@ -94,20 +99,20 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
 
         if (tag == 0x00) {
             // Zero tag: emit current all-zero word plus run-length encoded extra zero words.
-            try out.appendNTimes(allocator, 0, 8);
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
             index += 1;
-            if (count > 0) {
-                try out.appendNTimes(allocator, 0, @as(usize, count) * 8);
-            }
+            const zero_bytes = (1 + @as(usize, count)) * 8;
+            const dest = out.addManyAsSlice(allocator, zero_bytes) catch unreachable;
+            @memset(dest, 0);
             continue;
         }
 
         if (tag == 0xFF) {
             // 0xFF tag: current word is literal and may be followed by literal run words.
             if (index + 8 > packed_bytes.len) return error.UnexpectedEof;
-            try out.appendSlice(allocator, packed_bytes[index .. index + 8]);
+            const dest = out.addManyAsSlice(allocator, 8) catch unreachable;
+            @memcpy(dest, packed_bytes[index .. index + 8]);
             index += 8;
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
@@ -115,25 +120,70 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
             if (count > 0) {
                 const byte_count = @as(usize, count) * 8;
                 if (index + byte_count > packed_bytes.len) return error.UnexpectedEof;
-                try out.appendSlice(allocator, packed_bytes[index .. index + byte_count]);
+                const run_dest = out.addManyAsSlice(allocator, byte_count) catch unreachable;
+                @memcpy(run_dest, packed_bytes[index .. index + byte_count]);
                 index += byte_count;
             }
             continue;
         }
 
-        var word: [8]u8 = .{0} ** 8;
+        const dest = out.addManyAsSlice(allocator, 8) catch unreachable;
+        @memset(dest, 0);
         var bit_index: u8 = 0;
         while (bit_index < 8) : (bit_index += 1) {
             if ((tag & (@as(u8, 1) << @intCast(bit_index))) != 0) {
                 if (index >= packed_bytes.len) return error.UnexpectedEof;
-                word[@intCast(bit_index)] = packed_bytes[index];
+                dest[@intCast(bit_index)] = packed_bytes[index];
                 index += 1;
             }
         }
-        try out.appendSlice(allocator, &word);
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+/// Scans packed bytes to calculate the exact unpacked output size without
+/// performing any allocation. This mirrors the structure of the packing format:
+///   - Tag 0x00: 1 zero word + N extra zero words (N from count byte)
+///   - Tag 0xFF: 1 literal word + N literal words (N from count byte)
+///   - Other tags: 1 word with @popCount(tag) non-zero bytes
+fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
+    var total: usize = 0;
+    var index: usize = 0;
+
+    while (index < packed_bytes.len) {
+        const tag = packed_bytes[index];
+        index += 1;
+
+        if (tag == 0x00) {
+            total += 8; // The all-zero word itself.
+            if (index >= packed_bytes.len) return error.UnexpectedEof;
+            const count = packed_bytes[index];
+            index += 1;
+            total += @as(usize, count) * 8;
+            continue;
+        }
+
+        if (tag == 0xFF) {
+            if (index + 8 > packed_bytes.len) return error.UnexpectedEof;
+            total += 8; // The literal word.
+            index += 8;
+            if (index >= packed_bytes.len) return error.UnexpectedEof;
+            const count = packed_bytes[index];
+            index += 1;
+            const byte_count = @as(usize, count) * 8;
+            if (index + byte_count > packed_bytes.len) return error.UnexpectedEof;
+            total += byte_count;
+            index += byte_count;
+            continue;
+        }
+
+        // Regular tag: each set bit means one non-zero byte follows.
+        total += 8; // Always emits a full 8-byte word.
+        index += @popCount(tag);
+    }
+
+    return total;
 }
 
 fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
@@ -229,6 +279,7 @@ fn decodeFarPointer(pointer_word: u64) FarPointer {
     };
 }
 
+/// Decoded metadata for a Cap'n Proto inline-composite (struct) list.
 pub const InlineCompositeList = struct {
     segment_id: u32,
     elements_offset: usize,
@@ -237,11 +288,19 @@ pub const InlineCompositeList = struct {
     pointer_words: u16,
 };
 
+/// A capability pointer index, used in the RPC layer to reference entries
+/// in the message's capability table.
 pub const Capability = struct {
     id: u32,
 };
 
-/// Cap'n Proto message reader with full segment support
+/// A deserialized Cap'n Proto message providing zero-copy access to its contents.
+///
+/// The message is split into one or more segments. Reading is zero-copy:
+/// `StructReader` and list readers reference the original byte slices directly.
+/// Callers must keep the source data (or `backing_data`) alive for the lifetime
+/// of any readers obtained from this message. Call `deinit` to free the
+/// segment index (and backing data, if owned).
 pub const Message = struct {
     pub const max_segment_count: usize = 512;
 
@@ -270,6 +329,10 @@ pub const Message = struct {
         nesting_limit: usize = 64,
     };
 
+    /// Deserialize a Cap'n Proto message from its framed wire representation.
+    ///
+    /// Parses the segment table header and slices `data` into per-segment views.
+    /// The caller retains ownership of `data`; this message borrows into it.
     pub fn init(allocator: std.mem.Allocator, data: []const u8) !Message {
         var stream = std.io.fixedBufferStream(data);
         const reader = stream.reader();
@@ -325,6 +388,10 @@ pub const Message = struct {
         };
     }
 
+    /// Deserialize a Cap'n Proto message from packed encoding.
+    ///
+    /// Unpacks `packed_bytes` into standard framed format, then parses segments.
+    /// The unpacked buffer is owned by this message and freed on `deinit`.
     pub fn initPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) !Message {
         const unpacked = try unpackPacked(allocator, packed_bytes);
         errdefer allocator.free(unpacked);
@@ -335,6 +402,7 @@ pub const Message = struct {
         return msg;
     }
 
+    /// Free the segment index and any owned backing data.
     pub fn deinit(self: *Message) void {
         if (self.segments_owned) {
             self.allocator.free(self.segments);
@@ -599,6 +667,7 @@ pub const Message = struct {
         return error.InvalidInlineCompositePointer;
     }
 
+    /// Validate the message structure against configurable traversal and nesting limits.
     pub fn validate(self: *const Message, options: ValidationOptions) anyerror!void {
         if (self.segments.len == 0) return error.EmptyMessage;
         if (self.segments.len > options.segment_count_limit) return error.SegmentCountLimitExceeded;
@@ -835,6 +904,9 @@ pub const Message = struct {
         }
     }
 
+    /// Return a reader for the root struct of this message.
+    ///
+    /// The root pointer is always at offset 0 in segment 0.
     pub fn getRootStruct(self: *const Message) !StructReader {
         if (self.segments.len == 0) return error.EmptyMessage;
 
@@ -849,6 +921,7 @@ pub const Message = struct {
         return try self.resolveStructPointer(0, 0, root_pointer);
     }
 
+    /// Return a type-erased pointer reader for the root of this message.
     pub fn getRootAnyPointer(self: *const Message) !AnyPointerReader {
         if (self.segments.len == 0) return error.EmptyMessage;
         const segment = self.segments[0];
@@ -863,7 +936,14 @@ pub const Message = struct {
     }
 };
 
-/// Struct reader for Cap'n Proto structs
+/// Zero-copy reader for a Cap'n Proto struct within a `Message`.
+///
+/// All read methods that access the data section return the type's default
+/// value (zero/false/"") when the requested offset falls outside the struct's
+/// data section. This is by design per the Cap'n Proto spec: it enables
+/// schema evolution so that fields added in newer schemas read as their
+/// default from messages built with older schemas. Use the `*Strict` variants
+/// when an out-of-bounds access should be treated as an error.
 pub const StructReader = struct {
     message: *const Message,
     segment_id: u32,
@@ -895,33 +975,121 @@ pub const StructReader = struct {
         return pointer_word == 0;
     }
 
+    /// Read a u64 from the struct's data section at the given byte offset.
+    ///
+    /// Returns 0 if `byte_offset` falls outside the data section. This is
+    /// intentional per the Cap'n Proto spec: reading past the end of a struct's
+    /// data section yields the default value (zero), which enables schema
+    /// evolution — a field added in a newer schema reads as zero from messages
+    /// built with an older schema that had a smaller data section.
+    ///
+    /// Use `readU64Strict` when an out-of-bounds access should be treated as
+    /// an error (e.g. protocol-internal parsing where the field must exist).
     pub fn readU64(self: StructReader, byte_offset: usize) u64 {
         const data = self.getDataSection();
         if (byte_offset + 8 > data.len) return 0;
         return std.mem.readInt(u64, data[byte_offset..][0..8], .little);
     }
 
+    /// Strict variant of `readU64` that returns `error.OutOfBounds` instead of
+    /// the default value when the byte offset falls outside the data section.
+    /// Intended for protocol-internal parsing where the field is required.
+    pub fn readU64Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u64 {
+        const data = self.getDataSection();
+        if (byte_offset + 8 > data.len) return error.OutOfBounds;
+        return std.mem.readInt(u64, data[byte_offset..][0..8], .little);
+    }
+
+    /// Read a u32 from the struct's data section at the given byte offset.
+    ///
+    /// Returns 0 if `byte_offset` falls outside the data section. This is
+    /// intentional per the Cap'n Proto spec for schema evolution compatibility.
+    /// See `readU64` for details.
+    ///
+    /// Use `readU32Strict` when an out-of-bounds access should be treated as
+    /// an error.
     pub fn readU32(self: StructReader, byte_offset: usize) u32 {
         const data = self.getDataSection();
         if (byte_offset + 4 > data.len) return 0;
         return std.mem.readInt(u32, data[byte_offset..][0..4], .little);
     }
 
+    /// Strict variant of `readU32` that returns `error.OutOfBounds` instead of
+    /// the default value when the byte offset falls outside the data section.
+    /// Intended for protocol-internal parsing where the field is required.
+    pub fn readU32Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u32 {
+        const data = self.getDataSection();
+        if (byte_offset + 4 > data.len) return error.OutOfBounds;
+        return std.mem.readInt(u32, data[byte_offset..][0..4], .little);
+    }
+
+    /// Read a u16 from the struct's data section at the given byte offset.
+    ///
+    /// Returns 0 if `byte_offset` falls outside the data section. This is
+    /// intentional per the Cap'n Proto spec for schema evolution compatibility.
+    /// See `readU64` for details.
+    ///
+    /// Use `readU16Strict` when an out-of-bounds access should be treated as
+    /// an error.
     pub fn readU16(self: StructReader, byte_offset: usize) u16 {
         const data = self.getDataSection();
         if (byte_offset + 2 > data.len) return 0;
         return std.mem.readInt(u16, data[byte_offset..][0..2], .little);
     }
 
+    /// Strict variant of `readU16` that returns `error.OutOfBounds` instead of
+    /// the default value when the byte offset falls outside the data section.
+    /// Intended for protocol-internal parsing where the field is required.
+    pub fn readU16Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u16 {
+        const data = self.getDataSection();
+        if (byte_offset + 2 > data.len) return error.OutOfBounds;
+        return std.mem.readInt(u16, data[byte_offset..][0..2], .little);
+    }
+
+    /// Read a u8 from the struct's data section at the given byte offset.
+    ///
+    /// Returns 0 if `byte_offset` falls outside the data section. This is
+    /// intentional per the Cap'n Proto spec for schema evolution compatibility.
+    /// See `readU64` for details.
+    ///
+    /// Use `readU8Strict` when an out-of-bounds access should be treated as
+    /// an error.
     pub fn readU8(self: StructReader, byte_offset: usize) u8 {
         const data = self.getDataSection();
         if (byte_offset >= data.len) return 0;
         return data[byte_offset];
     }
 
+    /// Strict variant of `readU8` that returns `error.OutOfBounds` instead of
+    /// the default value when the byte offset falls outside the data section.
+    /// Intended for protocol-internal parsing where the field is required.
+    pub fn readU8Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u8 {
+        const data = self.getDataSection();
+        if (byte_offset >= data.len) return error.OutOfBounds;
+        return data[byte_offset];
+    }
+
+    /// Read a boolean from the struct's data section at the given byte and bit offset.
+    ///
+    /// Returns false if `byte_offset` falls outside the data section. This is
+    /// intentional per the Cap'n Proto spec for schema evolution compatibility.
+    /// See `readU64` for details.
+    ///
+    /// Use `readBoolStrict` when an out-of-bounds access should be treated as
+    /// an error.
     pub fn readBool(self: StructReader, byte_offset: usize, bit_offset: u3) bool {
         const data = self.getDataSection();
         if (byte_offset >= data.len) return false;
+        const byte = data[byte_offset];
+        return (byte & (@as(u8, 1) << bit_offset)) != 0;
+    }
+
+    /// Strict variant of `readBool` that returns `error.OutOfBounds` instead of
+    /// the default value when the byte offset falls outside the data section.
+    /// Intended for protocol-internal parsing where the field is required.
+    pub fn readBoolStrict(self: StructReader, byte_offset: usize, bit_offset: u3) error{OutOfBounds}!bool {
+        const data = self.getDataSection();
+        if (byte_offset >= data.len) return error.OutOfBounds;
         const byte = data[byte_offset];
         return (byte & (@as(u8, 1) << bit_offset)) != 0;
     }
@@ -1182,6 +1350,12 @@ pub const StructReader = struct {
         return .{ .element_count = list.element_count };
     }
 
+    /// Read a text (string) field from the struct's pointer section.
+    ///
+    /// Returns an empty string `""` when the pointer index is out of bounds or
+    /// when the pointer is null. This follows the Cap'n Proto convention where
+    /// absent/null text fields default to the empty string for schema evolution
+    /// compatibility.
     pub fn readText(self: StructReader, pointer_index: usize) ![]const u8 {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
@@ -1221,7 +1395,9 @@ const list_reader_defs = list_reader_module.define(
     decodeCapabilityPointer,
 );
 
+/// Zero-copy reader for a list of structs (inline-composite encoding).
 pub const StructListReader = list_reader_defs.StructListReader;
+/// Zero-copy reader for a list of text (pointer) elements.
 pub const TextListReader = list_reader_defs.TextListReader;
 pub const U8ListReader = list_reader_defs.U8ListReader;
 pub const I8ListReader = list_reader_defs.I8ListReader;
@@ -1246,8 +1422,15 @@ const any_pointer_reader_defs = any_pointer_reader_module.define(
     decodeCapabilityPointer,
 );
 
+/// Zero-copy reader for a type-erased pointer within a `Message`.
+///
+/// Can be inspected or cast to struct, list, text, data, or capability readers.
 pub const AnyPointerReader = any_pointer_reader_defs.AnyPointerReader;
 
+/// Builder for a type-erased pointer slot within a `MessageBuilder`.
+///
+/// Can be used to write a struct, list, text, data, or capability into
+/// any pointer position regardless of the expected schema type.
 pub const AnyPointerBuilder = struct {
     builder: *MessageBuilder,
     segment_id: u32,
@@ -1382,12 +1565,18 @@ pub const AnyPointerBuilder = struct {
     }
 };
 
-/// Message builder for creating Cap'n Proto messages
+/// Builder for constructing Cap'n Proto messages in memory.
+///
+/// Typical lifecycle: `init` -> `allocateStruct` (root) -> write fields via
+/// `StructBuilder` -> `toBytes` to serialize the framed wire format ->
+/// `deinit` to release all segment memory. The builder owns all allocated
+/// segment storage.
 pub const MessageBuilder = struct {
     allocator: std.mem.Allocator,
     segments: std.ArrayList(std.ArrayList(u8)),
     const initial_segment_capacity_bytes: usize = 1024;
 
+    /// Create a new, empty message builder.
     pub fn init(allocator: std.mem.Allocator) MessageBuilder {
         return .{
             .allocator = allocator,
@@ -1395,6 +1584,7 @@ pub const MessageBuilder = struct {
         };
     }
 
+    /// Free all segment storage owned by this builder.
     pub fn deinit(self: *MessageBuilder) void {
         for (self.segments.items) |*segment| {
             segment.deinit(self.allocator);
@@ -1420,6 +1610,7 @@ pub const MessageBuilder = struct {
         return &self.segments.items[segment_id];
     }
 
+    /// Initialize the root pointer slot, returning a type-erased builder for it.
     pub fn initRootAnyPointer(self: *MessageBuilder) !AnyPointerBuilder {
         if (self.segments.items.len == 0) {
             _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
@@ -1774,6 +1965,9 @@ pub const MessageBuilder = struct {
         };
     }
 
+    /// Allocate the root struct in segment 0 (on first call) or append a new
+    /// struct to segment 0 (on subsequent calls). Returns a `StructBuilder`
+    /// positioned at the allocated region.
     pub fn allocateStruct(self: *MessageBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
         // Ensure we have at least one segment
         if (self.segments.items.len == 0) {
@@ -1831,6 +2025,11 @@ pub const MessageBuilder = struct {
         };
     }
 
+    /// Serialize the message into the Cap'n Proto framed wire format.
+    ///
+    /// Returns an allocator-owned byte slice containing the segment table
+    /// header followed by all segment data. The caller must free the returned
+    /// slice.
     pub fn toBytes(self: *MessageBuilder) ![]const u8 {
         var result = std.ArrayList(u8){};
         errdefer result.deinit(self.allocator);
@@ -1879,12 +2078,16 @@ pub const MessageBuilder = struct {
         return result.toOwnedSlice(self.allocator);
     }
 
+    /// Serialize the message using Cap'n Proto packed encoding.
+    ///
+    /// Returns an allocator-owned byte slice. The caller must free it.
     pub fn toPackedBytes(self: *MessageBuilder) ![]const u8 {
         const bytes = try self.toBytes();
         defer self.allocator.free(bytes);
         return packPacked(self.allocator, bytes);
     }
 
+    /// Stream the framed wire format directly to `writer` without intermediate allocation.
     pub fn writeTo(self: *MessageBuilder, writer: anytype) !void {
         if (self.segments.items.len == 0) {
             try self.segments.append(self.allocator, std.ArrayList(u8){});
@@ -1985,7 +2188,12 @@ const struct_builder_defs = struct_builder_module.define(
 );
 
 pub const PointerListBuilder = struct_builder_defs.PointerListBuilder;
-/// Struct builder for creating Cap'n Proto structs
+
+/// Builder for writing fields into a Cap'n Proto struct within a `MessageBuilder`.
+///
+/// Write methods that target out-of-bounds offsets silently do nothing,
+/// mirroring the reader's zero-default behavior and allowing forward-compatible
+/// writes when the struct was allocated with a smaller schema.
 pub const StructBuilder = struct_builder_defs.StructBuilder;
 
 const clone_defs = clone_any_pointer_module.define(
@@ -1999,5 +2207,8 @@ const clone_defs = clone_any_pointer_module.define(
     decodeCapabilityPointer,
 );
 
+/// Serialize a type-erased pointer into a standalone framed message byte slice.
 pub const cloneAnyPointerToBytes = clone_defs.cloneAnyPointerToBytes;
+
+/// Deep-copy a type-erased pointer from a reader into a builder position.
 pub const cloneAnyPointer = clone_defs.cloneAnyPointer;

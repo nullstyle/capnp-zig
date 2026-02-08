@@ -10,6 +10,34 @@ const protocol = core.rpc.protocol;
 const cap_table = core.rpc.cap_table;
 
 pub const AbiPtr = if (builtin.target.cpu.arch == .wasm32) u32 else usize;
+
+// Thread-safety contract
+//
+// WASM linear memory is single-threaded: each WASM module instance executes on
+// a single thread and has its own isolated linear memory, so concurrent host
+// calls within a single instance cannot occur. On wasm32 targets, no
+// synchronization is needed and none is provided.
+//
+// When compiled for native targets (used by the test harness and by hosts that
+// embed this module as a native library), a mutex guards all mutable global
+// state (`peers`, `next_peer_id`, and the error-reporting variables) so that
+// concurrent calls from different host threads do not corrupt shared state.
+//
+// Callers on native targets may therefore invoke any exported `capnp_*`
+// function from any thread. The mutex is coarse-grained: every exported
+// function acquires it on entry and releases it on return.
+const GlobalMutex = if (builtin.target.cpu.arch == .wasm32)
+    // SAFETY: WASM linear memory is single-threaded; concurrent host calls
+    // within a single module instance are undefined behavior per the WASM
+    // spec. No synchronization is required.
+    struct {
+        pub fn lock(_: *@This()) void {}
+        pub fn unlock(_: *@This()) void {}
+    }
+else
+    std.Thread.Mutex;
+
+var global_mutex: GlobalMutex = .{};
 const allocator: std.mem.Allocator = if (builtin.target.cpu.arch == .wasm32)
     std.heap.wasm_allocator
 else
@@ -108,6 +136,9 @@ var next_peer_id: u32 = 1;
 var last_error_code: u32 = 0;
 var last_error_len: u32 = 0;
 var last_error_buf: [1024]u8 = [_]u8{0} ** 1024;
+
+// Note: clearErrorState, setError, and getPeerState are internal helpers.
+// They do NOT acquire the mutex themselves; callers must hold global_mutex.
 
 fn clearErrorState() void {
     last_error_code = 0;
@@ -209,7 +240,13 @@ pub export fn capnp_wasm_abi_version() u32 {
     return ABI_VERSION;
 }
 
+/// Allocate `len` bytes from the module allocator.
+/// Thread-safe on native targets (mutex-protected).
+/// On wasm32, single-threaded by WASM spec.
 pub export fn capnp_alloc(len: u32) AbiPtr {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
     const size: usize = if (len == 0) 1 else @as(usize, len);
     const mem = allocator.alloc(u8, size) catch {
@@ -223,30 +260,58 @@ pub export fn capnp_alloc(len: u32) AbiPtr {
     };
 }
 
+/// Free a previously allocated buffer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_free(ptr: AbiPtr, len: u32) void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     if (ptr == 0) return;
     const size: usize = if (len == 0) 1 else @as(usize, len);
     const mem: [*]u8 = @ptrFromInt(@as(usize, @intCast(ptr)));
     allocator.free(mem[0..size]);
 }
 
+/// Free a buffer returned by an ABI function (alias for capnp_free).
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_buf_free(ptr: AbiPtr, len: u32) void {
+    // capnp_free acquires the mutex internally.
     capnp_free(ptr, len);
 }
 
+/// Return the current error code, or 0 if no error is pending.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_last_error_code() u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     return last_error_code;
 }
 
+/// Return a pointer to the error message buffer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_last_error_ptr() AbiPtr {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     return @intCast(@intFromPtr(&last_error_buf));
 }
 
+/// Return the length of the current error message, or 0 if no error is pending.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_last_error_len() u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     return last_error_len;
 }
 
+/// Clear the current error state.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_clear_error() void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 }
 
@@ -266,7 +331,14 @@ pub export fn capnp_wasm_feature_flags_hi() u32 {
     return @truncate(ABI_FEATURE_FLAGS >> 32);
 }
 
+/// Atomically drain and clear the current error state, writing the error
+/// code, message pointer, and message length to the provided output locations.
+/// Returns 1 if an error was present, 0 otherwise.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, out_msg_len_ptr: AbiPtr) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     if (out_code_ptr == 0 or out_msg_ptr_ptr == 0 or out_msg_len_ptr == 0) {
         setError(ERROR_INVALID_ARG, "output pointer is null");
         return 0;
@@ -299,7 +371,12 @@ pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, ou
     return if (code == 0) 0 else 1;
 }
 
+/// Create a new peer instance and return its handle, or 0 on error.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_new() u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const id = allocatePeerId() orelse {
@@ -329,7 +406,12 @@ pub export fn capnp_peer_new() u32 {
     return id;
 }
 
+/// Destroy a peer and free its resources.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_free(peer: u32) void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const removed = peers.fetchRemove(peer) orelse return;
@@ -338,7 +420,12 @@ pub export fn capnp_peer_free(peer: u32) void {
     allocator.destroy(state);
 }
 
+/// Push an inbound frame to the peer for processing.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_push_frame(peer: u32, frame_ptr: AbiPtr, frame_len: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -359,7 +446,14 @@ pub export fn capnp_peer_push_frame(peer: u32, frame_ptr: AbiPtr, frame_len: u32
     return 1;
 }
 
+/// Pop the next outbound frame from the peer. Returns 1 if a frame was
+/// available, 0 otherwise. The frame must be committed or freed before
+/// popping again.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -413,7 +507,12 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
     return 1;
 }
 
+/// Commit the last popped frame, releasing its memory.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_pop_commit(peer: u32) void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -428,7 +527,12 @@ pub export fn capnp_peer_pop_commit(peer: u32) void {
     }
 }
 
+/// Install the default bootstrap stub on the peer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_set_bootstrap_stub(peer: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -449,10 +553,16 @@ pub export fn capnp_peer_set_bootstrap_stub(peer: u32) u32 {
     return 1;
 }
 
+/// Install the bootstrap stub and write the resulting export ID to the
+/// output pointer. Idempotent: repeated calls return the same ID.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_set_bootstrap_stub_with_id(
     peer: u32,
     out_export_id_ptr: AbiPtr,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -484,7 +594,12 @@ pub export fn capnp_peer_set_bootstrap_stub_with_id(
     return 1;
 }
 
+/// Return the number of pending outbound frames for the peer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_outbound_count(peer: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -494,7 +609,12 @@ pub export fn capnp_peer_outbound_count(peer: u32) u32 {
     return clampU32(state.host.pendingOutgoingCount());
 }
 
+/// Return the total byte count of pending outbound frames for the peer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_outbound_bytes(peer: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -504,7 +624,12 @@ pub export fn capnp_peer_outbound_bytes(peer: u32) u32 {
     return clampU32(state.host.pendingOutgoingBytes());
 }
 
+/// Return 1 if the peer has an uncommitted popped frame, 0 otherwise.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_has_uncommitted_pop(peer: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -514,11 +639,16 @@ pub export fn capnp_peer_has_uncommitted_pop(peer: u32) u32 {
     return if (state.last_popped != null) 1 else 0;
 }
 
+/// Set outbound queue limits for the peer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_set_limits(
     peer: u32,
     outbound_count_limit: u32,
     outbound_bytes_limit: u32,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -533,11 +663,16 @@ pub export fn capnp_peer_set_limits(
     return 1;
 }
 
+/// Read the current outbound queue limits for the peer.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_get_limits(
     peer: u32,
     out_count_limit_ptr: AbiPtr,
     out_bytes_limit_ptr: AbiPtr,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -563,6 +698,9 @@ pub export fn capnp_peer_get_limits(
     return 1;
 }
 
+/// Pop the next inbound host call from the peer. Returns 1 if a call was
+/// available, 0 otherwise.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_pop_host_call(
     peer: u32,
     out_question_id_ptr: AbiPtr,
@@ -571,6 +709,9 @@ pub export fn capnp_peer_pop_host_call(
     out_frame_ptr_ptr: AbiPtr,
     out_frame_len_ptr: AbiPtr,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -648,11 +789,16 @@ pub export fn capnp_peer_pop_host_call(
     return 1;
 }
 
+/// Free a host call frame previously obtained via capnp_peer_pop_host_call.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_free_host_call_frame(
     peer: u32,
     frame_ptr: AbiPtr,
     frame_len: u32,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -671,12 +817,17 @@ pub export fn capnp_peer_free_host_call_frame(
     return 1;
 }
 
+/// Respond to a host call with results.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_respond_host_call_results(
     peer: u32,
     question_id: u32,
     payload_ptr: AbiPtr,
     payload_len: u32,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -696,12 +847,17 @@ pub export fn capnp_peer_respond_host_call_results(
     return 1;
 }
 
+/// Respond to a host call with an exception.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_respond_host_call_exception(
     peer: u32,
     question_id: u32,
     reason_ptr: AbiPtr,
     reason_len: u32,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -721,11 +877,16 @@ pub export fn capnp_peer_respond_host_call_exception(
     return 1;
 }
 
+/// Respond to a host call with a raw Return frame.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_respond_host_call_return_frame(
     peer: u32,
     return_frame_ptr: AbiPtr,
     return_frame_len: u32,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -750,12 +911,17 @@ pub export fn capnp_peer_respond_host_call_return_frame(
     return 1;
 }
 
+/// Send a Finish control message for the given question.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_send_finish(
     peer: u32,
     question_id: u32,
     release_result_caps: u32,
     require_early_cancellation: u32,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -781,7 +947,12 @@ pub export fn capnp_peer_send_finish(
     return 1;
 }
 
+/// Send a Release control message for the given capability.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_send_release(peer: u32, cap_id: u32, reference_count: u32) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const state = getPeerState(peer) orelse {
@@ -796,7 +967,13 @@ pub export fn capnp_peer_send_release(peer: u32, cap_id: u32, reference_count: u
     return 1;
 }
 
+/// Return the schema manifest as a JSON-encoded, heap-allocated buffer.
+/// The caller must free the buffer via capnp_buf_free.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const manifest = schemaManifestJsonBytes();
@@ -815,12 +992,17 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
     return 1;
 }
 
+/// Decode a Person Cap'n Proto frame and return its JSON representation.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_example_person_to_json(
     frame_ptr: AbiPtr,
     frame_len: u32,
     out_json_ptr_ptr: AbiPtr,
     out_json_len_ptr: AbiPtr,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const frame = asSlice(frame_ptr, frame_len) catch {
@@ -870,12 +1052,17 @@ pub export fn capnp_example_person_to_json(
     return 1;
 }
 
+/// Encode a Person from JSON into a Cap'n Proto frame.
+/// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_example_person_from_json(
     json_ptr: AbiPtr,
     json_len: u32,
     out_frame_ptr_ptr: AbiPtr,
     out_frame_len_ptr: AbiPtr,
 ) u32 {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
     clearErrorState();
 
     const json_bytes = asSlice(json_ptr, json_len) catch {

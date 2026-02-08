@@ -4,11 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const xev_module = b.addModule("xev", .{
-        .root_source_file = b.path("vendor/ext/libxev/src/main.zig"),
+    const xev_dep = b.dependency("libxev", .{
         .target = target,
         .optimize = optimize,
     });
+    const xev_module = xev_dep.module("xev");
 
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
@@ -355,6 +355,9 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_rpc_nested_tests = b.addRunArtifact(codegen_rpc_nested_tests);
 
+    const codegen_gen_rt_options = b.addOptions();
+    codegen_gen_rt_options.addOptionPath("xev_src_path", xev_module.root_source_file.?);
+
     const codegen_generated_runtime_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/codegen_generated_runtime_test.zig"),
@@ -362,6 +365,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "build_options", .module = codegen_gen_rt_options.createModule() },
             },
         }),
     });
@@ -450,6 +454,20 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_union_tests = b.addRunArtifact(union_tests);
+
+    // Codegen union/group tests
+    const codegen_union_group_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/codegen_union_group_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_codegen_union_group_tests = b.addRunArtifact(codegen_union_group_tests);
 
     // Cap'n Proto official testdata fixtures
     const capnp_testdata_tests = b.addTest(.{
@@ -684,6 +702,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_real_world_person_tests.step);
     test_step.dependOn(&run_real_world_addressbook_tests.step);
     test_step.dependOn(&run_union_tests.step);
+    test_step.dependOn(&run_codegen_union_group_tests.step);
     test_step.dependOn(&run_capnp_testdata_tests.step);
     test_step.dependOn(&run_capnp_test_vendor_tests.step);
     test_step.dependOn(&run_schema_validation_tests.step);
@@ -709,6 +728,7 @@ pub fn build(b: *std.Build) void {
     test_codegen_step.dependOn(&run_codegen_annotations_tests.step);
     test_codegen_step.dependOn(&run_codegen_rpc_nested_tests.step);
     test_codegen_step.dependOn(&run_codegen_generated_runtime_tests.step);
+    test_codegen_step.dependOn(&run_codegen_union_group_tests.step);
 
     const test_integration_step = b.step("test-integration", "Run integration tests");
     test_integration_step.dependOn(&run_integration_tests.step);

@@ -124,6 +124,26 @@ pub fn handleRelease(
     on_release_export(peer, release.id, release.reference_count);
 }
 
+/// Bundles the 11 callback parameters of handleFinish into a single operations struct.
+/// Groups: question-state cleanup (5), tail-finish forwarding (2), answer-frame cleanup (3).
+pub fn FinishOps(comptime PeerType: type) type {
+    return struct {
+        // Question-state cleanup
+        remove_send_results_to_yourself: *const fn (*PeerType, u32) void,
+        clear_send_results_to_third_party: *const fn (*PeerType, u32) void,
+        clear_provide: *const fn (*PeerType, u32) void,
+        clear_pending_join_question: *const fn (*PeerType, u32) void,
+        clear_pending_accept_question: *const fn (*PeerType, u32) void,
+        // Tail-finish forwarding
+        take_forwarded_tail_question: *const fn (*PeerType, u32) ?u32,
+        send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
+        // Answer-frame cleanup
+        take_resolved_answer_frame: *const fn (*PeerType, u32) ?[]u8,
+        release_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
+        free_frame: *const fn (*PeerType, []u8) void,
+    };
+}
+
 pub fn clearFinishQuestionState(
     comptime PeerType: type,
     peer: *PeerType,
@@ -186,32 +206,68 @@ pub fn handleFinish(
     release_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
     free_frame: *const fn (*PeerType, []u8) void,
 ) !void {
+    const ops = FinishOps(PeerType){
+        .remove_send_results_to_yourself = remove_send_results_to_yourself,
+        .clear_send_results_to_third_party = clear_send_results_to_third_party,
+        .clear_provide = clear_provide,
+        .clear_pending_join_question = clear_pending_join_question,
+        .clear_pending_accept_question = clear_pending_accept_question,
+        .take_forwarded_tail_question = take_forwarded_tail_question,
+        .send_finish = send_finish,
+        .take_resolved_answer_frame = take_resolved_answer_frame,
+        .release_caps_for_frame = release_caps_for_frame,
+        .free_frame = free_frame,
+    };
+    try handleFinishWithOps(PeerType, peer, question_id, release_result_caps, ops);
+}
+
+/// handleFinish variant that accepts a bundled FinishOps instead of 11 individual callbacks.
+pub fn handleFinishWithOps(
+    comptime PeerType: type,
+    peer: *PeerType,
+    question_id: u32,
+    release_result_caps: bool,
+    ops: FinishOps(PeerType),
+) !void {
     clearFinishQuestionState(
         PeerType,
         peer,
         question_id,
-        remove_send_results_to_yourself,
-        clear_send_results_to_third_party,
-        clear_provide,
-        clear_pending_join_question,
-        clear_pending_accept_question,
+        ops.remove_send_results_to_yourself,
+        ops.clear_send_results_to_third_party,
+        ops.clear_provide,
+        ops.clear_pending_join_question,
+        ops.clear_pending_accept_question,
     );
     try forwardTailFinishIfNeeded(
         PeerType,
         peer,
         question_id,
-        take_forwarded_tail_question,
-        send_finish,
+        ops.take_forwarded_tail_question,
+        ops.send_finish,
     );
     try handleResolvedAnswerCleanup(
         PeerType,
         peer,
         question_id,
         release_result_caps,
-        take_resolved_answer_frame,
-        release_caps_for_frame,
-        free_frame,
+        ops.take_resolved_answer_frame,
+        ops.release_caps_for_frame,
+        ops.free_frame,
     );
+}
+
+/// Bundles the 7 callback parameters of handleResolve into a single operations struct.
+pub fn ResolveOps(comptime PeerType: type) type {
+    return struct {
+        has_known_promise: *const fn (*PeerType, u32) bool,
+        resolve_cap_descriptor: *const fn (*PeerType, protocol.CapDescriptor) anyerror!cap_table.ResolvedCap,
+        release_resolved_cap: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!void,
+        alloc_embargo_id: *const fn (*PeerType) u32,
+        remember_pending_embargo: *const fn (*PeerType, u32, u32) anyerror!void,
+        send_disembargo_sender_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
+        store_resolved_import: *const fn (*PeerType, u32, ?cap_table.ResolvedCap, ?u32, bool) anyerror!void,
+    };
 }
 
 pub fn handleResolve(
@@ -226,18 +282,37 @@ pub fn handleResolve(
     send_disembargo_sender_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
     store_resolved_import: *const fn (*PeerType, u32, ?cap_table.ResolvedCap, ?u32, bool) anyerror!void,
 ) !void {
+    const ops = ResolveOps(PeerType){
+        .has_known_promise = has_known_promise,
+        .resolve_cap_descriptor = resolve_cap_descriptor,
+        .release_resolved_cap = release_resolved_cap,
+        .alloc_embargo_id = alloc_embargo_id,
+        .remember_pending_embargo = remember_pending_embargo,
+        .send_disembargo_sender_loopback = send_disembargo_sender_loopback,
+        .store_resolved_import = store_resolved_import,
+    };
+    try handleResolveWithOps(PeerType, peer, resolve, ops);
+}
+
+/// handleResolve variant that accepts a bundled ResolveOps instead of 7 individual callbacks.
+pub fn handleResolveWithOps(
+    comptime PeerType: type,
+    peer: *PeerType,
+    resolve: protocol.Resolve,
+    ops: ResolveOps(PeerType),
+) !void {
     const promise_id = resolve.promise_id;
-    const known_promise = has_known_promise(peer, promise_id);
+    const known_promise = ops.has_known_promise(peer, promise_id);
 
     switch (resolve.tag) {
         .cap => {
             const descriptor = resolve.cap orelse return error.MissingResolveCap;
-            const resolved = try resolve_cap_descriptor(peer, descriptor);
+            const resolved = try ops.resolve_cap_descriptor(peer, descriptor);
 
             if (!known_promise) {
                 // Late resolve for an unknown promise id: release any received capability
                 // references immediately because no local table entry can own them.
-                try release_resolved_cap(peer, resolved);
+                try ops.release_resolved_cap(peer, resolved);
                 return;
             }
 
@@ -246,10 +321,10 @@ pub fn handleResolve(
             if (resolved == .exported or resolved == .promised) {
                 // Exported/promise resolutions require a sender-loopback disembargo handshake
                 // before the resolved import can be considered callable locally.
-                const new_embargo_id = alloc_embargo_id(peer);
+                const new_embargo_id = ops.alloc_embargo_id(peer);
                 embargo_id = new_embargo_id;
                 embargoed = true;
-                try remember_pending_embargo(peer, new_embargo_id, promise_id);
+                try ops.remember_pending_embargo(peer, new_embargo_id, promise_id);
                 const target = switch (resolved) {
                     .promised => |promised| protocol.MessageTarget{
                         .tag = .promised_answer,
@@ -262,16 +337,26 @@ pub fn handleResolve(
                         .promised_answer = null,
                     },
                 };
-                try send_disembargo_sender_loopback(peer, target, new_embargo_id);
+                try ops.send_disembargo_sender_loopback(peer, target, new_embargo_id);
             }
 
-            try store_resolved_import(peer, promise_id, resolved, embargo_id, embargoed);
+            try ops.store_resolved_import(peer, promise_id, resolved, embargo_id, embargoed);
         },
         .exception => {
             if (!known_promise) return;
-            try store_resolved_import(peer, promise_id, null, null, false);
+            try ops.store_resolved_import(peer, promise_id, null, null, false);
         },
     }
+}
+
+/// Bundles the 4 callback parameters of handleDisembargo into a single operations struct.
+pub fn DisembargoOps(comptime PeerType: type) type {
+    return struct {
+        send_disembargo_receiver_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
+        take_pending_embargo_promise: *const fn (*PeerType, u32) ?u32,
+        clear_resolved_import_embargo: *const fn (*PeerType, u32) void,
+        release_embargoed_accepts: *const fn (*PeerType, []const u8) anyerror!void,
+    };
 }
 
 pub fn handleDisembargo(
@@ -282,6 +367,22 @@ pub fn handleDisembargo(
     take_pending_embargo_promise: *const fn (*PeerType, u32) ?u32,
     clear_resolved_import_embargo: *const fn (*PeerType, u32) void,
     release_embargoed_accepts: *const fn (*PeerType, []const u8) anyerror!void,
+) !void {
+    const ops = DisembargoOps(PeerType){
+        .send_disembargo_receiver_loopback = send_disembargo_receiver_loopback,
+        .take_pending_embargo_promise = take_pending_embargo_promise,
+        .clear_resolved_import_embargo = clear_resolved_import_embargo,
+        .release_embargoed_accepts = release_embargoed_accepts,
+    };
+    try handleDisembargoWithOps(PeerType, peer, disembargo, ops);
+}
+
+/// handleDisembargo variant that accepts a bundled DisembargoOps instead of 4 individual callbacks.
+pub fn handleDisembargoWithOps(
+    comptime PeerType: type,
+    peer: *PeerType,
+    disembargo: protocol.Disembargo,
+    ops: DisembargoOps(PeerType),
 ) !void {
     switch (disembargo.context_tag) {
         .sender_loopback => {
@@ -295,17 +396,17 @@ pub fn handleDisembargo(
                     _ = disembargo.target.promised_answer orelse return error.MissingPromisedAnswer;
                 },
             }
-            try send_disembargo_receiver_loopback(peer, disembargo.target, embargo_id);
+            try ops.send_disembargo_receiver_loopback(peer, disembargo.target, embargo_id);
         },
         .receiver_loopback => {
             // ReceiverLoopback completes the local embargo lifecycle for that promise id.
             const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
-            const promise_id = take_pending_embargo_promise(peer, embargo_id) orelse return;
-            clear_resolved_import_embargo(peer, promise_id);
+            const promise_id = ops.take_pending_embargo_promise(peer, embargo_id) orelse return;
+            ops.clear_resolved_import_embargo(peer, promise_id);
         },
         .accept => {
             const accept_embargo = disembargo.accept orelse return;
-            try release_embargoed_accepts(peer, accept_embargo);
+            try ops.release_embargoed_accepts(peer, accept_embargo);
         },
     }
 }
@@ -943,6 +1044,12 @@ pub fn captureAnyPointerPayloadForPeerFn(
     }.call;
 }
 
+/// Re-export ForwardedReturnOps from forwarded_return_logic for callers that prefer
+/// the bundled ops pattern.
+pub fn ForwardedReturnOps(comptime PeerType: type, comptime InboundCapsType: type) type {
+    return peer_forwarded_return_logic.ForwardedReturnOps(PeerType, InboundCapsType);
+}
+
 pub fn handleForwardedReturn(
     comptime PeerType: type,
     comptime InboundCapsType: type,
@@ -977,6 +1084,31 @@ pub fn handleForwardedReturn(
         capture_payload,
         free_payload,
         send_accept_from_third_party,
+        context_third_party_payload,
+    );
+}
+
+/// handleForwardedReturn variant that accepts a bundled ForwardedReturnOps instead of 8 individual callbacks.
+pub fn handleForwardedReturnWithOps(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    mode: ForwardedReturnMode,
+    answer_id: u32,
+    ret: protocol.Return,
+    inbound_caps: *const InboundCapsType,
+    ops: ForwardedReturnOps(PeerType, InboundCapsType),
+    context_third_party_payload: ?[]const u8,
+) !void {
+    try peer_forwarded_return_logic.handleForwardedReturnWithOps(
+        PeerType,
+        InboundCapsType,
+        peer,
+        mode,
+        answer_id,
+        ret,
+        inbound_caps,
+        ops,
         context_third_party_payload,
     );
 }

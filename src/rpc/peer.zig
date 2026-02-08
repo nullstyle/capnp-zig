@@ -28,16 +28,26 @@ const peer_transport_state = @import("peer/peer_transport_state.zig");
 const peer_cleanup = @import("peer/peer_cleanup.zig");
 const peer_state_types = @import("peer/peer_state_types.zig");
 
+/// Callback invoked to populate a `CallBuilder` before sending an outbound call.
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
+/// Callback invoked to populate a `ReturnBuilder` before sending a return.
 pub const ReturnBuildFn = *const fn (ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void;
+/// Handler invoked when an inbound call arrives for an exported capability.
 pub const CallHandler = *const fn (ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void;
+/// Callback invoked when a return message arrives for a previously sent question.
 pub const QuestionCallback = *const fn (ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void;
+/// Optional override for outbound frame delivery (used in testing).
 pub const SendFrameOverride = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
+/// Transport callback: start listening for inbound frames.
 pub const TransportStartFn = *const fn (ctx: *anyopaque, peer: *Peer) void;
+/// Transport callback: send a framed message to the remote peer.
 pub const TransportSendFn = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
+/// Transport callback: close the underlying connection.
 pub const TransportCloseFn = *const fn (ctx: *anyopaque) void;
+/// Transport callback: check if the connection is in the process of closing.
 pub const TransportIsClosingFn = *const fn (ctx: *anyopaque) bool;
 
+/// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
     ctx: *anyopaque,
     on_call: CallHandler,
@@ -107,6 +117,13 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
 }
 
+/// A Cap'n Proto RPC peer that manages one side of a two-party connection.
+///
+/// `Peer` tracks exported capabilities, outstanding questions, promise
+/// resolution, and three-party handoff state. It is **not** thread-safe;
+/// all calls must be made from the same thread (or under external
+/// synchronization). Use `initDetached` for environments without a real
+/// transport (WASM, unit tests).
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     transport_ctx: ?*anyopaque = null,
@@ -147,12 +164,17 @@ pub const Peer = struct {
     last_inbound_tag: ?protocol.MessageTag = null,
     last_remote_abort_reason: ?[]u8 = null,
 
+    /// Create a peer and immediately attach it to a connection/transport.
     pub fn init(allocator: std.mem.Allocator, conn: anytype) Peer {
         var peer = initDetached(allocator);
         peer.attachConnection(conn);
         return peer;
     }
 
+    /// Create a peer without an attached transport.
+    ///
+    /// Useful for WASM, unit tests, or manual frame injection via
+    /// `handleFrame` and `setSendFrameOverride`.
     pub fn initDetached(allocator: std.mem.Allocator) Peer {
         return .{
             .allocator = allocator,
@@ -182,6 +204,7 @@ pub const Peer = struct {
         };
     }
 
+    /// Bind a typed connection to this peer, wiring up transport callbacks.
     pub fn attachConnection(self: *Peer, conn: anytype) void {
         const ConnPtr = @TypeOf(conn);
         comptime {
@@ -283,6 +306,8 @@ pub const Peer = struct {
         );
     }
 
+    /// Release all owned state: pending calls, resolved answers, export
+    /// entries, and the capability table.
     pub fn deinit(self: *Peer) void {
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
@@ -357,6 +382,8 @@ pub const Peer = struct {
         self.caps.deinit();
     }
 
+    /// Start the peer, registering error/close callbacks and initiating the
+    /// transport (if attached).
     pub fn start(
         self: *Peer,
         on_error: ?*const fn (peer: *Peer, err: anyerror) void,
@@ -383,6 +410,7 @@ pub const Peer = struct {
         return self.last_remote_abort_reason;
     }
 
+    /// Register a local capability for export and return its export ID.
     pub fn addExport(self: *Peer, exported: Export) !u32 {
         const id = self.caps.allocExportId();
         try self.exports.put(id, .{
@@ -394,6 +422,8 @@ pub const Peer = struct {
         return id;
     }
 
+    /// Export a promise capability that will be resolved later via
+    /// `resolvePromiseExportToExport` or `resolvePromiseExportToException`.
     pub fn addPromiseExport(self: *Peer) !u32 {
         const id = self.caps.allocExportId();
         try self.exports.put(id, .{
@@ -406,12 +436,20 @@ pub const Peer = struct {
         return id;
     }
 
+    /// Register a capability as this peer's bootstrap interface.
+    ///
+    /// Returns the export ID. The remote peer can obtain this capability
+    /// by sending a Bootstrap message.
     pub fn setBootstrap(self: *Peer, exported: Export) !u32 {
         const id = try self.addExport(exported);
         self.bootstrap_export_id = id;
         return id;
     }
 
+    /// Send a Bootstrap request to obtain the remote peer's bootstrap capability.
+    ///
+    /// Returns the question ID. When the remote peer responds, `on_return`
+    /// is invoked with the bootstrap capability in the return payload.
     pub fn sendBootstrap(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         const question_id = try self.allocateQuestion(ctx, on_return);
 
@@ -423,6 +461,7 @@ pub const Peer = struct {
         return question_id;
     }
 
+    /// Resolve a previously exported promise to point at a concrete export.
     pub fn resolvePromiseExportToExport(self: *Peer, promise_id: u32, export_id: u32) !void {
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
         if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
@@ -447,6 +486,7 @@ pub const Peer = struct {
         try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
     }
 
+    /// Resolve a previously exported promise to an exception.
     pub fn resolvePromiseExportToException(self: *Peer, promise_id: u32, reason: []const u8) !void {
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
         if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
@@ -464,6 +504,7 @@ pub const Peer = struct {
         try self.replayResolvedPromiseExport(promise_id, .none);
     }
 
+    /// Send an RPC call to an imported capability, returning the question ID.
     pub fn sendCall(
         self: *Peer,
         target_id: u32,
@@ -728,6 +769,7 @@ pub const Peer = struct {
         };
     }
 
+    /// Send a return with results for a previously received call.
     pub fn sendReturnResults(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
         // sendResultsTo routing is resolved in precedence order:
         // third-party handoff > local results-sent-elsewhere marker > normal results payload.
@@ -772,6 +814,7 @@ pub const Peer = struct {
         }
     }
 
+    /// Send a return with an exception for a previously received call.
     pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
         try peer_return_dispatch.sendReturnExceptionForPeer(
             Peer,
@@ -941,6 +984,8 @@ pub const Peer = struct {
         );
     }
 
+    /// Release references to an imported capability, sending a Release message
+    /// to the remote peer when the reference count drops to zero.
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
         try peer_cap_lifecycle.releaseImport(
             Peer,
@@ -1128,6 +1173,11 @@ pub const Peer = struct {
         if (self.on_close) |cb| cb(self);
     }
 
+    /// Process a single inbound Cap'n Proto RPC frame.
+    ///
+    /// Decodes the message tag and dispatches to the appropriate handler
+    /// (call, return, finish, resolve, etc.). Unknown message types trigger
+    /// an Unimplemented response per the Cap'n Proto RPC spec.
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {
         var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| {
             if (err == error.InvalidMessageTag) {
@@ -1206,20 +1256,16 @@ pub const Peer = struct {
     }
 
     fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
-        try peer_control.handleFinish(
-            Peer,
-            self,
-            finish.question_id,
-            finish.release_result_caps,
-            peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
-            clearSendResultsToThirdParty,
-            peer_provides_state.clearProvideForPeerFn(
+        const ops = peer_control.FinishOps(Peer){
+            .remove_send_results_to_yourself = peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
+            .clear_send_results_to_third_party = clearSendResultsToThirdParty,
+            .clear_provide = peer_provides_state.clearProvideForPeerFn(
                 Peer,
                 ProvideEntry,
                 ProvideTarget,
                 ProvideTarget.deinit,
             ),
-            peer_join_state.clearPendingJoinQuestionForPeerFn(
+            .clear_pending_join_question = peer_join_state.clearPendingJoinQuestionForPeerFn(
                 Peer,
                 JoinState,
                 PendingJoinQuestion,
@@ -1227,15 +1273,22 @@ pub const Peer = struct {
                 ProvideTarget.deinit,
                 JoinState.deinit,
             ),
-            peer_embargo_accepts.clearPendingAcceptQuestionForPeerFn(
+            .clear_pending_accept_question = peer_embargo_accepts.clearPendingAcceptQuestionForPeerFn(
                 Peer,
                 PendingEmbargoedAccept,
             ),
-            peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
-            peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            peer_control.takeResolvedAnswerFrameForPeerFn(Peer),
-            releaseResultCaps,
-            peer_control.freeOwnedFrameForPeerFn(Peer),
+            .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
+            .send_finish = peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            .take_resolved_answer_frame = peer_control.takeResolvedAnswerFrameForPeerFn(Peer),
+            .release_caps_for_frame = releaseResultCaps,
+            .free_frame = peer_control.freeOwnedFrameForPeerFn(Peer),
+        };
+        try peer_control.handleFinishWithOps(
+            Peer,
+            self,
+            finish.question_id,
+            finish.release_result_caps,
+            ops,
         );
     }
 
@@ -1244,29 +1297,24 @@ pub const Peer = struct {
     }
 
     fn handleResolve(self: *Peer, resolve: protocol.Resolve) !void {
-        try peer_control.handleResolve(
-            Peer,
-            self,
-            resolve,
-            peer_control.hasKnownResolvePromiseForPeerFn(Peer),
-            peer_control.resolveCapDescriptorForPeerFn(Peer),
-            releaseResolvedCap,
-            peer_control.allocateEmbargoIdForPeerFn(Peer),
-            peer_control.rememberPendingEmbargoForPeerFn(Peer),
-            peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            storeResolvedImport,
-        );
+        const ops = peer_control.ResolveOps(Peer){
+            .has_known_promise = peer_control.hasKnownResolvePromiseForPeerFn(Peer),
+            .resolve_cap_descriptor = peer_control.resolveCapDescriptorForPeerFn(Peer),
+            .release_resolved_cap = releaseResolvedCap,
+            .alloc_embargo_id = peer_control.allocateEmbargoIdForPeerFn(Peer),
+            .remember_pending_embargo = peer_control.rememberPendingEmbargoForPeerFn(Peer),
+            .send_disembargo_sender_loopback = peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            .store_resolved_import = storeResolvedImport,
+        };
+        try peer_control.handleResolveWithOps(Peer, self, resolve, ops);
     }
 
     fn handleDisembargo(self: *Peer, disembargo: protocol.Disembargo) !void {
-        try peer_control.handleDisembargo(
-            Peer,
-            self,
-            disembargo,
-            peer_outbound_control.sendDisembargoReceiverLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            peer_control.takePendingEmbargoPromiseForPeerFn(Peer),
-            peer_control.clearResolvedImportEmbargoForPeerFn(Peer),
-            peer_embargo_accepts.releaseEmbargoedAcceptsForPeerFn(
+        const ops = peer_control.DisembargoOps(Peer){
+            .send_disembargo_receiver_loopback = peer_outbound_control.sendDisembargoReceiverLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            .take_pending_embargo_promise = peer_control.takePendingEmbargoPromiseForPeerFn(Peer),
+            .clear_resolved_import_embargo = peer_control.clearResolvedImportEmbargoForPeerFn(Peer),
+            .release_embargoed_accepts = peer_embargo_accepts.releaseEmbargoedAcceptsForPeerFn(
                 Peer,
                 PendingEmbargoedAccept,
                 ProvideEntry,
@@ -1274,7 +1322,8 @@ pub const Peer = struct {
                 Peer.sendReturnProvidedTarget,
                 Peer.sendReturnException,
             ),
-        );
+        };
+        try peer_control.handleDisembargoWithOps(Peer, self, disembargo, ops);
     }
 
     fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {

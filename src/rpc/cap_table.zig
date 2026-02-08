@@ -3,14 +3,18 @@ const message = @import("../message.zig");
 const protocol = @import("protocol.zig");
 const promised_answer_copy = @import("promised_answer_copy.zig");
 
+/// An exported (local) capability referenced by ID.
 pub const ExportCap = struct {
     id: u32,
 };
 
+/// An imported (remote) capability referenced by ID.
 pub const ImportCap = struct {
     id: u32,
 };
 
+/// A capability reference resolved from a cap table entry to its
+/// logical location: local export, remote import, promise pipeline, or absent.
 pub const ResolvedCap = union(enum) {
     none,
     exported: ExportCap,
@@ -18,6 +22,7 @@ pub const ResolvedCap = union(enum) {
     promised: protocol.PromisedAnswer,
 };
 
+/// A heap-owned copy of a `PromisedAnswer` (question ID + transform ops).
 pub const OwnedPromisedAnswer = struct {
     question_id: u32,
     ops: []protocol.PromisedAnswerOp,
@@ -47,6 +52,11 @@ pub const OwnedPromisedAnswer = struct {
     }
 };
 
+/// Tracks capability import/export state for an RPC connection.
+///
+/// Manages import reference counts, export ID allocation, promise-export
+/// markers, and receiver-answer entries used for promise pipelining. Each
+/// `Peer` owns one `CapTable`.
 pub const CapTable = struct {
     allocator: std.mem.Allocator,
     imports: std.AutoHashMap(u32, ImportEntry),
@@ -73,6 +83,8 @@ pub const CapTable = struct {
         self.receiver_answers.deinit();
     }
 
+    /// Allocate a unique export ID that does not collide with any existing
+    /// import, promise-export, or receiver-answer entry.
     pub fn allocExportId(self: *CapTable) u32 {
         return self.allocLocalCapId();
     }
@@ -111,6 +123,8 @@ pub const CapTable = struct {
         return self.receiver_answers.get(cap_id);
     }
 
+    /// Record that a capability with `remote_id` was received from the remote
+    /// peer. Increments the reference count if already known.
     pub fn noteImport(self: *CapTable, remote_id: u32) !void {
         var entry = try self.imports.getOrPut(remote_id);
         if (!entry.found_existing) {
@@ -120,6 +134,8 @@ pub const CapTable = struct {
         }
     }
 
+    /// Decrement the reference count for an imported capability.
+    /// Returns true if the import was fully released (count reached zero).
     pub fn releaseImport(self: *CapTable, remote_id: u32) bool {
         var entry = self.imports.getEntry(remote_id) orelse return false;
         if (entry.value_ptr.ref_count > 1) {
@@ -146,6 +162,11 @@ const ImportEntry = struct {
     ref_count: u32,
 };
 
+/// Resolved capability table for an inbound Call or Return payload.
+///
+/// Created by decoding the cap descriptors from the wire message and
+/// resolving each against the connection's `CapTable`. Tracks which entries
+/// have been retained (referenced) so unused imports can be released.
 pub const InboundCapTable = struct {
     allocator: std.mem.Allocator,
     entries: []ResolvedCap,
@@ -240,6 +261,8 @@ fn resolveDescriptor(table: *CapTable, descriptor: protocol.CapDescriptor) !Reso
     };
 }
 
+/// Resolve a cap descriptor from the wire format into a `ResolvedCap`,
+/// noting any new imports in the cap table.
 pub fn resolveCapDescriptor(table: *CapTable, descriptor: protocol.CapDescriptor) !ResolvedCap {
     return resolveDescriptor(table, descriptor);
 }
@@ -505,6 +528,8 @@ fn resolveOutboundCapIndex(cap_list: message.StructListReader, index: u32) !Reso
     };
 }
 
+/// Walk a promised-answer transform path through a results payload to find
+/// the referenced capability.
 pub fn resolvePromisedAnswer(
     payload: protocol.Payload,
     transform: protocol.PromisedAnswerTransform,

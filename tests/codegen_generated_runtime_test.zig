@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
+const build_options = @import("build_options");
 
 fn writeFile(dir: std.fs.Dir, name: []const u8, data: []const u8) !void {
     var file = try dir.createFile(name, .{});
@@ -51,8 +52,7 @@ fn runGeneratedHarness(
 
     const lib_path = try std.fs.cwd().realpathAlloc(allocator, "src/lib.zig");
     defer allocator.free(lib_path);
-    const xev_path = try std.fs.cwd().realpathAlloc(allocator, "vendor/ext/libxev/src/main.zig");
-    defer allocator.free(xev_path);
+    const xev_path = build_options.xev_src_path;
 
     const lib_arg = try std.fmt.allocPrint(allocator, "-Mcapnpc-zig={s}", .{lib_path});
     defer allocator.free(lib_arg);

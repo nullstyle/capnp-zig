@@ -36,7 +36,7 @@ Requires **Zig 0.15.2** (use `mise install` to set up toolchain).
 
 Four-layer design, each building on the previous:
 
-**Wire Format** (`src/message.zig`, ~3700 LOC) — Core Cap'n Proto binary format: segment management, pointer encoding/decoding, struct/list/text/data serialization, packing, far pointers. Key types: `MessageBuilder`, `Message`, `StructBuilder`, `StructReader`.
+**Wire Format** (`src/message.zig` + `src/message/*`, ~2000 LOC) — Core Cap'n Proto binary format: segment management, pointer encoding/decoding, struct/list/text/data serialization, packing, far pointers. Key types: `MessageBuilder`, `Message`, `StructBuilder`, `StructReader`.
 
 **Schema** (`src/schema.zig`, `src/request_reader.zig`, `src/schema_validation.zig`) — Schema type definitions (Node, Field, Type, Value), CodeGeneratorRequest parsing from stdin, schema validation and canonicalization.
 
@@ -65,7 +65,7 @@ Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation
 
 ## Dependencies & Vendored Code
 
-- `vendor/ext/libxev/` — Event loop library (git submodule), used by RPC runtime
+- `libxev` — Event loop library, fetched via `build.zig.zon` URL+hash dependency (used by RPC runtime)
 - `vendor/ext/go-capnp/` — Go Cap'n Proto reference (git submodule), used by the e2e Go backend and Cap'n Proto schema tooling
 - `vendor/ext/capnp_test/` — Official Cap'n Proto test fixtures (git submodule)
 

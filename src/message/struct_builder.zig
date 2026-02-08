@@ -342,33 +342,126 @@ pub fn define(
                 return segment.items[start..end];
             }
 
+            /// Write a u64 into the struct's data section at the given byte offset.
+            ///
+            /// Silently drops the write if `byte_offset` falls outside the data
+            /// section. This is intentional per the Cap'n Proto spec: writing past
+            /// the end of a struct's data section is a no-op, which enables schema
+            /// evolution — a builder allocated with an older schema (smaller data
+            /// section) gracefully ignores fields that do not fit.
+            ///
+            /// Use `writeU64Strict` when a failed write should be treated as an
+            /// error (e.g. protocol-internal construction where the field must exist).
             pub fn writeU64(self: @This(), byte_offset: usize, value: u64) void {
                 const data = self.getDataSection();
                 if (byte_offset + 8 > data.len) return;
                 std.mem.writeInt(u64, data[byte_offset..][0..8], value, .little);
             }
 
+            /// Strict variant of `writeU64` that returns `error.OutOfBounds`
+            /// instead of silently dropping the write when the byte offset falls
+            /// outside the data section.
+            pub fn writeU64Strict(self: @This(), byte_offset: usize, value: u64) error{OutOfBounds}!void {
+                const data = self.getDataSection();
+                if (byte_offset + 8 > data.len) return error.OutOfBounds;
+                std.mem.writeInt(u64, data[byte_offset..][0..8], value, .little);
+            }
+
+            /// Write a u32 into the struct's data section at the given byte offset.
+            ///
+            /// Silently drops the write if `byte_offset` falls outside the data
+            /// section. This is intentional per the Cap'n Proto spec for schema
+            /// evolution compatibility. See `writeU64` for details.
+            ///
+            /// Use `writeU32Strict` when a failed write should be treated as an
+            /// error.
             pub fn writeU32(self: @This(), byte_offset: usize, value: u32) void {
                 const data = self.getDataSection();
                 if (byte_offset + 4 > data.len) return;
                 std.mem.writeInt(u32, data[byte_offset..][0..4], value, .little);
             }
 
+            /// Strict variant of `writeU32` that returns `error.OutOfBounds`
+            /// instead of silently dropping the write when the byte offset falls
+            /// outside the data section.
+            pub fn writeU32Strict(self: @This(), byte_offset: usize, value: u32) error{OutOfBounds}!void {
+                const data = self.getDataSection();
+                if (byte_offset + 4 > data.len) return error.OutOfBounds;
+                std.mem.writeInt(u32, data[byte_offset..][0..4], value, .little);
+            }
+
+            /// Write a u16 into the struct's data section at the given byte offset.
+            ///
+            /// Silently drops the write if `byte_offset` falls outside the data
+            /// section. This is intentional per the Cap'n Proto spec for schema
+            /// evolution compatibility. See `writeU64` for details.
+            ///
+            /// Use `writeU16Strict` when a failed write should be treated as an
+            /// error.
             pub fn writeU16(self: @This(), byte_offset: usize, value: u16) void {
                 const data = self.getDataSection();
                 if (byte_offset + 2 > data.len) return;
                 std.mem.writeInt(u16, data[byte_offset..][0..2], value, .little);
             }
 
+            /// Strict variant of `writeU16` that returns `error.OutOfBounds`
+            /// instead of silently dropping the write when the byte offset falls
+            /// outside the data section.
+            pub fn writeU16Strict(self: @This(), byte_offset: usize, value: u16) error{OutOfBounds}!void {
+                const data = self.getDataSection();
+                if (byte_offset + 2 > data.len) return error.OutOfBounds;
+                std.mem.writeInt(u16, data[byte_offset..][0..2], value, .little);
+            }
+
+            /// Write a u8 into the struct's data section at the given byte offset.
+            ///
+            /// Silently drops the write if `byte_offset` falls outside the data
+            /// section. This is intentional per the Cap'n Proto spec for schema
+            /// evolution compatibility. See `writeU64` for details.
+            ///
+            /// Use `writeU8Strict` when a failed write should be treated as an
+            /// error.
             pub fn writeU8(self: @This(), byte_offset: usize, value: u8) void {
                 const data = self.getDataSection();
                 if (byte_offset >= data.len) return;
                 data[byte_offset] = value;
             }
 
+            /// Strict variant of `writeU8` that returns `error.OutOfBounds`
+            /// instead of silently dropping the write when the byte offset falls
+            /// outside the data section.
+            pub fn writeU8Strict(self: @This(), byte_offset: usize, value: u8) error{OutOfBounds}!void {
+                const data = self.getDataSection();
+                if (byte_offset >= data.len) return error.OutOfBounds;
+                data[byte_offset] = value;
+            }
+
+            /// Write a boolean into the struct's data section at the given byte
+            /// and bit offset.
+            ///
+            /// Silently drops the write if `byte_offset` falls outside the data
+            /// section. This is intentional per the Cap'n Proto spec for schema
+            /// evolution compatibility. See `writeU64` for details.
+            ///
+            /// Use `writeBoolStrict` when a failed write should be treated as an
+            /// error.
             pub fn writeBool(self: @This(), byte_offset: usize, bit_offset: u3, value: bool) void {
                 const data = self.getDataSection();
                 if (byte_offset >= data.len) return;
+                const mask = @as(u8, 1) << bit_offset;
+                if (value) {
+                    data[byte_offset] |= mask;
+                } else {
+                    data[byte_offset] &= ~mask;
+                }
+            }
+
+            /// Strict variant of `writeBool` that returns `error.OutOfBounds`
+            /// instead of silently dropping the write when the byte offset falls
+            /// outside the data section.
+            pub fn writeBoolStrict(self: @This(), byte_offset: usize, bit_offset: u3, value: bool) error{OutOfBounds}!void {
+                const data = self.getDataSection();
+                if (byte_offset >= data.len) return error.OutOfBounds;
                 const mask = @as(u8, 1) << bit_offset;
                 if (value) {
                     data[byte_offset] |= mask;

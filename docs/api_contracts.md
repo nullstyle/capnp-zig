@@ -1,6 +1,6 @@
 # API Contracts And Error Taxonomy
 
-Updated: 2026-02-06
+Updated: 2026-02-07
 
 ## Scope
 This document defines stability and failure-mode expectations for the public `capnp-zig` library surface:
@@ -42,6 +42,40 @@ Errors are grouped by class for caller policy decisions:
 - `ResourceError` (allocation/limits/backpressure).
   Examples: `OutOfMemory`, traversal/segment limits, queue pressure.
   Policy: fail operation and preserve allocator/runtime invariants.
+
+## Primitive Read/Write Default-Value Behavior (Schema Evolution)
+
+The Cap'n Proto specification mandates that reading a primitive field past the end of a struct's data section returns the type's default value (zero for integers, false for booleans, empty string for text). This is not a bug — it is the mechanism that enables **schema evolution**: when a newer schema adds fields to a struct, messages serialized with an older schema (which has a shorter data section) are still readable; the new fields simply appear as their defaults.
+
+Accordingly, the following `StructReader` methods return defaults on out-of-bounds access without signalling an error:
+
+| Method | Default on OOB |
+|---|---|
+| `readU64(byte_offset)` | `0` |
+| `readU32(byte_offset)` | `0` |
+| `readU16(byte_offset)` | `0` |
+| `readU8(byte_offset)` | `0` |
+| `readBool(byte_offset, bit_offset)` | `false` |
+| `readText(pointer_index)` | `""` |
+
+Similarly, the following `StructBuilder` methods silently drop writes on out-of-bounds access (a builder allocated with an older/smaller schema ignores fields that do not fit):
+
+| Method | Behavior on OOB |
+|---|---|
+| `writeU64(byte_offset, value)` | silent no-op |
+| `writeU32(byte_offset, value)` | silent no-op |
+| `writeU16(byte_offset, value)` | silent no-op |
+| `writeU8(byte_offset, value)` | silent no-op |
+| `writeBool(byte_offset, bit_offset, value)` | silent no-op |
+
+### Strict Variants
+
+For use cases where an out-of-bounds access indicates a real bug (e.g. protocol-internal parsing of a known-layout struct, or test assertions), each method has a `*Strict` counterpart that returns `error.OutOfBounds`:
+
+- `readU64Strict`, `readU32Strict`, `readU16Strict`, `readU8Strict`, `readBoolStrict`
+- `writeU64Strict`, `writeU32Strict`, `writeU16Strict`, `writeU8Strict`, `writeBoolStrict`
+
+Generated code and normal application code should use the non-strict (default-returning) variants. Strict variants are intended for internal protocol parsing and debugging.
 
 ## Compatibility Policy
 - New error variants may be added.

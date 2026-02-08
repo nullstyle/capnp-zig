@@ -1,9 +1,6 @@
 [submodule "vendor/ext/capnp_test"]
 	path = vendor/ext/capnp_test
 	url = https://github.com/kaos/capnp_test.git
-[submodule "vendor/ext/libxev"]
-	path = vendor/ext/libxev
-	url = https://github.com/mitchellh/libxev.git
 [submodule "vendor/ext/go-capnp"]
 	path = vendor/ext/go-capnp
 	url = https://github.com/capnproto/go-capnp.git

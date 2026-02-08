@@ -44,7 +44,7 @@ Scope: Active workstream to close P1/P2 recommendations from `QUALITY_REPORT.md`
 5. P2-7: Publishable Zig package metadata. **Done (with optional follow-up)**
    - Package version moved to semantic versioning (`0.1.0`).
    - `libxev` dependency migrated from local `.path` to URL+hash in `build.zig.zon`.
-   - Optional follow-up: decide whether to keep/remove vendored `vendor/ext/libxev` for offline development.
+   - Vendored `vendor/ext/libxev` submodule removed; `build.zig` now consumes libxev via `b.dependency("libxev", ...)`.
 
 ## Validation Baseline
 
@@ -57,4 +57,4 @@ Latest full run in this branch state:
 
 1. Finish remaining P1 decomposition slice(s) that reduce `src/rpc/peer.zig` readability risk without API churn.
 2. Complete P2 comments pass over remaining complex pointer/state-machine sections.
-3. Decide whether to keep or remove vendored `vendor/ext/libxev` now that URL+hash dependency is active.
+3. (Done) Vendored `vendor/ext/libxev` removed; libxev is now sourced exclusively via `build.zig.zon` URL+hash.

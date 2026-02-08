@@ -27,4 +27,5 @@ The URL+hash form is suitable for external `zig fetch` consumers.
 
 - Package version updated to semantic versioning (`0.1.0`).
 - URL+hash dependency migration is complete for `libxev` (pinned to commit `42d4ead52667e03619dcd5b1a3ca8ef7d5dd24ed`).
-- Remaining optional cleanup: remove or retain `vendor/ext/libxev` depending on offline/local workflow preference.
+- `build.zig` now uses `b.dependency("libxev", ...)` to consume the zon dependency (no longer references `vendor/ext/libxev`).
+- The `vendor/ext/libxev` git submodule has been removed from `.gitmodules`. Run `git rm vendor/ext/libxev` to fully remove it from the index.

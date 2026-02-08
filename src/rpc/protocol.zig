@@ -1,6 +1,12 @@
+/// Cap'n Proto RPC protocol message types and their wire-format readers/builders.
+///
+/// Each struct in this module corresponds to a message or sub-structure defined
+/// in `rpc.capnp`. Reader structs decode fields from `StructReader`; builder
+/// structs write fields into a `MessageBuilder`.
 const std = @import("std");
 const message = @import("../message.zig");
 
+/// Discriminant tag for the top-level RPC `Message` union.
 pub const MessageTag = enum(u16) {
     unimplemented = 0,
     abort = 1,
@@ -19,6 +25,7 @@ pub const MessageTag = enum(u16) {
     third_party_answer = 14,
 };
 
+/// Discriminant tag for the `Return` union variants.
 pub const ReturnTag = enum(u16) {
     results = 0,
     exception = 1,
@@ -38,6 +45,7 @@ pub const PromisedAnswerOpTag = enum(u16) {
     get_pointer_field = 1,
 };
 
+/// Discriminant tag identifying the kind of capability being transferred.
 pub const CapDescriptorTag = enum(u16) {
     none = 0,
     sender_hosted = 1,
@@ -64,6 +72,10 @@ pub const DisembargoContextTag = enum(u16) {
     accept = 2,
 };
 
+/// Describes a capability being passed in a Call or Return payload's cap table.
+///
+/// Each entry identifies where the capability lives: sender-hosted, sender-promise,
+/// receiver-hosted, receiver-answer (promise pipeline), or third-party-hosted.
 pub const CapDescriptor = struct {
     tag: CapDescriptorTag,
     id: ?u32 = null,
@@ -155,6 +167,8 @@ pub const CapDescriptor = struct {
     }
 };
 
+/// Identifies a capability hosted by a third party, with a vine ID for
+/// reference counting.
 pub const ThirdPartyCapDescriptor = struct {
     id: ?message.AnyPointerReader,
     vine_id: u32,
@@ -307,6 +321,7 @@ fn byteOffsetBool(bit_offset: u32) struct { byte: usize, bit: u3 } {
     };
 }
 
+/// A parsed RPC message: the underlying `Message` plus the decoded top-level tag.
 pub const DecodedMessage = struct {
     msg: message.Message,
     tag: MessageTag,
@@ -416,6 +431,7 @@ pub const DecodedMessage = struct {
     }
 };
 
+/// Request to obtain the remote peer's bootstrap capability.
 pub const Bootstrap = struct {
     question_id: u32,
     deprecated_object: ?message.AnyPointerReader,
@@ -430,6 +446,7 @@ pub const Bootstrap = struct {
     }
 };
 
+/// Echoed back when the receiver does not implement the received message type.
 pub const Unimplemented = struct {
     message_tag: ?MessageTag,
     question_id: ?u32,
@@ -460,6 +477,7 @@ pub const Unimplemented = struct {
     }
 };
 
+/// Fatal error that terminates the RPC connection.
 pub const Abort = struct {
     exception: Exception,
 
@@ -470,6 +488,8 @@ pub const Abort = struct {
     }
 };
 
+/// An RPC method call: identifies the target capability, interface, and method,
+/// and carries the parameters payload with its capability table.
 pub const Call = struct {
     question_id: u32,
     interface_id: u64,
@@ -512,6 +532,8 @@ pub const Call = struct {
     }
 };
 
+/// Where the callee should send results: back to caller, to yourself
+/// (tail call), or to a third party.
 pub const SendResultsTo = struct {
     tag: SendResultsToTag,
     third_party: ?message.AnyPointerReader = null,
@@ -535,6 +557,8 @@ pub const SendResultsTo = struct {
     }
 };
 
+/// The response to a previously sent `Call`, carrying results, an exception,
+/// or a redirect to another question/third-party.
 pub const Return = struct {
     answer_id: u32,
     release_param_caps: bool,
@@ -594,6 +618,7 @@ pub const Return = struct {
     }
 };
 
+/// Tells the callee that the caller is done with the question and its results.
 pub const Finish = struct {
     question_id: u32,
     release_result_caps: bool,
@@ -611,6 +636,7 @@ pub const Finish = struct {
     }
 };
 
+/// The target of a Call: either an imported capability ID or a promised answer pipeline.
 pub const MessageTarget = struct {
     tag: MessageTargetTag,
     imported_cap: ?u32,
@@ -634,6 +660,8 @@ pub const MessageTarget = struct {
     }
 };
 
+/// A reference to a not-yet-returned answer, with an optional transform path
+/// for promise pipelining.
 pub const PromisedAnswer = struct {
     question_id: u32,
     transform: PromisedAnswerTransform,
@@ -760,6 +788,8 @@ fn writeCapDescriptor(builder: message.StructBuilder, descriptor: CapDescriptor)
     }
 }
 
+/// A content pointer paired with a capability table, used in Call params
+/// and Return results.
 pub const Payload = struct {
     content: message.AnyPointerReader,
     cap_table: ?message.StructListReader,
@@ -774,6 +804,7 @@ pub const Payload = struct {
     }
 };
 
+/// Tells the sender to release references to an exported capability.
 pub const Release = struct {
     id: u32,
     reference_count: u32,
@@ -785,6 +816,8 @@ pub const Release = struct {
     }
 };
 
+/// Resolves a previously sent promise capability to either a concrete
+/// capability descriptor or an exception.
 pub const Resolve = struct {
     promise_id: u32,
     tag: ResolveTag,
@@ -818,6 +851,8 @@ pub const Resolve = struct {
     }
 };
 
+/// Used to lift an embargo after a Resolve, ensuring message ordering is
+/// preserved during capability replacement.
 pub const Disembargo = struct {
     target: MessageTarget,
     context_tag: DisembargoContextTag,
@@ -854,6 +889,7 @@ pub const Disembargo = struct {
     }
 };
 
+/// Three-party handoff: offer a capability to a third party via a designated recipient.
 pub const Provide = struct {
     question_id: u32,
     target: MessageTarget,
@@ -873,6 +909,7 @@ pub const Provide = struct {
     }
 };
 
+/// Three-party handoff: accept a capability previously offered via `Provide`.
 pub const Accept = struct {
     question_id: u32,
     provision: ?message.AnyPointerReader,
@@ -895,6 +932,8 @@ pub const Accept = struct {
     }
 };
 
+/// Three-party handoff: the introducer tells one peer the answer ID assigned
+/// by the third party.
 pub const ThirdPartyAnswer = struct {
     completion: ?message.AnyPointerReader,
     answer_id: u32,
@@ -911,6 +950,7 @@ pub const ThirdPartyAnswer = struct {
     }
 };
 
+/// Three-party handoff: verify that two capabilities resolve to the same object.
 pub const Join = struct {
     question_id: u32,
     target: MessageTarget,
@@ -930,6 +970,7 @@ pub const Join = struct {
     }
 };
 
+/// An RPC exception with a human-readable reason, optional stack trace, and type code.
 pub const Exception = struct {
     reason: []const u8,
     trace: []const u8,
@@ -946,6 +987,7 @@ pub const Exception = struct {
     }
 };
 
+/// Builder for constructing Cap'n Proto RPC messages (Bootstrap, Call, Return, etc.).
 pub const MessageBuilder = struct {
     builder: message.MessageBuilder,
 
@@ -1186,6 +1228,7 @@ pub const MessageBuilder = struct {
     }
 };
 
+/// Builder for populating a Call message's target, parameters, and send-results-to fields.
 pub const CallBuilder = struct {
     call: message.StructBuilder,
     payload: ?message.StructBuilder = null,
@@ -1267,6 +1310,7 @@ pub const CallBuilder = struct {
     }
 };
 
+/// Builder for populating a Return message's results, exception, or redirect.
 pub const ReturnBuilder = struct {
     ret: message.StructBuilder,
     tag: ReturnTag,
