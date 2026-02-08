@@ -596,12 +596,12 @@ pub const Generator = struct {
         try writer.print("    pub const Type = {s};\n", .{type_name});
         try writer.writeAll("    pub const targets = .{\n");
         try writer.print("        .file = {},\n", .{annotation_info.targets_file});
-        try writer.print("        .const = {},\n", .{annotation_info.targets_const});
-        try writer.print("        .enum = {},\n", .{annotation_info.targets_enum});
+        try writer.print("        .@\"const\" = {},\n", .{annotation_info.targets_const});
+        try writer.print("        .@\"enum\" = {},\n", .{annotation_info.targets_enum});
         try writer.print("        .enumerant = {},\n", .{annotation_info.targets_enumerant});
-        try writer.print("        .struct = {},\n", .{annotation_info.targets_struct});
+        try writer.print("        .@\"struct\" = {},\n", .{annotation_info.targets_struct});
         try writer.print("        .field = {},\n", .{annotation_info.targets_field});
-        try writer.print("        .union = {},\n", .{annotation_info.targets_union});
+        try writer.print("        .@\"union\" = {},\n", .{annotation_info.targets_union});
         try writer.print("        .group = {},\n", .{annotation_info.targets_group});
         try writer.print("        .interface = {},\n", .{annotation_info.targets_interface});
         try writer.print("        .method = {},\n", .{annotation_info.targets_method});
@@ -625,6 +625,13 @@ pub const Generator = struct {
 
     fn allocValueDeclName(self: *Generator, node: *const schema.Node) ![]const u8 {
         return types.normalizeAndEscapeValueIdentifier(self.allocator, self.getSimpleName(node));
+    }
+
+    fn allocAnnotationUseBaseName(self: *Generator, node: *const schema.Node) ![]u8 {
+        return switch (node.kind) {
+            .@"const", .annotation => types.identToZigValueName(self.allocator, self.getSimpleName(node)),
+            else => types.identToZigTypeName(self.allocator, self.getSimpleName(node)),
+        };
     }
 
     fn resolveNodeName(self: *Generator, id: schema.Id) ![]const u8 {
@@ -772,7 +779,8 @@ pub const Generator = struct {
     }
 
     fn generateAnnotationUses(self: *Generator, node: *const schema.Node, writer: anytype) !void {
-        const name = self.getSimpleName(node);
+        const name = try self.allocAnnotationUseBaseName(node);
+        defer self.allocator.free(name);
 
         if (node.annotations.len > 0) {
             try writer.print("pub const {s}_annotations = ", .{name});
