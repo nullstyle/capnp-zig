@@ -27,6 +27,8 @@ pub fn handleForwardedReturn(
     send_accept_from_third_party: *const fn (*PeerType, u32, ?[]const u8) anyerror!void,
     context_third_party_payload: ?[]const u8,
 ) !void {
+    // Each forwarding mode defines a compatibility contract for which Return tags can be
+    // forwarded verbatim versus translated into local fallback semantics.
     switch (mode) {
         .translate_to_caller => switch (ret.tag) {
             .results => {
@@ -61,10 +63,14 @@ pub fn handleForwardedReturn(
                 try send_accept_from_third_party(peer, answer_id, await_payload);
             },
         },
+        // Tail-call completion mode: only terminal markers are valid after we already
+        // redirected results ownership to another question.
         .sent_elsewhere => switch (ret.tag) {
             .results_sent_elsewhere, .canceled => {},
             else => return error.UnexpectedForwardedTailReturn,
         },
+        // When the original call requested `sendResultsTo.yourself`, preserve local state by
+        // converting unsupported payload-bearing returns into resultsSentElsewhere.
         .propagate_results_sent_elsewhere => switch (ret.tag) {
             .results_sent_elsewhere => try send_return_tag(peer, answer_id, .results_sent_elsewhere),
             .canceled => try send_return_tag(peer, answer_id, .canceled),
@@ -82,6 +88,8 @@ pub fn handleForwardedReturn(
                 try send_return_tag(peer, answer_id, .results_sent_elsewhere);
             },
         },
+        // Third-party propagation mode prefers acceptFromThirdParty; if the upstream sends
+        // resultsSentElsewhere we fall back to the locally captured await payload.
         .propagate_accept_from_third_party => switch (ret.tag) {
             .results_sent_elsewhere => {
                 try send_accept_from_third_party(peer, answer_id, context_third_party_payload);

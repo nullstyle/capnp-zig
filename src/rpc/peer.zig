@@ -22,6 +22,10 @@ const peer_return_orchestration = @import("peer/return/peer_return_orchestration
 const peer_third_party_adoption = @import("peer/third_party/peer_third_party_adoption.zig");
 const peer_return_dispatch = @import("peer/return/peer_return_dispatch.zig");
 const peer_third_party_returns = @import("peer/third_party/peer_third_party_returns.zig");
+const peer_return_send_helpers = @import("peer/return/peer_return_send_helpers.zig");
+const peer_transport_callbacks = @import("peer/peer_transport_callbacks.zig");
+const peer_transport_state = @import("peer/peer_transport_state.zig");
+const peer_cleanup = @import("peer/peer_cleanup.zig");
 const peer_state_types = @import("peer/peer_state_types.zig");
 
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
@@ -192,9 +196,9 @@ pub const Peer = struct {
                     const typed: ConnPtr = castCtx(ConnPtr, ctx);
                     typed.start(
                         peer,
-                        onConnectionMessageFor(ConnPtr),
-                        onConnectionErrorFor(ConnPtr),
-                        onConnectionCloseFor(ConnPtr),
+                        peer_transport_callbacks.onConnectionMessageFor(Peer, ConnPtr, Peer.handleFrame),
+                        peer_transport_callbacks.onConnectionErrorFor(Peer, ConnPtr, onConnectionError),
+                        peer_transport_callbacks.onConnectionCloseFor(Peer, ConnPtr, onConnectionClose),
                     );
                 }
             }.call,
@@ -231,137 +235,125 @@ pub const Peer = struct {
         close_fn: ?TransportCloseFn,
         is_closing: ?TransportIsClosingFn,
     ) void {
-        self.transport_ctx = ctx;
-        self.transport_start = start_fn;
-        self.transport_send = send_fn;
-        self.transport_close = close_fn;
-        self.transport_is_closing = is_closing;
+        peer_transport_state.attachTransportForPeer(
+            Peer,
+            TransportStartFn,
+            TransportSendFn,
+            TransportCloseFn,
+            TransportIsClosingFn,
+            self,
+            ctx,
+            start_fn,
+            send_fn,
+            close_fn,
+            is_closing,
+        );
     }
 
     pub fn detachTransport(self: *Peer) void {
-        self.transport_ctx = null;
-        self.transport_start = null;
-        self.transport_send = null;
-        self.transport_close = null;
-        self.transport_is_closing = null;
+        peer_transport_state.detachTransportForPeer(Peer, self);
     }
 
     pub fn hasAttachedTransport(self: *const Peer) bool {
-        return self.transport_ctx != null and self.transport_send != null;
+        return peer_transport_state.hasAttachedTransportForPeer(Peer, self);
     }
 
     pub fn closeAttachedTransport(self: *Peer) void {
-        if (self.transport_ctx) |ctx| {
-            if (self.transport_close) |close| close(ctx);
-        }
+        peer_transport_state.closeAttachedTransportForPeer(Peer, self);
     }
 
     pub fn isAttachedTransportClosing(self: *const Peer) bool {
-        if (self.transport_ctx) |ctx| {
-            if (self.transport_is_closing) |is_closing| return is_closing(ctx);
-        }
-        return false;
+        return peer_transport_state.isAttachedTransportClosingForPeer(Peer, self);
     }
 
     pub fn takeAttachedConnection(self: *Peer, comptime ConnPtr: type) ?ConnPtr {
-        const conn = self.getAttachedConnection(ConnPtr);
-        self.detachTransport();
-        return conn;
+        return peer_transport_state.takeAttachedConnectionForPeer(
+            Peer,
+            ConnPtr,
+            self,
+            detachTransport,
+        );
     }
 
     pub fn getAttachedConnection(self: *const Peer, comptime ConnPtr: type) ?ConnPtr {
-        const ctx = self.transport_ctx orelse return null;
-        return castCtx(ConnPtr, ctx);
+        return peer_transport_state.getAttachedConnectionForPeer(
+            Peer,
+            ConnPtr,
+            self,
+        );
     }
 
     pub fn deinit(self: *Peer) void {
-        var it = self.pending_promises.valueIterator();
-        while (it.next()) |list| {
-            for (list.items) |*pending| {
-                pending.caps.deinit();
-                self.allocator.free(pending.frame);
-            }
-            list.deinit(self.allocator);
-        }
-        var export_it = self.pending_export_promises.valueIterator();
-        while (export_it.next()) |list| {
-            for (list.items) |*pending| {
-                pending.caps.deinit();
-                self.allocator.free(pending.frame);
-            }
-            list.deinit(self.allocator);
-        }
-        var answer_it = self.resolved_answers.valueIterator();
-        while (answer_it.next()) |answer| {
-            self.allocator.free(answer.frame);
-        }
+        peer_cleanup.deinitPendingCallMapOwned(
+            @TypeOf(self.pending_promises),
+            self.allocator,
+            &self.pending_promises,
+        );
+        peer_cleanup.deinitPendingCallMapOwned(
+            @TypeOf(self.pending_export_promises),
+            self.allocator,
+            &self.pending_export_promises,
+        );
+        peer_cleanup.deinitResolvedAnswerMap(
+            @TypeOf(self.resolved_answers),
+            self.allocator,
+            &self.resolved_answers,
+        );
         self.questions.deinit();
         self.exports.deinit();
-        self.resolved_answers.deinit();
-        self.pending_promises.deinit();
-        self.pending_export_promises.deinit();
         self.forwarded_questions.deinit();
         self.forwarded_tail_questions.deinit();
-        var provide_it = self.provides_by_question.valueIterator();
-        while (provide_it.next()) |entry| {
-            self.allocator.free(entry.recipient_key);
-            entry.target.deinit(self.allocator);
-        }
-        self.provides_by_question.deinit();
+        peer_cleanup.deinitProvideEntryMap(
+            @TypeOf(self.provides_by_question),
+            self.allocator,
+            &self.provides_by_question,
+        );
         self.provides_by_key.deinit();
 
-        var pending_join_it = self.pending_joins.valueIterator();
-        while (pending_join_it.next()) |join_state| {
-            join_state.deinit(self.allocator);
-        }
-        self.pending_joins.deinit();
+        peer_cleanup.deinitJoinStateMap(
+            @TypeOf(self.pending_joins),
+            self.allocator,
+            &self.pending_joins,
+        );
         self.pending_join_questions.deinit();
 
-        var pending_it = self.pending_accepts_by_embargo.iterator();
-        while (pending_it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            entry.value_ptr.deinit(self.allocator);
-        }
-        self.pending_accepts_by_embargo.deinit();
-
-        var pending_question_it = self.pending_accept_embargo_by_question.valueIterator();
-        while (pending_question_it.next()) |embargo_key| {
-            self.allocator.free(embargo_key.*);
-        }
-        self.pending_accept_embargo_by_question.deinit();
-
-        var pending_third_await_it = self.pending_third_party_awaits.iterator();
-        while (pending_third_await_it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.pending_third_party_awaits.deinit();
-
-        var pending_third_answer_it = self.pending_third_party_answers.iterator();
-        while (pending_third_answer_it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-        }
-        self.pending_third_party_answers.deinit();
-
-        var pending_third_return_it = self.pending_third_party_returns.valueIterator();
-        while (pending_third_return_it.next()) |frame| {
-            self.allocator.free(frame.*);
-        }
-        self.pending_third_party_returns.deinit();
+        peer_cleanup.deinitOwnedStringKeyListMap(
+            @TypeOf(self.pending_accepts_by_embargo),
+            self.allocator,
+            &self.pending_accepts_by_embargo,
+        );
+        peer_cleanup.deinitOwnedBytesMap(
+            @TypeOf(self.pending_accept_embargo_by_question),
+            self.allocator,
+            &self.pending_accept_embargo_by_question,
+        );
+        peer_cleanup.deinitOwnedStringKeyMap(
+            @TypeOf(self.pending_third_party_awaits),
+            self.allocator,
+            &self.pending_third_party_awaits,
+        );
+        peer_cleanup.deinitOwnedStringKeyMap(
+            @TypeOf(self.pending_third_party_answers),
+            self.allocator,
+            &self.pending_third_party_answers,
+        );
+        peer_cleanup.deinitOwnedBytesMap(
+            @TypeOf(self.pending_third_party_returns),
+            self.allocator,
+            &self.pending_third_party_returns,
+        );
         self.adopted_third_party_answers.deinit();
 
         self.resolved_imports.deinit();
         self.pending_embargoes.deinit();
         self.loopback_questions.deinit();
         self.send_results_to_yourself.deinit();
-        var third_party_it = self.send_results_to_third_party.valueIterator();
-        while (third_party_it.next()) |entry| {
-            if (entry.*) |payload| self.allocator.free(payload);
-        }
-        self.send_results_to_third_party.deinit();
-        if (self.last_remote_abort_reason) |reason| {
-            self.allocator.free(reason);
-            self.last_remote_abort_reason = null;
-        }
+        peer_cleanup.deinitOptionalOwnedBytesMap(
+            @TypeOf(self.send_results_to_third_party),
+            self.allocator,
+            &self.send_results_to_third_party,
+        );
+        peer_cleanup.clearOptionalOwnedBytes(self.allocator, &self.last_remote_abort_reason);
         self.caps.deinit();
     }
 
@@ -825,16 +817,23 @@ pub const Peer = struct {
     }
 
     fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {
-        _ = self.send_results_to_yourself.remove(answer_id);
-        self.clearSendResultsToThirdParty(answer_id);
+        peer_return_send_helpers.clearSendResultsRoutingForPeer(
+            Peer,
+            self,
+            answer_id,
+            clearSendResultsToThirdParty,
+        );
     }
 
     fn sendReturnFrameWithLoopback(self: *Peer, answer_id: u32, bytes: []const u8) !void {
-        if (self.loopback_questions.remove(answer_id)) {
-            try self.deliverLoopbackReturn(bytes);
-            return;
-        }
-        try self.sendFrame(bytes);
+        try peer_return_send_helpers.sendReturnFrameWithLoopbackForPeer(
+            Peer,
+            self,
+            answer_id,
+            bytes,
+            deliverLoopbackReturn,
+            sendFrame,
+        );
     }
 
     fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {
@@ -865,28 +864,20 @@ pub const Peer = struct {
     }
 
     fn noteOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
-        if (ret.tag != .results) return;
-        const payload = ret.results orelse return error.InvalidReturnSemantics;
-        const cap_table_list = payload.cap_table orelse return;
-
-        var idx: u32 = 0;
-        while (idx < cap_table_list.len()) : (idx += 1) {
-            const reader = try cap_table_list.get(idx);
-            const descriptor = try protocol.CapDescriptor.fromReader(reader);
-            switch (descriptor.tag) {
-                .sender_hosted, .sender_promise => {
-                    const id = descriptor.id orelse return error.MissingCapDescriptorId;
-                    try self.noteExportRef(id);
-                },
-                else => {},
-            }
-        }
+        try peer_return_send_helpers.noteOutboundReturnCapRefsForPeer(
+            Peer,
+            self,
+            ret,
+            noteExportRef,
+        );
     }
 
     fn clearSendResultsToThirdParty(self: *Peer, answer_id: u32) void {
-        if (self.send_results_to_third_party.fetchRemove(answer_id)) |entry| {
-            if (entry.value) |payload| self.allocator.free(payload);
-        }
+        peer_return_send_helpers.clearSendResultsToThirdPartyForPeer(
+            Peer,
+            self,
+            answer_id,
+        );
     }
 
     fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
@@ -928,8 +919,12 @@ pub const Peer = struct {
     }
 
     fn noteSendResultsToYourself(self: *Peer, answer_id: u32) !void {
-        self.clearSendResultsToThirdParty(answer_id);
-        _ = try self.send_results_to_yourself.getOrPut(answer_id);
+        try peer_return_send_helpers.noteSendResultsToYourselfForPeer(
+            Peer,
+            self,
+            answer_id,
+            clearSendResultsToThirdParty,
+        );
     }
 
     fn noteSendResultsToThirdParty(
@@ -937,16 +932,13 @@ pub const Peer = struct {
         answer_id: u32,
         ptr: ?message.AnyPointerReader,
     ) !void {
-        _ = self.send_results_to_yourself.remove(answer_id);
-
-        const payload = try captureAnyPointerPayload(self.allocator, ptr);
-        errdefer if (payload) |bytes| self.allocator.free(bytes);
-
-        const entry = try self.send_results_to_third_party.getOrPut(answer_id);
-        if (entry.found_existing) {
-            if (entry.value_ptr.*) |existing| self.allocator.free(existing);
-        }
-        entry.value_ptr.* = payload;
+        try peer_return_send_helpers.noteSendResultsToThirdPartyForPeer(
+            Peer,
+            self,
+            answer_id,
+            ptr,
+            captureAnyPointerPayload,
+        );
     }
 
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
@@ -1128,35 +1120,12 @@ pub const Peer = struct {
         return id;
     }
 
-    fn onConnectionMessageFor(comptime ConnPtr: type) *const fn (conn: ConnPtr, frame: []const u8) anyerror!void {
-        return struct {
-            fn call(conn: ConnPtr, frame: []const u8) anyerror!void {
-                const peer = peerFromConnection(ConnPtr, conn);
-                try peer.handleFrame(frame);
-            }
-        }.call;
+    fn onConnectionError(self: *Peer, err: anyerror) void {
+        if (self.on_error) |cb| cb(self, err);
     }
 
-    fn onConnectionErrorFor(comptime ConnPtr: type) *const fn (conn: ConnPtr, err: anyerror) void {
-        return struct {
-            fn call(conn: ConnPtr, err: anyerror) void {
-                const peer = peerFromConnection(ConnPtr, conn);
-                if (peer.on_error) |cb| cb(peer, err);
-            }
-        }.call;
-    }
-
-    fn onConnectionCloseFor(comptime ConnPtr: type) *const fn (conn: ConnPtr) void {
-        return struct {
-            fn call(conn: ConnPtr) void {
-                const peer = peerFromConnection(ConnPtr, conn);
-                if (peer.on_close) |cb| cb(peer);
-            }
-        }.call;
-    }
-
-    fn peerFromConnection(comptime ConnPtr: type, conn: ConnPtr) *Peer {
-        return @ptrCast(@alignCast(conn.ctx.?));
+    fn onConnectionClose(self: *Peer) void {
+        if (self.on_close) |cb| cb(self);
     }
 
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {

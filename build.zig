@@ -577,6 +577,62 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_host_peer_tests = b.addRunArtifact(rpc_host_peer_tests);
 
+    // RPC return send helper tests
+    const rpc_peer_return_send_helpers_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_peer_return_send_helpers_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_peer_return_send_helpers_tests = b.addRunArtifact(rpc_peer_return_send_helpers_tests);
+
+    // RPC transport callback adapter tests
+    const rpc_peer_transport_callbacks_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_peer_transport_callbacks_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_peer_transport_callbacks_tests = b.addRunArtifact(rpc_peer_transport_callbacks_tests);
+
+    // RPC transport state helper tests
+    const rpc_peer_transport_state_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_peer_transport_state_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_peer_transport_state_tests = b.addRunArtifact(rpc_peer_transport_state_tests);
+
+    // RPC peer cleanup helper tests
+    const rpc_peer_cleanup_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_peer_cleanup_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_peer_cleanup_tests = b.addRunArtifact(rpc_peer_cleanup_tests);
+
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
         .target = target,
@@ -637,6 +693,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_protocol_tests.step);
     test_step.dependOn(&run_rpc_peer_tests.step);
     test_step.dependOn(&run_rpc_host_peer_tests.step);
+    test_step.dependOn(&run_rpc_peer_return_send_helpers_tests.step);
+    test_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
+    test_step.dependOn(&run_rpc_peer_transport_state_tests.step);
+    test_step.dependOn(&run_rpc_peer_cleanup_tests.step);
     test_step.dependOn(&run_wasm_host_abi_tests.step);
 
     // Individual test steps
@@ -679,6 +739,10 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_tests.step);
     test_rpc_step.dependOn(&run_rpc_host_peer_tests.step);
+    test_rpc_step.dependOn(&run_rpc_peer_return_send_helpers_tests.step);
+    test_rpc_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
+    test_rpc_step.dependOn(&run_rpc_peer_transport_state_tests.step);
+    test_rpc_step.dependOn(&run_rpc_peer_cleanup_tests.step);
 
     const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
     test_wasm_host_step.dependOn(&run_wasm_host_abi_tests.step);

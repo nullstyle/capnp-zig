@@ -235,6 +235,8 @@ pub fn handleResolve(
             const resolved = try resolve_cap_descriptor(peer, descriptor);
 
             if (!known_promise) {
+                // Late resolve for an unknown promise id: release any received capability
+                // references immediately because no local table entry can own them.
                 try release_resolved_cap(peer, resolved);
                 return;
             }
@@ -242,6 +244,8 @@ pub fn handleResolve(
             var embargo_id: ?u32 = null;
             var embargoed = false;
             if (resolved == .exported or resolved == .promised) {
+                // Exported/promise resolutions require a sender-loopback disembargo handshake
+                // before the resolved import can be considered callable locally.
                 const new_embargo_id = alloc_embargo_id(peer);
                 embargo_id = new_embargo_id;
                 embargoed = true;
@@ -281,6 +285,7 @@ pub fn handleDisembargo(
 ) !void {
     switch (disembargo.context_tag) {
         .sender_loopback => {
+            // Peer echoes receiverLoopback so both sides can clear embargoed call paths.
             const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
             switch (disembargo.target.tag) {
                 .imported_cap => {
@@ -293,6 +298,7 @@ pub fn handleDisembargo(
             try send_disembargo_receiver_loopback(peer, disembargo.target, embargo_id);
         },
         .receiver_loopback => {
+            // ReceiverLoopback completes the local embargo lifecycle for that promise id.
             const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
             const promise_id = take_pending_embargo_promise(peer, embargo_id) orelse return;
             clear_resolved_import_embargo(peer, promise_id);

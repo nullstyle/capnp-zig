@@ -191,6 +191,7 @@ pub fn handleCallImportedTargetForPeer(
             return;
         },
         .queue_promise_export => {
+            // Queue ownership transfers inbound caps and frame bytes to pending state.
             try queue_promise_export_call(peer, export_id, frame, inbound_caps);
             return;
         },
@@ -275,10 +276,12 @@ pub fn handleCallPromisedTargetForPeer(
 
     switch (target_plan) {
         .queue_promised_call => {
+            // Queue ownership transfers inbound caps and frame bytes to pending state.
             try queue_promised_call(peer, promised.question_id, frame, inbound_caps);
             return;
         },
         .queue_export_promise => |export_id| {
+            // Queue ownership transfers inbound caps and frame bytes to pending state.
             try queue_promise_export_call(peer, export_id, frame, inbound_caps);
             return;
         },

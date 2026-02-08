@@ -155,6 +155,8 @@ pub fn handleReturn(
     maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) void,
     handle_return_regular: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) void,
 ) anyerror!void {
+    // Return delivery is two-phase: first locate and remove the waiting question, then
+    // build inbound caps scoped to this return for callback dispatch and cleanup.
     const question = fetch_remove_question(peer, ret.answer_id) orelse {
         try handle_missing_return_question(peer, frame, ret.answer_id);
         return;
@@ -164,6 +166,8 @@ pub fn handleReturn(
     defer deinit_inbound_caps(&inbound_caps);
 
     if (ret.tag == .accept_from_third_party) {
+        // acceptFromThirdParty adopts a different question path and still needs the same
+        // auto-finish policy as normal returns.
         try handle_return_accept_from_third_party(
             peer,
             ret.answer_id,
