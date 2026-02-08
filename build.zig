@@ -652,18 +652,17 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_cleanup_tests = b.addRunArtifact(rpc_peer_cleanup_tests);
 
     // RPC peer (from peer.zig) tests
-    // TODO: rpc_peer_from_peer_zig_tests need updating for current API
-    // const rpc_peer_from_peer_zig_tests = b.addTest(.{
-    //     .root_module = b.createModule(.{
-    //         .root_source_file = b.path("tests/rpc_peer_from_peer_zig_test.zig"),
-    //         .target = target,
-    //         .optimize = optimize,
-    //         .imports = &.{
-    //             .{ .name = "capnpc-zig", .module = lib_module },
-    //         },
-    //     }),
-    // });
-    // const run_rpc_peer_from_peer_zig_tests = b.addRunArtifact(rpc_peer_from_peer_zig_tests);
+    const rpc_peer_from_peer_zig_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_peer_from_peer_zig_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    const run_rpc_peer_from_peer_zig_tests = b.addRunArtifact(rpc_peer_from_peer_zig_tests);
 
     // RPC peer_control (from peer_control.zig) tests
     const rpc_peer_control_from_peer_control_zig_tests = b.addTest(.{
@@ -744,8 +743,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
     test_step.dependOn(&run_rpc_peer_transport_state_tests.step);
     test_step.dependOn(&run_rpc_peer_cleanup_tests.step);
-    // TODO: rpc_peer_from_peer_zig_tests need updating for current API
-    // test_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
+    test_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
     test_step.dependOn(&run_wasm_host_abi_tests.step);
 
@@ -794,8 +792,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_transport_state_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_cleanup_tests.step);
-    // TODO: rpc_peer_from_peer_zig_tests need updating for current API
-    // test_rpc_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
+    test_rpc_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
 
     const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
