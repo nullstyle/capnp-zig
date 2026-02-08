@@ -1272,6 +1272,16 @@ pub const ReturnBuilder = struct {
     tag: ReturnTag,
     payload: ?message.StructBuilder = null,
 
+    pub fn setReleaseParamCaps(self: *ReturnBuilder, release_param_caps: bool) void {
+        const release_bits = byteOffsetBool(RETURN_RELEASE_PARAM_CAPS_BIT);
+        self.ret.writeBool(release_bits.byte, release_bits.bit, !release_param_caps);
+    }
+
+    pub fn setNoFinishNeeded(self: *ReturnBuilder, no_finish_needed: bool) void {
+        const no_finish_bits = byteOffsetBool(RETURN_NO_FINISH_BIT);
+        self.ret.writeBool(no_finish_bits.byte, no_finish_bits.bit, no_finish_needed);
+    }
+
     pub fn initResultsStruct(self: *ReturnBuilder, data_words: u16, pointer_words: u16) !message.StructBuilder {
         if (self.tag != .results) return error.InvalidReturnTag;
         var payload = try self.ensurePayload();

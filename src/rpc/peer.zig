@@ -768,6 +768,18 @@ pub const Peer = struct {
         try self.recordResolvedAnswer(answer_id, copy);
     }
 
+    pub fn sendPrebuiltReturnFrame(self: *Peer, ret: protocol.Return, frame: []const u8) !void {
+        try self.noteOutboundReturnCapRefs(ret);
+        self.clearSendResultsRouting(ret.answer_id);
+        try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
+
+        if (ret.tag == .results) {
+            const copy = try self.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try self.recordResolvedAnswer(ret.answer_id, copy);
+        }
+    }
+
     pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
         try peer_return_dispatch.sendReturnExceptionForPeer(
             Peer,
@@ -850,6 +862,25 @@ pub const Peer = struct {
             .target = target,
         };
         try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
+    }
+
+    fn noteOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
+        if (ret.tag != .results) return;
+        const payload = ret.results orelse return error.InvalidReturnSemantics;
+        const cap_table_list = payload.cap_table orelse return;
+
+        var idx: u32 = 0;
+        while (idx < cap_table_list.len()) : (idx += 1) {
+            const reader = try cap_table_list.get(idx);
+            const descriptor = try protocol.CapDescriptor.fromReader(reader);
+            switch (descriptor.tag) {
+                .sender_hosted, .sender_promise => {
+                    const id = descriptor.id orelse return error.MissingCapDescriptorId;
+                    try self.noteExportRef(id);
+                },
+                else => {},
+            }
+        }
     }
 
     fn clearSendResultsToThirdParty(self: *Peer, answer_id: u32) void {

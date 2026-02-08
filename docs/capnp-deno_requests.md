@@ -1,97 +1,104 @@
-# capnp-zig Additions Needed For capnp-deno (Post-24f9197)
+# capnp-zig WASM ABI Spec: Host-Call Raw Return Frame
 
-Updated: 2026-02-07 Evaluated submodule commit: `vendor/capnp-zig@24f9197`
+Updated: 2026-02-08\
+Status: Proposed (request from `capnp-deno`)
 
-## Status summary
+## Problem
 
-Compared to the prior checkpoint, the major wasm-host ABI requests are now
-landed:
+`capnp-deno` can generate/handle full Cap'n Proto RPC `Return` messages, but the
+current wasm host-call response ABI only exposes:
 
-1. ABI min/max + feature flags exports: landed
-2. `capnp_error_take(...)`: landed
-3. Outbound queue counters + limits helpers: landed
-4. Host call bridge exports: `capnp_peer_pop_host_call`,
-   `capnp_peer_respond_host_call_results`,
-   `capnp_peer_respond_host_call_exception`: landed
-5. Lifecycle helper exports: `capnp_peer_send_finish`,
-   `capnp_peer_send_release`: landed
-6. Schema manifest export: `capnp_schema_manifest_json(...)`: landed
+- `capnp_peer_respond_host_call_results(peer, question_id, payload_ptr, payload_len)`
+- `capnp_peer_respond_host_call_exception(peer, question_id, reason_ptr, reason_len)`
 
-`capnp-deno` real-wasm integration now passes against this revision after
-adapting tests to the new host-bridge default behavior.
+This cannot express:
 
-## New integration findings from this bump
+- non-empty `Return.results.capTable`
+- non-default `releaseParamCaps` / `noFinishNeeded` flags
+- future advanced `Return` forms without adding new per-field ABI exports
 
-## P0: RPC fixture generator does not match wasm-host defaults
+## Required ABI Addition
 
-Observed:
+Add this export:
 
-- `src/wasm/capnp_host_abi.zig` now enables host call bridge by default via
-  `enableHostCallBridge()`.
-- `tools/gen_rpc_fixtures.zig` still builds fixtures from a plain `HostPeer`
-  that does not enable that bridge.
-- Result: generated fixtures and actual wasm behavior diverge for bootstrap and
-  bootstrap-cap call flows.
+```c
+u32 capnp_peer_respond_host_call_return_frame(
+  u32 peer,
+  u32 return_frame_ptr,
+  u32 return_frame_len
+);
+```
 
-Required upstream change:
+## Capability/Version Signaling
 
-1. Update `tools/gen_rpc_fixtures.zig` to generate fixtures through the same
-   runtime configuration used by `capnp_host_abi.zig` (bridge enabled), or add a
-   dedicated `--wasm-host-mode` fixture path and make that the output consumed
-   by `capnp-deno`.
-2. Add a Zig test that roundtrips fixture generation against wasm-host behavior
-   to prevent drift.
+- Add feature-flag bit `8` = `HOST_CALL_RETURN_FRAME`.
+- Keep existing exports behavior unchanged.
+- Backward compatibility: hosts can continue using
+  `capnp_peer_respond_host_call_results` when bit `8` is absent.
 
-## P0: Host call frame ownership cannot be released from wasm ABI
+## Normative Behavior
 
-Observed:
+On `capnp_peer_respond_host_call_return_frame(...)`:
 
-- `capnp_peer_pop_host_call(...)` returns frame pointer/len.
-- `HostPeer` requires `freeHostCallFrame(...)` ownership release.
-- No exported wasm function currently frees popped host-call frame buffers.
+1. Validate `peer` handle exists.
+2. Validate `(ptr,len)` is readable (`len > 0`; `ptr != 0` unless `len == 0`).
+3. Parse bytes as one RPC message frame.
+4. Require root message tag = `Return`.
+5. Require `Return.answerId` maps to an active pending host-call question.
+6. If valid, consume that pending host-call question and enqueue/send this
+   return exactly as if produced internally.
+7. Return `1` on success.
 
-Risk:
+Failure behavior:
 
-- Long-running hosts that bridge many inbound calls can leak memory in wasm.
+- return `0`
+- set ABI error state
+- do not mutate pending-host-call state on parse/validation failure
 
-Required upstream change:
+## Error Mapping
 
-1. Add `capnp_peer_pop_host_call_commit(peer)` (commit/consume pattern), or
-   `capnp_peer_free_host_call_frame(peer, frame_ptr, frame_len)`.
-2. Document ownership semantics in `docs/wasm_host_abi.md`.
-3. Add regression coverage for repeated pop/free cycles.
+- invalid pointers/lengths: `ERROR_INVALID_ARG`
+- unknown peer: `ERROR_UNKNOWN_PEER`
+- malformed frame, non-Return frame, unknown/stale answerId, invalid return
+  semantics: `ERROR_HOST_CALL`
 
-## P1: Bootstrap stub helper should expose deterministic identity semantics
+Error text should be diagnostic (for example:
+`"host-call return frame is not Return"`).
 
-Observed:
+## Memory Ownership
 
-- Default bridge bootstrap occupies export `0`.
-- `capnp_peer_set_bootstrap_stub(...)` installs stub later, which becomes a new
-  export id (`1` in current behavior).
-- The helper currently returns `u32` success/failure only, not the export id.
+- Input frame memory is host-owned; wasm must not retain borrowed pointers after
+  return.
+- wasm may copy/parse internally during call.
 
-Impact:
+## Compatibility Contract
 
-- Hosts/tests cannot deterministically target the installed stub without an
-  extra bootstrap handshake.
+- If this export exists, `capnp-deno` will prefer it for host-call results.
+- If absent, `capnp-deno` falls back to legacy results/exception exports.
+- If both old and new exports exist, both must remain valid.
 
-Recommended upstream change:
+## Conformance Tests (Required)
 
-1. Evolve helper to either:
-   - return installed export id, or
-   - replace existing bootstrap export in-place and keep stable id semantics.
-2. Document the behavior explicitly.
+Add wasm ABI tests for:
 
-## Recommended upstream patch order
+1. Export presence + feature flag bit `8`.
+2. Accept valid `Return.results` with:
+   - non-empty cap table
+   - `releaseParamCaps=false`
+   - `noFinishNeeded=true`
+3. Accept valid `Return.exception`.
+4. Reject non-`Return` frames.
+5. Reject malformed/truncated frames.
+6. Reject unknown/stale `answerId`.
+7. Verify no pending-host-call consumption on invalid frame.
 
-1. Fixture generator parity with wasm-host defaults.
-2. Host-call frame release export + ownership docs.
-3. Bootstrap-stub identity semantics cleanup.
+## Optional Follow-up (Not Required For capnp-deno Unblock)
 
-## capnp-deno work that can proceed now
+A convenience typed helper export can be added later:
 
-1. Add first-class TS wrappers for host-call bridge exports in `src/abi.ts`.
-2. Build `RpcServerBridge` wiring directly on wasm host-call queue/response
-   APIs.
-3. Replace remaining fixture-byte assertions with semantic decode assertions
-   where behavior is intentionally dynamic.
+```c
+u32 capnp_peer_respond_host_call_results_ex(...);
+```
+
+But the raw return-frame export above is sufficient for production use and
+future-proofs host-call response semantics.

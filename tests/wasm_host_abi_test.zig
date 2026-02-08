@@ -32,6 +32,10 @@ fn hasP0AExports(comptime ModuleType: type) bool {
         @hasDecl(ModuleType, "capnp_peer_respond_host_call_exception");
 }
 
+fn hasHostCallReturnFrameExport(comptime ModuleType: type) bool {
+    return @hasDecl(ModuleType, "capnp_peer_respond_host_call_return_frame");
+}
+
 fn hasP1BExports(comptime ModuleType: type) bool {
     return @hasDecl(ModuleType, "capnp_peer_send_finish") and
         @hasDecl(ModuleType, "capnp_peer_send_release");
@@ -59,6 +63,137 @@ fn buildBootstrapFrame(allocator: std.mem.Allocator, question_id: u32) ![]const 
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
     try builder.buildBootstrap(question_id);
+    return builder.finish();
+}
+
+fn popOutFrameCopy(allocator: std.mem.Allocator, peer: u32) ![]u8 {
+    var out_ptr: abi.AbiPtr = 0;
+    var out_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_out_frame(
+        peer,
+        toAbiPtr(&out_ptr),
+        toAbiPtr(&out_len),
+    ));
+    try std.testing.expect(out_ptr != 0);
+    try std.testing.expect(out_len > 0);
+
+    const out_src: [*]const u8 = @ptrFromInt(@as(usize, @intCast(out_ptr)));
+    const out_copy = try allocator.alloc(u8, out_len);
+    std.mem.copyForwards(u8, out_copy, out_src[0..out_len]);
+    abi.capnp_peer_pop_commit(peer);
+    return out_copy;
+}
+
+fn extractBootstrapImportId(allocator: std.mem.Allocator, server: u32) !u32 {
+    const bootstrap = try buildBootstrapFrame(allocator, 1);
+    defer allocator.free(bootstrap);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(bootstrap.ptr),
+        @intCast(bootstrap.len),
+    ));
+
+    const bootstrap_return_frame = try popOutFrameCopy(allocator, server);
+    defer allocator.free(bootstrap_return_frame);
+
+    var decoded_bootstrap = try protocol.DecodedMessage.init(allocator, bootstrap_return_frame);
+    defer decoded_bootstrap.deinit();
+    const bootstrap_ret = try decoded_bootstrap.asReturn();
+    const bootstrap_payload = bootstrap_ret.results orelse return error.MissingBootstrapPayload;
+    const bootstrap_cap = try bootstrap_payload.content.getCapability();
+    const bootstrap_cap_table = bootstrap_payload.cap_table orelse return error.MissingBootstrapCapTable;
+    const bootstrap_desc_reader = try bootstrap_cap_table.get(bootstrap_cap.id);
+    const bootstrap_desc = try protocol.CapDescriptor.fromReader(bootstrap_desc_reader);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, bootstrap_desc.tag);
+    return bootstrap_desc.id orelse return error.MissingBootstrapImportId;
+}
+
+const PendingHostCall = struct {
+    question_id: u32,
+    frame_ptr: abi.AbiPtr,
+    frame_len: u32,
+    bootstrap_export_id: u32,
+};
+
+fn queuePendingHostCall(
+    allocator: std.mem.Allocator,
+    server: u32,
+    question_id: u32,
+    interface_id: u64,
+    method_id: u16,
+) !PendingHostCall {
+    const bootstrap_import_id = try extractBootstrapImportId(allocator, server);
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(question_id, interface_id, method_id);
+    try call.setTargetImportedCap(bootstrap_import_id);
+    try call.setEmptyCapTable();
+    const call_frame = try call_builder.finish();
+    defer allocator.free(call_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(
+        server,
+        toAbiPtr(call_frame.ptr),
+        @intCast(call_frame.len),
+    ));
+
+    var call_q: u32 = 0;
+    var call_iface: u64 = 0;
+    var call_method: u16 = 0;
+    var call_ptr: abi.AbiPtr = 0;
+    var call_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_pop_host_call(
+        server,
+        toAbiPtr(&call_q),
+        toAbiPtr(&call_iface),
+        toAbiPtr(&call_method),
+        toAbiPtr(&call_ptr),
+        toAbiPtr(&call_len),
+    ));
+    try std.testing.expectEqual(question_id, call_q);
+    try std.testing.expectEqual(interface_id, call_iface);
+    try std.testing.expectEqual(method_id, call_method);
+    try std.testing.expect(call_ptr != 0);
+    try std.testing.expect(call_len > 0);
+
+    return .{
+        .question_id = call_q,
+        .frame_ptr = call_ptr,
+        .frame_len = call_len,
+        .bootstrap_export_id = bootstrap_import_id,
+    };
+}
+
+fn buildReturnResultsFrameWithCapAndFlags(
+    allocator: std.mem.Allocator,
+    answer_id: u32,
+    export_id: u32,
+) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var ret = try builder.beginReturn(answer_id, .results);
+    ret.setReleaseParamCaps(false);
+    ret.setNoFinishNeeded(true);
+
+    var out_any = try ret.getResultsAnyPointer();
+    try out_any.setCapability(.{ .id = 0 });
+
+    var cap_table = try ret.initCapTable(1);
+    const desc = try cap_table.get(0);
+    protocol.CapDescriptor.writeSenderHosted(desc, export_id);
+
+    return builder.finish();
+}
+
+fn buildReturnExceptionFrame(allocator: std.mem.Allocator, answer_id: u32, reason: []const u8) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var ret = try builder.beginReturn(answer_id, .exception);
+    try ret.setException(reason);
     return builder.finish();
 }
 
@@ -159,6 +294,17 @@ test "wasm host ABI exposes complete P0-A export set" {
     try std.testing.expect(!hasP0AExports(PartialMissingRespondException));
 }
 
+test "wasm host ABI exposes host-call raw return-frame export" {
+    try std.testing.expect(hasHostCallReturnFrameExport(abi));
+
+    const Missing = struct {
+        pub fn capnp_peer_respond_host_call_results(_: u32, _: u32, _: abi.AbiPtr, _: u32) u32 {
+            return 0;
+        }
+    };
+    try std.testing.expect(!hasHostCallReturnFrameExport(Missing));
+}
+
 test "wasm host ABI exposes complete P1-B export set" {
     try std.testing.expect(hasP1BExports(abi));
 
@@ -205,6 +351,235 @@ test "wasm host ABI reports min/max version and feature flags" {
     try std.testing.expect((flags & (@as(u64, 1) << 5)) != 0);
     try std.testing.expect((flags & (@as(u64, 1) << 6)) != 0);
     try std.testing.expect((flags & (@as(u64, 1) << 7)) != 0);
+    try std.testing.expect((flags & (@as(u64, 1) << 8)) != 0);
+}
+
+test "host call raw return frame accepts results with cap table and flags" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 2, 0xA100, 3);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+
+    const return_frame = try buildReturnResultsFrameWithCapAndFlags(
+        std.testing.allocator,
+        pending.question_id,
+        pending.bootstrap_export_id,
+    );
+    defer std.testing.allocator.free(return_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(return_frame.ptr),
+        @intCast(return_frame.len),
+    ));
+
+    const outbound = try popOutFrameCopy(std.testing.allocator, server);
+    defer std.testing.allocator.free(outbound);
+    try std.testing.expectEqualSlices(u8, return_frame, outbound);
+
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, outbound);
+    defer decoded.deinit();
+    const ret = try decoded.asReturn();
+
+    try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+    try std.testing.expect(!ret.release_param_caps);
+    try std.testing.expect(ret.no_finish_needed);
+
+    const payload = ret.results orelse return error.MissingPayload;
+    const cap = try payload.content.getCapability();
+    try std.testing.expectEqual(@as(u32, 0), cap.id);
+    const cap_table = payload.cap_table orelse return error.MissingCapTable;
+    try std.testing.expectEqual(@as(u32, 1), cap_table.len());
+    const desc_reader = try cap_table.get(0);
+    const desc = try protocol.CapDescriptor.fromReader(desc_reader);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, desc.tag);
+    try std.testing.expectEqual(pending.bootstrap_export_id, desc.id orelse return error.MissingDescriptorId);
+}
+
+test "host call raw return frame accepts exception" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 3, 0xA200, 4);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+
+    const reason = "return exception";
+    const return_frame = try buildReturnExceptionFrame(std.testing.allocator, pending.question_id, reason);
+    defer std.testing.allocator.free(return_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(return_frame.ptr),
+        @intCast(return_frame.len),
+    ));
+
+    const outbound = try popOutFrameCopy(std.testing.allocator, server);
+    defer std.testing.allocator.free(outbound);
+    try std.testing.expectEqualSlices(u8, return_frame, outbound);
+
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, outbound);
+    defer decoded.deinit();
+    const ret = try decoded.asReturn();
+    try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+    const ex = ret.exception orelse return error.MissingException;
+    try std.testing.expectEqualStrings(reason, ex.reason);
+}
+
+test "host call raw return frame rejects non-Return frames" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 4, 0xA300, 5);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+
+    const non_return = try buildUnknownCallFrame(std.testing.allocator, 999);
+    defer std.testing.allocator.free(non_return);
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(non_return.ptr),
+        @intCast(non_return.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 10), abi.capnp_last_error_code());
+}
+
+test "host call raw return frame rejects malformed truncated frames" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 5, 0xA400, 6);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+
+    const valid = try buildReturnExceptionFrame(std.testing.allocator, pending.question_id, "truncated");
+    defer std.testing.allocator.free(valid);
+    try std.testing.expect(valid.len > 8);
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(valid.ptr),
+        @intCast(valid.len - 3),
+    ));
+    try std.testing.expectEqual(@as(u32, 10), abi.capnp_last_error_code());
+}
+
+test "host call raw return frame rejects unknown and stale answerId" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 6, 0xA500, 7);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+
+    const unknown_frame = try buildReturnExceptionFrame(std.testing.allocator, pending.question_id + 77, "unknown");
+    defer std.testing.allocator.free(unknown_frame);
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(unknown_frame.ptr),
+        @intCast(unknown_frame.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 10), abi.capnp_last_error_code());
+
+    const valid_frame = try buildReturnExceptionFrame(std.testing.allocator, pending.question_id, "stale");
+    defer std.testing.allocator.free(valid_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(valid_frame.ptr),
+        @intCast(valid_frame.len),
+    ));
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(valid_frame.ptr),
+        @intCast(valid_frame.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 10), abi.capnp_last_error_code());
+}
+
+test "host call raw return frame keeps pending call after invalid frame" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 7, 0xA600, 8);
+    defer {
+        std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+            server,
+            pending.frame_ptr,
+            pending.frame_len,
+        )) catch unreachable;
+    }
+
+    const malformed = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(&malformed),
+        malformed.len,
+    ));
+    try std.testing.expectEqual(@as(u32, 10), abi.capnp_last_error_code());
+
+    const valid_frame = try buildReturnExceptionFrame(std.testing.allocator, pending.question_id, "after invalid");
+    defer std.testing.allocator.free(valid_frame);
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_respond_host_call_return_frame(
+        server,
+        toAbiPtr(valid_frame.ptr),
+        @intCast(valid_frame.len),
+    ));
 }
 
 test "capnp_error_take drains and clears current error state" {

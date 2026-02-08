@@ -25,6 +25,7 @@ const FEATURE_LIFECYCLE_HELPERS: u64 = 1 << 4;
 const FEATURE_SCHEMA_MANIFEST: u64 = 1 << 5;
 const FEATURE_HOST_CALL_FRAME_RELEASE: u64 = 1 << 6;
 const FEATURE_BOOTSTRAP_STUB_IDENTITY: u64 = 1 << 7;
+const FEATURE_HOST_CALL_RETURN_FRAME: u64 = 1 << 8;
 const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_ERROR_TAKE |
     FEATURE_PEER_LIMITS |
@@ -32,7 +33,8 @@ const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_LIFECYCLE_HELPERS |
     FEATURE_SCHEMA_MANIFEST |
     FEATURE_HOST_CALL_FRAME_RELEASE |
-    FEATURE_BOOTSTRAP_STUB_IDENTITY;
+    FEATURE_BOOTSTRAP_STUB_IDENTITY |
+    FEATURE_HOST_CALL_RETURN_FRAME;
 
 const ERROR_ALLOC: u32 = 1;
 const ERROR_INVALID_ARG: u32 = 2;
@@ -123,6 +125,15 @@ fn setError(code: u32, msg: []const u8) void {
 
 fn getPeerState(handle: u32) ?*PeerState {
     return peers.get(handle);
+}
+
+fn setHostCallReturnFrameError(err: anyerror) void {
+    switch (err) {
+        error.HostCallReturnNotReturn => setError(ERROR_HOST_CALL, "host-call return frame is not Return"),
+        error.InvalidReturnSemantics => setError(ERROR_HOST_CALL, "host-call return frame has invalid Return semantics"),
+        error.UnknownQuestion => setError(ERROR_HOST_CALL, "host-call return frame answerId is not pending"),
+        else => setError(ERROR_HOST_CALL, @errorName(err)),
+    }
 }
 
 fn ptrToAbi(ptr: usize) !AbiPtr {
@@ -705,6 +716,35 @@ pub export fn capnp_peer_respond_host_call_exception(
 
     state.host.respondHostCallException(question_id, reason) catch |err| {
         setError(ERROR_HOST_CALL, @errorName(err));
+        return 0;
+    };
+    return 1;
+}
+
+pub export fn capnp_peer_respond_host_call_return_frame(
+    peer: u32,
+    return_frame_ptr: AbiPtr,
+    return_frame_len: u32,
+) u32 {
+    clearErrorState();
+
+    const state = getPeerState(peer) orelse {
+        setError(ERROR_UNKNOWN_PEER, "unknown peer handle");
+        return 0;
+    };
+
+    if (return_frame_len == 0) {
+        setError(ERROR_INVALID_ARG, "invalid return frame length");
+        return 0;
+    }
+
+    const return_frame = asSlice(return_frame_ptr, return_frame_len) catch {
+        setError(ERROR_INVALID_ARG, "invalid return frame pointer");
+        return 0;
+    };
+
+    state.host.respondHostCallReturnFrame(return_frame) catch |err| {
+        setHostCallReturnFrameError(err);
         return 0;
     };
     return 1;

@@ -28,6 +28,7 @@ pub const HostPeer = struct {
     outgoing_bytes: usize = 0,
     limits: Limits = .{},
     host_calls: std.ArrayList(HostCall),
+    pending_host_call_questions: std.AutoHashMap(u32, void),
     current_inbound_frame: ?[]const u8 = null,
     host_bridge_enabled: bool = false,
     wired_override: bool = false,
@@ -46,6 +47,7 @@ pub const HostPeer = struct {
             .peer = peer_mod.Peer.initDetached(allocator),
             .outgoing = std.ArrayList([]u8){},
             .host_calls = std.ArrayList(HostCall){},
+            .pending_host_call_questions = std.AutoHashMap(u32, void).init(allocator),
         };
     }
 
@@ -54,6 +56,7 @@ pub const HostPeer = struct {
         self.outgoing.deinit(self.allocator);
         self.clearHostCalls();
         self.host_calls.deinit(self.allocator);
+        self.pending_host_call_questions.deinit();
         self.peer.deinit();
     }
 
@@ -120,12 +123,16 @@ pub const HostPeer = struct {
     }
 
     pub fn clearHostCalls(self: *HostPeer) void {
-        for (self.host_calls.items) |call| self.allocator.free(call.frame);
+        for (self.host_calls.items) |call| {
+            self.allocator.free(call.frame);
+            _ = self.pending_host_call_questions.remove(call.question_id);
+        }
         self.host_calls.clearRetainingCapacity();
     }
 
     pub fn respondHostCallException(self: *HostPeer, question_id: u32, reason: []const u8) !void {
         try self.peer.sendReturnException(question_id, reason);
+        _ = self.pending_host_call_questions.remove(question_id);
     }
 
     pub fn respondHostCallResults(self: *HostPeer, question_id: u32, payload_frame: []const u8) !void {
@@ -146,6 +153,23 @@ pub const HostPeer = struct {
 
         var ctx = BuildCtx{ .any = payload_any };
         try self.peer.sendReturnResults(question_id, &ctx, BuildCtx.build);
+        _ = self.pending_host_call_questions.remove(question_id);
+    }
+
+    pub fn respondHostCallReturnFrame(self: *HostPeer, return_frame: []const u8) !void {
+        var decoded = try protocol.DecodedMessage.init(self.allocator, return_frame);
+        defer decoded.deinit();
+
+        const ret = decoded.asReturn() catch |err| switch (err) {
+            error.UnexpectedMessage => return error.HostCallReturnNotReturn,
+            else => return err,
+        };
+
+        try validateHostCallReturnSemantics(ret);
+        if (!self.pending_host_call_questions.contains(ret.answer_id)) return error.UnknownQuestion;
+
+        try self.peer.sendPrebuiltReturnFrame(ret, return_frame);
+        _ = self.pending_host_call_questions.remove(ret.answer_id);
     }
 
     pub fn freeFrame(self: *HostPeer, frame: []u8) void {
@@ -180,6 +204,10 @@ pub const HostPeer = struct {
         errdefer self.allocator.free(frame_copy);
         std.mem.copyForwards(u8, frame_copy, inbound_frame);
 
+        const pending = try self.pending_host_call_questions.getOrPut(call.question_id);
+        if (pending.found_existing) return error.DuplicateQuestionId;
+        errdefer _ = self.pending_host_call_questions.remove(call.question_id);
+
         try self.host_calls.append(self.allocator, .{
             .question_id = call.question_id,
             .interface_id = call.interface_id,
@@ -205,5 +233,14 @@ pub const HostPeer = struct {
         std.mem.copyForwards(u8, owned, frame);
         try self.outgoing.append(self.allocator, owned);
         self.outgoing_bytes += frame.len;
+    }
+
+    fn validateHostCallReturnSemantics(ret: protocol.Return) !void {
+        switch (ret.tag) {
+            .results => if (ret.results == null) return error.InvalidReturnSemantics,
+            .exception => if (ret.exception == null) return error.InvalidReturnSemantics,
+            .take_from_other_question => if (ret.take_from_other_question == null) return error.InvalidReturnSemantics,
+            else => {},
+        }
     }
 };
