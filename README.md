@@ -213,8 +213,8 @@ just e2e                    # Cross-language interop harness
 ### Test Coverage
 
 - Message wire-format encode/decode, pointer resolution, limits, and malformed/fuzz inputs
-- Codegen generation/compile/runtime behavior across schema features
-- RPC protocol, framing, cap-table encoding, peer runtime semantics, and host-peer transport behavior
+- Codegen generation/compile/runtime behavior across schema features, including schema-evolution compatibility checks
+- RPC protocol, framing, cap-table encoding, peer runtime semantics, and transport failure-path behavior
 - Interop validation against reference stacks via the e2e harness
 
 ## Development
@@ -254,6 +254,7 @@ Implemented today:
 - Full Cap'n Proto message wire format (including packed/unpacked and far pointers)
 - Schema-driven code generation via `capnpc-zig`
 - RPC protocol/runtime surface with dedicated RPC test suites
+- Schema-evolution runtime coverage and expanded transport failure-path tests
 - Local benchmark and interop gates (`zig build bench-check`, `just e2e`)
 
 Roadmap and parity tracking live in:

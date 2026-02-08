@@ -204,6 +204,19 @@ pub fn maybeSendAutoFinishForPeerFn(
     }.call;
 }
 
+fn clearAndSendReturnFrameForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    answer_id: u32,
+    frame: []const u8,
+    clear_send_results_routing: *const fn (*PeerType, u32) void,
+    send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
+) !void {
+    clear_send_results_routing(peer, answer_id);
+    defer peer.allocator.free(frame);
+    try send_return_frame_with_loopback(peer, answer_id, frame);
+}
+
 pub fn sendReturnTagForPeer(
     comptime PeerType: type,
     peer: *PeerType,
@@ -212,10 +225,15 @@ pub fn sendReturnTagForPeer(
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    clear_send_results_routing(peer, answer_id);
-    const bytes = try peer_return_frames.buildReturnTagFrame(peer.allocator, answer_id, tag);
-    defer peer.allocator.free(bytes);
-    try send_return_frame_with_loopback(peer, answer_id, bytes);
+    const frame = try peer_return_frames.buildReturnTagFrame(peer.allocator, answer_id, tag);
+    try clearAndSendReturnFrameForPeer(
+        PeerType,
+        peer,
+        answer_id,
+        frame,
+        clear_send_results_routing,
+        send_return_frame_with_loopback,
+    );
 }
 
 pub fn sendReturnExceptionForPeer(
@@ -226,10 +244,15 @@ pub fn sendReturnExceptionForPeer(
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    clear_send_results_routing(peer, answer_id);
-    const bytes = try peer_return_frames.buildReturnExceptionFrame(peer.allocator, answer_id, reason);
-    defer peer.allocator.free(bytes);
-    try send_return_frame_with_loopback(peer, answer_id, bytes);
+    const frame = try peer_return_frames.buildReturnExceptionFrame(peer.allocator, answer_id, reason);
+    try clearAndSendReturnFrameForPeer(
+        PeerType,
+        peer,
+        answer_id,
+        frame,
+        clear_send_results_routing,
+        send_return_frame_with_loopback,
+    );
 }
 
 pub fn sendReturnTakeFromOtherQuestionForPeer(
@@ -240,14 +263,19 @@ pub fn sendReturnTakeFromOtherQuestionForPeer(
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    clear_send_results_routing(peer, answer_id);
-    const bytes = try peer_return_frames.buildReturnTakeFromOtherQuestionFrame(
+    const frame = try peer_return_frames.buildReturnTakeFromOtherQuestionFrame(
         peer.allocator,
         answer_id,
         other_question_id,
     );
-    defer peer.allocator.free(bytes);
-    try send_return_frame_with_loopback(peer, answer_id, bytes);
+    try clearAndSendReturnFrameForPeer(
+        PeerType,
+        peer,
+        answer_id,
+        frame,
+        clear_send_results_routing,
+        send_return_frame_with_loopback,
+    );
 }
 
 pub fn sendReturnAcceptFromThirdPartyForPeer(
@@ -258,14 +286,19 @@ pub fn sendReturnAcceptFromThirdPartyForPeer(
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    clear_send_results_routing(peer, answer_id);
-    const bytes = try peer_return_frames.buildReturnAcceptFromThirdPartyFrame(
+    const frame = try peer_return_frames.buildReturnAcceptFromThirdPartyFrame(
         peer.allocator,
         answer_id,
         await_payload,
     );
-    defer peer.allocator.free(bytes);
-    try send_return_frame_with_loopback(peer, answer_id, bytes);
+    try clearAndSendReturnFrameForPeer(
+        PeerType,
+        peer,
+        answer_id,
+        frame,
+        clear_send_results_routing,
+        send_return_frame_with_loopback,
+    );
 }
 
 test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded tag" {
@@ -363,6 +396,95 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
     try std.testing.expectEqual(@as(usize, 1), state.clear_calls);
     try std.testing.expectEqual(@as(usize, 1), state.send_calls);
     try std.testing.expectEqualStrings("loopback-await", state.await_text);
+}
+
+test "peer_return_dispatch sendReturnExceptionForPeer clears routing and sends exception payload" {
+    const State = struct {
+        allocator: std.mem.Allocator,
+        clear_calls: usize = 0,
+        send_calls: usize = 0,
+        clear_answer_id: u32 = 0,
+        sent_answer_id: u32 = 0,
+        reason: []const u8 = "",
+    };
+
+    const Hooks = struct {
+        fn clear(state: *State, answer_id: u32) void {
+            state.clear_calls += 1;
+            state.clear_answer_id = answer_id;
+        }
+
+        fn send(state: *State, answer_id: u32, frame: []const u8) !void {
+            state.send_calls += 1;
+            state.sent_answer_id = answer_id;
+            var decoded = try protocol.DecodedMessage.init(state.allocator, frame);
+            defer decoded.deinit();
+            const ret = try decoded.asReturn();
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            const ex = ret.exception orelse return error.MissingException;
+            state.reason = ex.reason;
+        }
+    };
+
+    var state = State{
+        .allocator = std.testing.allocator,
+    };
+    try sendReturnExceptionForPeer(
+        State,
+        &state,
+        46,
+        "send-failed",
+        Hooks.clear,
+        Hooks.send,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), state.clear_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.send_calls);
+    try std.testing.expectEqual(@as(u32, 46), state.clear_answer_id);
+    try std.testing.expectEqual(@as(u32, 46), state.sent_answer_id);
+    try std.testing.expectEqualStrings("send-failed", state.reason);
+}
+
+test "peer_return_dispatch sendReturnTakeFromOtherQuestionForPeer clears routing and sends question id" {
+    const State = struct {
+        allocator: std.mem.Allocator,
+        clear_calls: usize = 0,
+        send_calls: usize = 0,
+        take_from_other_question: ?u32 = null,
+    };
+
+    const Hooks = struct {
+        fn clear(state: *State, answer_id: u32) void {
+            _ = answer_id;
+            state.clear_calls += 1;
+        }
+
+        fn send(state: *State, answer_id: u32, frame: []const u8) !void {
+            _ = answer_id;
+            state.send_calls += 1;
+            var decoded = try protocol.DecodedMessage.init(state.allocator, frame);
+            defer decoded.deinit();
+            const ret = try decoded.asReturn();
+            try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, ret.tag);
+            state.take_from_other_question = ret.take_from_other_question;
+        }
+    };
+
+    var state = State{
+        .allocator = std.testing.allocator,
+    };
+    try sendReturnTakeFromOtherQuestionForPeer(
+        State,
+        &state,
+        47,
+        12,
+        Hooks.clear,
+        Hooks.send,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), state.clear_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.send_calls);
+    try std.testing.expectEqual(@as(?u32, 12), state.take_from_other_question);
 }
 
 test "peer_return_dispatch takeAdoptedAnswerOriginal removes and returns mapped answer" {

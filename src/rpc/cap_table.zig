@@ -26,6 +26,17 @@ pub const OwnedPromisedAnswer = struct {
         allocator.free(self.ops);
     }
 
+    pub fn fromQuestionAndOps(
+        allocator: std.mem.Allocator,
+        question_id: u32,
+        ops: []const protocol.PromisedAnswerOp,
+    ) !OwnedPromisedAnswer {
+        return .{
+            .question_id = question_id,
+            .ops = try promised_answer_copy.cloneOpsFromSlice(allocator, ops),
+        };
+    }
+
     pub fn fromPromised(allocator: std.mem.Allocator, promised: protocol.PromisedAnswer) !OwnedPromisedAnswer {
         const ops = try promised_answer_copy.cloneOpsFromPromised(allocator, promised);
 
@@ -90,13 +101,9 @@ pub const CapTable = struct {
         ops: []const protocol.PromisedAnswerOp,
     ) !u32 {
         const id = self.allocLocalCapId();
-        const copied_ops = try self.allocator.alloc(protocol.PromisedAnswerOp, ops.len);
-        errdefer self.allocator.free(copied_ops);
-        std.mem.copyForwards(protocol.PromisedAnswerOp, copied_ops, ops);
-        try self.receiver_answers.put(id, .{
-            .question_id = question_id,
-            .ops = copied_ops,
-        });
+        var owned = try OwnedPromisedAnswer.fromQuestionAndOps(self.allocator, question_id, ops);
+        errdefer owned.deinit(self.allocator);
+        try self.receiver_answers.put(id, owned);
         return id;
     }
 

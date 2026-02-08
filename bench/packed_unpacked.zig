@@ -1,5 +1,6 @@
 const std = @import("std");
 const capnp = @import("capnpc-zig");
+const alloc_counter = @import("alloc_counter.zig");
 
 const message = capnp.message;
 
@@ -17,6 +18,14 @@ const Config = struct {
     far_payload: bool = false,
     mode: Mode = .roundtrip,
     json: bool = false,
+};
+
+const AllocationSample = struct {
+    sample_iters: usize,
+    alloc_calls: usize,
+    alloc_bytes: usize,
+    allocs_per_iter: f64,
+    alloc_bytes_per_iter: f64,
 };
 
 fn printUsage() void {
@@ -210,6 +219,55 @@ fn doRoundTrip(allocator: std.mem.Allocator, builder: *message.MessageBuilder) !
     return sum;
 }
 
+fn allocationSampleIterations(iterations: usize) usize {
+    return @max(@as(usize, 1), @min(iterations, @as(usize, 256)));
+}
+
+fn measureAllocationSample(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    cfg: Config,
+) !AllocationSample {
+    var counter = alloc_counter.CountingAllocator.init(allocator);
+    const counting_allocator = counter.allocator();
+
+    var builder = try buildMessage(
+        counting_allocator,
+        payload,
+        @as(u32, @intCast(cfg.list_len)),
+        cfg.far_payload,
+    );
+    defer builder.deinit();
+
+    const unpacked_once = try builder.toBytes();
+    defer counting_allocator.free(unpacked_once);
+    const packed_once = try builder.toPackedBytes();
+    defer counting_allocator.free(packed_once);
+
+    const sample_iters = allocationSampleIterations(cfg.iterations);
+    const before = counter.snapshot();
+
+    var iter: usize = 0;
+    while (iter < sample_iters) : (iter += 1) {
+        _ = switch (cfg.mode) {
+            .pack => try doPack(counting_allocator, &builder),
+            .unpack => try doUnpack(counting_allocator, packed_once),
+            .roundtrip => try doRoundTrip(counting_allocator, &builder),
+        };
+    }
+
+    const delta = counter.deltaSince(before);
+
+    const sample_iters_f = @as(f64, @floatFromInt(sample_iters));
+    return .{
+        .sample_iters = sample_iters,
+        .alloc_calls = delta.alloc_calls,
+        .alloc_bytes = delta.allocated_bytes,
+        .allocs_per_iter = @as(f64, @floatFromInt(delta.alloc_calls)) / sample_iters_f,
+        .alloc_bytes_per_iter = @as(f64, @floatFromInt(delta.allocated_bytes)) / sample_iters_f,
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -297,6 +355,7 @@ pub fn main() !void {
 
     const total_bytes = per_iter_bytes * @as(u64, @intCast(cfg.iterations));
     const mib_per_sec = (@as(f64, @floatFromInt(total_bytes)) / (1024.0 * 1024.0)) / seconds;
+    const alloc_sample = try measureAllocationSample(allocator, payload, cfg);
 
     const packed_len = packed_once.len;
     const unpacked_len = unpacked_once.len;
@@ -309,7 +368,7 @@ pub fn main() !void {
         var out_buffer: [4096]u8 = undefined;
         var out = std.fs.File.stdout().writer(&out_buffer);
         try out.interface.print(
-            "{{\"benchmark\":\"packed_unpacked\",\"mode\":\"{s}\",\"iterations\":{d},\"payload_size\":{d},\"list_len\":{d},\"far_payload\":{s},\"unpacked_len\":{d},\"packed_len\":{d},\"compression\":{d:.6},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"checksum\":{d}}}\n",
+            "{{\"benchmark\":\"packed_unpacked\",\"mode\":\"{s}\",\"iterations\":{d},\"payload_size\":{d},\"list_len\":{d},\"far_payload\":{s},\"unpacked_len\":{d},\"packed_len\":{d},\"compression\":{d:.6},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"alloc_sample_iters\":{d},\"alloc_calls\":{d},\"alloc_bytes\":{d},\"allocs_per_iter\":{d:.6},\"alloc_bytes_per_iter\":{d:.6},\"checksum\":{d}}}\n",
             .{
                 modeName(cfg.mode),
                 cfg.iterations,
@@ -323,6 +382,11 @@ pub fn main() !void {
                 ns_per_iter,
                 ops_per_sec,
                 mib_per_sec,
+                alloc_sample.sample_iters,
+                alloc_sample.alloc_calls,
+                alloc_sample.alloc_bytes,
+                alloc_sample.allocs_per_iter,
+                alloc_sample.alloc_bytes_per_iter,
                 checksum,
             },
         );
@@ -345,6 +409,11 @@ pub fn main() !void {
     try out.interface.print("ns/op: {d:.2}\n", .{ns_per_iter});
     try out.interface.print("ops/s: {d:.2}\n", .{ops_per_sec});
     try out.interface.print("MiB/s: {d:.2}\n", .{mib_per_sec});
+    try out.interface.print("alloc sample iters: {d}\n", .{alloc_sample.sample_iters});
+    try out.interface.print("alloc calls: {d}\n", .{alloc_sample.alloc_calls});
+    try out.interface.print("alloc bytes: {d}\n", .{alloc_sample.alloc_bytes});
+    try out.interface.print("alloc calls/op: {d:.4}\n", .{alloc_sample.allocs_per_iter});
+    try out.interface.print("alloc bytes/op: {d:.2}\n", .{alloc_sample.alloc_bytes_per_iter});
     try out.interface.print("checksum: {d}\n", .{checksum});
     try out.interface.flush();
 }

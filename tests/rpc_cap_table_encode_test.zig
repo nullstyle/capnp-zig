@@ -109,6 +109,29 @@ test "noteReceiverAnswer copies promised-answer transform ops" {
     try std.testing.expectEqual(@as(u16, 7), stored.ops[1].pointer_index);
 }
 
+test "noteReceiverAnswerOps copies transform ops without aliasing source slice" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    var ops = [_]protocol.PromisedAnswerOp{
+        .{ .tag = .noop, .pointer_index = 0 },
+        .{ .tag = .get_pointer_field, .pointer_index = 3 },
+    };
+
+    const id = try caps.noteReceiverAnswerOps(77, &ops);
+    ops[1].pointer_index = 42;
+    ops[1].tag = .noop;
+
+    const stored = caps.getReceiverAnswer(id) orelse return error.MissingStoredPromisedAnswer;
+    try std.testing.expectEqual(@as(u32, 77), stored.question_id);
+    try std.testing.expectEqual(@as(usize, 2), stored.ops.len);
+    try std.testing.expectEqual(protocol.PromisedAnswerOpTag.noop, stored.ops[0].tag);
+    try std.testing.expectEqual(protocol.PromisedAnswerOpTag.get_pointer_field, stored.ops[1].tag);
+    try std.testing.expectEqual(@as(u16, 3), stored.ops[1].pointer_index);
+}
+
 fn noteReceiverAnswerOpsOomImpl(allocator: std.mem.Allocator) !void {
     var caps = cap_table.CapTable.init(allocator);
     defer caps.deinit();

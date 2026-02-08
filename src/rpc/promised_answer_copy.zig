@@ -1,6 +1,16 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 
+pub fn cloneOpsFromSlice(
+    allocator: std.mem.Allocator,
+    ops: []const protocol.PromisedAnswerOp,
+) ![]protocol.PromisedAnswerOp {
+    const copied = try allocator.alloc(protocol.PromisedAnswerOp, ops.len);
+    errdefer allocator.free(copied);
+    std.mem.copyForwards(protocol.PromisedAnswerOp, copied, ops);
+    return copied;
+}
+
 pub fn cloneOpsFromPromised(
     allocator: std.mem.Allocator,
     promised: protocol.PromisedAnswer,

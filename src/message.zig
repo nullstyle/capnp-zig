@@ -1386,6 +1386,7 @@ pub const AnyPointerBuilder = struct {
 pub const MessageBuilder = struct {
     allocator: std.mem.Allocator,
     segments: std.ArrayList(std.ArrayList(u8)),
+    const initial_segment_capacity_bytes: usize = 1024;
 
     pub fn init(allocator: std.mem.Allocator) MessageBuilder {
         return .{
@@ -1401,10 +1402,17 @@ pub const MessageBuilder = struct {
         self.segments.deinit(self.allocator);
     }
 
-    pub fn createSegment(self: *MessageBuilder) !u32 {
+    fn createSegmentWithCapacity(self: *MessageBuilder, min_capacity: usize) !u32 {
         const id: u32 = @intCast(self.segments.items.len);
         try self.segments.append(self.allocator, std.ArrayList(u8){});
+        if (min_capacity > 0) {
+            try self.segments.items[id].ensureTotalCapacity(self.allocator, min_capacity);
+        }
         return id;
+    }
+
+    pub fn createSegment(self: *MessageBuilder) !u32 {
+        return self.createSegmentWithCapacity(0);
     }
 
     fn getSegment(self: *MessageBuilder, segment_id: u32) !*std.ArrayList(u8) {
@@ -1414,11 +1422,13 @@ pub const MessageBuilder = struct {
 
     pub fn initRootAnyPointer(self: *MessageBuilder) !AnyPointerBuilder {
         if (self.segments.items.len == 0) {
-            try self.segments.append(self.allocator, std.ArrayList(u8){});
+            _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
         const segment = &self.segments.items[0];
         if (segment.items.len < 8) {
-            try segment.appendNTimes(self.allocator, 0, 8 - segment.items.len);
+            const missing = 8 - segment.items.len;
+            const bytes = try segment.addManyAsSlice(self.allocator, missing);
+            @memset(bytes, 0);
         }
         return .{
             .builder = self,
@@ -1430,13 +1440,14 @@ pub const MessageBuilder = struct {
     fn allocateBytes(self: *MessageBuilder, segment_id: u32, byte_count: usize) !usize {
         const segment = try self.getSegment(segment_id);
         const offset = segment.items.len;
-        try segment.appendNTimes(self.allocator, 0, byte_count);
+        const bytes = try segment.addManyAsSlice(self.allocator, byte_count);
+        @memset(bytes, 0);
         return offset;
     }
 
     pub fn allocateStructInSegment(self: *MessageBuilder, segment_id: u32, data_words: u16, pointer_words: u16) !StructBuilder {
         if (self.segments.items.len == 0) {
-            try self.segments.append(self.allocator, std.ArrayList(u8){});
+            _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
         while (self.segments.items.len <= segment_id) {
             _ = try self.createSegment();
@@ -1459,7 +1470,7 @@ pub const MessageBuilder = struct {
         if (segment_id == 0) return self.allocateStruct(data_words, pointer_words);
 
         if (self.segments.items.len == 0) {
-            try self.segments.append(self.allocator, std.ArrayList(u8){});
+            _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
 
         const root_segment = &self.segments.items[0];
@@ -1471,17 +1482,26 @@ pub const MessageBuilder = struct {
 
         const target_segment = &self.segments.items[segment_id];
         const landing_pad_pos = target_segment.items.len;
-        try target_segment.appendNTimes(self.allocator, 0, 8);
+        {
+            const landing_pad = try target_segment.addManyAsSlice(self.allocator, 8);
+            @memset(landing_pad, 0);
+        }
 
         const total_words = @as(usize, data_words) + @as(usize, pointer_words);
         const total_bytes = total_words * 8;
         const struct_offset = target_segment.items.len;
-        try target_segment.appendNTimes(self.allocator, 0, total_bytes);
+        {
+            const struct_storage = try target_segment.addManyAsSlice(self.allocator, total_bytes);
+            @memset(struct_storage, 0);
+        }
 
         const struct_ptr = makeStructPointer(0, data_words, pointer_words);
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], struct_ptr, .little);
 
-        try root_segment.appendNTimes(self.allocator, 0, 8);
+        {
+            const root_pointer = try root_segment.addManyAsSlice(self.allocator, 8);
+            @memset(root_pointer, 0);
+        }
         const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), segment_id);
         std.mem.writeInt(u64, root_segment.items[0..8], far_ptr, .little);
 
@@ -1508,12 +1528,16 @@ pub const MessageBuilder = struct {
         if (pointer_pos + 8 > pointer_segment.items.len) return error.OutOfBounds;
 
         const target_segment = &self.segments.items[target_segment_id];
-        const text_offset = target_segment.items.len;
-        try target_segment.appendSlice(self.allocator, text);
-        try target_segment.append(self.allocator, 0);
-
         const padding = (8 - ((text.len + 1) % 8)) % 8;
-        try target_segment.appendNTimes(self.allocator, 0, padding);
+        const text_offset = target_segment.items.len;
+        {
+            const storage = try target_segment.addManyAsSlice(self.allocator, text.len + 1 + padding);
+            @memcpy(storage[0..text.len], text);
+            storage[text.len] = 0;
+            if (padding != 0) {
+                @memset(storage[text.len + 1 ..], 0);
+            }
+        }
 
         if (pointer_segment_id == target_segment_id) {
             const relative_offset = @as(i32, @intCast(@divTrunc(
@@ -1526,7 +1550,10 @@ pub const MessageBuilder = struct {
         }
 
         const landing_pad_pos = target_segment.items.len;
-        try target_segment.appendNTimes(self.allocator, 0, 8);
+        {
+            const landing_pad = try target_segment.addManyAsSlice(self.allocator, 8);
+            @memset(landing_pad, 0);
+        }
 
         const list_offset = @as(i32, @intCast(@divTrunc(
             @as(isize, @intCast(text_offset)) - @as(isize, @intCast(landing_pad_pos)) - 8,
@@ -1750,7 +1777,7 @@ pub const MessageBuilder = struct {
     pub fn allocateStruct(self: *MessageBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
         // Ensure we have at least one segment
         if (self.segments.items.len == 0) {
-            try self.segments.append(self.allocator, std.ArrayList(u8){});
+            _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
 
         const segment = &self.segments.items[0];
@@ -1767,13 +1794,18 @@ pub const MessageBuilder = struct {
             root_pointer |= @as(u64, data_words) << 32;
             root_pointer |= @as(u64, pointer_words) << 48;
 
+            // Reserve the whole root allocation in one growth step.
+            try segment.ensureUnusedCapacity(self.allocator, 8 + total_bytes);
+
             // Write root pointer
-            try segment.appendNTimes(self.allocator, 0, 8);
+            const root_slot = try segment.addManyAsSlice(self.allocator, 8);
+            @memset(root_slot, 0);
             std.mem.writeInt(u64, segment.items[0..8], root_pointer, .little);
 
             // Allocate struct data
             const struct_offset = segment.items.len;
-            try segment.appendNTimes(self.allocator, 0, total_bytes);
+            const struct_storage = try segment.addManyAsSlice(self.allocator, total_bytes);
+            @memset(struct_storage, 0);
 
             return StructBuilder{
                 .builder = self,
@@ -1805,33 +1837,43 @@ pub const MessageBuilder = struct {
 
         // Ensure we have at least one segment
         if (self.segments.items.len == 0) {
-            try self.segments.append(self.allocator, std.ArrayList(u8){});
+            _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
 
-        // Write segment count
-        const segment_count = @as(u32, @intCast(self.segments.items.len));
-        try result.append(self.allocator, @as(u8, @truncate(segment_count - 1)));
-        try result.append(self.allocator, @as(u8, @truncate((segment_count - 1) >> 8)));
-        try result.append(self.allocator, @as(u8, @truncate((segment_count - 1) >> 16)));
-        try result.append(self.allocator, @as(u8, @truncate((segment_count - 1) >> 24)));
+        const segment_count_usize = self.segments.items.len;
+        const segment_count = @as(u32, @intCast(segment_count_usize));
+        const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
+        const header_words = 1 + segment_count_usize + padding_words;
+        const header_bytes = header_words * 4;
+
+        var payload_bytes: usize = 0;
+        for (self.segments.items) |segment| {
+            payload_bytes = std.math.add(usize, payload_bytes, segment.items.len) catch return error.InvalidMessageSize;
+        }
+
+        const total_bytes = std.math.add(usize, header_bytes, payload_bytes) catch return error.InvalidMessageSize;
+        try result.ensureTotalCapacity(self.allocator, total_bytes);
+
+        // Write segment count.
+        var word_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, word_buf[0..4], segment_count - 1, .little);
+        result.appendSliceAssumeCapacity(&word_buf);
 
         // Write segment sizes
         for (self.segments.items) |segment| {
             const size_words = @as(u32, @intCast(segment.items.len / 8));
-            try result.append(self.allocator, @as(u8, @truncate(size_words)));
-            try result.append(self.allocator, @as(u8, @truncate(size_words >> 8)));
-            try result.append(self.allocator, @as(u8, @truncate(size_words >> 16)));
-            try result.append(self.allocator, @as(u8, @truncate(size_words >> 24)));
+            std.mem.writeInt(u32, word_buf[0..4], size_words, .little);
+            result.appendSliceAssumeCapacity(&word_buf);
         }
 
         // Padding to 8-byte boundary
-        if (segment_count % 2 == 0) {
-            try result.appendNTimes(self.allocator, 0, 4);
+        if (padding_words == 1) {
+            result.appendSliceAssumeCapacity(&[_]u8{ 0, 0, 0, 0 });
         }
 
         // Write segment data
         for (self.segments.items) |segment| {
-            try result.appendSlice(self.allocator, segment.items);
+            result.appendSliceAssumeCapacity(segment.items);
         }
 
         return result.toOwnedSlice(self.allocator);

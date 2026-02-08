@@ -1,5 +1,6 @@
 const std = @import("std");
 const capnp = @import("capnpc-zig");
+const alloc_counter = @import("alloc_counter.zig");
 
 const message = capnp.message;
 
@@ -15,6 +16,14 @@ const IterationResult = struct {
     ping_size: usize,
     pong_size: usize,
     checksum: u64,
+};
+
+const AllocationSample = struct {
+    sample_iters: usize,
+    alloc_calls: usize,
+    alloc_bytes: usize,
+    allocs_per_iter: f64,
+    alloc_bytes_per_iter: f64,
 };
 
 fn printUsage() void {
@@ -159,6 +168,51 @@ fn runPingPong(
     };
 }
 
+fn allocationSampleIterations(iterations: usize) usize {
+    return @max(@as(usize, 1), @min(iterations, @as(usize, 256)));
+}
+
+fn measureAllocationSample(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    cfg: Config,
+) !AllocationSample {
+    var counter = alloc_counter.CountingAllocator.init(allocator);
+    const counting_allocator = counter.allocator();
+    const sample_iters = allocationSampleIterations(cfg.iterations);
+
+    const before = counter.snapshot();
+    var iter: usize = 0;
+    while (iter < sample_iters) : (iter += 1) {
+        var ping_arena = std.heap.ArenaAllocator.init(counting_allocator);
+        errdefer ping_arena.deinit();
+
+        var pong_arena = std.heap.ArenaAllocator.init(counting_allocator);
+        errdefer pong_arena.deinit();
+
+        _ = try runPingPong(
+            &ping_arena,
+            &pong_arena,
+            payload,
+            @as(u64, @intCast(iter + 1)),
+            cfg.far_payload,
+        );
+
+        ping_arena.deinit();
+        pong_arena.deinit();
+    }
+    const delta = counter.deltaSince(before);
+
+    const sample_iters_f = @as(f64, @floatFromInt(sample_iters));
+    return .{
+        .sample_iters = sample_iters,
+        .alloc_calls = delta.alloc_calls,
+        .alloc_bytes = delta.allocated_bytes,
+        .allocs_per_iter = @as(f64, @floatFromInt(delta.alloc_calls)) / sample_iters_f,
+        .alloc_bytes_per_iter = @as(f64, @floatFromInt(delta.allocated_bytes)) / sample_iters_f,
+    };
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -226,12 +280,13 @@ pub fn main() !void {
     const per_iter_bytes = @as(u64, @intCast(ping_size + pong_size));
     const total_bytes = per_iter_bytes * @as(u64, @intCast(cfg.iterations));
     const mib_per_sec = (@as(f64, @floatFromInt(total_bytes)) / (1024.0 * 1024.0)) / seconds;
+    const alloc_sample = try measureAllocationSample(allocator, payload, cfg);
 
     if (cfg.json) {
         var out_buffer: [4096]u8 = undefined;
         var out = std.fs.File.stdout().writer(&out_buffer);
         try out.interface.print(
-            "{{\"benchmark\":\"ping_pong\",\"iterations\":{d},\"payload_size\":{d},\"far_payload\":{s},\"ping_size\":{d},\"pong_size\":{d},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"checksum\":{d}}}\n",
+            "{{\"benchmark\":\"ping_pong\",\"iterations\":{d},\"payload_size\":{d},\"far_payload\":{s},\"ping_size\":{d},\"pong_size\":{d},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"alloc_sample_iters\":{d},\"alloc_calls\":{d},\"alloc_bytes\":{d},\"allocs_per_iter\":{d:.6},\"alloc_bytes_per_iter\":{d:.6},\"checksum\":{d}}}\n",
             .{
                 cfg.iterations,
                 cfg.payload_size,
@@ -242,6 +297,11 @@ pub fn main() !void {
                 ns_per_iter,
                 ops_per_sec,
                 mib_per_sec,
+                alloc_sample.sample_iters,
+                alloc_sample.alloc_calls,
+                alloc_sample.alloc_bytes,
+                alloc_sample.allocs_per_iter,
+                alloc_sample.alloc_bytes_per_iter,
                 checksum,
             },
         );
@@ -261,6 +321,11 @@ pub fn main() !void {
     try out.interface.print("ns/op: {d:.2}\n", .{ns_per_iter});
     try out.interface.print("ops/s: {d:.2}\n", .{ops_per_sec});
     try out.interface.print("MiB/s: {d:.2}\n", .{mib_per_sec});
+    try out.interface.print("alloc sample iters: {d}\n", .{alloc_sample.sample_iters});
+    try out.interface.print("alloc calls: {d}\n", .{alloc_sample.alloc_calls});
+    try out.interface.print("alloc bytes: {d}\n", .{alloc_sample.alloc_bytes});
+    try out.interface.print("alloc calls/op: {d:.4}\n", .{alloc_sample.allocs_per_iter});
+    try out.interface.print("alloc bytes/op: {d:.2}\n", .{alloc_sample.alloc_bytes_per_iter});
     try out.interface.print("checksum: {d}\n", .{checksum});
     try out.interface.flush();
 }

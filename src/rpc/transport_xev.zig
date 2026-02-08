@@ -403,6 +403,44 @@ test "transport onRead read error signals close callback" {
     try std.testing.expect(transport.close_signaled);
 }
 
+test "transport onRead EOF signals close callback with null error" {
+    const CloseHarness = struct {
+        const State = struct {
+            calls: usize = 0,
+            last_err: ?anyerror = error.TestUnexpectedError,
+        };
+
+        fn onClose(ctx: *anyopaque, err: ?anyerror) void {
+            const state: *State = @ptrCast(@alignCast(ctx));
+            state.calls += 1;
+            state.last_err = err;
+        }
+    };
+
+    var read_buf = [_]u8{0} ** 8;
+    var state = CloseHarness.State{};
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+    transport.setCloseHandler(&state, CloseHarness.onClose);
+
+    const action = Transport.onRead(
+        &transport,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        0,
+    );
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectEqual(@as(?anyerror, null), state.last_err);
+    try std.testing.expect(transport.close_signaled);
+}
+
 test "transport onClose after prior signalClose does not double notify" {
     const CloseHarness = struct {
         const State = struct {
@@ -433,6 +471,37 @@ test "transport onClose after prior signalClose does not double notify" {
     try std.testing.expectEqual(xev.CallbackAction.disarm, action);
     try std.testing.expectEqual(@as(usize, 1), state.calls);
     try std.testing.expectEqual(@as(?anyerror, error.TestTransportClosed), state.last_err);
+}
+
+test "transport onClose error propagates error to callback" {
+    const CloseHarness = struct {
+        const State = struct {
+            calls: usize = 0,
+            last_err: ?anyerror = null,
+        };
+
+        fn onClose(ctx: *anyopaque, err: ?anyerror) void {
+            const state: *State = @ptrCast(@alignCast(ctx));
+            state.calls += 1;
+            state.last_err = err;
+        }
+    };
+
+    var read_buf = [_]u8{0} ** 8;
+    var state = CloseHarness.State{};
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+    transport.setCloseHandler(&state, CloseHarness.onClose);
+
+    const action = Transport.onClose(&transport, undefined, undefined, undefined, error.Unexpected);
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectEqual(@as(?anyerror, error.Unexpected), state.last_err);
+    try std.testing.expect(transport.close_signaled);
 }
 
 test "transport isClosing tracks close state flags" {
@@ -567,4 +636,55 @@ test "write op completion forwards write errors" {
     try std.testing.expectEqual(@as(usize, 0), transport.pending_writes);
     try std.testing.expectEqual(@as(usize, 1), callback_state.calls);
     try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), callback_state.last_err);
+}
+
+test "write op completion with null callback context skips callback invocation" {
+    const WriteHarness = struct {
+        const State = struct {
+            calls: usize = 0,
+        };
+
+        fn onWrite(ctx: *anyopaque, err: ?anyerror) void {
+            _ = err;
+            const state: *State = @ptrCast(@alignCast(ctx));
+            state.calls += 1;
+        }
+    };
+
+    var read_buf = [_]u8{0} ** 8;
+    var transport = Transport{
+        .loop = undefined,
+        .socket = undefined,
+        .allocator = std.testing.allocator,
+        .read_buf = read_buf[0..],
+    };
+
+    const callback_state = WriteHarness.State{};
+    const bytes = try std.testing.allocator.alloc(u8, 2);
+    bytes[0] = 3;
+    bytes[1] = 4;
+
+    const op = try std.testing.allocator.create(WriteOp);
+    op.* = .{
+        .allocator = std.testing.allocator,
+        .transport = &transport,
+        .request = undefined,
+        .bytes = bytes,
+        .ctx = null,
+        .cb = WriteHarness.onWrite,
+    };
+
+    transport.trackWriteOp(op);
+    const action = WriteOp.onWrite(
+        op,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        2,
+    );
+
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+    try std.testing.expectEqual(@as(usize, 0), transport.pending_writes);
+    try std.testing.expectEqual(@as(usize, 0), callback_state.calls);
 }

@@ -332,6 +332,79 @@ test "Codegen generated edge schema compiles and runs" {
     );
 }
 
+test "Codegen generated schema evolution compiles and runs" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/schema_evolution_runtime.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "generated schema evolution runtime" {
+        \\    {
+        \\        var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\        defer builder.deinit();
+        \\
+        \\        var old_root = try generated.OldVersion.Builder.init(&builder);
+        \\        try old_root.setId(7);
+        \\        try old_root.setLabel("legacy");
+        \\        var old_profile = try old_root.initProfile();
+        \\        try old_profile.setName("v1-profile");
+        \\
+        \\        const bytes = try builder.toBytes();
+        \\        defer std.testing.allocator.free(bytes);
+        \\
+        \\        var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\        defer msg.deinit();
+        \\
+        \\        const root_struct = try msg.getRootStruct();
+        \\        const as_new = generated.NewVersion.Reader.wrap(root_struct);
+        \\        try std.testing.expectEqual(@as(u64, 7), try as_new.getId());
+        \\        try std.testing.expectEqualStrings("legacy", try as_new.getLabel());
+        \\        const new_profile = try as_new.getProfile();
+        \\        try std.testing.expectEqualStrings("v1-profile", try new_profile.getName());
+        \\        try std.testing.expectEqual(@as(u32, 42), try as_new.getRevision());
+        \\        try std.testing.expectEqualStrings("new-field-default", try as_new.getNote());
+        \\        try std.testing.expectEqual(true, try as_new.getEnabled());
+        \\    }
+        \\
+        \\    {
+        \\        var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\        defer builder.deinit();
+        \\
+        \\        var new_root = try generated.NewVersion.Builder.init(&builder);
+        \\        try new_root.setId(9);
+        \\        try new_root.setLabel("modern");
+        \\        var new_profile = try new_root.initProfile();
+        \\        try new_profile.setName("v2-profile");
+        \\        try new_root.setRevision(99);
+        \\        try new_root.setNote("explicit-note");
+        \\        try new_root.setEnabled(false);
+        \\
+        \\        const bytes = try builder.toBytes();
+        \\        defer std.testing.allocator.free(bytes);
+        \\
+        \\        var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\        defer msg.deinit();
+        \\
+        \\        const root_struct = try msg.getRootStruct();
+        \\        const as_old = generated.OldVersion.Reader.wrap(root_struct);
+        \\        try std.testing.expectEqual(@as(u64, 9), try as_old.getId());
+        \\        try std.testing.expectEqualStrings("modern", try as_old.getLabel());
+        \\        const old_profile = try as_old.getProfile();
+        \\        try std.testing.expectEqualStrings("v2-profile", try old_profile.getName());
+        \\
+        \\        const as_new = generated.NewVersion.Reader.wrap(root_struct);
+        \\        try std.testing.expectEqual(@as(u32, 99), try as_new.getRevision());
+        \\        try std.testing.expectEqualStrings("explicit-note", try as_new.getNote());
+        \\        try std.testing.expectEqual(false, try as_new.getEnabled());
+        \\    }
+        \\}
+        \\
+    );
+}
+
 test "Codegen generated schema manifest compiles and runs" {
     const allocator = std.testing.allocator;
 

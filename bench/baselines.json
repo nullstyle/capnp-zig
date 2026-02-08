@@ -17,6 +17,21 @@
       "baseline": 2929.381833
     },
     {
+      "name": "ping_pong_default_allocs",
+      "binary": "./zig-out/bin/bench-ping-pong",
+      "args": [
+        "--iters",
+        "6000",
+        "--payload",
+        "1024",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "allocs_per_iter",
+      "baseline": 6.0
+    },
+    {
       "name": "ping_pong_far",
       "binary": "./zig-out/bin/bench-ping-pong",
       "args": [
@@ -31,6 +46,22 @@
       ],
       "metric": "ns_per_iter",
       "baseline": 3459.708333
+    },
+    {
+      "name": "ping_pong_far_allocs",
+      "binary": "./zig-out/bin/bench-ping-pong",
+      "args": [
+        "--iters",
+        "6000",
+        "--payload",
+        "1024",
+        "--warmup",
+        "200",
+        "--far",
+        "--json"
+      ],
+      "metric": "allocs_per_iter",
+      "baseline": 6.0
     },
     {
       "name": "packed_pack_default",
@@ -52,6 +83,25 @@
       "baseline": 173923.652833
     },
     {
+      "name": "packed_pack_default_allocs",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "pack",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "allocs_per_iter",
+      "baseline": 6.0
+    },
+    {
       "name": "packed_unpack_default",
       "binary": "./zig-out/bin/bench-pack-unpack",
       "args": [
@@ -71,6 +121,25 @@
       "baseline": 108204.368
     },
     {
+      "name": "packed_unpack_default_allocs",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "unpack",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "allocs_per_iter",
+      "baseline": 7.0
+    },
+    {
       "name": "packed_roundtrip_default",
       "binary": "./zig-out/bin/bench-pack-unpack",
       "args": [
@@ -88,6 +157,25 @@
       ],
       "metric": "ns_per_iter",
       "baseline": 270675.972167
+    },
+    {
+      "name": "packed_roundtrip_default_allocs",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "roundtrip",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "allocs_per_iter",
+      "baseline": 13.0
     }
   ]
 }
