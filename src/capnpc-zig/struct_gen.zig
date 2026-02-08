@@ -1025,29 +1025,7 @@ pub const StructGenerator = struct {
 
     fn allocTypeName(self: *StructGenerator, node: *const schema.Node) ![]u8 {
         const name = self.getSimpleName(node);
-        return self.toZigTypeName(name);
-    }
-
-    fn toZigTypeName(self: *StructGenerator, name: []const u8) ![]u8 {
-        var result = try std.ArrayList(u8).initCapacity(self.allocator, name.len);
-        errdefer result.deinit(self.allocator);
-
-        var capitalize_next = true;
-        for (name) |c| {
-            if (c == '_' or c == '$') {
-                capitalize_next = true;
-                continue;
-            }
-
-            if (capitalize_next) {
-                try result.append(self.allocator, std.ascii.toUpper(c));
-                capitalize_next = false;
-            } else {
-                try result.append(self.allocator, c);
-            }
-        }
-
-        return result.toOwnedSlice(self.allocator);
+        return types.identToZigTypeName(self.allocator, name);
     }
 
     fn capitalizeFirst(self: *StructGenerator, name: []const u8) ![]const u8 {

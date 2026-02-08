@@ -282,15 +282,17 @@ pub const Generator = struct {
     /// Generate an enum definition
     fn generateEnum(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         const enum_info = node.enum_node orelse return error.InvalidEnumNode;
+        const decl_name = try self.allocTypeDeclName(node);
+        defer self.allocator.free(decl_name);
 
-        const name = self.getSimpleName(node);
-
-        try writer.print("pub const {s} = enum(u16) {{\n", .{name});
+        try writer.print("pub const {s} = enum(u16) {{\n", .{decl_name});
 
         for (enum_info.enumerants) |enumerant| {
             const zig_name = try self.toZigIdentifier(enumerant.name);
             defer self.allocator.free(zig_name);
-            try writer.print("    {s} = {},\n", .{ zig_name, enumerant.code_order });
+            const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+            defer self.allocator.free(escaped_name);
+            try writer.print("    {s} = {},\n", .{ escaped_name, enumerant.code_order });
         }
 
         try writer.writeAll("};\n\n");
@@ -299,15 +301,18 @@ pub const Generator = struct {
     /// Generate an interface definition
     fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         const interface_info = node.interface_node orelse return error.InvalidInterfaceNode;
-        const name = self.getSimpleName(node);
+        const decl_name = try self.allocTypeDeclName(node);
+        defer self.allocator.free(decl_name);
 
-        try writer.print("pub const {s} = struct {{\n", .{name});
+        try writer.print("pub const {s} = struct {{\n", .{decl_name});
         try writer.print("    pub const interface_id: u64 = 0x{x};\n", .{node.id});
         try writer.writeAll("    pub const Method = enum(u16) {\n");
         for (interface_info.methods) |method| {
             const zig_name = try self.toZigIdentifier(method.name);
             defer self.allocator.free(zig_name);
-            try writer.print("        {s} = {},\n", .{ zig_name, method.code_order });
+            const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+            defer self.allocator.free(escaped_name);
+            try writer.print("        {s} = {},\n", .{ escaped_name, method.code_order });
         }
         try writer.writeAll("    };\n\n");
 
@@ -549,7 +554,8 @@ pub const Generator = struct {
     /// Generate a constant definition
     fn generateConst(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         const const_info = node.const_node orelse return error.InvalidConstNode;
-        const name = self.getSimpleName(node);
+        const name = try self.allocValueDeclName(node);
+        defer self.allocator.free(name);
 
         switch (const_info.value) {
             .text => |text| {
@@ -580,7 +586,8 @@ pub const Generator = struct {
     /// Generate an annotation definition
     fn generateAnnotation(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         const annotation_info = node.annotation_node orelse return error.InvalidAnnotationNode;
-        const name = self.getSimpleName(node);
+        const name = try self.allocValueDeclName(node);
+        defer self.allocator.free(name);
 
         const type_name = try self.typeNameForConst(annotation_info.type);
         defer self.allocator.free(type_name);
@@ -612,10 +619,18 @@ pub const Generator = struct {
         return node.display_name[prefix_len..];
     }
 
+    fn allocTypeDeclName(self: *Generator, node: *const schema.Node) ![]const u8 {
+        return types.normalizeAndEscapeTypeIdentifier(self.allocator, self.getSimpleName(node));
+    }
+
+    fn allocValueDeclName(self: *Generator, node: *const schema.Node) ![]const u8 {
+        return types.normalizeAndEscapeValueIdentifier(self.allocator, self.getSimpleName(node));
+    }
+
     fn resolveNodeName(self: *Generator, id: schema.Id) ![]const u8 {
         if (self.getNode(id)) |node| {
             const name = self.getSimpleName(node);
-            return self.toZigIdentifier(name);
+            return types.normalizeAndEscapeTypeIdentifier(self.allocator, name);
         }
         return try self.allocator.dupe(u8, "void");
     }
@@ -637,25 +652,7 @@ pub const Generator = struct {
 
     /// Convert Cap'n Proto identifier to Zig identifier
     fn toZigIdentifier(self: *Generator, name: []const u8) ![]const u8 {
-        var result = try std.ArrayList(u8).initCapacity(self.allocator, name.len);
-        errdefer result.deinit(self.allocator);
-
-        var capitalize_next = true;
-        for (name) |c| {
-            if (c == '_' or c == '$') {
-                capitalize_next = true;
-                continue;
-            }
-
-            if (capitalize_next) {
-                try result.append(self.allocator, std.ascii.toUpper(c));
-                capitalize_next = false;
-            } else {
-                try result.append(self.allocator, c);
-            }
-        }
-
-        return result.toOwnedSlice(self.allocator);
+        return types.identToZigTypeName(self.allocator, name);
     }
 
     fn moduleNameFromFilename(self: *Generator, filename: []const u8) ![]const u8 {
@@ -726,8 +723,7 @@ pub const Generator = struct {
             .@"enum" => |enum_info| blk: {
                 if (self.getNode(enum_info.type_id)) |node| {
                     if (node.kind == .@"enum") {
-                        const name = self.getSimpleName(node);
-                        break :blk try self.allocator.dupe(u8, name);
+                        break :blk try self.allocTypeDeclName(node);
                     }
                 }
                 break :blk try self.allocator.dupe(u8, "u16");
@@ -1027,8 +1023,7 @@ pub const Generator = struct {
     fn structTypeName(self: *Generator, id: schema.Id) ?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"struct") return null;
-        const name = self.getSimpleName(node);
-        return self.allocator.dupe(u8, name) catch null;
+        return self.allocTypeDeclName(node) catch null;
     }
 
     fn writeByteArrayInitializer(self: *Generator, writer: anytype, data: []const u8) !void {

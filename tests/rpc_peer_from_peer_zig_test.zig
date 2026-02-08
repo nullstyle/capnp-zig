@@ -31,6 +31,34 @@ test "peer detached sendFrame requires override or attached transport" {
     try std.testing.expectError(error.TransportNotAttached, peer_test_hooks.sendFrame(&peer, &[_]u8{ 0x01, 0x02 }));
 }
 
+test "peer question allocation probes past occupied ID across wrap-around" {
+    const allocator = std.testing.allocator;
+    const Noop = struct {
+        fn sendFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var blocked_ctx: u8 = 0;
+    var bootstrap_ctx: u8 = 0;
+
+    peer.next_question_id = std.math.maxInt(u32);
+    try peer.questions.put(peer.next_question_id, .{
+        .ctx = &blocked_ctx,
+        .on_return = Noop.onReturn,
+        .is_loopback = false,
+    });
+
+    peer.setSendFrameOverride(&bootstrap_ctx, Noop.sendFrame);
+    const question_id = try peer.sendBootstrap(&bootstrap_ctx, Noop.onReturn);
+
+    try std.testing.expectEqual(@as(u32, 0), question_id);
+    try std.testing.expect(peer.questions.contains(std.math.maxInt(u32)));
+    try std.testing.expect(peer.questions.contains(@as(u32, 0)));
+}
+
 test "release batching aggregates per import id" {
     const allocator = std.testing.allocator;
 

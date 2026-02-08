@@ -480,6 +480,146 @@ test "Codegen: const and annotation output" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, ".field = true"));
 }
 
+test "Codegen: typed enum/struct consts use normalized declaration names" {
+    const schema = @import("capnpc-zig").schema;
+    const Generator = @import("capnpc-zig").codegen.Generator;
+
+    var enum_values = [_]schema.Enumerant{
+        .{ .name = "first", .code_order = 0, .annotations = &[_]schema.AnnotationUse{} },
+    };
+    const enum_node = schema.Node{
+        .id = 2,
+        .display_name = "my_enum",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"enum",
+        .struct_node = null,
+        .enum_node = .{ .enumerants = &enum_values },
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const struct_node = schema.Node{
+        .id = 3,
+        .display_name = "my_struct",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &[_]schema.Field{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const enum_type = schema.Type{ .@"enum" = .{ .type_id = 2 } };
+    const struct_type = schema.Type{ .@"struct" = .{ .type_id = 3 } };
+
+    const enum_const_node = schema.Node{
+        .id = 4,
+        .display_name = "enum_const",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"const",
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = .{
+            .type = enum_type,
+            .value = .{ .@"enum" = 0 },
+        },
+        .annotation_node = null,
+    };
+
+    const struct_const_node = schema.Node{
+        .id = 5,
+        .display_name = "struct_const",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"const",
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = .{
+            .type = struct_type,
+            .value = .{
+                .@"struct" = .{
+                    .message_bytes = &[_]u8{
+                        0x00, 0x00, 0x00, 0x00,
+                        0x00, 0x00, 0x00, 0x00,
+                    },
+                },
+            },
+        },
+        .annotation_node = null,
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "my_enum", .id = 2 },
+        .{ .name = "my_struct", .id = 3 },
+        .{ .name = "enum_const", .id = 4 },
+        .{ .name = "struct_const", .id = 5 },
+    };
+
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "typed_consts.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{
+        file_node,
+        enum_node,
+        struct_node,
+        enum_const_node,
+        struct_const_node,
+    };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "typed_consts.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyEnum = enum(u16)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyStruct = struct"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const enumConst: MyEnum = @enumFromInt(@as(u16, 0));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const structConst = struct {"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn get() !MyStruct.Reader {"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return MyStruct.Reader{ ._reader = value };"));
+}
+
 test "Codegen: void const emits unit literal" {
     const schema = @import("capnpc-zig").schema;
     const Generator = @import("capnpc-zig").codegen.Generator;
@@ -1272,4 +1412,248 @@ test "Codegen: data and capability list fields use typed wrappers" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListReader{ ._list = raw };"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initServices(self: *Builder, element_count: u32) !CapabilityListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListBuilder{ ._list = raw };"));
+}
+
+test "Codegen: declaration identifiers are normalized and escaped consistently" {
+    const schema = @import("capnpc-zig").schema;
+    const Generator = @import("capnpc-zig").codegen.Generator;
+
+    var enum_values = [_]schema.Enumerant{
+        .{ .name = "first_value", .code_order = 0, .annotations = &[_]schema.AnnotationUse{} },
+    };
+    const enum_node = schema.Node{
+        .id = 2,
+        .display_name = "my_enum",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"enum",
+        .struct_node = null,
+        .enum_node = .{ .enumerants = &enum_values },
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const enum_type = schema.Type{ .@"enum" = .{ .type_id = 2 } };
+    var holder_fields = [_]schema.Field{
+        .{
+            .name = "status",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{ .offset = 0, .type = enum_type, .default_value = null },
+            .group = null,
+        },
+    };
+    const holder_node = schema.Node{
+        .id = 3,
+        .display_name = "holder",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &holder_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var methods = [_]schema.Method{
+        .{
+            .name = "ping",
+            .code_order = 0,
+            .param_struct_type = 5,
+            .result_struct_type = 6,
+            .annotations = &[_]schema.AnnotationUse{},
+        },
+    };
+    const interface_node = schema.Node{
+        .id = 4,
+        .display_name = "my_service",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .interface,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = .{ .methods = &methods },
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const empty_struct = schema.StructNode{
+        .data_word_count = 0,
+        .pointer_count = 0,
+        .preferred_list_encoding = .inline_composite,
+        .is_group = false,
+        .discriminant_count = 0,
+        .discriminant_offset = 0,
+        .fields = &[_]schema.Field{},
+    };
+    const ping_params_node = schema.Node{
+        .id = 5,
+        .display_name = "ping_params",
+        .display_name_prefix_length = 0,
+        .scope_id = 4,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = empty_struct,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    const ping_results_node = schema.Node{
+        .id = 6,
+        .display_name = "ping_results",
+        .display_name_prefix_length = 0,
+        .scope_id = 4,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = empty_struct,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const keyword_const_node = schema.Node{
+        .id = 7,
+        .display_name = "usingnamespace",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"const",
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = .{
+            .type = .{ .uint32 = {} },
+            .value = .{ .uint32 = 7 },
+        },
+        .annotation_node = null,
+    };
+
+    const snake_const_node = schema.Node{
+        .id = 8,
+        .display_name = "snake_case_const",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"const",
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = .{
+            .type = .{ .uint32 = {} },
+            .value = .{ .uint32 = 9 },
+        },
+        .annotation_node = null,
+    };
+
+    const annotation_node = schema.Node{
+        .id = 9,
+        .display_name = "annotation_value",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .annotation,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = .{
+            .type = .text,
+            .targets_file = false,
+            .targets_const = false,
+            .targets_enum = false,
+            .targets_enumerant = false,
+            .targets_struct = false,
+            .targets_field = false,
+            .targets_union = false,
+            .targets_group = false,
+            .targets_interface = false,
+            .targets_method = false,
+            .targets_param = false,
+            .targets_annotation = false,
+        },
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "my_enum", .id = 2 },
+        .{ .name = "holder", .id = 3 },
+        .{ .name = "my_service", .id = 4 },
+        .{ .name = "ping_params", .id = 5 },
+        .{ .name = "ping_results", .id = 6 },
+        .{ .name = "usingnamespace", .id = 7 },
+        .{ .name = "snake_case_const", .id = 8 },
+        .{ .name = "annotation_value", .id = 9 },
+    };
+
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "decls.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{
+        file_node,
+        enum_node,
+        holder_node,
+        interface_node,
+        ping_params_node,
+        ping_results_node,
+        keyword_const_node,
+        snake_const_node,
+        annotation_node,
+    };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "decls.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyEnum = enum(u16)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatus(self: Reader) !MyEnum"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const MyService = struct"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const @\"usingnamespace\": u32 = @as(u32, 7);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const snakeCaseConst: u32 = @as(u32, 9);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const annotationValue = struct"));
+
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub const my_enum = enum(u16)"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub const my_service = struct"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub const snake_case_const"));
 }

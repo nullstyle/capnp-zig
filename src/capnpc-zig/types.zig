@@ -18,9 +18,9 @@ pub const zig_keywords = std.StaticStringMap(void).initComptime(.{
     .{ "return", {} },    .{ "struct", {} },      .{ "suspend", {} },
     .{ "switch", {} },    .{ "test", {} },        .{ "threadlocal", {} },
     .{ "try", {} },       .{ "type", {} },        .{ "undefined", {} },
-    .{ "union", {} },     .{ "unreachable", {} }, .{ "var", {} },
-    .{ "volatile", {} },  .{ "while", {} },       .{ "true", {} },
-    .{ "false", {} },     .{ "null", {} },
+    .{ "union", {} },     .{ "unreachable", {} }, .{ "usingnamespace", {} },
+    .{ "var", {} },       .{ "volatile", {} },    .{ "while", {} },
+    .{ "true", {} },      .{ "false", {} },       .{ "null", {} },
 });
 
 /// Escape a name with @"..." if it collides with a Zig keyword.
@@ -29,6 +29,48 @@ pub fn escapeZigKeyword(allocator: std.mem.Allocator, name: []const u8) ![]const
         return std.fmt.allocPrint(allocator, "@\"{s}\"", .{name});
     }
     return allocator.dupe(u8, name);
+}
+
+fn normalizeIdentifier(allocator: std.mem.Allocator, name: []const u8, capitalize_first: bool) ![]u8 {
+    var result = std.ArrayList(u8){};
+    errdefer result.deinit(allocator);
+
+    var capitalize_next = capitalize_first;
+    for (name) |c| {
+        if (c == '_' or c == '$') {
+            capitalize_next = true;
+            continue;
+        }
+
+        if (capitalize_next) {
+            try result.append(allocator, std.ascii.toUpper(c));
+            capitalize_next = false;
+        } else {
+            try result.append(allocator, c);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
+pub fn identToZigValueName(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return normalizeIdentifier(allocator, name, false);
+}
+
+pub fn identToZigTypeName(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return normalizeIdentifier(allocator, name, true);
+}
+
+pub fn normalizeAndEscapeValueIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    const normalized = try identToZigValueName(allocator, name);
+    defer allocator.free(normalized);
+    return escapeZigKeyword(allocator, normalized);
+}
+
+pub fn normalizeAndEscapeTypeIdentifier(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    const normalized = try identToZigTypeName(allocator, name);
+    defer allocator.free(normalized);
+    return escapeZigKeyword(allocator, normalized);
 }
 
 /// Generate Zig type code for Cap'n Proto types
@@ -154,47 +196,27 @@ pub const TypeGenerator = struct {
 
     /// Convert Cap'n Proto identifier to Zig identifier (camelCase)
     pub fn toZigIdentifier(self: *TypeGenerator, name: []const u8) ![]const u8 {
-        var result = std.ArrayList(u8){};
-        errdefer result.deinit(self.allocator);
-
-        var capitalize_next = false;
-        for (name) |c| {
-            if (c == '_' or c == '$') {
-                capitalize_next = true;
-                continue;
-            }
-
-            if (capitalize_next) {
-                try result.append(self.allocator, std.ascii.toUpper(c));
-                capitalize_next = false;
-            } else {
-                try result.append(self.allocator, c);
-            }
-        }
-
-        return result.toOwnedSlice(self.allocator);
+        return identToZigValueName(self.allocator, name);
     }
 
     /// Convert Cap'n Proto identifier to Zig type name (PascalCase)
     pub fn toZigTypeName(self: *TypeGenerator, name: []const u8) ![]const u8 {
-        var result = std.ArrayList(u8){};
-        errdefer result.deinit(self.allocator);
-
-        var capitalize_next = true;
-        for (name) |c| {
-            if (c == '_' or c == '$') {
-                capitalize_next = true;
-                continue;
-            }
-
-            if (capitalize_next) {
-                try result.append(self.allocator, std.ascii.toUpper(c));
-                capitalize_next = false;
-            } else {
-                try result.append(self.allocator, c);
-            }
-        }
-
-        return result.toOwnedSlice(self.allocator);
+        return identToZigTypeName(self.allocator, name);
     }
 };
+
+test "escapeZigKeyword escapes usingnamespace" {
+    const escaped = try escapeZigKeyword(std.testing.allocator, "usingnamespace");
+    defer std.testing.allocator.free(escaped);
+    try std.testing.expectEqualStrings("@\"usingnamespace\"", escaped);
+}
+
+test "normalizeAndEscapeValueIdentifier normalizes and escapes" {
+    const normalized = try normalizeAndEscapeValueIdentifier(std.testing.allocator, "my_value");
+    defer std.testing.allocator.free(normalized);
+    try std.testing.expectEqualStrings("myValue", normalized);
+
+    const escaped = try normalizeAndEscapeValueIdentifier(std.testing.allocator, "usingnamespace");
+    defer std.testing.allocator.free(escaped);
+    try std.testing.expectEqualStrings("@\"usingnamespace\"", escaped);
+}

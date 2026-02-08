@@ -27,6 +27,7 @@ const peer_third_party_returns = @import("peer/third_party/peer_third_party_retu
 const peer_return_send_helpers = @import("peer/return/peer_return_send_helpers.zig");
 const peer_transport_callbacks = @import("peer/peer_transport_callbacks.zig");
 const peer_transport_state = @import("peer/peer_transport_state.zig");
+const peer_question_state = @import("peer/peer_question_state.zig");
 const peer_cleanup = @import("peer/peer_cleanup.zig");
 const peer_state_types = @import("peer/peer_state_types.zig");
 
@@ -1391,15 +1392,16 @@ pub const Peer = struct {
     }
 
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
-        const id = self.next_question_id;
-        self.next_question_id +%= 1;
-        if (self.questions.contains(id)) return error.QuestionIdExhausted;
-        try self.questions.put(id, .{
-            .ctx = ctx,
-            .on_return = on_return,
-            .is_loopback = false,
-        });
-        return id;
+        return peer_question_state.allocateQuestion(
+            Question,
+            &self.questions,
+            &self.next_question_id,
+            .{
+                .ctx = ctx,
+                .on_return = on_return,
+                .is_loopback = false,
+            },
+        );
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {
