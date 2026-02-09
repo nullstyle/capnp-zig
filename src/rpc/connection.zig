@@ -2,7 +2,7 @@ const std = @import("std");
 const log = std.log.scoped(.rpc_conn);
 const framing = @import("framing.zig");
 const transport_xev = @import("transport_xev.zig");
-const xev = @import("xev");
+const xev = @import("xev").Dynamic;
 const message = @import("../message.zig");
 
 /// A framed Cap'n Proto connection over TCP.

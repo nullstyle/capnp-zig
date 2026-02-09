@@ -29,7 +29,7 @@ pub const schema_validation = @import("schema_validation.zig");
 pub const rpc = @import("rpc/mod.zig");
 
 /// Re-export xev so downstream consumers share the same module instance.
-pub const xev = @import("xev");
+pub const xev = @import("xev").Dynamic;
 
 test {
     @import("std").testing.refAllDecls(@This());

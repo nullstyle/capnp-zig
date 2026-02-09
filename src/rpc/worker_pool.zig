@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_worker_pool);
-const xev = @import("xev");
+const xev = @import("xev").Dynamic;
 const Connection = @import("connection.zig").Connection;
 const Listener = @import("runtime.zig").Listener;
 const Runtime = @import("runtime.zig").Runtime;
@@ -55,6 +55,8 @@ pub const WorkerPool = struct {
         on_accept: AcceptFn,
         config: Config,
     ) !WorkerPool {
+        try Runtime.ensureBackend();
+
         const concurrency: u32 = config.concurrency orelse @intCast(std.Thread.getCpuCount() catch 1);
         if (concurrency == 0) return error.InvalidConcurrency;
 
@@ -214,7 +216,7 @@ pub const WorkerPool = struct {
     fn createListenSocket(addr: std.net.Address, backlog: u31, reuseport: bool) !std.posix.fd_t {
         const flags: u32 = blk: {
             var f: u32 = std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC;
-            if (comptime builtin.target.os.tag != .linux or xev.backend != .io_uring) {
+            if (builtin.target.os.tag != .linux or xev.backend != .io_uring) {
                 f |= std.posix.SOCK.NONBLOCK;
             }
             break :blk f;

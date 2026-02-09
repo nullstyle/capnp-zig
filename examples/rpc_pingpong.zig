@@ -1,6 +1,6 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
-const xev = @import("xev");
+const xev = @import("xev").Dynamic;
 const pingpong = @import("pingpong.zig");
 
 const rpc = capnpc.rpc;

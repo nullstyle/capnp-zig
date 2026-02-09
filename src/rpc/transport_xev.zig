@@ -1,6 +1,6 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_transport);
-const xev = @import("xev");
+const xev = @import("xev").Dynamic;
 
 /// Union of all xev I/O error types that can surface through transport
 /// callbacks (read errors, write errors, and close errors).

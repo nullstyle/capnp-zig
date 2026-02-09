@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_runtime);
-const xev = @import("xev");
+const xev = @import("xev").Dynamic;
 const Connection = @import("connection.zig").Connection;
 
 /// The RPC event-loop runtime.
@@ -20,6 +20,30 @@ pub const Runtime = struct {
     /// real thread ID in `init`.
     owner_thread_id: std.Thread.Id = 0,
 
+    /// Protects one-time backend detection for dynamic xev mode.
+    var backend_detect_mutex: std.Thread.Mutex = .{};
+    var backend_detected: bool = false;
+    var backend_detect_error: ?anyerror = null;
+
+    /// Ensure the xev backend is selected once process-wide before using
+    /// any loop/socket types. In dynamic mode this picks the preferred
+    /// available backend (io_uring first, then epoll on Linux).
+    pub fn ensureBackend() !void {
+        if (comptime !xev.dynamic) return;
+
+        backend_detect_mutex.lock();
+        defer backend_detect_mutex.unlock();
+
+        if (backend_detected) return;
+        if (backend_detect_error) |err| return err;
+
+        xev.detect() catch |err| {
+            backend_detect_error = err;
+            return err;
+        };
+        backend_detected = true;
+    }
+
     /// Assert that the caller is on the thread that created this runtime.
     /// No-op in release builds.
     fn assertThreadAffinity(self: *const Runtime) void {
@@ -37,6 +61,7 @@ pub const Runtime = struct {
     /// The calling thread becomes the owner thread for thread-affinity
     /// checks.
     pub fn init(allocator: std.mem.Allocator) !Runtime {
+        try Runtime.ensureBackend();
         const loop = try xev.Loop.init(.{});
         return .{
             .allocator = allocator,
@@ -184,3 +209,9 @@ pub const Listener = struct {
         return .disarm;
     }
 };
+
+test "runtime backend selection can initialize a loop" {
+    try Runtime.ensureBackend();
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+}
