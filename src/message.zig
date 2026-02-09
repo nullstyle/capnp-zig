@@ -1779,10 +1779,26 @@ pub const MessageBuilder = struct {
         target_segment_id: u32,
     ) !StructBuilder {
         if (pointer_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
-        if (target_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
 
         const pointer_segment = &self.segments.items[pointer_segment_id];
         if (pointer_pos + 8 > pointer_segment.items.len) return error.OutOfBounds;
+
+        // Empty structs (0 data words, 0 pointers) are canonically represented
+        // as NULL pointers per the Cap'n Proto spec. Writing a non-zero struct
+        // pointer with an offset causes strict validators (e.g. capnp-rust) to
+        // reject the message.
+        if (data_words == 0 and pointer_words == 0) {
+            std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], 0, .little);
+            return StructBuilder{
+                .builder = self,
+                .segment_id = pointer_segment_id,
+                .offset = pointer_pos,
+                .data_size = 0,
+                .pointer_count = 0,
+            };
+        }
+
+        if (target_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
 
         const target_segment = &self.segments.items[target_segment_id];
         const total_words = @as(usize, data_words) + @as(usize, pointer_words);

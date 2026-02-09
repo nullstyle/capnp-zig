@@ -20,18 +20,43 @@ pub fn define(
                 return self.pointer_word == 0;
             }
 
+            /// Returns the struct this pointer refers to.
+            /// A NULL pointer (all zeros) is valid per the Cap'n Proto spec and
+            /// represents the default value — a struct with zero data words and
+            /// zero pointers where every field reads as its default.
             pub fn getStruct(self: AnyPointerReader) !StructReaderType {
-                if (self.pointer_word == 0) return error.InvalidPointer;
+                if (self.pointer_word == 0) return StructReaderType{
+                    .message = self.message,
+                    .segment_id = self.segment_id,
+                    .offset = 0,
+                    .data_size = 0,
+                    .pointer_count = 0,
+                };
                 return self.message.resolveStructPointer(self.segment_id, self.pointer_pos, self.pointer_word);
             }
 
+            /// Returns the list this pointer refers to.
+            /// A NULL pointer is a valid empty list per the Cap'n Proto spec.
             pub fn getList(self: AnyPointerReader) !MessageType.ResolvedListPointer {
-                if (self.pointer_word == 0) return error.InvalidPointer;
+                if (self.pointer_word == 0) return .{
+                    .segment_id = self.segment_id,
+                    .content_offset = 0,
+                    .element_size = 0,
+                    .element_count = 0,
+                };
                 return self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
             }
 
+            /// Returns the inline composite list this pointer refers to.
+            /// A NULL pointer is a valid empty list per the Cap'n Proto spec.
             pub fn getInlineCompositeList(self: AnyPointerReader) !InlineCompositeListType {
-                if (self.pointer_word == 0) return error.InvalidPointer;
+                if (self.pointer_word == 0) return .{
+                    .segment_id = self.segment_id,
+                    .elements_offset = 0,
+                    .element_count = 0,
+                    .data_words = 0,
+                    .pointer_words = 0,
+                };
                 return self.message.resolveInlineCompositeList(self.segment_id, self.pointer_pos, self.pointer_word);
             }
 
