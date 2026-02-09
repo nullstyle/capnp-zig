@@ -398,6 +398,20 @@ pub const Generator = struct {
         self.allocator.free(ancestors);
     }
 
+    /// Check whether an interface (or any ancestor) has streaming methods.
+    fn hasStreamingMethods(_: *Generator, node: *const schema.Node, ancestors: []const AncestorInfo) bool {
+        const iface = node.interface_node orelse return false;
+        for (iface.methods) |method| {
+            if (method.isStreaming()) return true;
+        }
+        for (ancestors) |ancestor| {
+            for (ancestor.methods) |method| {
+                if (method.isStreaming()) return true;
+            }
+        }
+        return false;
+    }
+
     /// Generate an interface definition
     fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         const interface_info = node.interface_node orelse return error.InvalidInterfaceNode;
@@ -459,6 +473,11 @@ pub const Generator = struct {
         try writer.writeAll("        }\n\n");
 
         try writer.writeAll("    };\n\n");
+
+        // --- StreamClient (only when interface or ancestors have streaming methods) ---
+        if (self.hasStreamingMethods(node, ancestors)) {
+            try self.generateStreamClient(node, interface_info, ancestors, writer);
+        }
 
         // Generate Pipeline types for methods with interface-typed results (own methods)
         for (interface_info.methods) |method| {
@@ -748,6 +767,31 @@ pub const Generator = struct {
             // handleCall delegates to handleCallDirect
             try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
             try writer.print("            try handleCallDirect(server.vtable.{s}, server.ctx, peer, call, caps);\n", .{escaped_method_field});
+            try writer.writeAll("        }\n\n");
+
+            // StreamCallContext + streamCallBuild + streamCallReturn for fire-and-forget streaming
+            try writer.writeAll("        pub const StreamCallContext = struct {\n");
+            try writer.writeAll("            stream: *rpc.stream_state.StreamState,\n");
+            try writer.writeAll("            build_ctx: *anyopaque,\n");
+            try writer.writeAll("            build: ?BuildFn,\n");
+            try writer.writeAll("        };\n\n");
+
+            try writer.writeAll("        fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {\n");
+            try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
+            try writer.print("            const params_builder = try call.initParamsStruct({}, {});\n", .{
+                param_layout.data_words,
+                param_layout.pointer_words,
+            });
+            try writer.writeAll("            var params = Params.Builder.wrap(params_builder);\n");
+            try writer.writeAll("            if (ctx.build) |build_fn| try build_fn(ctx.build_ctx, &params);\n");
+            try writer.writeAll("            try call.setEmptyCapTable();\n");
+            try writer.writeAll("        }\n\n");
+
+            try writer.writeAll("        fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
+            try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
+            try writer.writeAll("            _ = caps;\n");
+            try writer.writeAll("            ctx.stream.handleReturn(ret.tag == .exception);\n");
             try writer.writeAll("        }\n");
         } else {
             // handleCallDirect: takes Handler + ?DeferredHandler + ctx directly
@@ -839,6 +883,91 @@ pub const Generator = struct {
             iface_id, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
         });
         try writer.writeAll("        }\n\n");
+    }
+
+    /// Generate a StreamClient type for an interface with streaming methods.
+    fn generateStreamClient(
+        self: *Generator,
+        node: *const schema.Node,
+        interface_info: schema.InterfaceNode,
+        ancestors: []const AncestorInfo,
+        writer: anytype,
+    ) !void {
+        _ = node;
+        try writer.writeAll("    pub const StreamClient = struct {\n");
+        try writer.writeAll("        client: Client,\n");
+        try writer.writeAll("        stream: rpc.stream_state.StreamState = .{},\n\n");
+
+        try writer.writeAll("        pub fn init(client: Client) StreamClient {\n");
+        try writer.writeAll("            return .{ .client = client };\n");
+        try writer.writeAll("        }\n\n");
+
+        // Own methods
+        for (interface_info.methods) |method| {
+            try self.generateStreamClientCallMethod(method, "interface_id", null, writer);
+        }
+        // Inherited methods
+        for (ancestors) |ancestor| {
+            for (ancestor.methods) |method| {
+                try self.generateStreamClientCallMethod(method, null, ancestor.name, writer);
+            }
+        }
+
+        try writer.writeAll("        pub fn waitStreaming(self: *StreamClient, ctx: *anyopaque, callback: rpc.stream_state.StreamState.DrainCallback) void {\n");
+        try writer.writeAll("            self.stream.waitStreaming(ctx, callback);\n");
+        try writer.writeAll("        }\n");
+
+        try writer.writeAll("    };\n\n");
+    }
+
+    /// Generate a single StreamClient call method. Streaming methods become
+    /// fire-and-forget; non-streaming methods pass through to the inner Client.
+    fn generateStreamClientCallMethod(
+        self: *Generator,
+        method: schema.Method,
+        interface_id_expr: ?[]const u8,
+        ancestor_name: ?[]const u8,
+        writer: anytype,
+    ) !void {
+        const zig_name = try self.toZigIdentifier(method.name);
+        defer self.allocator.free(zig_name);
+        const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
+        defer self.allocator.free(call_name);
+
+        const method_prefix = ancestor_name orelse "";
+        const dot = if (ancestor_name != null) "." else "";
+        const iface_id = if (interface_id_expr) |expr| expr else blk: {
+            const temp = try std.fmt.allocPrint(self.allocator, "{s}.interface_id", .{ancestor_name.?});
+            break :blk temp;
+        };
+        const iface_id_owned = interface_id_expr == null;
+        defer if (iface_id_owned) self.allocator.free(iface_id);
+
+        if (method.isStreaming()) {
+            // Fire-and-forget streaming call
+            try writer.print("        pub fn {s}(self: *StreamClient, build_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn) !void {{\n", .{
+                call_name, method_prefix, dot, zig_name,
+            });
+            try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
+            try writer.print("            const ctx = try self.client.peer.allocator.create({s}{s}{s}.StreamCallContext);\n", .{ method_prefix, dot, zig_name });
+            try writer.writeAll("            ctx.* = .{ .stream = &self.stream, .build_ctx = build_ctx, .build = build };\n");
+            try writer.writeAll("            self.stream.noteCallSent();\n");
+            try writer.print("            _ = self.client.peer.sendCall(self.client.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.streamCallBuild, {s}{s}{s}.streamCallReturn) catch |err| {{\n", .{
+                iface_id, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+            });
+            try writer.writeAll("                self.stream.in_flight -= 1;\n");
+            try writer.writeAll("                self.client.peer.allocator.destroy(ctx);\n");
+            try writer.writeAll("                return err;\n");
+            try writer.writeAll("            };\n");
+            try writer.writeAll("        }\n\n");
+        } else {
+            // Pass-through to inner Client
+            try writer.print("        pub fn {s}(self: *StreamClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
+                call_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+            });
+            try writer.print("            return self.client.{s}(user_ctx, build, on_return);\n", .{call_name});
+            try writer.writeAll("        }\n\n");
+        }
     }
 
     /// Generate a callXxxPipelined method on Client if the method has interface-typed results.

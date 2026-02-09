@@ -114,4 +114,39 @@ test "Codegen emits streaming method types and handlers" {
     try expectContains(output, "pub fn callDoStreamI");
     try expectContains(output, "pub fn callDoStreamJ");
     try expectContains(output, "pub fn callFinishStream");
+
+    // --- StreamClient ---
+    // StreamClient should be generated (interface has streaming methods)
+    try expectContains(output, "pub const StreamClient = struct");
+    try expectContains(output, "stream: rpc.stream_state.StreamState");
+
+    // Find the StreamClient section
+    const sc_start = std.mem.indexOf(u8, output, "pub const StreamClient = struct") orelse return error.MissingExpectedOutput;
+    // StreamClient ends before PipelinedClient or Pipeline types
+    const sc_end_offset = std.mem.indexOf(u8, output[sc_start..], "Pipeline") orelse output.len - sc_start;
+    const sc_section = output[sc_start .. sc_start + sc_end_offset];
+
+    // StreamClient has fire-and-forget streaming call methods
+    try expectContains(sc_section, "pub fn callDoStreamI(self: *StreamClient, build_ctx: *anyopaque, build: ?DoStreamI.BuildFn) !void");
+    try expectContains(sc_section, "pub fn callDoStreamJ(self: *StreamClient, build_ctx: *anyopaque, build: ?DoStreamJ.BuildFn) !void");
+
+    // Streaming calls check hasFailed
+    try expectContains(sc_section, "self.stream.hasFailed()");
+    // Streaming calls use noteCallSent
+    try expectContains(sc_section, "self.stream.noteCallSent()");
+    // Streaming calls use streamCallBuild/streamCallReturn
+    try expectContains(sc_section, "streamCallBuild");
+    try expectContains(sc_section, "streamCallReturn");
+
+    // Non-streaming method is a pass-through
+    try expectContains(sc_section, "pub fn callFinishStream(self: *StreamClient");
+    try expectContains(sc_section, "self.client.callFinishStream(");
+
+    // waitStreaming method present
+    try expectContains(sc_section, "pub fn waitStreaming(");
+
+    // StreamCallContext should be in streaming method structs
+    try expectContains(doStreamI_section, "pub const StreamCallContext = struct");
+    try expectContains(doStreamI_section, "streamCallBuild");
+    try expectContains(doStreamI_section, "streamCallReturn");
 }
