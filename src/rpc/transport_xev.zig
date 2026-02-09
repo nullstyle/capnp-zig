@@ -266,7 +266,9 @@ pub const Transport = struct {
             cb(transport.read_ctx.?, slice);
         }
 
-        if (!transport.shutting_down) transport.queueRead();
+        // Re-check after callback: the callback may have called
+        // clearHandlers() or initiated shutdown, invalidating state.
+        if (!transport.shutting_down and transport.read_cb != null) transport.queueRead();
         return .disarm;
     }
 
@@ -346,7 +348,7 @@ pub const Transport = struct {
     /// Detach all remaining write ops from this transport. Their callback
     /// pointers are cleared so the xev completion becomes a no-op that
     /// just frees the write buffer and the op itself.
-    fn abandonPendingWrites(self: *Transport) void {
+    pub fn abandonPendingWrites(self: *Transport) void {
         var op_opt = self.write_head;
         while (op_opt) |op| {
             const next = op.next;

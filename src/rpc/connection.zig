@@ -61,6 +61,7 @@ pub const Connection = struct {
         self.on_error = null;
         self.on_close = null;
         self.transport.clearHandlers();
+        self.transport.abandonPendingWrites();
         self.transport.deinit();
         self.framer.deinit();
     }

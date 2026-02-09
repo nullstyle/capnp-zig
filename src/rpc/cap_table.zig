@@ -200,10 +200,13 @@ pub const InboundCapTable = struct {
         table: *CapTable,
     ) !InboundCapTable {
         if (list_opt == null) {
+            const entries = try allocator.alloc(ResolvedCap, 0);
+            errdefer allocator.free(entries);
+            const retained = try allocator.alloc(bool, 0);
             return .{
                 .allocator = allocator,
-                .entries = try allocator.alloc(ResolvedCap, 0),
-                .retained = try allocator.alloc(bool, 0),
+                .entries = entries,
+                .retained = retained,
             };
         }
 

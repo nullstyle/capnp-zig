@@ -18,18 +18,14 @@ pub fn main() !void {
     // Read all data from stdin
     const max_size = 10 * 1024 * 1024; // 10 MB max
     const input_data = stdin.readToEndAlloc(allocator, max_size) catch |err| {
-        const msg = std.fmt.allocPrint(allocator, "Error reading stdin: {}\n", .{err}) catch return err;
-        defer allocator.free(msg);
-        stderr.writeAll(msg) catch {};
+        logStderr(stderr, "Error reading stdin: {}\n", .{err});
         return err;
     };
     defer allocator.free(input_data);
 
     // Parse the message
     const request = request_reader.parseCodeGeneratorRequest(allocator, input_data) catch |err| {
-        const msg1 = std.fmt.allocPrint(allocator, "Error parsing CodeGeneratorRequest: {}\n", .{err}) catch return err;
-        defer allocator.free(msg1);
-        stderr.writeAll(msg1) catch {};
+        logStderr(stderr, "Error parsing CodeGeneratorRequest: {}\n", .{err});
         return err;
     };
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -53,12 +49,18 @@ pub fn main() !void {
 
         try file.writeAll(output_code);
 
-        const msg = std.fmt.allocPrint(allocator, "Generated: {s}\n", .{output_filename}) catch continue;
-        defer allocator.free(msg);
-        stderr.writeAll(msg) catch {};
+        logStderr(stderr, "Generated: {s}\n", .{output_filename});
     }
 
     stdout.writeAll("Code generation complete.\n") catch {};
+}
+
+/// Best-effort diagnostic output to stderr using a stack buffer.
+fn logStderr(stderr: std.fs.File, comptime fmt: []const u8, args: anytype) void {
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    std.fmt.format(fbs.writer(), fmt, args) catch {};
+    stderr.writeAll(fbs.getWritten()) catch {};
 }
 
 // Parsing and freeing are handled by request_reader.zig.

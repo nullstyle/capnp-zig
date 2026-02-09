@@ -1649,6 +1649,7 @@ pub const MessageBuilder = struct {
         if (self.segments.items.len == 0) {
             _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
+        try self.segments.ensureTotalCapacity(self.allocator, segment_id + 1);
         while (self.segments.items.len <= segment_id) {
             _ = try self.createSegment();
         }
@@ -1676,6 +1677,7 @@ pub const MessageBuilder = struct {
         const root_segment = &self.segments.items[0];
         if (root_segment.items.len != 0) return error.RootAlreadyAllocated;
 
+        try self.segments.ensureTotalCapacity(self.allocator, segment_id + 1);
         while (self.segments.items.len <= segment_id) {
             _ = try self.createSegment();
         }

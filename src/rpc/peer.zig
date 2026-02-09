@@ -341,7 +341,7 @@ pub const Peer = struct {
     /// Assert that the caller is on the thread that created this peer.
     /// This is a no-op in release builds. In debug builds, it panics
     /// with a clear message if the current thread is not the owner.
-    fn assertThreadAffinity(self: *const Peer) void {
+    pub fn assertThreadAffinity(self: *const Peer) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
         if (builtin.mode == .Debug) {
             const owner = self.owner_thread_id orelse return;
@@ -584,7 +584,23 @@ pub const Peer = struct {
             &self.send_results_to_third_party,
         );
         peer_cleanup.clearOptionalOwnedBytes(self.allocator, &self.last_remote_abort_reason);
+        self.releaseAllImports();
         self.caps.deinit();
+    }
+
+    /// Best-effort: send Release messages for all remaining imports so the
+    /// remote peer can decrement its export ref counts.
+    fn releaseAllImports(self: *Peer) void {
+        var it = self.caps.imports.iterator();
+        while (it.next()) |entry| {
+            peer_outbound_control.sendReleaseViaSendFrame(
+                Peer,
+                self,
+                entry.key_ptr.*,
+                entry.value_ptr.ref_count,
+                Peer.sendFrame,
+            ) catch {};
+        }
     }
 
     /// Start the peer, registering error/close callbacks and initiating the
@@ -696,6 +712,7 @@ pub const Peer = struct {
     }
 
     fn completeShutdown(self: *Peer) void {
+        self.assertThreadAffinity();
         // Close transport if attached and not already closing.
         if (self.transport_close) |close_fn| {
             if (self.transport_is_closing) |is_closing_fn| {

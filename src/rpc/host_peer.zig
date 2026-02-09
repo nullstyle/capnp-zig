@@ -53,6 +53,7 @@ pub const HostPeer = struct {
     }
 
     pub fn deinit(self: *HostPeer) void {
+        self.peer.assertThreadAffinity();
         self.clearOutgoing();
         self.outgoing.deinit(self.allocator);
         self.clearHostCalls();
@@ -66,11 +67,13 @@ pub const HostPeer = struct {
         on_error: ?*const fn (peer: *peer_mod.Peer, err: anyerror) void,
         on_close: ?*const fn (peer: *peer_mod.Peer) void,
     ) void {
+        self.peer.assertThreadAffinity();
         self.ensureOverride();
         self.peer.start(on_error, on_close);
     }
 
     pub fn pushFrame(self: *HostPeer, frame: []const u8) !void {
+        self.peer.assertThreadAffinity();
         self.ensureOverride();
         self.current_inbound_frame = frame;
         defer self.current_inbound_frame = null;
@@ -79,6 +82,7 @@ pub const HostPeer = struct {
     }
 
     pub fn popOutgoingFrame(self: *HostPeer) ?[]u8 {
+        self.peer.assertThreadAffinity();
         if (self.outgoing.items.len == 0) return null;
         const frame = self.outgoing.orderedRemove(0);
         self.outgoing_bytes -= frame.len;
@@ -94,6 +98,7 @@ pub const HostPeer = struct {
     }
 
     pub fn setLimits(self: *HostPeer, limits: Limits) void {
+        self.peer.assertThreadAffinity();
         self.limits = limits;
     }
 
@@ -102,6 +107,7 @@ pub const HostPeer = struct {
     }
 
     pub fn enableHostCallBridge(self: *HostPeer) !void {
+        self.peer.assertThreadAffinity();
         if (self.host_bridge_enabled) return;
 
         _ = try self.peer.setBootstrap(.{
@@ -116,6 +122,7 @@ pub const HostPeer = struct {
     }
 
     pub fn popHostCall(self: *HostPeer) ?HostCall {
+        self.peer.assertThreadAffinity();
         if (self.host_calls.items.len == 0) return null;
         return self.host_calls.orderedRemove(0);
     }
@@ -125,6 +132,7 @@ pub const HostPeer = struct {
     }
 
     pub fn clearHostCalls(self: *HostPeer) void {
+        self.peer.assertThreadAffinity();
         for (self.host_calls.items) |call| {
             self.allocator.free(call.frame);
             _ = self.pending_host_call_questions.remove(call.question_id);
@@ -133,11 +141,13 @@ pub const HostPeer = struct {
     }
 
     pub fn respondHostCallException(self: *HostPeer, question_id: u32, reason: []const u8) !void {
+        self.peer.assertThreadAffinity();
         try self.peer.sendReturnException(question_id, reason);
         _ = self.pending_host_call_questions.remove(question_id);
     }
 
     pub fn respondHostCallResults(self: *HostPeer, question_id: u32, payload_frame: []const u8) !void {
+        self.peer.assertThreadAffinity();
         var payload_msg = try message.Message.init(self.allocator, payload_frame);
         defer payload_msg.deinit();
         const payload_any = try payload_msg.getRootAnyPointer();
@@ -159,6 +169,7 @@ pub const HostPeer = struct {
     }
 
     pub fn respondHostCallReturnFrame(self: *HostPeer, return_frame: []const u8) !void {
+        self.peer.assertThreadAffinity();
         var decoded = try protocol.DecodedMessage.init(self.allocator, return_frame);
         defer decoded.deinit();
 
@@ -175,10 +186,12 @@ pub const HostPeer = struct {
     }
 
     pub fn freeFrame(self: *HostPeer, frame: []u8) void {
+        self.peer.assertThreadAffinity();
         self.outgoing_allocator.free(frame);
     }
 
     pub fn clearOutgoing(self: *HostPeer) void {
+        self.peer.assertThreadAffinity();
         for (self.outgoing.items) |frame| self.outgoing_allocator.free(frame);
         self.outgoing.clearRetainingCapacity();
         self.outgoing_bytes = 0;

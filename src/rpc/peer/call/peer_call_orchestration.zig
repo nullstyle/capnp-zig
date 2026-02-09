@@ -99,7 +99,11 @@ pub fn dispatchImportedTargetPlan(
             try note_call_send_results(peer, call);
             try send_return_exception(peer, call.question_id, "missing export handler");
         },
-        .unknown_capability, .queue_promise_export => unreachable,
+        .unknown_capability => {
+            try note_call_send_results(peer, call);
+            try send_return_exception(peer, call.question_id, "unknown capability");
+        },
+        .queue_promise_export => unreachable, // filtered by handleCallImportedTargetForPeer before dispatch
     }
 }
 
