@@ -355,6 +355,19 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_rpc_nested_tests = b.addRunArtifact(codegen_rpc_nested_tests);
 
+    const codegen_streaming_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/codegen_streaming_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_codegen_streaming_tests = b.addRunArtifact(codegen_streaming_tests);
+
     const codegen_gen_rt_options = b.addOptions();
     codegen_gen_rt_options.addOptionPath("xev_src_path", xev_module.root_source_file.?);
 
@@ -750,6 +763,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_codegen_defaults_tests.step);
     test_step.dependOn(&run_codegen_annotations_tests.step);
     test_step.dependOn(&run_codegen_rpc_nested_tests.step);
+    test_step.dependOn(&run_codegen_streaming_tests.step);
     test_step.dependOn(&run_codegen_generated_runtime_tests.step);
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_interop_tests.step);
@@ -786,6 +800,7 @@ pub fn build(b: *std.Build) void {
     test_codegen_step.dependOn(&run_codegen_defaults_tests.step);
     test_codegen_step.dependOn(&run_codegen_annotations_tests.step);
     test_codegen_step.dependOn(&run_codegen_rpc_nested_tests.step);
+    test_codegen_step.dependOn(&run_codegen_streaming_tests.step);
     test_codegen_step.dependOn(&run_codegen_generated_runtime_tests.step);
     test_codegen_step.dependOn(&run_codegen_union_group_tests.step);
     test_codegen_step.dependOn(&run_codegen_golden_tests.step);

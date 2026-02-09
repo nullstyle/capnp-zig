@@ -123,6 +123,47 @@ pub fn sendCallPromised(
     return question_id;
 }
 
+/// Like `sendCallPromised` but takes a question ID and slice of ops directly,
+/// instead of a `protocol.PromisedAnswer` with a reader-backed transform.
+/// This is used by generated pipeline code to avoid constructing a reader.
+pub fn sendCallPromisedWithOps(
+    comptime PeerType: type,
+    comptime CallBuildFnType: type,
+    comptime QuestionCallbackType: type,
+    allocator: std.mem.Allocator,
+    caps: *cap_table.CapTable,
+    outbound_ctx: ?*anyopaque,
+    on_outbound_cap: ?cap_table.CapEntryCallback,
+    peer: *PeerType,
+    question_id_target: u32,
+    ops: []const protocol.PromisedAnswerOp,
+    interface_id: u64,
+    method_id: u16,
+    ctx: *anyopaque,
+    build: ?CallBuildFnType,
+    on_return: QuestionCallbackType,
+    allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
+    remove_question: *const fn (*PeerType, u32) void,
+    send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
+) !u32 {
+    const new_question_id = try allocate_question(peer, ctx, on_return);
+    errdefer remove_question(peer, new_question_id);
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(new_question_id, interface_id, method_id);
+    try call.setTargetPromisedAnswerWithOps(question_id_target, ops);
+
+    if (build) |build_fn| {
+        try build_fn(ctx, &call);
+    }
+
+    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap);
+    try send_builder(peer, &builder);
+    return new_question_id;
+}
+
 test "peer_call_sender sendCallToImport allocates question and encodes imported target" {
     const State = struct {
         allocator: std.mem.Allocator,

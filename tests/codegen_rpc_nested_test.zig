@@ -93,4 +93,23 @@ test "Codegen emits nested interface definitions" {
     try expectContains(output, "pub const PingParams");
     try expectContains(output, "pub fn callGetInner");
     try expectContains(output, "pub fn callPing");
+
+    // GAP-5: Typed capability resolution in readers
+    try expectContains(output, "pub fn resolveInner");
+    try expectContains(output, "Inner.Client");
+
+    // GAP-3: Typed capability parameter passing in builders
+    try expectContains(output, "pub fn setInnerServer");
+    try expectContains(output, "pub fn setInnerClient");
+
+    // GAP-8: Deferred handler returns
+    try expectContains(output, "pub const DeferredHandler");
+    try expectContains(output, "pub const ReturnSender");
+    try expectContains(output, "_deferred: ?");
+
+    // GAP-1: Promise pipelining
+    try expectContains(output, "pub const PipelinedClient");
+    try expectContains(output, "sendCallPromisedWithOps");
+    try expectContains(output, "GetInnerPipeline");
+    try expectContains(output, "callGetInnerPipelined");
 }

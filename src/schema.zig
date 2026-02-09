@@ -108,6 +108,9 @@ pub const Enumerant = struct {
     annotations: []AnnotationUse,
 };
 
+/// The type ID of StreamResult from stream.capnp, used to detect streaming methods.
+pub const stream_result_type_id: Id = 0x995f9a3377c0b16e;
+
 /// Method definition
 pub const Method = struct {
     name: []const u8,
@@ -115,6 +118,11 @@ pub const Method = struct {
     param_struct_type: Id,
     result_struct_type: Id,
     annotations: []AnnotationUse,
+
+    /// Whether this method uses `-> stream` (result type is StreamResult).
+    pub fn isStreaming(self: Method) bool {
+        return self.result_struct_type == stream_result_type_id;
+    }
 };
 
 /// Node types

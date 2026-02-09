@@ -450,6 +450,21 @@ pub const StructGenerator = struct {
                     try writer.print("            const raw = try self._reader.readPointerList({});\n", .{slot.offset});
                     try writer.writeAll("            return CapabilityListReader{ ._list = raw };\n");
                     try writer.writeAll("        }\n\n");
+
+                    // Generate typed resolve helper for List(Interface) fields
+                    if (self.interfaceTypeName(list_info.element_type.interface.type_id)) |iface_name| {
+                        defer self.allocator.free(iface_name);
+                        try writer.print("        pub fn resolve{s}(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+                        try writer.print("            const raw_list = try self._reader.readPointerList({});\n", .{slot.offset});
+                        try writer.writeAll("            const cap = try raw_list.getCapability(index);\n");
+                        try writer.writeAll("            const resolved = try caps.resolveCapability(cap);\n");
+                        try writer.writeAll("            switch (resolved) {\n");
+                        try writer.print("                .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
+                        try writer.writeAll("                else => return error.UnexpectedCapabilityType,\n");
+                        try writer.writeAll("            }\n");
+                        try writer.writeAll("        }\n\n");
+                    }
+
                     return;
                 }
                 if (list_info.element_type.* == .@"struct") {
@@ -533,6 +548,20 @@ pub const StructGenerator = struct {
         }
 
         try writer.writeAll("        }\n\n");
+
+        // Generate typed resolve helper for interface fields
+        if (slot.type == .interface) {
+            const iface_name = self.interfaceTypeName(slot.type.interface.type_id) orelse return;
+            defer self.allocator.free(iface_name);
+            try writer.print("        pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+            try writer.print("            const cap = try self._reader.readCapability({});\n", .{slot.offset});
+            try writer.writeAll("            const resolved = try caps.resolveCapability(cap);\n");
+            try writer.writeAll("            switch (resolved) {\n");
+            try writer.print("                .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
+            try writer.writeAll("                else => return error.UnexpectedCapabilityType,\n");
+            try writer.writeAll("            }\n");
+            try writer.writeAll("        }\n\n");
+        }
     }
 
     fn generateGroupFieldAccessor(self: *StructGenerator, field: schema.Field, writer: anytype) !void {
@@ -706,6 +735,20 @@ pub const StructGenerator = struct {
         }
 
         try writer.writeAll("            }\n\n");
+
+        // Generate typed resolve helper for interface fields in groups
+        if (slot.type == .interface) {
+            const iface_name = self.interfaceTypeName(slot.type.interface.type_id) orelse return;
+            defer self.allocator.free(iface_name);
+            try writer.print("            pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+            try writer.print("                const cap = try self._reader.readCapability({});\n", .{slot.offset});
+            try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
+            try writer.writeAll("                switch (resolved) {\n");
+            try writer.print("                    .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
+            try writer.writeAll("                    else => return error.UnexpectedCapabilityType,\n");
+            try writer.writeAll("                }\n");
+            try writer.writeAll("            }\n\n");
+        }
     }
 
     /// Generate field setter for a group's internal field (used inside group Builder)
@@ -763,6 +806,27 @@ pub const StructGenerator = struct {
                 try writer.print("            pub fn init{s}(self: *Builder) !message.AnyPointerBuilder {{\n", .{cap_name});
                 try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
                 try writer.writeAll("            }\n\n");
+
+                // Typed helpers for group interface fields
+                if (self.interfaceTypeName(slot.type.interface.type_id)) |iface_name| {
+                    defer self.allocator.free(iface_name);
+                    try writer.print("            pub fn set{s}Capability(self: *Builder, cap: message.Capability) !void {{\n", .{cap_name});
+                    try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
+                    try writer.writeAll("                try any.setCapability(cap);\n");
+                    try writer.writeAll("            }\n\n");
+
+                    try writer.print("            pub fn set{s}Server(self: *Builder, peer: *rpc.peer.Peer, server: *{s}.Server) !void {{\n", .{ cap_name, iface_name });
+                    try writer.print("                const cap_id = try {s}.exportServer(peer, server);\n", .{iface_name});
+                    try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
+                    try writer.writeAll("                try any.setCapability(.{ .id = cap_id });\n");
+                    try writer.writeAll("            }\n\n");
+
+                    try writer.print("            pub fn set{s}Client(self: *Builder, client: {s}.Client) !void {{\n", .{ cap_name, iface_name });
+                    try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
+                    try writer.writeAll("                try any.setCapability(.{ .id = client.cap_id });\n");
+                    try writer.writeAll("            }\n\n");
+                }
+
                 return;
             },
             else => {},
@@ -1051,6 +1115,7 @@ pub const StructGenerator = struct {
             },
             .interface => {
                 try self.writeAnyPointerMethod(cap_name, field, parent_struct_info, slot.offset, true, writer);
+                try self.writeInterfaceCapabilityHelpers(cap_name, slot.type.interface.type_id, field, parent_struct_info, slot.offset, writer);
                 return;
             },
             else => {},
@@ -1299,6 +1364,12 @@ pub const StructGenerator = struct {
     fn enumTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"enum") return null;
+        return self.qualifiedTypeName(node, id) catch null;
+    }
+
+    fn interfaceTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
+        const node = self.getNode(id) orelse return null;
+        if (node.kind != .interface) return null;
         return self.qualifiedTypeName(node, id) catch null;
     }
 
@@ -1578,6 +1649,37 @@ pub const StructGenerator = struct {
         try self.writeUnionDiscriminant(field, parent_struct_info, writer);
         try writer.print("            var any = try self._builder.getAnyPointer({});\n", .{slot_offset});
         try writer.writeAll("            try any.setCapability(cap);\n");
+        try writer.writeAll("        }\n\n");
+    }
+
+    /// Emit typed helper methods for an interface-typed Builder field:
+    /// setXxxServer (exports a server and writes the capability pointer) and
+    /// setXxxClient (writes an existing client's capability pointer).
+    fn writeInterfaceCapabilityHelpers(
+        self: *StructGenerator,
+        cap_name: []const u8,
+        type_id: schema.Id,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        slot_offset: u32,
+        writer: anytype,
+    ) !void {
+        const iface_name = self.interfaceTypeName(type_id) orelse return;
+        defer self.allocator.free(iface_name);
+
+        // setXxxServer: exports a server and writes the capability pointer
+        try writer.print("        pub fn set{s}Server(self: *Builder, peer: *rpc.peer.Peer, server: *{s}.Server) !void {{\n", .{ cap_name, iface_name });
+        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
+        try writer.print("            const cap_id = try {s}.exportServer(peer, server);\n", .{iface_name});
+        try writer.print("            var any = try self._builder.getAnyPointer({});\n", .{slot_offset});
+        try writer.writeAll("            try any.setCapability(.{ .id = cap_id });\n");
+        try writer.writeAll("        }\n\n");
+
+        // setXxxClient: writes an existing client's capability pointer
+        try writer.print("        pub fn set{s}Client(self: *Builder, client: {s}.Client) !void {{\n", .{ cap_name, iface_name });
+        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
+        try writer.print("            var any = try self._builder.getAnyPointer({});\n", .{slot_offset});
+        try writer.writeAll("            try any.setCapability(.{ .id = client.cap_id });\n");
         try writer.writeAll("        }\n\n");
     }
 

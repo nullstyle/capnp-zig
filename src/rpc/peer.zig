@@ -322,6 +322,15 @@ pub const Peer = struct {
     /// Reason string from the most recent remote Abort message, if any.
     last_remote_abort_reason: ?[]u8 = null,
 
+    // -- Graceful shutdown ---------------------------------------------------
+
+    /// When true, no new outbound calls are accepted and the peer drains
+    /// in-flight questions before invoking `shutdown_callback`.
+    is_shutting_down: bool = false,
+    /// Optional callback fired once all outstanding questions have been
+    /// answered and the shutdown sequence completes.
+    shutdown_callback: ?*const fn (peer: *Peer) void = null,
+
     // -- Thread-affinity check (debug only) ---------------------------------
 
     /// Thread ID captured at init time. In debug builds, key entry points
@@ -658,6 +667,7 @@ pub const Peer = struct {
     /// is invoked with the bootstrap capability in the return payload.
     pub fn sendBootstrap(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
         const question_id = try self.allocateQuestion(ctx, on_return);
 
         var builder = protocol.MessageBuilder.init(self.allocator);
@@ -667,6 +677,36 @@ pub const Peer = struct {
         try self.sendBuilder(&builder);
         log.debug("sent bootstrap question_id={}", .{question_id});
         return question_id;
+    }
+
+    /// Begin a graceful shutdown: reject new outbound calls, wait for
+    /// outstanding questions to receive their Return, then fire `on_complete`.
+    ///
+    /// If there are no outstanding questions the callback fires immediately.
+    /// Calling `shutdown` a second time is a no-op.
+    pub fn shutdown(self: *Peer, on_complete: ?*const fn (peer: *Peer) void) void {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return;
+        self.is_shutting_down = true;
+        self.shutdown_callback = on_complete;
+
+        if (self.questions.count() == 0) {
+            self.completeShutdown();
+        }
+    }
+
+    fn completeShutdown(self: *Peer) void {
+        // Close transport if attached and not already closing.
+        if (self.transport_close) |close_fn| {
+            if (self.transport_is_closing) |is_closing_fn| {
+                if (!is_closing_fn(self.transport_ctx.?)) {
+                    close_fn(self.transport_ctx.?);
+                }
+            } else {
+                close_fn(self.transport_ctx.?);
+            }
+        }
+        if (self.shutdown_callback) |cb| cb(self);
     }
 
     /// Resolve a previously exported promise to point at a concrete export.
@@ -725,6 +765,7 @@ pub const Peer = struct {
         on_return: QuestionCallback,
     ) !u32 {
         self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
         log.debug("sendCall target_id={} interface_id=0x{x} method_id={}", .{ target_id, interface_id, method_id });
         if (self.resolved_imports.get(target_id)) |entry| {
             if (!entry.embargoed and entry.cap != null) {
@@ -763,6 +804,7 @@ pub const Peer = struct {
         on_return: QuestionCallback,
     ) !u32 {
         self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
         return switch (target) {
             .imported => |cap| peer_call_sender.sendCallToImport(
                 Peer,
@@ -819,6 +861,7 @@ pub const Peer = struct {
         on_return: QuestionCallback,
     ) !u32 {
         self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
         return peer_call_sender.sendCallPromised(
             Peer,
             CallBuildFn,
@@ -829,6 +872,43 @@ pub const Peer = struct {
             onOutboundCap,
             self,
             promised,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            Peer.allocateQuestion,
+            Peer.removeQuestion,
+            Peer.sendBuilder,
+        );
+    }
+
+    /// Like `sendCallPromised` but takes a question ID and a slice of
+    /// `PromisedAnswerOp` directly, avoiding the need to build a reader-backed
+    /// `PromisedAnswer`. Used by generated pipeline code.
+    pub fn sendCallPromisedWithOps(
+        self: *Peer,
+        question_id_target: u32,
+        ops: []const protocol.PromisedAnswerOp,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+        return peer_call_sender.sendCallPromisedWithOps(
+            Peer,
+            CallBuildFn,
+            QuestionCallback,
+            self.allocator,
+            &self.caps,
+            self,
+            onOutboundCap,
+            self,
+            question_id_target,
+            ops,
             interface_id,
             method_id,
             ctx,
@@ -1052,6 +1132,20 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
+    }
+
+    /// Send a return with an empty struct result (0 data words, 0 pointers).
+    /// Used by streaming methods to auto-ack after the handler completes.
+    pub fn sendReturnEmptyStruct(self: *Peer, answer_id: u32) !void {
+        self.assertThreadAffinity();
+        const BuildCtx = struct {
+            fn build(_: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+                _ = try ret.initResultsStruct(0, 0);
+                try ret.setEmptyCapTable();
+            }
+        };
+        var ctx: u8 = 0;
+        try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
     }
 
     fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
@@ -1410,6 +1504,9 @@ pub const Peer = struct {
 
     fn removeQuestion(self: *Peer, question_id: u32) void {
         _ = self.questions.remove(question_id);
+        if (self.is_shutting_down and self.questions.count() == 0) {
+            self.completeShutdown();
+        }
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {

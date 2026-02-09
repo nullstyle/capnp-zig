@@ -360,13 +360,23 @@ pub const Generator = struct {
 
             const param_layout = self.structLayout(method.param_struct_type) orelse return error.InvalidStructNode;
             const result_layout = self.structLayout(method.result_struct_type) orelse return error.InvalidStructNode;
+            const is_streaming = method.isStreaming();
 
             try writer.print("    pub const {s} = struct {{\n", .{zig_name});
             try writer.print("        pub const ordinal: u16 = {};\n", .{method.code_order});
+            try writer.print("        pub const is_streaming: bool = {};\n", .{is_streaming});
             try writer.print("        pub const Params = {s};\n", .{param_name});
             try writer.print("        pub const Results = {s};\n", .{result_name});
             try writer.writeAll("        pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;\n");
-            try writer.writeAll("        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;\n");
+
+            if (is_streaming) {
+                // Streaming handler: no results builder, server auto-acks with empty Return.
+                try writer.writeAll("        pub const StreamHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;\n");
+            } else {
+                try writer.writeAll("        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;\n");
+                try writer.writeAll("        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;\n");
+            }
+
             try writer.writeAll("        pub const Response = union(enum) {\n");
             try writer.writeAll("            results: Results.Reader,\n");
             try writer.writeAll("            exception: rpc.protocol.Exception,\n");
@@ -383,12 +393,25 @@ pub const Generator = struct {
             try writer.writeAll("            callback: Callback,\n");
             try writer.writeAll("        };\n\n");
 
-            try writer.writeAll("        const ReturnContext = struct {\n");
-            try writer.writeAll("            server: *Server,\n");
-            try writer.writeAll("            peer: *rpc.peer.Peer,\n");
-            try writer.writeAll("            params: Params.Reader,\n");
-            try writer.writeAll("            caps: *const rpc.cap_table.InboundCapTable,\n");
-            try writer.writeAll("        };\n\n");
+            if (!is_streaming) {
+                try writer.writeAll("        const ReturnContext = struct {\n");
+                try writer.writeAll("            server: *Server,\n");
+                try writer.writeAll("            peer: *rpc.peer.Peer,\n");
+                try writer.writeAll("            params: Params.Reader,\n");
+                try writer.writeAll("            caps: *const rpc.cap_table.InboundCapTable,\n");
+                try writer.writeAll("        };\n\n");
+
+                try writer.writeAll("        pub const ReturnSender = struct {\n");
+                try writer.writeAll("            peer: *rpc.peer.Peer,\n");
+                try writer.writeAll("            question_id: u32,\n\n");
+                try writer.writeAll("            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {\n");
+                try writer.writeAll("                try self.peer.sendReturnResults(self.question_id, ctx, build);\n");
+                try writer.writeAll("            }\n\n");
+                try writer.writeAll("            pub fn sendException(self: ReturnSender, reason: []const u8) !void {\n");
+                try writer.writeAll("                try self.peer.sendReturnException(self.question_id, reason);\n");
+                try writer.writeAll("            }\n");
+                try writer.writeAll("        };\n\n");
+            }
 
             try writer.writeAll("        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {\n");
             try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
@@ -429,28 +452,43 @@ pub const Generator = struct {
             try writer.writeAll("            try ctx.callback(ctx.user_ctx, peer, response, caps);\n");
             try writer.writeAll("        }\n\n");
 
-            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
-            try writer.writeAll("            const params_struct = try call.params.content.getStruct();\n");
-            try writer.writeAll("            const params = Params.Reader.wrap(params_struct);\n");
-            try writer.writeAll("            var ctx = ReturnContext{\n");
-            try writer.writeAll("                .server = server,\n");
-            try writer.writeAll("                .peer = peer,\n");
-            try writer.writeAll("                .params = params,\n");
-            try writer.writeAll("                .caps = caps,\n");
-            try writer.writeAll("            };\n");
-            try writer.writeAll("            try peer.sendReturnResults(call.question_id, &ctx, buildReturn);\n");
-            try writer.writeAll("        }\n\n");
+            if (is_streaming) {
+                // Streaming handleCall: call StreamHandler, auto-ack with empty Return
+                try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+                try writer.writeAll("            const params_struct = try call.params.content.getStruct();\n");
+                try writer.writeAll("            const params = Params.Reader.wrap(params_struct);\n");
+                try writer.print("            try server.vtable.{s}(server.ctx, peer, params, caps);\n", .{escaped_method_field});
+                try writer.writeAll("            try peer.sendReturnEmptyStruct(call.question_id);\n");
+                try writer.writeAll("        }\n");
+            } else {
+                try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+                try writer.writeAll("            const params_struct = try call.params.content.getStruct();\n");
+                try writer.writeAll("            const params = Params.Reader.wrap(params_struct);\n");
+                try writer.print("            if (server.vtable.{s}_deferred) |deferred_fn| {{\n", .{escaped_method_field});
+                try writer.writeAll("                const sender = ReturnSender{ .peer = peer, .question_id = call.question_id };\n");
+                try writer.writeAll("                try deferred_fn(server.ctx, peer, params, caps, sender);\n");
+                try writer.writeAll("            } else {\n");
+                try writer.writeAll("                var ctx = ReturnContext{\n");
+                try writer.writeAll("                    .server = server,\n");
+                try writer.writeAll("                    .peer = peer,\n");
+                try writer.writeAll("                    .params = params,\n");
+                try writer.writeAll("                    .caps = caps,\n");
+                try writer.writeAll("                };\n");
+                try writer.writeAll("                try peer.sendReturnResults(call.question_id, &ctx, buildReturn);\n");
+                try writer.writeAll("            }\n");
+                try writer.writeAll("        }\n\n");
 
-            try writer.writeAll("        fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {\n");
-            try writer.writeAll("            const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));\n");
-            try writer.print("            const results_builder = try ret.initResultsStruct({}, {});\n", .{
-                result_layout.data_words,
-                result_layout.pointer_words,
-            });
-            try writer.writeAll("            var results = Results.Builder.wrap(results_builder);\n");
-            try writer.print("            try ctx.server.vtable.{s}(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);\n", .{escaped_method_field});
-            try writer.writeAll("            try ret.setEmptyCapTable();\n");
-            try writer.writeAll("        }\n");
+                try writer.writeAll("        fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {\n");
+                try writer.writeAll("            const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));\n");
+                try writer.print("            const results_builder = try ret.initResultsStruct({}, {});\n", .{
+                    result_layout.data_words,
+                    result_layout.pointer_words,
+                });
+                try writer.writeAll("            var results = Results.Builder.wrap(results_builder);\n");
+                try writer.print("            try ctx.server.vtable.{s}(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);\n", .{escaped_method_field});
+                try writer.writeAll("            try ret.setEmptyCapTable();\n");
+                try writer.writeAll("        }\n");
+            }
 
             try writer.writeAll("    };\n\n");
         }
@@ -483,9 +521,75 @@ pub const Generator = struct {
             try writer.writeAll("        }\n\n");
         }
 
+        // Generate callXxxPipelined methods for methods with interface-typed results
+        for (interface_info.methods) |method| {
+            const iface_fields = try self.getInterfaceFields(method.result_struct_type);
+            defer self.freeInterfaceFields(iface_fields);
+            if (iface_fields.len == 0) continue;
+
+            const zig_name = try self.toZigIdentifier(method.name);
+            defer self.allocator.free(zig_name);
+
+            try writer.print("        pub fn call{s}Pipelined(self: *Client, user_ctx: *anyopaque, build: ?{s}.BuildFn, on_return: {s}.Callback) !{s}.Pipeline {{\n", .{
+                zig_name, zig_name, zig_name, zig_name,
+            });
+            try writer.print("            const qid = try self.call{s}(user_ctx, build, on_return);\n", .{zig_name});
+            try writer.writeAll("            return .{ .peer = self.peer, .question_id = qid };\n");
+            try writer.writeAll("        }\n\n");
+        }
+
         try writer.writeAll("        pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {\n");
         try writer.writeAll("            return bootstrap(peer, user_ctx, callback);\n");
         try writer.writeAll("        }\n\n");
+
+        try writer.writeAll("    };\n\n");
+
+        // Generate Pipeline types for methods with interface-typed results
+        for (interface_info.methods) |method| {
+            const iface_fields = try self.getInterfaceFields(method.result_struct_type);
+            defer self.freeInterfaceFields(iface_fields);
+            if (iface_fields.len == 0) continue;
+
+            const zig_name = try self.toZigIdentifier(method.name);
+            defer self.allocator.free(zig_name);
+
+            try writer.print("    pub const {s}Pipeline = struct {{\n", .{zig_name});
+            // A pipeline wraps a (peer, question_id) pair with type-safe accessors
+            // for each interface-typed result field.
+            try writer.writeAll("        peer: *rpc.peer.Peer,\n");
+            try writer.writeAll("        question_id: u32,\n\n");
+
+            for (iface_fields) |ifield| {
+                try writer.print("        pub fn get{s}(self: @This()) {s}.PipelinedClient {{\n", .{ ifield.name, ifield.type_name });
+                try writer.print("            return .{{ .peer = self.peer, .question_id = self.question_id, .pointer_index = {} }};\n", .{ifield.pointer_offset});
+                try writer.writeAll("        }\n\n");
+            }
+
+            try writer.writeAll("    };\n\n");
+        }
+
+        // Generate PipelinedClient type with callXxx methods using sendCallPromisedWithOps
+        try writer.writeAll("    pub const PipelinedClient = struct {\n");
+        try writer.writeAll("        peer: *rpc.peer.Peer,\n");
+        try writer.writeAll("        question_id: u32,\n");
+        try writer.writeAll("        pointer_index: u16,\n\n");
+
+        for (interface_info.methods) |method| {
+            const zig_name = try self.toZigIdentifier(method.name);
+            defer self.allocator.free(zig_name);
+            const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
+            defer self.allocator.free(call_name);
+
+            try writer.print("        pub fn {s}(self: *PipelinedClient, user_ctx: *anyopaque, build: ?{s}.BuildFn, on_return: {s}.Callback) !u32 {{\n", .{
+                call_name, zig_name, zig_name,
+            });
+            try writer.print("            const ctx = try self.peer.allocator.create({s}.CallContext);\n", .{zig_name});
+            try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
+            try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{{.{{ .tag = .get_pointer_field, .pointer_index = self.pointer_index }}}}, interface_id, {s}.ordinal, ctx, {s}.callBuild, {s}.callReturn);\n", .{
+                zig_name, zig_name, zig_name,
+            });
+            try writer.writeAll("        }\n\n");
+        }
 
         try writer.writeAll("    };\n\n");
 
@@ -552,7 +656,12 @@ pub const Generator = struct {
             defer self.allocator.free(method_field);
             const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
             defer self.allocator.free(escaped_field);
-            try writer.print("        {s}: {s}.Handler,\n", .{ escaped_field, zig_name });
+            if (method.isStreaming()) {
+                try writer.print("        {s}: {s}.StreamHandler,\n", .{ escaped_field, zig_name });
+            } else {
+                try writer.print("        {s}: {s}.Handler,\n", .{ escaped_field, zig_name });
+                try writer.print("        {s}_deferred: ?{s}.DeferredHandler = null,\n", .{ escaped_field, zig_name });
+            }
         }
         try writer.writeAll("    };\n\n");
 
@@ -669,6 +778,54 @@ pub const Generator = struct {
             return self.qualifiedTypeName(id);
         }
         return try self.allocator.dupe(u8, "void");
+    }
+
+    /// Describes an interface-typed pointer field in a struct.
+    const InterfaceFieldInfo = struct {
+        name: []const u8,
+        type_name: []const u8,
+        pointer_offset: u32,
+    };
+
+    /// Return the list of interface-typed pointer fields in the given struct node.
+    /// Caller must free each entry's name and type_name, as well as the returned slice.
+    fn getInterfaceFields(self: *Generator, struct_id: schema.Id) ![]InterfaceFieldInfo {
+        const node = self.getNode(struct_id) orelse return try self.allocator.alloc(InterfaceFieldInfo, 0);
+        const struct_info = node.struct_node orelse return try self.allocator.alloc(InterfaceFieldInfo, 0);
+
+        var result = std.ArrayList(InterfaceFieldInfo){};
+        errdefer {
+            for (result.items) |item| {
+                self.allocator.free(item.name);
+                self.allocator.free(item.type_name);
+            }
+            result.deinit(self.allocator);
+        }
+
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .interface) continue;
+            const iface_id = slot.type.interface.type_id;
+            const iface_name = self.qualifiedTypeName(iface_id) catch continue;
+            errdefer self.allocator.free(iface_name);
+            const field_name = try types.identToZigTypeName(self.allocator, field.name);
+            errdefer self.allocator.free(field_name);
+            try result.append(self.allocator, .{
+                .name = field_name,
+                .type_name = iface_name,
+                .pointer_offset = slot.offset,
+            });
+        }
+
+        return result.toOwnedSlice(self.allocator);
+    }
+
+    fn freeInterfaceFields(self: *Generator, fields: []InterfaceFieldInfo) void {
+        for (fields) |item| {
+            self.allocator.free(item.name);
+            self.allocator.free(item.type_name);
+        }
+        self.allocator.free(fields);
     }
 
     fn structLayout(self: *Generator, id: schema.Id) ?struct { data_words: u16, pointer_words: u16 } {
