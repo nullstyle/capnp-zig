@@ -112,6 +112,7 @@ pub fn handleBootstrap(
     try send_frame(peer, bytes);
 
     const copy = try allocator.alloc(u8, bytes.len);
+    errdefer allocator.free(copy);
     std.mem.copyForwards(u8, copy, bytes);
     try record_resolved_answer(peer, bootstrap.question_id, copy);
 }

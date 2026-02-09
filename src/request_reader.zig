@@ -105,11 +105,26 @@ fn parseNodeList(allocator: std.mem.Allocator, root: message.StructReader) ![]sc
 
     const count = list.len();
     var nodes = try allocator.alloc(schema.Node, count);
-    errdefer allocator.free(nodes);
+    var initialized: u32 = 0;
+    errdefer {
+        for (nodes[0..initialized]) |node| {
+            allocator.free(node.display_name);
+            freeNestedNodes(allocator, node.nested_nodes);
+            freeAnnotations(allocator, node.annotations);
+            if (node.struct_node) |sn| freeFields(allocator, sn.fields);
+            if (node.enum_node) |en| freeEnumerants(allocator, en.enumerants);
+            if (node.interface_node) |in_| freeMethods(allocator, in_.methods);
+            if (node.const_node) |cn| {
+                freeType(allocator, cn.type);
+                freeValue(allocator, cn.value);
+            }
+            if (node.annotation_node) |an| freeType(allocator, an.type);
+        }
+        allocator.free(nodes);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        nodes[idx] = try parseNode(allocator, try list.get(idx));
+    while (initialized < count) : (initialized += 1) {
+        nodes[initialized] = try parseNode(allocator, try list.get(initialized));
     }
 
     return nodes;
@@ -118,10 +133,13 @@ fn parseNodeList(allocator: std.mem.Allocator, root: message.StructReader) ![]sc
 fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.Node {
     const id = reader.readU64(0);
     const display_name = try dupText(allocator, reader, 0);
+    errdefer allocator.free(display_name);
     const display_name_prefix_length = reader.readU32(8);
     const scope_id = reader.readU64(16);
     const nested_nodes = try parseNestedNodes(allocator, reader);
+    errdefer freeNestedNodes(allocator, nested_nodes);
     const annotations = try parseAnnotations(allocator, reader, 2);
+    errdefer freeAnnotations(allocator, annotations);
 
     const kind_raw = reader.readU16(12);
     const kind_tag = std.meta.intToEnum(NodeWhich, kind_raw) catch return error.InvalidNodeKind;
@@ -172,12 +190,15 @@ fn parseNestedNodes(allocator: std.mem.Allocator, reader: message.StructReader) 
 
     const count = list.len();
     var nested = try allocator.alloc(schema.Node.NestedNode, count);
-    errdefer allocator.free(nested);
+    var initialized: u32 = 0;
+    errdefer {
+        for (nested[0..initialized]) |item| allocator.free(item.name);
+        allocator.free(nested);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
-        nested[idx] = .{
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
+        nested[initialized] = .{
             .name = try dupText(allocator, item, 0),
             .id = item.readU64(0),
         };
@@ -215,15 +236,24 @@ fn parseEnumNode(allocator: std.mem.Allocator, reader: message.StructReader) !sc
 
     const count = list.len();
     var enumerants = try allocator.alloc(schema.Enumerant, count);
-    errdefer allocator.free(enumerants);
+    var initialized: u32 = 0;
+    errdefer {
+        for (enumerants[0..initialized]) |e| {
+            allocator.free(e.name);
+            freeAnnotations(allocator, e.annotations);
+        }
+        allocator.free(enumerants);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
-        enumerants[idx] = .{
-            .name = try dupText(allocator, item, 0),
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
+        const name = try dupText(allocator, item, 0);
+        errdefer allocator.free(name);
+        const ann = try parseAnnotations(allocator, item, 1);
+        enumerants[initialized] = .{
+            .name = name,
             .code_order = item.readU16(0),
-            .annotations = try parseAnnotations(allocator, item, 1),
+            .annotations = ann,
         };
     }
 
@@ -238,17 +268,26 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
 
     const count = list.len();
     var methods = try allocator.alloc(schema.Method, count);
-    errdefer allocator.free(methods);
+    var initialized: u32 = 0;
+    errdefer {
+        for (methods[0..initialized]) |m| {
+            allocator.free(m.name);
+            freeAnnotations(allocator, m.annotations);
+        }
+        allocator.free(methods);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
-        methods[idx] = .{
-            .name = try dupText(allocator, item, 0),
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
+        const name = try dupText(allocator, item, 0);
+        errdefer allocator.free(name);
+        const ann = try parseAnnotations(allocator, item, 1);
+        methods[initialized] = .{
+            .name = name,
             .code_order = item.readU16(0),
             .param_struct_type = item.readU64(8),
             .result_struct_type = item.readU64(16),
-            .annotations = try parseAnnotations(allocator, item, 1),
+            .annotations = ann,
         };
     }
 
@@ -258,6 +297,7 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
 fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.ConstNode {
     const type_reader = try reader.readStruct(3);
     const typ = try parseType(allocator, type_reader);
+    errdefer freeType(allocator, typ);
 
     const value_reader = reader.readStruct(4) catch |err| switch (err) {
         error.InvalidPointer => null,
@@ -303,12 +343,21 @@ fn parseFields(allocator: std.mem.Allocator, reader: message.StructReader) ![]sc
 
     const count = list.len();
     var fields = try allocator.alloc(schema.Field, count);
-    errdefer allocator.free(fields);
+    var initialized: u32 = 0;
+    errdefer {
+        for (fields[0..initialized]) |field| {
+            allocator.free(field.name);
+            freeAnnotations(allocator, field.annotations);
+            if (field.slot) |slot| {
+                freeType(allocator, slot.type);
+                if (slot.default_value) |value| freeValue(allocator, value);
+            }
+        }
+        allocator.free(fields);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
-        fields[idx] = try parseField(allocator, item);
+    while (initialized < count) : (initialized += 1) {
+        fields[initialized] = try parseField(allocator, try list.get(initialized));
     }
 
     return fields;
@@ -316,8 +365,10 @@ fn parseFields(allocator: std.mem.Allocator, reader: message.StructReader) ![]sc
 
 fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schema.Field {
     const name = try dupText(allocator, reader, 0);
+    errdefer allocator.free(name);
     const code_order = reader.readU16(0);
     const annotations = try parseAnnotations(allocator, reader, 1);
+    errdefer freeAnnotations(allocator, annotations);
     const discriminant_value = reader.readU16(2);
 
     const which_raw = reader.readU16(8);
@@ -331,6 +382,7 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
             const offset = reader.readU32(4);
             const type_reader = try reader.readStruct(2);
             const field_type = try parseType(allocator, type_reader);
+            errdefer freeType(allocator, field_type);
 
             const default_value_reader = reader.readStruct(3) catch |err| switch (err) {
                 error.InvalidPointer => null,
@@ -372,11 +424,14 @@ fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, 
 
     const count = list.len();
     var annotations = try allocator.alloc(schema.AnnotationUse, count);
-    errdefer allocator.free(annotations);
+    var initialized: u32 = 0;
+    errdefer {
+        for (annotations[0..initialized]) |ann| freeValue(allocator, ann.value);
+        allocator.free(annotations);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
         const id = item.readU64(0);
         const value_reader = item.readStruct(0) catch |err| switch (err) {
             error.InvalidPointer => null,
@@ -387,7 +442,7 @@ fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, 
         else
             .void;
 
-        annotations[idx] = .{
+        annotations[initialized] = .{
             .id = id,
             .value = value,
         };
@@ -404,12 +459,18 @@ fn parseRequestedFiles(allocator: std.mem.Allocator, root: message.StructReader)
 
     const count = list.len();
     var requested = try allocator.alloc(schema.RequestedFile, count);
-    errdefer allocator.free(requested);
+    var initialized: u32 = 0;
+    errdefer {
+        for (requested[0..initialized]) |file| {
+            allocator.free(file.filename);
+            for (file.imports) |imp| allocator.free(imp.name);
+            allocator.free(file.imports);
+        }
+        allocator.free(requested);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
-        requested[idx] = try parseRequestedFile(allocator, item);
+    while (initialized < count) : (initialized += 1) {
+        requested[initialized] = try parseRequestedFile(allocator, try list.get(initialized));
     }
 
     return requested;
@@ -418,6 +479,7 @@ fn parseRequestedFiles(allocator: std.mem.Allocator, root: message.StructReader)
 fn parseRequestedFile(allocator: std.mem.Allocator, reader: message.StructReader) !schema.RequestedFile {
     const id = reader.readU64(0);
     const filename = try dupText(allocator, reader, 0);
+    errdefer allocator.free(filename);
     const imports = try parseImports(allocator, reader);
 
     return .{
@@ -435,12 +497,15 @@ fn parseImports(allocator: std.mem.Allocator, reader: message.StructReader) ![]s
 
     const count = list.len();
     var imports = try allocator.alloc(schema.Import, count);
-    errdefer allocator.free(imports);
+    var initialized: u32 = 0;
+    errdefer {
+        for (imports[0..initialized]) |imp| allocator.free(imp.name);
+        allocator.free(imports);
+    }
 
-    var idx: u32 = 0;
-    while (idx < count) : (idx += 1) {
-        const item = try list.get(idx);
-        imports[idx] = .{
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
+        imports[initialized] = .{
             .id = item.readU64(0),
             .name = try dupText(allocator, item, 0),
         };
@@ -471,6 +536,7 @@ fn parseType(allocator: std.mem.Allocator, reader: message.StructReader) !schema
         .list => blk: {
             const element_reader = try reader.readStruct(0);
             const element_type = try parseType(allocator, element_reader);
+            errdefer freeType(allocator, element_type);
             const element_ptr = try allocator.create(schema.Type);
             element_ptr.* = element_type;
             break :blk .{ .list = .{ .element_type = element_ptr } };

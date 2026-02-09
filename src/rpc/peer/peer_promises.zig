@@ -68,13 +68,21 @@ pub fn recordResolvedAnswer(
         defer pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
-        var decoded = try protocol.DecodedMessage.init(allocator, pending_call.frame);
+        var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
+            report_nonfatal_error(peer, err);
+            continue;
+        };
         defer decoded.deinit();
         if (decoded.tag != .call) continue;
-        const call = try decoded.asCall();
+        const call = decoded.asCall() catch |err| {
+            report_nonfatal_error(peer, err);
+            continue;
+        };
         const promised = call.target.promised_answer orelse continue;
         const resolved = resolve_promised_answer(peer, promised) catch |err| {
-            try send_return_exception(peer, call.question_id, @errorName(err));
+            send_return_exception(peer, call.question_id, @errorName(err)) catch |send_err| {
+                report_nonfatal_error(peer, send_err);
+            };
             continue;
         };
         handle_resolved_call(peer, call, &pending_call.caps, resolved) catch |err| {
@@ -107,13 +115,21 @@ pub fn replayResolvedPromiseExport(
         defer pending_call.caps.deinit();
         defer allocator.free(pending_call.frame);
 
-        var decoded = try protocol.DecodedMessage.init(allocator, pending_call.frame);
+        var decoded = protocol.DecodedMessage.init(allocator, pending_call.frame) catch |err| {
+            report_nonfatal_error(peer, err);
+            continue;
+        };
         defer decoded.deinit();
         if (decoded.tag != .call) continue;
-        const call = try decoded.asCall();
+        const call = decoded.asCall() catch |err| {
+            report_nonfatal_error(peer, err);
+            continue;
+        };
 
         if (resolved == .none) {
-            try send_return_exception(peer, call.question_id, "promise broken");
+            send_return_exception(peer, call.question_id, "promise broken") catch |err| {
+                report_nonfatal_error(peer, err);
+            };
         } else {
             handle_resolved_call(peer, call, &pending_call.caps, resolved) catch |err| {
                 report_nonfatal_error(peer, err);

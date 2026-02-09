@@ -1710,6 +1710,14 @@ pub const Peer = struct {
     }
 
     fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
+        // Reject duplicate question IDs from the remote peer (spec violation).
+        if (self.resolved_answers.contains(call.question_id) or
+            self.send_results_to_yourself.contains(call.question_id) or
+            self.send_results_to_third_party.contains(call.question_id))
+        {
+            return error.DuplicateQuestionId;
+        }
+
         peer_call_orchestration.handleCallForPeer(
             Peer,
             self,

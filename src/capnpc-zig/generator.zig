@@ -11,6 +11,10 @@ pub const Generator = struct {
     allocator: std.mem.Allocator,
     nodes: []const schema.Node,
     node_map: std.AutoHashMap(schema.Id, usize),
+    /// Set during generateFile to the current file's node ID.
+    current_file_id: ?schema.Id = null,
+    /// Maps imported file node IDs to their Zig module const names.
+    import_modules: std.AutoHashMap(schema.Id, []const u8),
 
     /// Build a generator from the full set of schema nodes, indexing them by ID.
     pub fn init(allocator: std.mem.Allocator, nodes: []const schema.Node) !Generator {
@@ -25,11 +29,20 @@ pub const Generator = struct {
             .allocator = allocator,
             .nodes = nodes,
             .node_map = node_map,
+            .import_modules = std.AutoHashMap(schema.Id, []const u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *Generator) void {
+        self.clearImportModules();
+        self.import_modules.deinit();
         self.node_map.deinit();
+    }
+
+    fn clearImportModules(self: *Generator) void {
+        var it = self.import_modules.valueIterator();
+        while (it.next()) |v| self.allocator.free(v.*);
+        self.import_modules.clearRetainingCapacity();
     }
 
     /// Get a node by its ID
@@ -46,6 +59,11 @@ pub const Generator = struct {
     pub fn generateFile(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
         log.debug("generating file: {s}", .{requested_file.filename});
 
+        // Set current file context for cross-file type resolution.
+        self.current_file_id = requested_file.id;
+        defer self.current_file_id = null;
+        self.clearImportModules();
+
         var output = std.ArrayList(u8){};
         errdefer output.deinit(self.allocator);
 
@@ -58,7 +76,18 @@ pub const Generator = struct {
         try writer.writeAll("const capnpc = @import(\"capnpc-zig\");\n");
         try writer.writeAll("const message = capnpc.message;\n");
         try writer.writeAll("const schema = capnpc.schema;\n");
-        try writer.writeAll("const rpc = capnpc.rpc;\n\n");
+        try writer.writeAll("const rpc = capnpc.rpc;\n");
+
+        // Emit @import for each cross-file import.
+        for (requested_file.imports) |imp| {
+            const mod_name = try self.moduleNameFromFilename(imp.name);
+            errdefer self.allocator.free(mod_name);
+            const import_path = try self.importPathFromCapnpName(imp.name);
+            defer self.allocator.free(import_path);
+            try writer.print("const {s} = @import(\"{s}\");\n", .{ mod_name, import_path });
+            try self.import_modules.put(imp.id, mod_name);
+        }
+        try writer.writeByte('\n');
 
         // Find the file node
         const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
@@ -276,6 +305,7 @@ pub const Generator = struct {
     /// Generate a struct definition
     fn generateStruct(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         var struct_gen = StructGenerator.initWithLookup(self.allocator, lookupNode, self);
+        struct_gen.type_prefix_fn = lookupTypePrefix;
         try struct_gen.generate(node, writer);
     }
 
@@ -635,9 +665,8 @@ pub const Generator = struct {
     }
 
     fn resolveNodeName(self: *Generator, id: schema.Id) ![]const u8 {
-        if (self.getNode(id)) |node| {
-            const name = self.getSimpleName(node);
-            return types.normalizeAndEscapeTypeIdentifier(self.allocator, name);
+        if (self.getNode(id)) |_| {
+            return self.qualifiedTypeName(id);
         }
         return try self.allocator.dupe(u8, "void");
     }
@@ -665,6 +694,51 @@ pub const Generator = struct {
     fn moduleNameFromFilename(self: *Generator, filename: []const u8) ![]const u8 {
         const stem = std.fs.path.stem(filename);
         return self.toSnakeCaseLower(stem);
+    }
+
+    /// Derive the .zig import path from a .capnp import name.
+    /// E.g., "other.capnp" → "other.zig", "path/to/types.capnp" → "path/to/types.zig"
+    fn importPathFromCapnpName(self: *Generator, capnp_name: []const u8) ![]const u8 {
+        if (std.mem.endsWith(u8, capnp_name, ".capnp")) {
+            const base = capnp_name[0 .. capnp_name.len - 6];
+            return std.fmt.allocPrint(self.allocator, "{s}.zig", .{base});
+        }
+        return std.fmt.allocPrint(self.allocator, "{s}.zig", .{capnp_name});
+    }
+
+    /// Walk the scope chain from a node to find its owning file node ID.
+    fn findOwningFileId(self: *const Generator, id: schema.Id) ?schema.Id {
+        var current_id = id;
+        var depth: u32 = 0;
+        while (depth < 64) : (depth += 1) {
+            const node = self.getNode(current_id) orelse return null;
+            if (node.kind == .file) return node.id;
+            if (node.scope_id == current_id) return null; // self-referential, stop
+            current_id = node.scope_id;
+        }
+        return null;
+    }
+
+    /// Return the import module name for a type if it belongs to a different file,
+    /// or null if it belongs to the current file.
+    fn typeModulePrefix(self: *const Generator, type_id: schema.Id) ?[]const u8 {
+        const current = self.current_file_id orelse return null;
+        const owning_file = self.findOwningFileId(type_id) orelse return null;
+        if (owning_file == current) return null;
+        return self.import_modules.get(owning_file);
+    }
+
+    /// Resolve a type name, qualifying with module prefix if it's from another file.
+    fn qualifiedTypeName(self: *Generator, id: schema.Id) ![]const u8 {
+        const node = self.getNode(id) orelse return try self.allocator.dupe(u8, "void");
+        const simple_name = self.getSimpleName(node);
+        const zig_name = try types.normalizeAndEscapeTypeIdentifier(self.allocator, simple_name);
+
+        if (self.typeModulePrefix(id)) |prefix| {
+            defer self.allocator.free(zig_name);
+            return std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, zig_name });
+        }
+        return zig_name;
     }
 
     fn toSnakeCaseLower(self: *Generator, name: []const u8) ![]u8 {
@@ -708,6 +782,11 @@ pub const Generator = struct {
     fn lookupNode(ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node {
         const generator: *const Generator = @ptrCast(@alignCast(ctx.?));
         return generator.getNode(id);
+    }
+
+    fn lookupTypePrefix(ctx: ?*const anyopaque, id: schema.Id) ?[]const u8 {
+        const generator: *const Generator = @ptrCast(@alignCast(ctx.?));
+        return generator.typeModulePrefix(id);
     }
 
     fn typeNameForConst(self: *Generator, typ: schema.Type) ![]const u8 {

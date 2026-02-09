@@ -11,6 +11,9 @@ pub const StructGenerator = struct {
     type_gen: TypeGenerator,
     node_lookup_ctx: ?*const anyopaque,
     node_lookup: ?*const fn (ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node,
+    /// Optional callback returning the import module prefix for cross-file types.
+    /// Returns null for types in the current file.
+    type_prefix_fn: ?*const fn (ctx: ?*const anyopaque, id: schema.Id) ?[]const u8 = null,
 
     /// Create a standalone struct generator (no cross-node lookup support).
     pub fn init(allocator: std.mem.Allocator) StructGenerator {
@@ -661,9 +664,23 @@ pub const StructGenerator = struct {
                 }
             },
             .text => {
+                if (slot.default_value) |default_value| {
+                    const text = self.defaultText(default_value) orelse "";
+                    try writer.print(
+                        "                if (self._reader.isPointerNull({})) return \"{f}\";\n",
+                        .{ slot.offset, std.zig.fmtString(text) },
+                    );
+                }
                 try writer.print("                return try self._reader.readText({});\n", .{slot.offset});
             },
             .data => {
+                if (slot.default_value) |default_value| {
+                    if (self.defaultData(default_value)) |data| {
+                        try writer.print("                if (self._reader.isPointerNull({})) return ", .{slot.offset});
+                        try self.writeByteArrayLiteral(writer, data);
+                        try writer.writeAll(";\n");
+                    }
+                }
                 try writer.print("                return try self._reader.readData({});\n", .{slot.offset});
             },
             .@"struct" => |struct_info| {
@@ -701,8 +718,51 @@ pub const StructGenerator = struct {
         defer self.allocator.free(cap_name);
 
         switch (slot.type) {
-            .list, .@"struct", .any_pointer, .interface => {
-                // For complex types in groups, generate simplified setters
+            .list => |list_info| {
+                const unresolved_struct_layout = switch (list_info.element_type.*) {
+                    .@"struct" => |si| self.structLayout(si.type_id) == null,
+                    else => false,
+                };
+                const builder_type = try self.listBuilderTypeString(list_info.element_type.*);
+                defer self.allocator.free(builder_type);
+                if (unresolved_struct_layout) {
+                    try writer.print("            pub fn init{s}(self: *Builder, element_count: u32, data_words: u16, pointer_words: u16) !{s} {{\n", .{ cap_name, builder_type });
+                } else {
+                    try writer.print("            pub fn init{s}(self: *Builder, element_count: u32) !{s} {{\n", .{ cap_name, builder_type });
+                }
+                try self.writeGroupListSetterBody(list_info.element_type.*, slot.offset, writer);
+                try writer.writeAll("            }\n\n");
+                return;
+            },
+            .@"struct" => |struct_info| {
+                const struct_name = self.structTypeName(struct_info.type_id);
+                defer if (struct_name) |name| self.allocator.free(name);
+                if (self.structLayout(struct_info.type_id)) |layout| {
+                    if (struct_name) |name| {
+                        try writer.print("            pub fn init{s}(self: *Builder) !{s}.Builder {{\n", .{ cap_name, name });
+                        try writer.print("                const builder = try self._builder.initStruct({}, {}, {});\n", .{ slot.offset, layout.data_words, layout.pointer_words });
+                        try writer.print("                return {s}.Builder{{ ._builder = builder }};\n", .{name});
+                    } else {
+                        try writer.print("            pub fn init{s}(self: *Builder) !message.StructBuilder {{\n", .{cap_name});
+                        try writer.print("                return try self._builder.initStruct({}, {}, {});\n", .{ slot.offset, layout.data_words, layout.pointer_words });
+                    }
+                } else {
+                    try writer.print("            pub fn init{s}(self: *Builder, data_words: u16, pointer_words: u16) !message.StructBuilder {{\n", .{cap_name});
+                    try writer.print("                return try self._builder.initStruct({}, data_words, pointer_words);\n", .{slot.offset});
+                }
+                try writer.writeAll("            }\n\n");
+                return;
+            },
+            .any_pointer => {
+                try writer.print("            pub fn init{s}(self: *Builder) !message.AnyPointerBuilder {{\n", .{cap_name});
+                try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
+                try writer.writeAll("            }\n\n");
+                return;
+            },
+            .interface => {
+                try writer.print("            pub fn init{s}(self: *Builder) !message.AnyPointerBuilder {{\n", .{cap_name});
+                try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
+                try writer.writeAll("            }\n\n");
                 return;
             },
             else => {},
@@ -1233,13 +1293,25 @@ pub const StructGenerator = struct {
     fn structTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"struct") return null;
-        return self.allocTypeName(node) catch null;
+        return self.qualifiedTypeName(node, id) catch null;
     }
 
     fn enumTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"enum") return null;
-        return self.allocTypeName(node) catch null;
+        return self.qualifiedTypeName(node, id) catch null;
+    }
+
+    /// Return the type name, qualified with import module prefix for cross-file types.
+    fn qualifiedTypeName(self: *StructGenerator, node: *const schema.Node, id: schema.Id) ![]const u8 {
+        const bare_name = try self.allocTypeName(node);
+        if (self.type_prefix_fn) |prefix_fn| {
+            if (prefix_fn(self.node_lookup_ctx, id)) |prefix| {
+                defer self.allocator.free(bare_name);
+                return std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, bare_name });
+            }
+        }
+        return bare_name;
     }
 
     fn structLayout(self: *StructGenerator, id: schema.Id) ?struct { data_words: u16, pointer_words: u16 } {
@@ -1530,6 +1602,57 @@ pub const StructGenerator = struct {
     }
 
     /// Emit a numeric setter body for group fields (4-level indent) with optional XOR-default handling.
+    fn writeGroupListSetterBody(self: *StructGenerator, element_type: schema.Type, slot_offset: u32, writer: anytype) !void {
+        switch (element_type) {
+            .void => try writer.print("                return try self._builder.writeVoidList({}, element_count);\n", .{slot_offset}),
+            .bool => try writer.print("                return try self._builder.writeBoolList({}, element_count);\n", .{slot_offset}),
+            .int8 => try writer.print("                return try self._builder.writeI8List({}, element_count);\n", .{slot_offset}),
+            .uint8 => try writer.print("                return try self._builder.writeU8List({}, element_count);\n", .{slot_offset}),
+            .int16 => try writer.print("                return try self._builder.writeI16List({}, element_count);\n", .{slot_offset}),
+            .uint16 => try writer.print("                return try self._builder.writeU16List({}, element_count);\n", .{slot_offset}),
+            .int32 => try writer.print("                return try self._builder.writeI32List({}, element_count);\n", .{slot_offset}),
+            .uint32 => try writer.print("                return try self._builder.writeU32List({}, element_count);\n", .{slot_offset}),
+            .float32 => try writer.print("                return try self._builder.writeF32List({}, element_count);\n", .{slot_offset}),
+            .int64 => try writer.print("                return try self._builder.writeI64List({}, element_count);\n", .{slot_offset}),
+            .uint64 => try writer.print("                return try self._builder.writeU64List({}, element_count);\n", .{slot_offset}),
+            .float64 => try writer.print("                return try self._builder.writeF64List({}, element_count);\n", .{slot_offset}),
+            .text => try writer.print("                return try self._builder.writeTextList({}, element_count);\n", .{slot_offset}),
+            .data => {
+                try writer.print("                const raw = try self._builder.writePointerList({}, element_count);\n", .{slot_offset});
+                try writer.writeAll("                return DataListBuilder{ ._list = raw };\n");
+            },
+            .interface => {
+                try writer.print("                const raw = try self._builder.writePointerList({}, element_count);\n", .{slot_offset});
+                try writer.writeAll("                return CapabilityListBuilder{ ._list = raw };\n");
+            },
+            .@"enum" => |enum_info| {
+                const enum_name = self.enumTypeName(enum_info.type_id);
+                defer if (enum_name) |name| self.allocator.free(name);
+                if (enum_name) |name| {
+                    try writer.print("                const raw = try self._builder.writeU16List({}, element_count);\n", .{slot_offset});
+                    try writer.print("                return EnumListBuilder({s}){{ ._list = raw }};\n", .{name});
+                } else {
+                    try writer.print("                return try self._builder.writeU16List({}, element_count);\n", .{slot_offset});
+                }
+            },
+            .@"struct" => |struct_info| {
+                const struct_name = self.structTypeName(struct_info.type_id);
+                defer if (struct_name) |name| self.allocator.free(name);
+                if (self.structLayout(struct_info.type_id)) |layout| {
+                    if (struct_name) |name| {
+                        try writer.print("                const raw = try self._builder.writeStructList({}, element_count, {}, {});\n", .{ slot_offset, layout.data_words, layout.pointer_words });
+                        try writer.print("                return StructListBuilder({s}){{ ._list = raw }};\n", .{name});
+                    } else {
+                        try writer.print("                return try self._builder.writeStructList({}, element_count, {}, {});\n", .{ slot_offset, layout.data_words, layout.pointer_words });
+                    }
+                } else {
+                    try writer.print("                return try self._builder.writeStructList({}, element_count, data_words, pointer_words);\n", .{slot_offset});
+                }
+            },
+            else => try writer.print("                return try self._builder.writePointerList({}, element_count);\n", .{slot_offset}),
+        }
+    }
+
     fn writeNumericGroupSetterBody(
         self: *StructGenerator,
         slot: schema.FieldSlot,
