@@ -733,7 +733,7 @@ test "Codegen: void list and pointer helper builders" {
         .kind = .interface,
         .struct_node = null,
         .enum_node = null,
-        .interface_node = .{ .methods = &[_]schema.Method{} },
+        .interface_node = .{ .methods = &[_]schema.Method{}, .superclasses = &[_]schema.Id{} },
         .const_node = null,
         .annotation_node = null,
     };
@@ -1339,7 +1339,7 @@ test "Codegen: data and capability list fields use typed wrappers" {
         .kind = .interface,
         .struct_node = null,
         .enum_node = null,
-        .interface_node = .{ .methods = &[_]schema.Method{} },
+        .interface_node = .{ .methods = &[_]schema.Method{}, .superclasses = &[_]schema.Id{} },
         .const_node = null,
         .annotation_node = null,
     };
@@ -1489,7 +1489,7 @@ test "Codegen: declaration identifiers are normalized and escaped consistently" 
         .kind = .interface,
         .struct_node = null,
         .enum_node = null,
-        .interface_node = .{ .methods = &methods },
+        .interface_node = .{ .methods = &methods, .superclasses = &[_]schema.Id{} },
         .const_node = null,
         .annotation_node = null,
     };

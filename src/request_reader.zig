@@ -113,7 +113,10 @@ fn parseNodeList(allocator: std.mem.Allocator, root: message.StructReader) ![]sc
             freeAnnotations(allocator, node.annotations);
             if (node.struct_node) |sn| freeFields(allocator, sn.fields);
             if (node.enum_node) |en| freeEnumerants(allocator, en.enumerants);
-            if (node.interface_node) |in_| freeMethods(allocator, in_.methods);
+            if (node.interface_node) |in_| {
+                freeMethods(allocator, in_.methods);
+                allocator.free(in_.superclasses);
+            }
             if (node.const_node) |cn| {
                 freeType(allocator, cn.type);
                 freeValue(allocator, cn.value);
@@ -262,7 +265,10 @@ fn parseEnumNode(allocator: std.mem.Allocator, reader: message.StructReader) !sc
 
 fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.InterfaceNode {
     const list = reader.readStructList(3) catch |err| switch (err) {
-        error.InvalidPointer => return .{ .methods = try allocator.alloc(schema.Method, 0) },
+        error.InvalidPointer => return .{
+            .methods = try allocator.alloc(schema.Method, 0),
+            .superclasses = try allocator.alloc(schema.Id, 0),
+        },
         else => return err,
     };
 
@@ -291,7 +297,27 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
         };
     }
 
-    return .{ .methods = methods };
+    const superclasses = try parseSuperclasses(allocator, reader);
+
+    return .{ .methods = methods, .superclasses = superclasses };
+}
+
+fn parseSuperclasses(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Id {
+    const list = reader.readStructList(4) catch |err| switch (err) {
+        error.InvalidPointer => return allocator.alloc(schema.Id, 0),
+        else => return err,
+    };
+
+    const count = list.len();
+    var superclasses = try allocator.alloc(schema.Id, count);
+    errdefer allocator.free(superclasses);
+
+    for (0..count) |i| {
+        const item = try list.get(@intCast(i));
+        superclasses[i] = item.readU64(0);
+    }
+
+    return superclasses;
 }
 
 fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.ConstNode {
@@ -566,12 +592,15 @@ fn parseValue(allocator: std.mem.Allocator, reader: message.StructReader) !?sche
         .float32 => .{ .float32 = @bitCast(reader.readU32(4)) },
         .float64 => .{ .float64 = @bitCast(reader.readU64(8)) },
         .text => blk: {
-            const text = reader.readText(0) catch "";
+            const text = try reader.readText(0);
             const owned = try allocator.dupe(u8, text);
             break :blk .{ .text = owned };
         },
         .data => blk: {
-            const data = reader.readData(0) catch &[_]u8{};
+            const data = reader.readData(0) catch |err| switch (err) {
+                error.InvalidPointer, error.OutOfBounds => &[_]u8{},
+                else => return err,
+            };
             const owned = try allocator.dupe(u8, data);
             break :blk .{ .data = owned };
         },
@@ -617,6 +646,7 @@ fn freeNodes(allocator: std.mem.Allocator, nodes: []schema.Node) void {
         }
         if (node.interface_node) |interface_node| {
             freeMethods(allocator, interface_node.methods);
+            allocator.free(interface_node.superclasses);
         }
         if (node.const_node) |const_node| {
             freeType(allocator, const_node.type);

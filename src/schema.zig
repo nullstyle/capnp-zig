@@ -154,6 +154,7 @@ pub const EnumNode = struct {
 /// Interface node information
 pub const InterfaceNode = struct {
     methods: []Method,
+    superclasses: []Id,
 };
 
 /// Const node information
