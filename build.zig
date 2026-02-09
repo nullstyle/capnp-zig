@@ -719,6 +719,20 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_peer_control_from_peer_control_zig_tests = b.addRunArtifact(rpc_peer_control_from_peer_control_zig_tests);
 
+    // RPC worker pool tests
+    const rpc_worker_pool_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc_worker_pool_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_worker_pool_tests = b.addRunArtifact(rpc_worker_pool_tests);
+
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
         .target = target,
@@ -787,6 +801,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_rpc_peer_cleanup_tests.step);
     test_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
+    test_step.dependOn(&run_rpc_worker_pool_tests.step);
     test_step.dependOn(&run_union_runtime_tests.step);
     test_step.dependOn(&run_codegen_golden_tests.step);
     test_step.dependOn(&run_wasm_host_abi_tests.step);
@@ -842,6 +857,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_step.dependOn(&run_rpc_peer_cleanup_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_rpc_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
+    test_rpc_step.dependOn(&run_rpc_worker_pool_tests.step);
 
     const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
     test_wasm_host_step.dependOn(&run_wasm_host_abi_tests.step);

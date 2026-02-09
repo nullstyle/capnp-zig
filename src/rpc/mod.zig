@@ -7,6 +7,7 @@ pub const protocol = @import("protocol.zig");
 pub const cap_table = @import("cap_table.zig");
 pub const peer = @import("peer.zig");
 pub const stream_state = @import("stream_state.zig");
+pub const worker_pool = @import("worker_pool.zig");
 
 pub const _internal = struct {
     pub const peer_dispatch = @import("peer/peer_dispatch.zig");
