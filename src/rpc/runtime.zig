@@ -101,6 +101,27 @@ pub const Listener = struct {
         };
     }
 
+    /// Wrap an already-bound and listening socket fd.
+    ///
+    /// Use this when the parent process creates the listening socket and
+    /// passes the fd to the child (e.g., to avoid ephemeral port races
+    /// in test harnesses).
+    pub fn initFd(
+        allocator: std.mem.Allocator,
+        loop: *xev.Loop,
+        fd: std.posix.fd_t,
+        on_accept: *const fn (listener: *Listener, conn: *Connection) void,
+        conn_options: Connection.Options,
+    ) Listener {
+        return .{
+            .allocator = allocator,
+            .loop = loop,
+            .socket = xev.TCP.initFd(fd),
+            .on_accept = on_accept,
+            .conn_options = conn_options,
+        };
+    }
+
     /// Begin accepting connections. Must be called after `init`.
     pub fn start(self: *Listener) void {
         self.queueAccept();

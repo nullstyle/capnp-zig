@@ -155,11 +155,45 @@ fn zigSchemaPort(s: Schema) u16 {
     };
 }
 
-fn reserveLocalPort() !u16 {
-    const addr = try std.net.Address.parseIp4("127.0.0.1", 0);
-    var server = try addr.listen(.{ .reuse_address = true });
-    defer server.deinit();
-    return server.listen_address.getPort();
+const ListenSocket = struct {
+    fd: std.posix.fd_t,
+    port: u16,
+
+    fn close(self: *ListenSocket) void {
+        std.posix.close(self.fd);
+        self.fd = -1;
+    }
+};
+
+/// Create a listening socket on an OS-assigned port and return the fd + port.
+/// The fd is kept open (with CLOEXEC cleared) so it can be inherited by a
+/// child process, eliminating the TOCTOU race in reserve-then-rebind.
+fn createListenSocket() !ListenSocket {
+    const fd = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+    errdefer std.posix.close(fd);
+
+    // Allow immediate rebind (defense in depth; primary fix is fd passing).
+    const one = std.mem.toBytes(@as(c_int, 1));
+    try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &one);
+
+    // Bind to port 0 → OS assigns an ephemeral port.
+    const bind_addr = try std.net.Address.parseIp4("127.0.0.1", 0);
+    try std.posix.bind(fd, &bind_addr.any, bind_addr.getOsSockLen());
+
+    try std.posix.listen(fd, 128);
+
+    // Read back the assigned port.
+    var sa: std.posix.sockaddr.in = undefined;
+    var sa_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.in);
+    try std.posix.getsockname(fd, @ptrCast(&sa), &sa_len);
+    const port = std.mem.bigToNative(u16, sa.port);
+
+    // Clear CLOEXEC so the fd survives fork/exec into the child process.
+    if (comptime @hasDecl(std.posix.F, "SETFD")) {
+        _ = try std.posix.fcntl(fd, std.posix.F.SETFD, @as(u32, 0));
+    }
+
+    return .{ .fd = fd, .port = port };
 }
 
 fn fileExists(path: []const u8) bool {
@@ -716,11 +750,13 @@ fn startZigServer(
     paths: Paths,
     zig_server_cmd_override: ?[]const u8,
     schema: Schema,
-    port: u16,
+    listen: ListenSocket,
     inherit_server_logs: bool,
 ) !std.process.Child {
     var port_buf: [16]u8 = undefined;
-    const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+    const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{listen.port});
+    var fd_buf: [16]u8 = undefined;
+    const fd_text = try std.fmt.bufPrint(&fd_buf, "{d}", .{listen.fd});
     var env_storage: ?std.process.EnvMap = null;
     var env_ptr: ?*std.process.EnvMap = null;
     if (zig_server_cmd_override != null) {
@@ -733,6 +769,7 @@ fn startZigServer(
         try env_ptr.?.put("E2E_BIND_HOST", "0.0.0.0");
         try env_ptr.?.put("E2E_BIND_PORT", port_text);
         try env_ptr.?.put("E2E_SCHEMA", schemaName(schema));
+        try env_ptr.?.put("E2E_LISTEN_FD", fd_text);
         var c = std.process.Child.init(&.{ "sh", "-lc", cmd }, allocator);
         c.env_map = env_ptr.?;
         break :blk c;
@@ -744,10 +781,8 @@ fn startZigServer(
             "./.zig-global-cache",
             "e2e-zig-server",
             "--",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            port_text,
+            "--listen-fd",
+            fd_text,
             "--schema",
             schemaName(schema),
         }, allocator);
@@ -761,7 +796,10 @@ fn startZigServer(
 
     try child.spawn();
 
-    const ready = try waitForPort(port, server_timeout_ms);
+    // The listening socket is already open, so waitForPort will succeed as
+    // soon as the kernel acknowledges the connection.  The child inherits
+    // the fd and starts accept()ing on the xev loop.
+    const ready = try waitForPort(listen.port, server_timeout_ms);
     if (!ready) {
         _ = child.kill() catch {};
         _ = child.wait() catch {};
@@ -839,20 +877,24 @@ fn runZigServerPhase(
             const key = try std.fmt.allocPrint(allocator, "zig-server:{s}:{s}", .{ schemaName(schema), backendName(backend) });
             defer allocator.free(key);
 
-            const zig_server_port = reserveLocalPort() catch |err| {
+            var listen = createListenSocket() catch |err| {
                 const status = try std.fmt.allocPrint(allocator, "FAIL(port-reserve:{s})", .{@errorName(err)});
                 defer allocator.free(status);
                 try appendResult(allocator, results, key, status);
                 continue;
             };
 
-            std.debug.print("    starting Zig server for schema={s} on port={d}\n", .{ schemaName(schema), zig_server_port });
-            var child = startZigServer(allocator, paths, zig_server_cmd_override, schema, zig_server_port, cfg.verbose) catch |err| {
+            std.debug.print("    starting Zig server for schema={s} on port={d} fd={d}\n", .{ schemaName(schema), listen.port, listen.fd });
+            var child = startZigServer(allocator, paths, zig_server_cmd_override, schema, listen, cfg.verbose) catch |err| {
+                listen.close();
                 const status = try std.fmt.allocPrint(allocator, "FAIL(server-start:{s})", .{@errorName(err)});
                 defer allocator.free(status);
                 try appendResult(allocator, results, key, status);
                 continue;
             };
+            // Child inherited the fd; close the parent's copy so it doesn't
+            // leak across loop iterations.
+            listen.close();
             defer {
                 _ = child.kill() catch {};
                 _ = child.wait() catch {};
@@ -863,7 +905,7 @@ fn runZigServerPhase(
             const output_path = try std.fmt.allocPrint(allocator, "{s}/zig_server_{s}_{s}.tap", .{ paths.results_dir, schemaName(schema), backendName(backend) });
             defer allocator.free(output_path);
 
-            const run = try runRefClientCase(allocator, paths, backend, schema, zig_server_port, output_path);
+            const run = try runRefClientCase(allocator, paths, backend, schema, listen.port, output_path);
             defer allocator.free(run.stdout);
             defer allocator.free(run.stderr);
 

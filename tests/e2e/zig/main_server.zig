@@ -22,6 +22,7 @@ const CliArgs = struct {
     host: []const u8 = "0.0.0.0",
     port: u16 = 4700,
     schema: Schema = .game_world,
+    listen_fd: ?std.posix.fd_t = null,
 };
 
 const App = struct {
@@ -499,6 +500,12 @@ fn parseArgs(allocator: Allocator) !CliArgs {
             idx += 1;
             if (idx >= argv.len) return error.MissingArgValue;
             out.schema = try parseSchema(argv[idx]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--listen-fd")) {
+            idx += 1;
+            if (idx >= argv.len) return error.MissingArgValue;
+            out.listen_fd = try std.fmt.parseInt(std.posix.fd_t, argv[idx], 10);
             continue;
         }
     }
@@ -1790,17 +1797,24 @@ pub fn main() !void {
     defer app.deinit();
     app.bind();
 
-    const address = try std.net.Address.parseIp4(args.host, args.port);
-
     var listener_ctx = ListenerCtx{
         .app = &app,
-        .listener = try rpc.runtime.Listener.init(
-            allocator,
-            &app.runtime.loop,
-            address,
-            onAccept,
-            .{},
-        ),
+        .listener = if (args.listen_fd) |fd|
+            rpc.runtime.Listener.initFd(
+                allocator,
+                &app.runtime.loop,
+                fd,
+                onAccept,
+                .{},
+            )
+        else
+            try rpc.runtime.Listener.init(
+                allocator,
+                &app.runtime.loop,
+                try std.net.Address.parseIp4(args.host, args.port),
+                onAccept,
+                .{},
+            ),
     };
     defer listener_ctx.listener.close();
 
