@@ -1,0 +1,2 @@
+server: zig build server -- --port 9000
+client: sleep 2 && zig build client -- --port 9000

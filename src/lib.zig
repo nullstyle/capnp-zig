@@ -28,6 +28,9 @@ pub const schema_validation = @import("schema_validation.zig");
 /// Cap'n Proto RPC runtime: capability-based messaging over TCP using libxev.
 pub const rpc = @import("rpc/mod.zig");
 
+/// Re-export xev so downstream consumers share the same module instance.
+pub const xev = @import("xev");
+
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("rpc/connection.zig");

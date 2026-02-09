@@ -1,0 +1,11 @@
+.{
+    .name = .kvstore_example,
+    .version = "0.0.0",
+    .dependencies = .{
+        .capnpc_zig = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{""},
+    .fingerprint = 0x2124e4f37c596927,
+}

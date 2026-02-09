@@ -31,10 +31,10 @@ ci:
     zig build test --summary all
     just e2e
 
-# Install to local bin
-install: release
-    mkdir -p ~/.local/bin
-    cp zig-out/bin/capnpc-zig ~/.local/bin/
+# Install to a local bin path (defaults to ~/.local/bin)
+install dest="${HOME}/.local/bin": release
+    mkdir -p "{{dest}}"
+    cp zig-out/bin/capnpc-zig "{{dest}}/capnpc-zig"
 
 # Clean build artifacts
 clean:
@@ -42,11 +42,19 @@ clean:
 
 # Format code
 fmt:
-    zig fmt --exclude tests/golden src/ tests/ bench/ tools/
+    zig fmt --exclude tests/golden src/ tests/ bench/ tools/ examples/
 
 # Run example schema compilation
 example: build
     capnp compile -o ./zig-out/bin/capnpc-zig tests/test_schemas/example.capnp
+
+# Run KVStore example server
+example-kvstore-server port="9000":
+    cd examples/kvstore && zig build server -- --port {{port}}
+
+# Run KVStore example client
+example-kvstore-client port="9000":
+    cd examples/kvstore && zig build client -- --port {{port}}
 
 # Check for errors without building
 check:

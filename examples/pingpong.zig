@@ -116,7 +116,6 @@ pub const PingPong = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -213,7 +212,6 @@ pub const PingParams = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -231,7 +229,6 @@ pub const PingParams = struct {
         pub fn setCount(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
 
@@ -253,7 +250,6 @@ pub const PingResults = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -271,7 +267,5 @@ pub const PingResults = struct {
         pub fn setCount(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
-

@@ -1,5 +1,7 @@
 # capnpc-zig
 
+**WARNING: This code was extensively vibed;  It's only for me for now, use at your own risk**
+
 A pure Zig implementation of a Cap'n Proto compiler plugin for Zig 0.15.2. Generates idiomatic Zig code from Cap'n Proto schema files with full serialization and deserialization support.
 
 ## Features
