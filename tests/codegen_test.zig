@@ -1410,6 +1410,9 @@ test "Codegen: data and capability list fields use typed wrappers" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return DataListBuilder{ ._list = raw };"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getServices(self: Reader) !CapabilityListReader"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListReader{ ._list = raw };"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn resolveServices(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !Service.Client"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "var mutable_caps = caps.*;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "try mutable_caps.retainCapability(cap);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initServices(self: *Builder, element_count: u32) !CapabilityListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListBuilder{ ._list = raw };"));
 }

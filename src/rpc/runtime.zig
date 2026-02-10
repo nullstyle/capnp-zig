@@ -174,6 +174,10 @@ pub const Listener = struct {
             return .disarm;
         };
 
+        // Disable Nagle on accepted RPC sockets to avoid delayed-ACK/Nagle
+        // interaction adding ~40ms request/response stalls for some clients.
+        enableTcpNoDelay(socket);
+
         const conn_ptr = listener.allocator.create(Connection) catch |err| {
             log.debug("connection alloc failed: {}", .{err});
             std.posix.close(socketFd(socket));
@@ -214,6 +218,18 @@ pub const Listener = struct {
             return socket.fd();
         }
         return socket.fd;
+    }
+
+    fn enableTcpNoDelay(socket: xev.TCP) void {
+        const one = std.mem.toBytes(@as(c_int, 1));
+        std.posix.setsockopt(
+            socketFd(socket),
+            std.posix.IPPROTO.TCP,
+            std.posix.TCP.NODELAY,
+            &one,
+        ) catch |err| {
+            log.debug("failed to set TCP_NODELAY on accepted socket: {}", .{err});
+        };
     }
 };
 

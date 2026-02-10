@@ -97,6 +97,17 @@ test "Codegen emits nested interface definitions" {
     // GAP-5: Typed capability resolution in readers
     try expectContains(output, "pub fn resolveInner");
     try expectContains(output, "Inner.Client");
+    try expectContains(output, "var mutable_caps = caps.*;");
+    try expectContains(output, "try mutable_caps.retainCapability(cap);");
+
+    // Bootstrap callback should retain returned client capability so
+    // callback cleanup does not immediately release it.
+    try expectContains(output,
+        \\const cap = try payload.content.getCapability();
+        \\                var mutable_caps = caps.*;
+        \\                try mutable_caps.retainCapability(cap);
+        \\                const resolved = try caps.resolveCapability(cap);
+    );
 
     // GAP-3: Typed capability parameter passing in builders
     try expectContains(output, "pub fn setInnerServer");

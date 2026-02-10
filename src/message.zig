@@ -50,14 +50,13 @@ fn makeFarPointer(landing_pad_is_double: bool, landing_pad_offset_words: u32, se
 }
 
 fn makeCapabilityPointer(cap_id: u32) !u64 {
-    if (cap_id >= (@as(u32, 1) << 30)) return error.CapabilityIdTooLarge;
-    return 3 | (@as(u64, cap_id) << 2);
+    return 3 | (@as(u64, cap_id) << 32);
 }
 
 fn decodeCapabilityPointer(pointer_word: u64) !u32 {
     if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
-    if ((pointer_word >> 32) != 0) return error.InvalidPointer;
-    return @as(u32, @intCast((pointer_word >> 2) & 0x3FFFFFFF));
+    if (((pointer_word >> 2) & 0x3FFFFFFF) != 0) return error.InvalidPointer;
+    return @as(u32, @truncate(pointer_word >> 32));
 }
 
 fn listContentBytes(element_size: u3, element_count: u32) !usize {

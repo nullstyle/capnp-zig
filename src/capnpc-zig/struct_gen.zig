@@ -457,6 +457,8 @@ pub const StructGenerator = struct {
                         try writer.print("        pub fn resolve{s}(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
                         try writer.print("            const raw_list = try self._reader.readPointerList({});\n", .{slot.offset});
                         try writer.writeAll("            const cap = try raw_list.getCapability(index);\n");
+                        try writer.writeAll("            var mutable_caps = caps.*;\n");
+                        try writer.writeAll("            try mutable_caps.retainCapability(cap);\n");
                         try writer.writeAll("            const resolved = try caps.resolveCapability(cap);\n");
                         try writer.writeAll("            switch (resolved) {\n");
                         try writer.print("                .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
@@ -555,6 +557,8 @@ pub const StructGenerator = struct {
             defer self.allocator.free(iface_name);
             try writer.print("        pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("            const cap = try self._reader.readCapability({});\n", .{slot.offset});
+            try writer.writeAll("            var mutable_caps = caps.*;\n");
+            try writer.writeAll("            try mutable_caps.retainCapability(cap);\n");
             try writer.writeAll("            const resolved = try caps.resolveCapability(cap);\n");
             try writer.writeAll("            switch (resolved) {\n");
             try writer.print("                .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});
@@ -742,6 +746,8 @@ pub const StructGenerator = struct {
             defer self.allocator.free(iface_name);
             try writer.print("            pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("                const cap = try self._reader.readCapability({});\n", .{slot.offset});
+            try writer.writeAll("                var mutable_caps = caps.*;\n");
+            try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
             try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
             try writer.writeAll("                switch (resolved) {\n");
             try writer.print("                    .imported => |imported| return {s}.Client.init(peer, imported.id),\n", .{iface_name});

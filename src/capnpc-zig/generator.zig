@@ -533,6 +533,8 @@ pub const Generator = struct {
         try writer.writeAll("            .results => {\n");
         try writer.writeAll("                const payload = ret.results orelse return error.MissingReturnPayload;\n");
         try writer.writeAll("                const cap = try payload.content.getCapability();\n");
+        try writer.writeAll("                var mutable_caps = caps.*;\n");
+        try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
         try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
         try writer.writeAll("                switch (resolved) {\n");
         try writer.writeAll("                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },\n");
@@ -590,8 +592,15 @@ pub const Generator = struct {
         // --- onCall dispatch ---
         try writer.writeAll("    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
         try writer.writeAll("        const server: *Server = @ptrCast(@alignCast(ctx));\n");
-        try writer.writeAll("        _ = server;\n");
-        try writer.writeAll("        _ = caps;\n");
+
+        var dispatch_method_count: usize = interface_info.methods.len;
+        for (ancestors) |ancestor| {
+            dispatch_method_count += ancestor.methods.len;
+        }
+        if (dispatch_method_count == 0) {
+            try writer.writeAll("        _ = server;\n");
+            try writer.writeAll("        _ = caps;\n");
+        }
 
         if (has_ancestors) {
             // Dispatch by interface_id first, then method_id

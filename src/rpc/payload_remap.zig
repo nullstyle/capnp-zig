@@ -183,14 +183,13 @@ fn remapPayloadCapabilityPointer(
 }
 
 fn capabilityPointerWord(cap_id: u32) !u64 {
-    if (cap_id >= (@as(u32, 1) << 30)) return error.CapabilityIdTooLarge;
-    return 3 | (@as(u64, cap_id) << 2);
+    return 3 | (@as(u64, cap_id) << 32);
 }
 
 fn decodeCapabilityPointerWord(pointer_word: u64) !u32 {
     if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
-    if ((pointer_word >> 32) != 0) return error.InvalidPointer;
-    return @as(u32, @intCast((pointer_word >> 2) & 0x3FFFFFFF));
+    if (((pointer_word >> 2) & 0x3FFFFFFF) != 0) return error.InvalidPointer;
+    return @as(u32, @truncate(pointer_word >> 32));
 }
 
 fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_pos: usize, word: u64) !void {
@@ -224,7 +223,7 @@ fn buildMessageView(
 test "payload_remap capability pointer roundtrip" {
     const cap_id: u32 = 12345;
     const word = try capabilityPointerWord(cap_id);
-    try std.testing.expectEqual(@as(u64, 3 | (@as(u64, cap_id) << 2)), word);
+    try std.testing.expectEqual(@as(u64, 3 | (@as(u64, cap_id) << 32)), word);
     try std.testing.expectEqual(cap_id, try decodeCapabilityPointerWord(word));
 }
 
@@ -235,10 +234,11 @@ test "payload_remap decode capability pointer rejects invalid tags" {
 }
 
 test "payload_remap decode capability pointer rejects high bits" {
-    const invalid_word = (@as(u64, 1) << 32) | 3;
+    const invalid_word = (@as(u64, 1) << 2) | 3;
     try std.testing.expectError(error.InvalidPointer, decodeCapabilityPointerWord(invalid_word));
 }
 
-test "payload_remap capability pointer rejects oversized capability ids" {
-    try std.testing.expectError(error.CapabilityIdTooLarge, capabilityPointerWord(@as(u32, 1) << 30));
+test "payload_remap capability pointer supports full u32 range" {
+    const word = try capabilityPointerWord(std.math.maxInt(u32));
+    try std.testing.expectEqual(std.math.maxInt(u32), try decodeCapabilityPointerWord(word));
 }
