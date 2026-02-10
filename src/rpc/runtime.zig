@@ -176,7 +176,7 @@ pub const Listener = struct {
 
         const conn_ptr = listener.allocator.create(Connection) catch |err| {
             log.debug("connection alloc failed: {}", .{err});
-            std.posix.close(socket.fd);
+            std.posix.close(socketFd(socket));
             listener.queueAccept();
             return .disarm;
         };
@@ -189,7 +189,7 @@ pub const Listener = struct {
         ) catch |err| {
             log.debug("connection init failed: {}", .{err});
             listener.allocator.destroy(conn_ptr);
-            std.posix.close(socket.fd);
+            std.posix.close(socketFd(socket));
             listener.queueAccept();
             return .disarm;
         };
@@ -207,6 +207,13 @@ pub const Listener = struct {
         _: xev.CloseError!void,
     ) xev.CallbackAction {
         return .disarm;
+    }
+
+    fn socketFd(socket: xev.TCP) std.posix.fd_t {
+        if (comptime xev.dynamic) {
+            return socket.fd();
+        }
+        return socket.fd;
     }
 };
 

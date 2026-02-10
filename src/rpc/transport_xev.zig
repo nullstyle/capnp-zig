@@ -178,7 +178,8 @@ pub const Transport = struct {
         op.* = .{
             .allocator = self.allocator,
             .transport = self,
-            .request = .{ .full_write_buffer = .{ .slice = owned } },
+            // Dynamic xev initializes/tag-dispatches WriteRequest inside queueWrite.
+            .request = undefined,
             .bytes = owned,
             .ctx = ctx,
             .cb = cb,
