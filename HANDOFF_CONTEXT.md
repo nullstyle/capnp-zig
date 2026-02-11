@@ -7,11 +7,11 @@ Purpose: Resume decomposition work quickly without re-reading the entire RPC sta
 ## Current branch state (important)
 
 Modified/new RPC files in working tree:
-- `src/rpc/peer.zig` (modified)
-- `src/rpc/peer_forward_orchestration.zig` (modified)
+- `src/rpc/level3/peer.zig` (modified)
+- `src/rpc/level3/peer/forward/peer_forward_orchestration.zig` (modified)
 - `src/rpc/mod.zig` (modified)
-- `src/rpc/peer_third_party_adoption.zig` (new)
-- `src/rpc/peer_provide_join_orchestration.zig` (new)
+- `src/rpc/level3/peer/third_party/peer_third_party_adoption.zig` (new)
+- `src/rpc/level3/peer/provide/peer_provide_join_orchestration.zig` (new)
 
 ## Stable verification baseline
 
@@ -25,7 +25,7 @@ Use those as minimum gate before/after additional slices.
 ## What was extracted recently
 
 1. Third-party adoption/await lifecycle
-- Module: `src/rpc/peer_third_party_adoption.zig`
+- Module: `src/rpc/level3/peer/third_party/peer_third_party_adoption.zig`
 - Entry points:
   - `adoptThirdPartyAnswer(...)`
   - `handleThirdPartyAnswer(...)`
@@ -33,7 +33,7 @@ Use those as minimum gate before/after additional slices.
 - `peer.zig` now delegates adoption/await orchestration to this module.
 
 2. Provide/accept/join orchestration
-- Module: `src/rpc/peer_provide_join_orchestration.zig`
+- Module: `src/rpc/level3/peer/provide/peer_provide_join_orchestration.zig`
 - Entry points:
   - `handleProvide(...)`
   - `handleAccept(...)`
@@ -41,7 +41,7 @@ Use those as minimum gate before/after additional slices.
 - `peer.zig` now delegates provide/accept/join flow orchestration.
 
 3. Forward/tail coordination centralization
-- Module: `src/rpc/peer_forward_orchestration.zig`
+- Module: `src/rpc/level3/peer/forward/peer_forward_orchestration.zig`
 - `finishForwardResolvedCall(...)` now mutates forward/tail maps directly and returns a completion directive.
 - Added callback-factory helpers for control-path callback signatures.
 
@@ -51,16 +51,16 @@ Use those as minimum gate before/after additional slices.
 ## Key navigation anchors
 
 - Forward call/return orchestration path:
-  - `src/rpc/peer.zig` around `forwardResolvedCall(...)` and `onForwardedReturn(...)`
-  - `src/rpc/peer_forward_orchestration.zig`
+  - `src/rpc/level3/peer.zig` around `forwardResolvedCall(...)` and `onForwardedReturn(...)`
+  - `src/rpc/level3/peer/forward/peer_forward_orchestration.zig`
 
 - Provide/accept/join path:
-  - `src/rpc/peer.zig` around `handleProvide(...)`, `handleAccept(...)`, `handleJoin(...)`
-  - `src/rpc/peer_provide_join_orchestration.zig`
+  - `src/rpc/level3/peer.zig` around `handleProvide(...)`, `handleAccept(...)`, `handleJoin(...)`
+  - `src/rpc/level3/peer/provide/peer_provide_join_orchestration.zig`
 
 - Third-party adoption path:
-  - `src/rpc/peer.zig` around `handleThirdPartyAnswer(...)`, `adoptThirdPartyAnswer(...)`, return-accept adapter
-  - `src/rpc/peer_third_party_adoption.zig`
+  - `src/rpc/level3/peer.zig` around `handleThirdPartyAnswer(...)`, `adoptThirdPartyAnswer(...)`, return-accept adapter
+  - `src/rpc/level3/peer/third_party/peer_third_party_adoption.zig`
 
 ## Next practical slice (if continuing decomposition)
 

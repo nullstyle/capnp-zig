@@ -1,5 +1,5 @@
 const std = @import("std");
-const schema = @import("../schema.zig");
+const schema = @import("../serialization/schema.zig");
 const types = @import("types.zig");
 const TypeGenerator = types.TypeGenerator;
 

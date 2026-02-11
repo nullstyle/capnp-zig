@@ -2,8 +2,12 @@
 
 ## Project Structure & Module Organization
 - `src/` holds the Zig library and plugin entry point.
+- `src/serialization/` contains wire-format, schema, and reader/validation modules.
 - `src/capnpc-zig/` contains codegen utilities and generators.
-- `tests/` contains Zig test suites; fixture schemas live in `tests/test_schemas/`.
+- `src/rpc/level0`, `src/rpc/level1`, `src/rpc/level2`, and `src/rpc/level3` group RPC runtime modules by Cap'n Proto level.
+- `src/rpc/level1/` contains promise and pipelining primitives shared by higher-level peer flows.
+- `tests/serialization/` contains serialization-focused suites; `tests/rpc/level0..level3/` contain RPC suites by level.
+- `tests/` also contains support assets; fixture schemas live in `tests/test_schemas/`.
 - `build.zig` defines build/test steps; `Justfile` wraps common tasks.
 - `zig-out/` and `.zig-cache/` are build artifacts.
 
@@ -11,7 +15,11 @@
 - `just build` builds the project (`zig build`).
 - `just release` builds optimized (`zig build -Doptimize=ReleaseSafe`).
 - `just test` runs all tests with summary output (`zig build test --summary all`).
+- `just test-serialization` runs serialization-focused suites.
+- `just test-rpc`, `just test-rpc-level0`, `just test-rpc-level1`, `just test-rpc-level2`, `just test-rpc-level3` run RPC suites by level.
 - `zig build test-message`, `zig build test-codegen`, `zig build test-integration`, `zig build test-real-world`, `zig build test-union` run focused suites.
+- `zig build test-serialization` runs all non-RPC serialization suites.
+- `zig build test-rpc-level0`, `zig build test-rpc-level1`, `zig build test-rpc-level2`, `zig build test-rpc-level3` run cumulative RPC levels.
 - `zig build test-capnp-testdata` and `zig build test-capnp-test-vendor` run Cap’n Proto fixture suites.
 - `just fmt` formats `src/` and `tests/` (`zig fmt`).
 - `just check` compiles without linking (`zig build check`).
@@ -27,8 +35,8 @@
 - Files are `snake_case.zig` (examples: `message.zig`, `integration_test.zig`).
 
 ## Testing Guidelines
-- Tests use Zig’s built-in `test` blocks in `tests/*.zig`.
-- Name new test files `*_test.zig` and group by feature area (message, codegen, integration).
+- Tests use Zig’s built-in `test` blocks in `tests/**/*.zig`.
+- Name new test files `*_test.zig` and group by area (`tests/serialization` or `tests/rpc/level0..level3`).
 - Run `just test` before submitting changes; add targeted tests for new behavior.
 
 ## Commit & Pull Request Guidelines

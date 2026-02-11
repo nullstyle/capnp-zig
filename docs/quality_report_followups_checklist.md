@@ -10,7 +10,7 @@ Scope: Remaining non-size-reduction follow-ups from `QUALITY_REPORT.md`.
 - [x] Refresh docs for current hardening status
   - Record these follow-ups in project docs so current coverage is visible without reading commit history.
 - [x] Reduce localized RPC duplication
-  - Consolidate repeated return-frame send plumbing in `src/rpc/peer/return/peer_return_dispatch.zig` without changing behavior.
+  - Consolidate repeated return-frame send plumbing in `src/rpc/level3/peer/return/peer_return_dispatch.zig` without changing behavior.
 
 Additional pass (requested after first follow-up batch):
 - [x] Optimize `MessageBuilder` allocation behavior

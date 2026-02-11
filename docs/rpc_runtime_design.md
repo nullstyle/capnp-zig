@@ -74,11 +74,11 @@ Outbound call:
 - Application errors are serialized as RPC exceptions.
 
 ## Proposed Module Layout
-- `src/rpc/runtime.zig`
-- `src/rpc/connection.zig`
-- `src/rpc/transport_xev.zig`
-- `src/rpc/protocol.zig`
-- `src/rpc/cap_table.zig`
+- `src/rpc/level2/runtime.zig`
+- `src/rpc/level2/connection.zig`
+- `src/rpc/level2/transport_xev.zig`
+- `src/rpc/level0/protocol.zig`
+- `src/rpc/level0/cap_table.zig`
 - `src/rpc/dispatcher.zig`
 - `src/rpc/client.zig`
 

@@ -4,10 +4,10 @@ Date: 2026-02-08
 
 ## Context
 
-`tests/rpc_peer_from_peer_zig_test.zig` was extracted from inline tests formerly in `src/rpc/peer.zig`.
-When imported into `tests/rpc_peer_test.zig`, `zig build test-rpc --summary all` currently reports multiple failures and memory-safety issues.
+`tests/rpc/level3/rpc_peer_from_peer_zig_test.zig` was extracted from inline tests formerly in `src/rpc/level3/peer.zig`.
+When imported into `tests/rpc/level3/rpc_peer_test.zig`, `zig build test-rpc --summary all` currently reports multiple failures and memory-safety issues.
 
-The module is currently **not imported** by `tests/rpc_peer_test.zig`, so active CI/local `test-rpc` remains green.
+The module is currently **not imported** by `tests/rpc/level3/rpc_peer_test.zig`, so active CI/local `test-rpc` remains green.
 
 ## Current blockers observed when module is enabled
 
@@ -33,4 +33,4 @@ The module is currently **not imported** by `tests/rpc_peer_test.zig`, so active
 2. Fix sendResultsTo forwarding semantics (`handleResolvedCall ... thirdParty`, `handleCall ... thirdParty`).
 3. Fix third-party await/return replay semantics (`forwarded return ... awaitFromThirdParty`, `handleReturn replays buffered ...`).
 4. Address OOM cleanup paths and double-free/leak regressions.
-5. Re-enable this module in `tests/rpc_peer_test.zig` only after all above pass.
+5. Re-enable this module in `tests/rpc/level3/rpc_peer_test.zig` only after all above pass.

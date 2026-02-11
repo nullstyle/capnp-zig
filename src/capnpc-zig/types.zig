@@ -1,5 +1,5 @@
 const std = @import("std");
-const schema = @import("../schema.zig");
+const schema = @import("../serialization/schema.zig");
 
 /// Zig keywords that must be escaped with @"..." when used as identifiers.
 pub const zig_keywords = std.StaticStringMap(void).initComptime(.{

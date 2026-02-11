@@ -168,7 +168,7 @@ The codegen now generates `PipelinedClient` types with `callXxxPipelined()` meth
 **Status:** Resolved. Client-side flow control via `StreamClient` + `StreamState`.
 
 **Implementation:**
-- `StreamState` runtime helper (`src/rpc/stream_state.zig`): tracks in-flight calls, caches first error, drain notification
+- `StreamState` runtime helper (`src/rpc/level2/stream_state.zig`): tracks in-flight calls, caches first error, drain notification
 - `StreamClient` generated per interface (when streaming methods present): fire-and-forget streaming wrappers, non-streaming pass-throughs, `waitStreaming()`
 - `StreamCallContext` / `streamCallBuild` / `streamCallReturn` generated per streaming method for fire-and-forget lifecycle
 - Error sealing: if any streaming call fails, subsequent calls return the cached error immediately
@@ -283,15 +283,15 @@ All RPC operations run on a single-threaded libxev event loop. CPU-bound handler
 | Code generator (interfaces) | `src/capnpc-zig/generator.zig` |
 | Code generator (struct fields) | `src/capnpc-zig/struct_gen.zig` |
 | Type mapping | `src/capnpc-zig/types.zig` |
-| RPC peer (call/return/cap lifecycle) | `src/rpc/peer.zig` |
-| Call sending | `src/rpc/peer/call/peer_call_sender.zig` |
-| Return dispatch | `src/rpc/peer/return/peer_return_dispatch.zig` |
-| Cap table encoding | `src/rpc/cap_table.zig` |
-| Payload cap remapping | `src/rpc/payload_remap.zig` |
-| Protocol types | `src/rpc/protocol.zig` |
-| Runtime/listener | `src/rpc/runtime.zig` |
-| Connection/framing | `src/rpc/connection.zig`, `src/rpc/framing.zig` |
-| Transport (libxev) | `src/rpc/transport_xev.zig` |
+| RPC peer (call/return/cap lifecycle) | `src/rpc/level3/peer.zig` |
+| Call sending | `src/rpc/level3/peer/call/peer_call_sender.zig` |
+| Return dispatch | `src/rpc/level3/peer/return/peer_return_dispatch.zig` |
+| Cap table encoding | `src/rpc/level0/cap_table.zig` |
+| Payload cap remapping | `src/rpc/level3/payload_remap.zig` |
+| Protocol types | `src/rpc/level0/protocol.zig` |
+| Runtime/listener | `src/rpc/level2/runtime.zig` |
+| Connection/framing | `src/rpc/level2/connection.zig`, `src/rpc/level0/framing.zig` |
+| Transport (libxev) | `src/rpc/level2/transport_xev.zig` |
 | Ping-pong example | `examples/rpc_pingpong.zig` |
 | KvStore example (full client/server) | `examples/kvstore/` |
 | E2E server (capability passing) | `tests/e2e/zig/main_server.zig` |

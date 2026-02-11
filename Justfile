@@ -10,6 +10,30 @@ release:
 test:
     zig build test --summary all
 
+# Run serialization-focused tests (message/codegen/schema/interop)
+test-serialization:
+    zig build test-serialization --summary all
+
+# Run all RPC tests
+test-rpc:
+    zig build test-rpc --summary all
+
+# Run Cap'n Proto RPC level 0 tests (framing/protocol/cap-table)
+test-rpc-level0:
+    zig build test-rpc-level0 --summary all
+
+# Run Cap'n Proto RPC level 1 tests (promises/pipelining)
+test-rpc-level1:
+    zig build test-rpc-level1 --summary all
+
+# Run Cap'n Proto RPC level 2 tests (runtime plumbing)
+test-rpc-level2:
+    zig build test-rpc-level2 --summary all
+
+# Run Cap'n Proto RPC level 3+ tests (advanced peer semantics)
+test-rpc-level3:
+    zig build test-rpc-level3 --summary all
+
 # Build e2e reference images
 e2e-build:
     just --justfile tests/e2e/Justfile build

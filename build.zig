@@ -291,7 +291,7 @@ pub fn build(b: *std.Build) void {
     // Message tests
     const message_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/message_test.zig"),
+            .root_source_file = b.path("tests/serialization/message_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -305,7 +305,7 @@ pub fn build(b: *std.Build) void {
     // Code generation tests
     const codegen_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -318,7 +318,7 @@ pub fn build(b: *std.Build) void {
 
     const codegen_defaults_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_defaults_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_defaults_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -331,7 +331,7 @@ pub fn build(b: *std.Build) void {
 
     const codegen_annotations_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_annotations_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_annotations_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -344,7 +344,7 @@ pub fn build(b: *std.Build) void {
 
     const codegen_rpc_nested_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_rpc_nested_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_rpc_nested_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -357,7 +357,7 @@ pub fn build(b: *std.Build) void {
 
     const codegen_streaming_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_streaming_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_streaming_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -373,7 +373,7 @@ pub fn build(b: *std.Build) void {
 
     const codegen_generated_runtime_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_generated_runtime_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_generated_runtime_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -388,7 +388,7 @@ pub fn build(b: *std.Build) void {
     // Integration tests
     const integration_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/integration_test.zig"),
+            .root_source_file = b.path("tests/serialization/integration_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -402,7 +402,7 @@ pub fn build(b: *std.Build) void {
     // Interop tests
     const interop_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/interop_test.zig"),
+            .root_source_file = b.path("tests/serialization/interop_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -415,7 +415,7 @@ pub fn build(b: *std.Build) void {
 
     const interop_roundtrip_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/interop_roundtrip_test.zig"),
+            .root_source_file = b.path("tests/serialization/interop_roundtrip_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -429,7 +429,7 @@ pub fn build(b: *std.Build) void {
     // Real-world Person tests
     const real_world_person_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/real_world_person_test.zig"),
+            .root_source_file = b.path("tests/serialization/real_world_person_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -443,7 +443,7 @@ pub fn build(b: *std.Build) void {
     // Real-world AddressBook tests
     const real_world_addressbook_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/real_world_addressbook_test.zig"),
+            .root_source_file = b.path("tests/serialization/real_world_addressbook_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -457,7 +457,7 @@ pub fn build(b: *std.Build) void {
     // Union tests
     const union_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/union_test.zig"),
+            .root_source_file = b.path("tests/serialization/union_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -471,7 +471,7 @@ pub fn build(b: *std.Build) void {
     // Codegen union/group tests
     const codegen_union_group_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_union_group_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_union_group_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -485,7 +485,7 @@ pub fn build(b: *std.Build) void {
     // Cap'n Proto official testdata fixtures
     const capnp_testdata_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/capnp_testdata_test.zig"),
+            .root_source_file = b.path("tests/serialization/capnp_testdata_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -499,7 +499,7 @@ pub fn build(b: *std.Build) void {
     // capnp_test vendor fixtures
     const capnp_test_vendor_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/capnp_test_vendor_test.zig"),
+            .root_source_file = b.path("tests/serialization/capnp_test_vendor_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -513,7 +513,7 @@ pub fn build(b: *std.Build) void {
     // Schema validation + canonicalization tests
     const schema_validation_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/schema_validation_test.zig"),
+            .root_source_file = b.path("tests/serialization/schema_validation_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -527,7 +527,7 @@ pub fn build(b: *std.Build) void {
     // RPC framing tests
     const rpc_framing_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_framing_test.zig"),
+            .root_source_file = b.path("tests/rpc/level0/rpc_framing_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -541,7 +541,7 @@ pub fn build(b: *std.Build) void {
     // RPC cap table encoding tests
     const rpc_cap_table_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_cap_table_encode_test.zig"),
+            .root_source_file = b.path("tests/rpc/level0/rpc_cap_table_encode_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -555,7 +555,7 @@ pub fn build(b: *std.Build) void {
     // RPC promised answer transform tests
     const rpc_promised_answer_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_promised_answer_transform_test.zig"),
+            .root_source_file = b.path("tests/rpc/level1/rpc_promised_answer_transform_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -569,7 +569,7 @@ pub fn build(b: *std.Build) void {
     // RPC protocol/cap table tests
     const rpc_protocol_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_protocol_test.zig"),
+            .root_source_file = b.path("tests/rpc/level0/rpc_protocol_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -583,7 +583,7 @@ pub fn build(b: *std.Build) void {
     // RPC peer behavior tests
     const rpc_peer_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_test.zig"),
+            .root_source_file = b.path("tests/rpc/level3/rpc_peer_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -597,7 +597,7 @@ pub fn build(b: *std.Build) void {
     // RPC host peer wrapper tests
     const rpc_host_peer_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_host_peer_test.zig"),
+            .root_source_file = b.path("tests/rpc/level2/rpc_host_peer_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -611,7 +611,7 @@ pub fn build(b: *std.Build) void {
     // RPC return send helper tests
     const rpc_peer_return_send_helpers_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_return_send_helpers_test.zig"),
+            .root_source_file = b.path("tests/rpc/level1/rpc_peer_return_send_helpers_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -625,7 +625,7 @@ pub fn build(b: *std.Build) void {
     // RPC transport callback adapter tests
     const rpc_peer_transport_callbacks_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_transport_callbacks_test.zig"),
+            .root_source_file = b.path("tests/rpc/level2/rpc_peer_transport_callbacks_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -639,7 +639,7 @@ pub fn build(b: *std.Build) void {
     // RPC transport state helper tests
     const rpc_peer_transport_state_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_transport_state_test.zig"),
+            .root_source_file = b.path("tests/rpc/level2/rpc_peer_transport_state_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -653,7 +653,7 @@ pub fn build(b: *std.Build) void {
     // RPC peer cleanup helper tests
     const rpc_peer_cleanup_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_cleanup_test.zig"),
+            .root_source_file = b.path("tests/rpc/level2/rpc_peer_cleanup_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -667,7 +667,7 @@ pub fn build(b: *std.Build) void {
     // RPC peer (from peer.zig) tests
     const rpc_peer_from_peer_zig_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_from_peer_zig_test.zig"),
+            .root_source_file = b.path("tests/rpc/level3/rpc_peer_from_peer_zig_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -680,7 +680,7 @@ pub fn build(b: *std.Build) void {
     // Union runtime tests (low-level union discriminant round-trips)
     const union_runtime_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/union_runtime_test.zig"),
+            .root_source_file = b.path("tests/serialization/union_runtime_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -694,7 +694,7 @@ pub fn build(b: *std.Build) void {
     // Codegen golden-file snapshot tests
     const codegen_golden_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/codegen_golden_test.zig"),
+            .root_source_file = b.path("tests/serialization/codegen_golden_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -708,7 +708,7 @@ pub fn build(b: *std.Build) void {
     // RPC peer_control (from peer_control.zig) tests
     const rpc_peer_control_from_peer_control_zig_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_peer_control_from_peer_control_zig_test.zig"),
+            .root_source_file = b.path("tests/rpc/level3/rpc_peer_control_from_peer_control_zig_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -722,7 +722,7 @@ pub fn build(b: *std.Build) void {
     // RPC worker pool tests
     const rpc_worker_pool_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc_worker_pool_test.zig"),
+            .root_source_file = b.path("tests/rpc/level2/rpc_worker_pool_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -768,44 +768,6 @@ pub fn build(b: *std.Build) void {
 
     const run_wasm_host_abi_tests = b.addRunArtifact(wasm_host_abi_tests);
 
-    // Test step runs all tests
-    const test_step = b.step("test", "Run all tests");
-    test_step.dependOn(&run_main_tests.step);
-    test_step.dependOn(&run_lib_tests.step);
-    test_step.dependOn(&run_message_tests.step);
-    test_step.dependOn(&run_codegen_tests.step);
-    test_step.dependOn(&run_codegen_defaults_tests.step);
-    test_step.dependOn(&run_codegen_annotations_tests.step);
-    test_step.dependOn(&run_codegen_rpc_nested_tests.step);
-    test_step.dependOn(&run_codegen_streaming_tests.step);
-    test_step.dependOn(&run_codegen_generated_runtime_tests.step);
-    test_step.dependOn(&run_integration_tests.step);
-    test_step.dependOn(&run_interop_tests.step);
-    test_step.dependOn(&run_interop_roundtrip_tests.step);
-    test_step.dependOn(&run_real_world_person_tests.step);
-    test_step.dependOn(&run_real_world_addressbook_tests.step);
-    test_step.dependOn(&run_union_tests.step);
-    test_step.dependOn(&run_codegen_union_group_tests.step);
-    test_step.dependOn(&run_capnp_testdata_tests.step);
-    test_step.dependOn(&run_capnp_test_vendor_tests.step);
-    test_step.dependOn(&run_schema_validation_tests.step);
-    test_step.dependOn(&run_rpc_framing_tests.step);
-    test_step.dependOn(&run_rpc_cap_table_tests.step);
-    test_step.dependOn(&run_rpc_promised_answer_tests.step);
-    test_step.dependOn(&run_rpc_protocol_tests.step);
-    test_step.dependOn(&run_rpc_peer_tests.step);
-    test_step.dependOn(&run_rpc_host_peer_tests.step);
-    test_step.dependOn(&run_rpc_peer_return_send_helpers_tests.step);
-    test_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
-    test_step.dependOn(&run_rpc_peer_transport_state_tests.step);
-    test_step.dependOn(&run_rpc_peer_cleanup_tests.step);
-    test_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
-    test_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
-    test_step.dependOn(&run_rpc_worker_pool_tests.step);
-    test_step.dependOn(&run_union_runtime_tests.step);
-    test_step.dependOn(&run_codegen_golden_tests.step);
-    test_step.dependOn(&run_wasm_host_abi_tests.step);
-
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
     test_message_step.dependOn(&run_message_tests.step);
@@ -844,26 +806,72 @@ pub fn build(b: *std.Build) void {
     const test_schema_validation_step = b.step("test-schema-validation", "Run schema validation + canonicalization tests");
     test_schema_validation_step.dependOn(&run_schema_validation_tests.step);
 
-    const test_rpc_step = b.step("test-rpc", "Run RPC framing tests");
-    test_rpc_step.dependOn(&run_rpc_framing_tests.step);
-    test_rpc_step.dependOn(&run_rpc_cap_table_tests.step);
-    test_rpc_step.dependOn(&run_rpc_promised_answer_tests.step);
-    test_rpc_step.dependOn(&run_rpc_protocol_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_tests.step);
-    test_rpc_step.dependOn(&run_rpc_host_peer_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_return_send_helpers_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_transport_state_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_cleanup_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
-    test_rpc_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
-    test_rpc_step.dependOn(&run_rpc_worker_pool_tests.step);
+    const test_serialization_step = b.step("test-serialization", "Run serialization-oriented tests");
+    test_serialization_step.dependOn(&run_main_tests.step);
+    test_serialization_step.dependOn(&run_lib_tests.step);
+    test_serialization_step.dependOn(&run_message_tests.step);
+    test_serialization_step.dependOn(&run_codegen_tests.step);
+    test_serialization_step.dependOn(&run_codegen_defaults_tests.step);
+    test_serialization_step.dependOn(&run_codegen_annotations_tests.step);
+    test_serialization_step.dependOn(&run_codegen_rpc_nested_tests.step);
+    test_serialization_step.dependOn(&run_codegen_streaming_tests.step);
+    test_serialization_step.dependOn(&run_codegen_generated_runtime_tests.step);
+    test_serialization_step.dependOn(&run_integration_tests.step);
+    test_serialization_step.dependOn(&run_interop_tests.step);
+    test_serialization_step.dependOn(&run_interop_roundtrip_tests.step);
+    test_serialization_step.dependOn(&run_real_world_person_tests.step);
+    test_serialization_step.dependOn(&run_real_world_addressbook_tests.step);
+    test_serialization_step.dependOn(&run_union_tests.step);
+    test_serialization_step.dependOn(&run_union_runtime_tests.step);
+    test_serialization_step.dependOn(&run_codegen_union_group_tests.step);
+    test_serialization_step.dependOn(&run_codegen_golden_tests.step);
+    test_serialization_step.dependOn(&run_capnp_testdata_tests.step);
+    test_serialization_step.dependOn(&run_capnp_test_vendor_tests.step);
+    test_serialization_step.dependOn(&run_schema_validation_tests.step);
+
+    // Cumulative RPC levels:
+    // - level0: framing/protocol/cap-table encoding
+    // - level1: promise/pipelining primitives
+    // - level2: runtime plumbing and transport integration
+    // - level3: advanced peer semantics (provide/accept/join/third-party/disembargo)
+    const test_rpc_level0_step = b.step("test-rpc-level0", "Run RPC level 0 tests (framing/protocol/cap-table)");
+    test_rpc_level0_step.dependOn(&run_rpc_framing_tests.step);
+    test_rpc_level0_step.dependOn(&run_rpc_protocol_tests.step);
+    test_rpc_level0_step.dependOn(&run_rpc_cap_table_tests.step);
+
+    const test_rpc_level1_step = b.step("test-rpc-level1", "Run RPC level 1 tests (promises/pipelining)");
+    test_rpc_level1_step.dependOn(test_rpc_level0_step);
+    test_rpc_level1_step.dependOn(&run_rpc_promised_answer_tests.step);
+    test_rpc_level1_step.dependOn(&run_rpc_peer_return_send_helpers_tests.step);
+
+    const test_rpc_level2_step = b.step("test-rpc-level2", "Run RPC level 2 tests (runtime plumbing)");
+    test_rpc_level2_step.dependOn(test_rpc_level1_step);
+    test_rpc_level2_step.dependOn(&run_rpc_host_peer_tests.step);
+    test_rpc_level2_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
+    test_rpc_level2_step.dependOn(&run_rpc_peer_transport_state_tests.step);
+    test_rpc_level2_step.dependOn(&run_rpc_peer_cleanup_tests.step);
+    test_rpc_level2_step.dependOn(&run_rpc_worker_pool_tests.step);
+
+    const test_rpc_level3_step = b.step("test-rpc-level3", "Run RPC level 3+ tests (advanced peer semantics)");
+    test_rpc_level3_step.dependOn(test_rpc_level2_step);
+    test_rpc_level3_step.dependOn(&run_rpc_peer_tests.step);
+    test_rpc_level3_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
+    test_rpc_level3_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
+
+    const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
+    test_rpc_step.dependOn(test_rpc_level3_step);
 
     const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
     test_wasm_host_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
     test_lib_step.dependOn(&run_lib_tests.step);
+
+    // Test step runs all tests
+    const test_step = b.step("test", "Run all tests");
+    test_step.dependOn(test_serialization_step);
+    test_step.dependOn(test_rpc_step);
+    test_step.dependOn(test_wasm_host_step);
 
     // Check step (compile without linking)
     const check = b.addExecutable(.{

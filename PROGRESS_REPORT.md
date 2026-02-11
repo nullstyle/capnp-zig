@@ -19,18 +19,18 @@ Scope: Active workstream to close P1/P2 recommendations from `QUALITY_REPORT.md`
 ## P1/P2 Checklist
 
 1. P1-4: Split `peer.zig` into focused modules. **In progress (near-complete)**
-   - `src/rpc/peer.zig` reduced from monolith to orchestrator + state holder.
+   - `src/rpc/level3/peer.zig` reduced from monolith to orchestrator + state holder.
    - Extracted submodules include:
-     - `src/rpc/peer/call/*`
-     - `src/rpc/peer/forward/*`
-     - `src/rpc/peer/provide/*`
-     - `src/rpc/peer/return/*`
-     - `src/rpc/peer/third_party/*`
+     - `src/rpc/level3/peer/call/*`
+     - `src/rpc/level3/peer/forward/*`
+     - `src/rpc/level3/peer/provide/*`
+     - `src/rpc/level3/peer/return/*`
+     - `src/rpc/level3/peer/third_party/*`
    - Latest slice:
-     - `src/rpc/peer/peer_state_types.zig` extracted for provide/join state types.
+     - `src/rpc/level3/peer/peer_state_types.zig` extracted for provide/join state types.
 
 2. P1-5: Add allocation-size limits to reader path. **Done**
-   - `src/reader.zig` uses bounded `max_total_words` checks and overflow-safe arithmetic.
+   - `src/serialization/reader.zig` uses bounded `max_total_words` checks and overflow-safe arithmetic.
 
 3. P2-6: Add comments in critical paths. **In progress**
    - Message packing/unpacking and far/double-far pointer resolution comments added.
@@ -55,6 +55,6 @@ Latest full run in this branch state:
 
 ## Next Execution Order
 
-1. Finish remaining P1 decomposition slice(s) that reduce `src/rpc/peer.zig` readability risk without API churn.
+1. Finish remaining P1 decomposition slice(s) that reduce `src/rpc/level3/peer.zig` readability risk without API churn.
 2. Complete P2 comments pass over remaining complex pointer/state-machine sections.
 3. (Done) Vendored `vendor/ext/libxev` removed; libxev is now sourced exclusively via `build.zig.zon` URL+hash.

@@ -9,21 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Wire format** (`src/message.zig`, `src/message/*`): Full Cap'n Proto binary
+- **Wire format** (`src/serialization/message.zig`, `src/serialization/message/*`): Full Cap'n Proto binary
   format support including segment management, pointer encoding/decoding
   (struct, list, far, capability), text/data serialization, and packed encoding.
   Key types: `Message`, `MessageBuilder`, `StructReader`, `StructBuilder`, and
   typed list readers/builders for all primitive types.
 
-- **Schema types** (`src/schema.zig`): In-memory representation of Cap'n Proto
+- **Schema types** (`src/serialization/schema.zig`): In-memory representation of Cap'n Proto
   schema graphs mirroring `schema.capnp` -- `Node`, `Field`, `Type`, `Value`,
   and supporting types.
 
-- **Schema parsing** (`src/request_reader.zig`): Parser for
+- **Schema parsing** (`src/serialization/request_reader.zig`): Parser for
   `CodeGeneratorRequest` messages received from the Cap'n Proto compiler plugin
   protocol over stdin.
 
-- **Schema validation** (`src/schema_validation.zig`): Validation and
+- **Schema validation** (`src/serialization/schema_validation.zig`): Validation and
   canonicalization of schema graphs with configurable traversal limits and
   nesting depth.
 
@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   structs, enums, constants, unions, groups, nested types, default values, and
   schema manifests with JSON serde exports.
 
-- **Reader convenience** (`src/reader.zig`): High-level `Reader` type for
+- **Reader convenience** (`src/serialization/reader.zig`): High-level `Reader` type for
   segment-framed message reading, including packed-format support and
   stream-based message reading.
 

@@ -47,8 +47,8 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
         v
 +-----------------------------------------------------------------------+
 |                                                                       |
-|  Layer 1: Wire Format                          src/message.zig        |
-|                                                 src/message/*          |
+|  Layer 1: Wire Format                          src/serialization/message.zig        |
+|                                                 src/serialization/message/*          |
 |                                                                       |
 |    message.zig              Segment management, pointer encoding,     |
 |                             packing/unpacking, Message & MessageBuilder|
@@ -182,12 +182,12 @@ Application                          Remote peer
 ## Public API Surface (`src/lib.zig`)
 
 ```zig
-pub const message            = @import("message.zig");           // Layer 1
-pub const schema             = @import("schema.zig");            // Layer 2
-pub const reader             = @import("reader.zig");            // Layer 1 convenience
+pub const message            = @import("serialization/message.zig");           // Layer 1
+pub const schema             = @import("serialization/schema.zig");            // Layer 2
+pub const reader             = @import("serialization/reader.zig");            // Layer 1 convenience
 pub const codegen            = @import("capnpc-zig/generator.zig"); // Layer 3
-pub const request            = @import("request_reader.zig");    // Layer 2
-pub const schema_validation  = @import("schema_validation.zig"); // Layer 2
+pub const request            = @import("serialization/request_reader.zig");    // Layer 2
+pub const schema_validation  = @import("serialization/schema_validation.zig"); // Layer 2
 pub const rpc                = @import("rpc/mod.zig");           // Layer 4
 ```
 

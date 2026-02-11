@@ -207,10 +207,19 @@ The project includes comprehensive tests:
 # Run all tests
 just test
 
-# Run specific test suites
-zig build test-message      # Message tests
-zig build test-codegen      # Codegen tests
-zig build test-rpc          # RPC tests
+# Run broad test groups
+zig build test-serialization # Serialization-focused suites
+zig build test-rpc           # All RPC suites
+
+# Run RPC suites by Cap'n Proto level (cumulative)
+zig build test-rpc-level0    # Framing/protocol/cap-table
+zig build test-rpc-level1    # Promises/pipelining
+zig build test-rpc-level2    # Runtime plumbing
+zig build test-rpc-level3    # Advanced peer semantics (level 3+)
+
+# Run specific focused suites
+zig build test-message       # Message tests
+zig build test-codegen       # Codegen tests
 just e2e                    # Cross-language interop harness
 ```
 
