@@ -52,6 +52,9 @@ capnp compile -o ./zig-out/bin/capnpc-zig addressbook.capnp
 ```
 
 This produces `addressbook.capnp.zig` (or similar, depending on the schema filename). The generated file contains `Reader` and `Builder` types for each struct, plus Zig enums for each Cap'n Proto enum.
+Codegen is quiet by default to keep build output clean.
+
+For a canonical `build.zig` automation pattern (codegen step + generated module wiring), see [build-integration.md](build-integration.md).
 
 ## 3. Add capnpc-zig as a Dependency
 
@@ -324,6 +327,17 @@ switch (try shape.which()) {
     },
 }
 ```
+
+### Union Default-Arm Semantics
+
+Generated unions follow the Cap'n Proto discriminant value directly:
+
+- A newly initialized struct starts with discriminant `0`, so the first union arm is active by default.
+- A message that never explicitly set a union arm may still report that first arm at read time.
+- Always branch on `which()` before calling arm-specific getters.
+- Always call `setXxx()` or `initXxx()` before writing fields for a non-default arm.
+
+This avoids subtle bugs where application code assumes a union arm was explicitly set when it was only the implicit zero/default discriminant.
 
 ## 10. Packed Encoding
 

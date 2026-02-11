@@ -8,6 +8,12 @@ fn expectContains(haystack: []const u8, needle: []const u8) !void {
     }
 }
 
+fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
+    if (std.mem.indexOf(u8, haystack, needle) != null) {
+        return error.UnexpectedOutput;
+    }
+}
+
 test "Codegen defaults and constants" {
     const allocator = std.testing.allocator;
 
@@ -57,4 +63,5 @@ test "Codegen defaults and constants" {
     try expectContains(output, "value != true");
     try expectContains(output, "const stored = @as(u32, @bitCast(value)) ^ @as(u32, 123);");
     try expectContains(output, "const stored = raw ^ @as(u16, 1);");
+    try expectNotContains(output, "const rpc = capnpc.rpc;");
 }

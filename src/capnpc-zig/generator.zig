@@ -1,5 +1,4 @@
 const std = @import("std");
-const log = std.log.scoped(.codegen);
 const schema = @import("../schema.zig");
 const StructGenerator = @import("struct_gen.zig").StructGenerator;
 const types = @import("types.zig");
@@ -15,6 +14,8 @@ pub const Generator = struct {
     current_file_id: ?schema.Id = null,
     /// Maps imported file node IDs to their Zig module const names.
     import_modules: std.AutoHashMap(schema.Id, []const u8),
+    /// Emit codegen trace logs when true.
+    verbose: bool = false,
 
     /// Build a generator from the full set of schema nodes, indexing them by ID.
     pub fn init(allocator: std.mem.Allocator, nodes: []const schema.Node) !Generator {
@@ -39,10 +40,20 @@ pub const Generator = struct {
         self.node_map.deinit();
     }
 
+    /// Enable/disable verbose codegen traces.
+    pub fn setVerbose(self: *Generator, verbose: bool) void {
+        self.verbose = verbose;
+    }
+
     fn clearImportModules(self: *Generator) void {
         var it = self.import_modules.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
         self.import_modules.clearRetainingCapacity();
+    }
+
+    fn verboseLog(self: *const Generator, comptime fmt: []const u8, args: anytype) void {
+        if (!self.verbose) return;
+        std.debug.print(fmt, args);
     }
 
     /// Get a node by its ID
@@ -57,12 +68,15 @@ pub const Generator = struct {
     /// definitions. Returns an allocator-owned byte slice containing the
     /// generated `.zig` source.
     pub fn generateFile(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
-        log.debug("generating file: {s}", .{requested_file.filename});
+        self.verboseLog("capnpc-zig: generating file {s}\n", .{requested_file.filename});
 
         // Set current file context for cross-file type resolution.
         self.current_file_id = requested_file.id;
         defer self.current_file_id = null;
         self.clearImportModules();
+
+        const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
+        const needs_rpc = try self.fileNeedsRpc(file_node);
 
         var output = std.ArrayList(u8){};
         errdefer output.deinit(self.allocator);
@@ -76,7 +90,9 @@ pub const Generator = struct {
         try writer.writeAll("const capnpc = @import(\"capnpc-zig\");\n");
         try writer.writeAll("const message = capnpc.message;\n");
         try writer.writeAll("const schema = capnpc.schema;\n");
-        try writer.writeAll("const rpc = capnpc.rpc;\n");
+        if (needs_rpc) {
+            try writer.writeAll("const rpc = capnpc.rpc;\n");
+        }
 
         // Emit @import for each cross-file import.
         for (requested_file.imports) |imp| {
@@ -89,8 +105,6 @@ pub const Generator = struct {
         }
         try writer.writeByte('\n');
 
-        // Find the file node
-        const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
         try self.writeSchemaManifest(requested_file, file_node, writer);
 
         var generated = std.AutoHashMap(schema.Id, void).init(self.allocator);
@@ -259,7 +273,7 @@ pub const Generator = struct {
 
     /// Generate code for a single node
     fn generateNode(self: *Generator, node: *const schema.Node, output: *std.ArrayList(u8)) !void {
-        log.debug("generating node id=0x{x} kind={s}", .{ node.id, @tagName(node.kind) });
+        self.verboseLog("capnpc-zig: generating node id=0x{x} kind={s}\n", .{ node.id, @tagName(node.kind) });
         const writer = output.writer(self.allocator);
 
         switch (node.kind) {
@@ -318,6 +332,68 @@ pub const Generator = struct {
                 }
             }
         }
+    }
+
+    fn fileNeedsRpc(self: *Generator, file_node: *const schema.Node) !bool {
+        var visited = std.AutoHashMap(schema.Id, void).init(self.allocator);
+        defer visited.deinit();
+
+        for (file_node.nested_nodes) |nested| {
+            if (try self.nodeNeedsRpcRecursive(nested.id, &visited)) return true;
+        }
+        return false;
+    }
+
+    fn nodeNeedsRpcRecursive(
+        self: *Generator,
+        id: schema.Id,
+        visited: *std.AutoHashMap(schema.Id, void),
+    ) !bool {
+        if (visited.contains(id)) return false;
+        try visited.put(id, {});
+
+        const node = self.getNode(id) orelse return false;
+        if (self.nodeNeedsRpc(node)) return true;
+
+        for (node.nested_nodes) |nested| {
+            if (try self.nodeNeedsRpcRecursive(nested.id, visited)) return true;
+        }
+
+        if (node.kind == .interface) {
+            const iface = node.interface_node orelse return false;
+            for (iface.methods) |method| {
+                if (try self.nodeNeedsRpcRecursive(method.param_struct_type, visited)) return true;
+                if (try self.nodeNeedsRpcRecursive(method.result_struct_type, visited)) return true;
+            }
+            for (iface.superclasses) |parent_id| {
+                if (try self.nodeNeedsRpcRecursive(parent_id, visited)) return true;
+            }
+        }
+
+        return false;
+    }
+
+    fn nodeNeedsRpc(self: *Generator, node: *const schema.Node) bool {
+        return switch (node.kind) {
+            .interface => true,
+            .@"struct" => blk: {
+                const struct_node = node.struct_node orelse break :blk false;
+                for (struct_node.fields) |field| {
+                    const slot = field.slot orelse continue;
+                    if (self.typeNeedsRpc(slot.type)) break :blk true;
+                }
+                break :blk false;
+            },
+            else => false,
+        };
+    }
+
+    fn typeNeedsRpc(self: *Generator, typ: schema.Type) bool {
+        return switch (typ) {
+            .interface => true,
+            .list => |list_info| self.typeNeedsRpc(list_info.element_type.*),
+            else => false,
+        };
     }
 
     /// Generate a struct definition

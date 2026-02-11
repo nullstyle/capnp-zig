@@ -47,6 +47,7 @@ test "Codegen emits nested param/result structs with sanitized names" {
     try expectContains(output, "pub const PingResults");
     try expectContains(output, "pub const RpcNested = struct");
     try expectContains(output, "pub const Ping = struct");
+    try expectContains(output, "const rpc = capnpc.rpc;");
     try std.testing.expect(std.mem.indexOf(u8, output, "$") == null);
 }
 

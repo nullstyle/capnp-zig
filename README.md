@@ -137,6 +137,8 @@ pub fn main() !void {
 }
 ```
 
+For a canonical `build.zig` codegen + generated-module wiring example, see `docs/build-integration.md`.
+
 ## Project Structure
 
 ```

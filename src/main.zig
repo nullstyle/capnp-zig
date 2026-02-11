@@ -2,14 +2,21 @@ const std = @import("std");
 const Generator = @import("capnpc-zig/generator.zig").Generator;
 const request_reader = @import("request_reader.zig");
 
+const RunOptions = struct {
+    verbose: bool = false,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const argv = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, argv);
+    const options = parseRunOptions(argv);
+
     // Read CodeGeneratorRequest from stdin
     const stdin = std.fs.File.stdin();
-    const stdout = std.fs.File.stdout();
     const stderr = std.fs.File.stderr();
 
     // For now, we'll implement a simple version that just reads and processes
@@ -33,6 +40,7 @@ pub fn main() !void {
     // Initialize generator
     var generator = try Generator.init(allocator, request.nodes);
     defer generator.deinit();
+    generator.setVerbose(options.verbose);
 
     // Generate code for each requested file
     for (request.requested_files) |requested_file| {
@@ -49,10 +57,13 @@ pub fn main() !void {
 
         try file.writeAll(output_code);
 
-        logStderr(stderr, "Generated: {s}\n", .{output_filename});
+        if (options.verbose) {
+            logStderr(stderr, "Generated: {s}\n", .{output_filename});
+        }
     }
-
-    stdout.writeAll("Code generation complete.\n") catch {};
+    if (options.verbose) {
+        logStderr(stderr, "Code generation complete.\n", .{});
+    }
 }
 
 /// Best-effort diagnostic output to stderr using a stack buffer.
@@ -61,6 +72,33 @@ fn logStderr(stderr: std.fs.File, comptime fmt: []const u8, args: anytype) void 
     var fbs = std.io.fixedBufferStream(&buf);
     std.fmt.format(fbs.writer(), fmt, args) catch {};
     stderr.writeAll(fbs.getWritten()) catch {};
+}
+
+fn parseRunOptions(argv: anytype) RunOptions {
+    var options = RunOptions{};
+    if (argv.len <= 1) return options;
+
+    for (argv[1..]) |arg| {
+        const arg_slice: []const u8 = arg;
+        if (isVerboseOption(arg_slice)) {
+            options.verbose = true;
+            continue;
+        }
+        var tokens = std.mem.tokenizeAny(u8, arg_slice, ",");
+        while (tokens.next()) |token| {
+            if (isVerboseOption(token)) {
+                options.verbose = true;
+                break;
+            }
+        }
+    }
+    return options;
+}
+
+fn isVerboseOption(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--verbose") or
+        std.mem.eql(u8, arg, "-v") or
+        std.mem.eql(u8, arg, "verbose");
 }
 
 // Parsing and freeing are handled by request_reader.zig.
@@ -90,4 +128,22 @@ test "getOutputFilename" {
     const result2 = try getOutputFilename(allocator, "schema/example.capnp");
     defer allocator.free(result2);
     try std.testing.expectEqualStrings("schema/example.zig", result2);
+}
+
+test "parseRunOptions defaults to quiet" {
+    const argv = [_][]const u8{"capnpc-zig"};
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(!options.verbose);
+}
+
+test "parseRunOptions enables verbose for --verbose" {
+    const argv = [_][]const u8{ "capnpc-zig", "--verbose" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(options.verbose);
+}
+
+test "parseRunOptions enables verbose for capnp style token" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,verbose,foo" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(options.verbose);
 }

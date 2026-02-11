@@ -5,7 +5,6 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
-const rpc = capnpc.rpc;
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"defs.capnp\",\"module\":\"defs\",\"serde\":[]}";
 pub fn capnpSchemaManifestJson() []const u8 {
