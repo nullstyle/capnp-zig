@@ -83,6 +83,7 @@ const Paths = struct {
 
 const server_timeout_ms: i64 = 60 * 1000;
 const case_timeout_ms: i64 = 20 * 1000;
+const default_e2e_zig_global_cache_dir = "./.zig-global-cache";
 
 fn usage() void {
     std.debug.print(
@@ -98,13 +99,17 @@ fn usage() void {
         \\  --verbose
         \\  --help
         \\
-        \\Optional hook env vars (legacy override):
+        \\Optional hook env vars:
+        \\  E2E_ZIG_GLOBAL_CACHE_DIR
+        \\  (if set, used to seed ZIG_GLOBAL_CACHE_DIR for zig build/run)
+        \\
+        \\Legacy override hook env vars:
         \\  E2E_ZIG_CLIENT_CMD
         \\  E2E_ZIG_SERVER_CMD
         \\By default the Zig client hook runs via:
         \\  just --justfile tests/e2e/zig/Justfile client-hook ...
         \\By default the Zig server runs via:
-        \\  zig build --global-cache-dir ./.zig-global-cache e2e-zig-server -- ...
+        \\  zig build e2e-zig-server -- ... (inherits ZIG_GLOBAL_CACHE_DIR)
         \\
     , .{});
 }
@@ -759,10 +764,17 @@ fn startZigServer(
     const fd_text = try std.fmt.bufPrint(&fd_buf, "{d}", .{listen.fd});
     var env_storage: ?std.process.EnvMap = null;
     var env_ptr: ?*std.process.EnvMap = null;
-    if (zig_server_cmd_override != null) {
-        env_storage = try std.process.getEnvMap(allocator);
-        env_ptr = &env_storage.?;
-    }
+    env_storage = try std.process.getEnvMap(allocator);
+    env_ptr = &env_storage.?;
+    const e2e_global_cache_dir = try getOptionalEnv(allocator, "E2E_ZIG_GLOBAL_CACHE_DIR");
+    defer if (e2e_global_cache_dir) |dir| allocator.free(dir);
+    const cache_dir = if (e2e_global_cache_dir) |dir|
+        dir
+    else if (env_ptr.?.get("ZIG_GLOBAL_CACHE_DIR")) |dir|
+        dir
+    else
+        default_e2e_zig_global_cache_dir;
+    try env_ptr.?.put("ZIG_GLOBAL_CACHE_DIR", cache_dir);
     defer if (env_storage) |*map| map.deinit();
 
     var child = if (zig_server_cmd_override) |cmd| blk: {
@@ -777,8 +789,6 @@ fn startZigServer(
         var c = std.process.Child.init(&.{
             "zig",
             "build",
-            "--global-cache-dir",
-            "./.zig-global-cache",
             "e2e-zig-server",
             "--",
             "--listen-fd",
@@ -787,6 +797,7 @@ fn startZigServer(
             schemaName(schema),
         }, allocator);
         c.cwd = paths.repo_root;
+        c.env_map = env_ptr.?;
         break :blk c;
     };
 

@@ -57,23 +57,26 @@ export E2E_ZIG_SERVER_CMD='zig build e2e-zig-server -- --host "$E2E_BIND_HOST" -
 ## Commands
 
 ```bash
+export E2E_ZIG_GLOBAL_CACHE_DIR=.zig-global-cache
+export ZIG_GLOBAL_CACHE_DIR="$E2E_ZIG_GLOBAL_CACHE_DIR"
+
 # Build reference images
-zig run --global-cache-dir .zig-global-cache tools/e2e_runner.zig -- --build-only
+zig run tools/e2e_runner.zig -- --build-only
 
 # Run full Zig interop e2e
-zig run --global-cache-dir .zig-global-cache tools/e2e_runner.zig --
+zig run tools/e2e_runner.zig --
 
 # Run only Python reference backend
-zig run --global-cache-dir .zig-global-cache tools/e2e_runner.zig -- --backend=python
+zig run tools/e2e_runner.zig -- --backend=python
 
 # Run only Rust reference backend
-zig run --global-cache-dir .zig-global-cache tools/e2e_runner.zig -- --backend=rust
+zig run tools/e2e_runner.zig -- --backend=rust
 
 # Run e2e using already-built images
-zig run --global-cache-dir .zig-global-cache tools/e2e_runner.zig -- --skip-build
+zig run tools/e2e_runner.zig -- --skip-build
 
 # Scaffold mode while Zig hooks are not wired yet
-zig run --global-cache-dir .zig-global-cache tools/e2e_runner.zig -- --allow-missing-hooks
+zig run tools/e2e_runner.zig -- --allow-missing-hooks
 
 # Or via just recipes
 just --justfile tests/e2e/Justfile test

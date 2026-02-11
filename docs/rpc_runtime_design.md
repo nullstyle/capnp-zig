@@ -3,7 +3,7 @@
 ## Goals
 - Full Cap'n Proto RPC protocol compliance (bootstrap, calls, returns, pipelining, capability transfer).
 - Production-ready performance: low overhead, backpressure-aware, minimal allocations.
-- Integration with the existing `message.zig` wire-format layer and codegen.
+- Integration with the existing `src/serialization/message.zig` wire-format layer and codegen.
 - Event-driven, cross-platform IO via libxev.
 
 ## Non-Goals (Initial Phase)
@@ -14,13 +14,13 @@
 ## Architecture Overview
 The runtime is organized into a small set of components, with strict ownership and lifetime rules:
 
-- `rpc/Runtime`: owns the libxev loop (or attaches to an existing loop), manages connections, and provides a minimal executor to schedule user callbacks without blocking the IO loop.
-- `rpc/Connection`: the per-transport state machine. It handles framing, parsing, dispatch, and write scheduling.
-- `rpc/Transport`: abstraction over libxev TCP (initially only TCP). Handles async read/write and exposes buffers to `Connection`.
-- `rpc/Protocol`: Cap'n Proto RPC message definitions and parsing helpers. Messages are encoded/decoded using the existing `message.zig` APIs.
-- `rpc/CapTable`: capability tables for exported and imported capabilities, plus reference counting/lifetime management.
-- `rpc/Dispatcher`: routes incoming `Call` messages to generated server stubs and assembles responses.
-- `rpc/Client`: wrapper for issuing calls, tracking in-flight requests, and resolving promises.
+- `rpc/Runtime` (`src/rpc/level2/runtime.zig`): owns the libxev loop (or attaches to an existing loop), manages connections, and provides a minimal executor to schedule user callbacks without blocking the IO loop.
+- `rpc/Connection` (`src/rpc/level2/connection.zig`): per-transport state machine for framing, parsing, dispatch, and write scheduling.
+- `rpc/Transport` (`src/rpc/level2/transport_xev.zig`): libxev TCP transport, handling async read/write and exposing buffers to `Connection`.
+- `rpc/Protocol` (`src/rpc/level0/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
+- `rpc/CapTable` (`src/rpc/level0/cap_table.zig`): export/import capability tracking with reference counting and lifetime management.
+- `rpc/Peer` (`src/rpc/level3/peer.zig` + `src/rpc/level3/peer/*`): inbound/outbound call orchestration, return handling, and lifecycle dispatch.
+- `rpc/Promise Pipeline` (`src/rpc/level1/promise_pipeline.zig`, `src/rpc/level1/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
 
 All runtime types are single-threaded unless explicitly documented. The event loop thread owns connections and transport IO.
 
@@ -53,12 +53,12 @@ Connection IO pipeline:
 ## Call Flow
 Inbound call:
 1. `Call` message parsed with target capability ID and method.
-2. `Dispatcher` locates server implementation and invokes it.
+2. `Peer` dispatch logic locates server implementation and invokes it.
 3. Results are serialized into a `Return` message.
 4. Exceptions map to `Return` with an error payload.
 
 Outbound call:
-1. `Client` allocates a `QuestionId`, builds params using generated stubs.
+1. Generated client stubs/peer helpers allocate a `QuestionId` and build params.
 2. `Connection` sends `Call` and tracks outstanding question state.
 3. `Return` resolves the promise and releases temporary capabilities.
 
@@ -73,14 +73,16 @@ Outbound call:
 - Transport errors propagate to `Connection` and trigger cleanup.
 - Application errors are serialized as RPC exceptions.
 
-## Proposed Module Layout
+## Current Module Layout
 - `src/rpc/level2/runtime.zig`
 - `src/rpc/level2/connection.zig`
 - `src/rpc/level2/transport_xev.zig`
 - `src/rpc/level0/protocol.zig`
 - `src/rpc/level0/cap_table.zig`
-- `src/rpc/dispatcher.zig`
-- `src/rpc/client.zig`
+- `src/rpc/level0/framing.zig`
+- `src/rpc/level1/promise_pipeline.zig`
+- `src/rpc/level1/peer_promises.zig`
+- `src/rpc/level3/peer.zig`
 
 ## Test Plan
 - Unit tests for framing and state machines.
@@ -89,5 +91,5 @@ Outbound call:
 
 ## Open Questions
 - Exact mapping of Cap’n Proto RPC protocol types to generated Zig types.
-- How to represent pipelined calls in the client API.
+- How to expose higher-level pipelined call ergonomics in generated client stubs.
 - Whether to support packed RPC streams in the first iteration.

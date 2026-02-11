@@ -183,22 +183,6 @@ pub fn build(b: *std.Build) void {
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);
 
-    const rpc_fixture_gen = b.addExecutable(.{
-        .name = "gen-rpc-fixtures",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/gen_rpc_fixtures.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig-core", .module = core_module },
-            },
-        }),
-    });
-
-    const run_rpc_fixture_gen = b.addRunArtifact(rpc_fixture_gen);
-    const rpc_fixture_step = b.step("gen-rpc-fixtures", "Generate deterministic RPC frame fixtures for Deno tests");
-    rpc_fixture_step.dependOn(&run_rpc_fixture_gen.step);
-
     // RPC ping-pong example
     const rpc_pingpong_example = b.addExecutable(.{
         .name = "example-rpc-pingpong",
@@ -744,7 +728,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const rpc_fixture_tool_module = b.createModule(.{
-        .root_source_file = b.path("tools/gen_rpc_fixtures.zig"),
+        .root_source_file = b.path("tests/rpc/support/rpc_fixture_tool.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

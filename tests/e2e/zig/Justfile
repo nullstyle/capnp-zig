@@ -1,7 +1,7 @@
 # Zig e2e hook contract for tools/e2e_runner.zig.
 
 repo_root := '../../..'
-zig_build := 'zig build --global-cache-dir ./.zig-global-cache'
+zig_build := 'cache_dir="${E2E_ZIG_GLOBAL_CACHE_DIR:-./.zig-global-cache}"; E2E_ZIG_GLOBAL_CACHE_DIR="$cache_dir" ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build'
 
 build-client:
     cd {{repo_root}} && {{zig_build}} e2e-zig-client -- --help >/dev/null
