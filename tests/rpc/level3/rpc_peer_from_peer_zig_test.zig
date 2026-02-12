@@ -151,6 +151,62 @@ test "peer shutdown callback fires immediately with no outstanding questions" {
     try std.testing.expectEqual(@as(usize, 1), state.close_calls);
 }
 
+test "peer shutdown callback fires for detached peer with no transport" {
+    const State = struct {
+        var ctx: ?*@This() = null;
+        calls: usize = 0,
+
+        fn onShutdown(_: *Peer) void {
+            const state = ctx orelse unreachable;
+            state.calls += 1;
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    var state = State{};
+    State.ctx = &state;
+    defer State.ctx = null;
+
+    peer.shutdown(State.onShutdown);
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+}
+
+test "peer detached shutdown callback fires after outstanding questions drain" {
+    const State = struct {
+        var ctx: ?*@This() = null;
+        shutdown_calls: usize = 0,
+
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+        fn onShutdown(_: *Peer) void {
+            const state = ctx orelse unreachable;
+            state.shutdown_calls += 1;
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    var send_ctx: u8 = 0;
+    peer.setSendFrameOverride(&send_ctx, State.send);
+
+    var callback_ctx: u8 = 0;
+    const question_id = try peer.sendBootstrap(&callback_ctx, State.onReturn);
+    try std.testing.expect(peer.questions.contains(question_id));
+
+    var state = State{};
+    State.ctx = &state;
+    defer State.ctx = null;
+
+    peer.shutdown(State.onShutdown);
+    try std.testing.expectEqual(@as(usize, 0), state.shutdown_calls);
+
+    peer_test_hooks.removeQuestion(&peer, question_id);
+    try std.testing.expectEqual(@as(usize, 1), state.shutdown_calls);
+}
+
 test "peer question allocation probes past occupied ID across wrap-around" {
     const allocator = std.testing.allocator;
     const Noop = struct {
@@ -177,6 +233,62 @@ test "peer question allocation probes past occupied ID across wrap-around" {
     try std.testing.expectEqual(@as(u32, 0), question_id);
     try std.testing.expect(peer.questions.contains(std.math.maxInt(u32)));
     try std.testing.expect(peer.questions.contains(@as(u32, 0)));
+}
+
+test "sendBootstrap rolls back question when send fails" {
+    const Hooks = struct {
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+        fn failSend(_: *anyopaque, _: []const u8) anyerror!void {
+            return error.TestSendFailed;
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    var send_ctx: u8 = 0;
+    peer.setSendFrameOverride(&send_ctx, Hooks.failSend);
+
+    var callback_ctx: u8 = 0;
+    const expected_question_id = peer.next_question_id;
+    try std.testing.expectError(error.TestSendFailed, peer.sendBootstrap(&callback_ctx, Hooks.onReturn));
+    try std.testing.expect(!peer.questions.contains(expected_question_id));
+    try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+}
+
+test "addExport rolls back cap table export identity when insertion fails" {
+    const NoopHandler = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    // First allocation (caps.noteExport) succeeds, second (peer.exports.put)
+    // fails, exercising rollback symmetry.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var peer = Peer.initDetached(failing.allocator());
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    try std.testing.expectError(
+        error.OutOfMemory,
+        peer.addExport(.{
+            .ctx = &handler_state,
+            .on_call = NoopHandler.onCall,
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.exports.count());
+    try std.testing.expectEqual(@as(u32, 0), peer.caps.totalEntries());
+}
+
+test "addPromiseExport rolls back cap table export identity when insertion fails" {
+    // First allocation (caps.noteExport) succeeds, second (peer.exports.put)
+    // fails, exercising rollback symmetry.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var peer = Peer.initDetached(failing.allocator());
+    defer peer.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, peer.addPromiseExport());
+    try std.testing.expectEqual(@as(usize, 0), peer.exports.count());
+    try std.testing.expectEqual(@as(u32, 0), peer.caps.totalEntries());
 }
 
 test "release batching aggregates per import id" {
@@ -2475,6 +2587,33 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
     const ex = ret.exception orelse return error.MissingException;
     try std.testing.expectEqualStrings("resolved", ex.reason);
+}
+
+test "resolvePromiseExportToExport rejects unknown target export id" {
+    const allocator = std.testing.allocator;
+
+    const SendState = struct {
+        sends: usize = 0,
+        fn onFrame(ctx_ptr: *anyopaque, _: []const u8) anyerror!void {
+            const state: *@This() = castCtx(*@This(), ctx_ptr);
+            state.sends += 1;
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var send_state = SendState{};
+    peer.setSendFrameOverride(&send_state, SendState.onFrame);
+
+    const promise_export_id = try peer.addPromiseExport();
+    try std.testing.expectError(error.UnknownExport, peer.resolvePromiseExportToExport(promise_export_id, 999_999));
+    try std.testing.expectEqual(@as(usize, 0), send_state.sends);
+
+    const promise_entry = peer.exports.get(promise_export_id) orelse return error.UnknownExport;
+    try std.testing.expect(promise_entry.is_promise);
+    try std.testing.expect(promise_entry.resolved == null);
+    try std.testing.expect(peer.caps.isExportPromise(promise_export_id));
 }
 
 test "bootstrap return is recorded for promisedAnswer pipelined calls" {

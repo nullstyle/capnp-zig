@@ -1,8 +1,8 @@
-# capnpc-zig Security & Correctness Audit Report (Round 5 - Remediation Update)
+# capnpc-zig Security & Correctness Audit Report (Round 6 - Outside-In Remediation Update)
 
 **Date:** 2026-02-12  
-**Scope:** Remediation of Round 5 deep-audit findings across RPC capability classification, queued-call duplicate detection, and level2 lifecycle/shutdown behavior.  
-**Status:** All Round 5 findings addressed with regression coverage.
+**Scope:** Remediation of Round 6 outside-in findings across public `Peer` APIs, shutdown lifecycle behavior, export/promise state consistency, and callback lifetime hardening.  
+**Status:** All Round 6 findings addressed.
 
 ---
 
@@ -14,111 +14,115 @@
 | High | 0 | 1 |
 | Medium | 0 | 3 |
 | Low | 0 | 1 |
-| Test Gaps | 0 | 3 |
+| Test Gaps | 0 | 4 |
 
 ---
 
 ## Remediations
 
-### H1 (Fixed): Export/import ID collision could misclassify outbound capabilities
+### H1 (Fixed): `sendBootstrap()` leaked question state on send/build failure
 
 **Files:**
-- `src/rpc/level0/cap_table.zig`
-- `src/rpc/level3/peer.zig`
-- `src/rpc/level3/peer/peer_cap_lifecycle.zig`
-- `tests/rpc/level0/rpc_cap_table_encode_test.zig`
+- `src/rpc/level3/peer.zig:719`
+- `src/rpc/level3/peer.zig:723`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig:238`
 
 **Fix:**
-- Added explicit export identity tracking in `CapTable` (`exports` map).
-- Updated outbound classification precedence to prefer local export identity (`senderHosted` / `senderPromise`) before import-hosted classification.
-- Wired peer export lifecycle to register and clear export IDs in `CapTable` (`noteExport` on add, `clearExport` on final release).
+- Added bootstrap send rollback parity with call send paths.
+- `sendBootstrap()` now performs `errdefer removeQuestion(question_id)` after question allocation.
+
+**Regression test added:**
+- `sendBootstrap rolls back question when send fails`
+
+---
+
+### M1 (Fixed): Detached-mode `shutdown(on_complete)` could drop callback
+
+**Files:**
+- `src/rpc/level3/peer.zig:750`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig:154`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig:176`
+
+**Fix:**
+- `completeShutdown()` now invokes shutdown callback regardless of attached transport.
+- Transport close remains conditional on transport presence.
+- Callback is nulled before invocation to prevent duplicate completion callbacks.
 
 **Regression tests added:**
-- `encode outbound cap table prefers local export classification over import id collisions`
-- `encode outbound cap table prefers local promised export over import id collisions`
+- `peer shutdown callback fires for detached peer with no transport`
+- `peer detached shutdown callback fires after outstanding questions drain`
 
 ---
 
-### M1 (Fixed): Duplicate inbound question detection checked wrong key space for promised queues
+### M2 (Fixed): `resolvePromiseExportToExport()` accepted unknown target export IDs
 
 **Files:**
-- `src/rpc/level3/peer.zig`
-- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`
+- `src/rpc/level3/peer.zig:771`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig:2592`
 
 **Fix:**
-- Reworked duplicate-question detection to scan queued pending-call frames for actual queued call `question_id` values.
-- Removed dependency on `pending_promises.contains(question_id)` for duplicate inbound question detection.
+- Added explicit target validation: resolution now fails with `error.UnknownExport` when `export_id` is not present in local `exports`.
 
 **Regression test added:**
-- `queued promised target key does not trigger duplicate question id for a distinct queued call id`
+- `resolvePromiseExportToExport rejects unknown target export id`
 
 ---
 
-### M2 (Fixed): Listener accept loop re-armed after close request
+### M3 (Fixed): `addExport` / `addPromiseExport` could leave ghost cap-table export IDs on failure
 
 **Files:**
-- `src/rpc/level2/runtime.zig`
+- `src/rpc/level3/peer.zig:670`
+- `src/rpc/level3/peer.zig:674`
+- `src/rpc/level3/peer.zig:687`
+- `src/rpc/level3/peer.zig:691`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig:259`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig:282`
 
 **Fix:**
-- `Listener.onAccept()` now gates all `queueAccept()` re-arm calls behind `!close_requested`.
-- Added close-request handling for accepted sockets so shutdown does not leak accepted fds while draining in-flight accepts.
+- Added rollback symmetry for export registration:
+  - `errdefer self.caps.clearExport(id)` in both export creation paths.
+- Guarantees `CapTable.exports` is reverted when later insertion/promise-marking steps fail.
 
-**Regression test added:**
-- `listener onAccept does not re-arm when close was requested`
+**Regression tests added:**
+- `addExport rolls back cap table export identity when insertion fails`
+- `addPromiseExport rolls back cap table export identity when insertion fails`
 
 ---
 
-### M3 (Fixed): `onTransportClose` callback order lifetime hazard
+### L1 (Fixed): `Connection` error-callback lifetime guard is now runtime-enforced in all builds
 
 **Files:**
-- `src/rpc/level2/connection.zig`
+- `src/rpc/level2/connection.zig:40`
+- `src/rpc/level2/connection.zig:99`
+- `src/rpc/level2/connection.zig:209`
 
 **Fix:**
-- Preserved `on_error` then `on_close` ordering for compatibility/cleanup behavior.
-- Added explicit safety contract and debug enforcement: `deinit()` is forbidden during `on_error` callback execution.
-- Centralized error-callback invocation through guarded helpers to enforce the contract consistently.
+- Promoted `deinit()`-during-`on_error` guard from debug-only to all build modes.
+- `invokeErrorCallback()` now always marks in-error-callback scope, and `deinit()` always panics when called from that scope.
 
-**Validation tests updated/added:**
-- `connection onTransportClose reports error then close` (retained expected behavior)
-- `connection onTransportClose invokes close callback on clean close`
-
----
-
-### L1 (Fixed): Early-cancel queue cleanup left empty pending buckets
-
-**Files:**
-- `src/rpc/level3/peer.zig`
-- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`
-
-**Fix:**
-- `cancelQueuedPendingQuestionInMap()` now removes empty pending buckets and deinitializes list storage when queues drain to zero.
-
-**Regression behavior assertion updated:**
-- `handleFinish cancels queued promised call when early-cancel workaround is disabled` now asserts bucket removal (`!pending_promises.contains(...)`).
+**Impact:**
+- Misuse now fails fast in production builds instead of relying solely on debug-mode detection.
 
 ---
 
 ## Test Gap Closure
 
-### T1 (Closed)
-Covered by collision regression tests in `tests/rpc/level0/rpc_cap_table_encode_test.zig`.
-
-### T2 (Closed)
-Covered by duplicate-question promised-queue regression in `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`.
-
-### T3 (Closed)
-Covered by listener close/re-arm regression in `src/rpc/level2/runtime.zig` test block.
+Closed this round:
+- T1: bootstrap rollback on send failure
+- T2: detached shutdown callback semantics
+- T3: promise-export resolve target validation
+- T4: export-creation rollback symmetry under allocator failure
 
 ---
 
 ## Validation
 
 Commands run during remediation:
-- `zig build test-rpc-level0 --summary all`
 - `zig build test-rpc-level2 --summary all`
 - `zig build test-rpc-level3 --summary all`
 - `just test`
 
 Results:
-- All targeted suites passed.
-- Full suite passed: `658/658`.
+- `test-rpc-level2` passed (`103/103`).
+- `test-rpc-level3` passed (`240/240`).
+- Full suite passed (`664/664`).

@@ -39,7 +39,8 @@ pub const Connection = struct {
     ///
     /// If close includes an error, `on_error` is dispatched first and then
     /// `on_close`. `on_error` callbacks must not call `deinit`/destroy the
-    /// connection; cleanup belongs in `on_close`.
+    /// connection; cleanup belongs in `on_close`. This is runtime-enforced:
+    /// calling `deinit()` from `on_error` panics in all build modes.
     on_close: ?*const fn (conn: *Connection) void = null,
     in_error_callback: bool = false,
 
@@ -98,7 +99,7 @@ pub const Connection = struct {
     /// `deinit()` is needed.
     pub fn deinit(self: *Connection) void {
         self.assertThreadAffinity();
-        if (builtin.mode == .Debug and self.in_error_callback) {
+        if (self.in_error_callback) {
             @panic("Connection.deinit() must not be called from on_error callback; defer cleanup to on_close");
         }
         self.ctx = null;
@@ -211,10 +212,8 @@ pub const Connection = struct {
         cb: *const fn (conn: *Connection, callback_err: anyerror) void,
         err: anyerror,
     ) void {
-        if (builtin.mode == .Debug) {
-            self.in_error_callback = true;
-            defer self.in_error_callback = false;
-        }
+        self.in_error_callback = true;
+        defer self.in_error_callback = false;
         cb(self, err);
     }
 

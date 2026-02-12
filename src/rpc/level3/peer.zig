@@ -671,6 +671,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         const id = try self.caps.allocExportId();
         try self.caps.noteExport(id);
+        errdefer self.caps.clearExport(id);
         try self.exports.put(id, .{
             .handler = exported,
             .ref_count = 0,
@@ -687,6 +688,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         const id = try self.caps.allocExportId();
         try self.caps.noteExport(id);
+        errdefer self.caps.clearExport(id);
         try self.exports.put(id, .{
             .handler = null,
             .ref_count = 0,
@@ -718,6 +720,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
         const question_id = try self.allocateQuestion(ctx, on_return);
+        errdefer self.removeQuestion(question_id);
 
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
@@ -746,18 +749,22 @@ pub const Peer = struct {
 
     fn completeShutdown(self: *Peer) void {
         self.assertThreadAffinity();
-        const transport_ctx = self.transport_ctx orelse return;
-        // Close transport if attached and not already closing.
-        if (self.transport_close) |close_fn| {
-            if (self.transport_is_closing) |is_closing_fn| {
-                if (!is_closing_fn(transport_ctx)) {
+        if (self.transport_ctx) |transport_ctx| {
+            // Close transport if attached and not already closing.
+            if (self.transport_close) |close_fn| {
+                if (self.transport_is_closing) |is_closing_fn| {
+                    if (!is_closing_fn(transport_ctx)) {
+                        close_fn(transport_ctx);
+                    }
+                } else {
                     close_fn(transport_ctx);
                 }
-            } else {
-                close_fn(transport_ctx);
             }
         }
-        if (self.shutdown_callback) |cb| cb(self);
+        if (self.shutdown_callback) |cb| {
+            self.shutdown_callback = null;
+            cb(self);
+        }
     }
 
     /// Resolve a previously exported promise to point at a concrete export.
@@ -766,6 +773,7 @@ pub const Peer = struct {
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
         if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
         if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
+        if (!self.exports.contains(export_id)) return error.UnknownExport;
 
         const descriptor = protocol.CapDescriptor{
             .tag = if (self.caps.isExportPromise(export_id)) .senderPromise else .senderHosted,
