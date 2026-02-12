@@ -7,6 +7,11 @@ const TypeGenerator = types.TypeGenerator;
 /// a `Reader` type (zero-copy field accessors) and a `Builder` type (field
 /// writers), plus list helpers, union tag enums, and nested group types.
 pub const StructGenerator = struct {
+    pub const ApiProfile = enum {
+        full,
+        compact,
+    };
+
     allocator: std.mem.Allocator,
     type_gen: TypeGenerator,
     node_lookup_ctx: ?*anyopaque,
@@ -14,6 +19,19 @@ pub const StructGenerator = struct {
     /// Optional callback returning the import module prefix for cross-file types.
     /// Returns null for types in the current file.
     type_prefix_fn: ?*const fn (ctx: ?*anyopaque, id: schema.Id) std.mem.Allocator.Error!?[]const u8 = null,
+    /// Controls generated convenience API surface for Reader/Builder wrappers.
+    api_profile: ApiProfile = .full,
+
+    const ListHelperUsage = struct {
+        enum_list: bool = false,
+        struct_list: bool = false,
+        data_list: bool = false,
+        capability_list: bool = false,
+
+        fn any(self: @This()) bool {
+            return self.enum_list or self.struct_list or self.data_list or self.capability_list;
+        }
+    };
 
     /// Create a standalone struct generator (no cross-node lookup support).
     pub fn init(allocator: std.mem.Allocator) StructGenerator {
@@ -22,6 +40,7 @@ pub const StructGenerator = struct {
             .type_gen = TypeGenerator.init(allocator),
             .node_lookup_ctx = null,
             .node_lookup = null,
+            .api_profile = .full,
         };
     }
 
@@ -37,7 +56,12 @@ pub const StructGenerator = struct {
             .type_gen = TypeGenerator.initWithLookup(allocator, node_lookup, node_lookup_ctx),
             .node_lookup_ctx = node_lookup_ctx,
             .node_lookup = node_lookup,
+            .api_profile = .full,
         };
+    }
+
+    pub fn setApiProfile(self: *StructGenerator, profile: ApiProfile) void {
+        self.api_profile = profile;
     }
 
     fn getNode(self: *const StructGenerator, id: schema.Id) ?*const schema.Node {
@@ -58,12 +82,13 @@ pub const StructGenerator = struct {
         const struct_info = node.struct_node orelse return error.InvalidStructNode;
         const name = try self.allocTypeName(node);
         defer self.allocator.free(name);
+        const list_helper_usage = try self.collectListHelperUsage(struct_info);
 
         const data_word_count = struct_info.data_word_count;
         const pointer_count = struct_info.pointer_count;
 
         try writer.print("pub const {s} = struct {{\n", .{name});
-        try self.generateListHelpers(writer);
+        try self.generateListHelpers(list_helper_usage, writer);
 
         // Generate union tag enum if this struct has a union
         if (struct_info.discriminant_count > 0) {
@@ -142,16 +167,73 @@ pub const StructGenerator = struct {
         }
     }
 
-    fn generateListHelpers(self: *StructGenerator, writer: anytype) !void {
+    fn collectListHelperUsage(self: *StructGenerator, struct_info: schema.StructNode) !ListHelperUsage {
+        var usage = ListHelperUsage{};
+        try self.collectListHelperUsageFromFields(struct_info.fields, &usage);
+        return usage;
+    }
+
+    fn collectListHelperUsageFromFields(
+        self: *StructGenerator,
+        fields: []const schema.Field,
+        usage: *ListHelperUsage,
+    ) !void {
+        for (fields) |field| {
+            if (field.group) |group| {
+                const group_node = self.getNode(group.type_id) orelse continue;
+                const group_struct_info = group_node.struct_node orelse continue;
+                try self.collectListHelperUsageFromFields(group_struct_info.fields, usage);
+            }
+
+            const slot = field.slot orelse continue;
+            if (slot.type != .list) continue;
+            try self.markListHelperUsage(slot.type.list.element_type.*, usage);
+        }
+    }
+
+    fn markListHelperUsage(
+        self: *StructGenerator,
+        element_type: schema.Type,
+        usage: *ListHelperUsage,
+    ) !void {
+        switch (element_type) {
+            .@"enum" => |enum_info| {
+                const enum_name = try self.enumTypeName(enum_info.type_id);
+                defer if (enum_name) |name| self.allocator.free(name);
+                if (enum_name != null) usage.enum_list = true;
+            },
+            .@"struct" => |struct_info| {
+                const struct_name = try self.structTypeName(struct_info.type_id);
+                defer if (struct_name) |name| self.allocator.free(name);
+                if (struct_name != null) usage.struct_list = true;
+            },
+            .data => usage.data_list = true,
+            .interface => usage.capability_list = true,
+            else => {},
+        }
+    }
+
+    fn generateListHelpers(self: *StructGenerator, usage: ListHelperUsage, writer: anytype) !void {
         _ = self;
-        try writer.writeAll("    const EnumListReader = message.typed_list_helpers.EnumListReader;\n");
-        try writer.writeAll("    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;\n");
-        try writer.writeAll("    const StructListReader = message.typed_list_helpers.StructListReader;\n");
-        try writer.writeAll("    const StructListBuilder = message.typed_list_helpers.StructListBuilder;\n");
-        try writer.writeAll("    const DataListReader = message.typed_list_helpers.DataListReader;\n");
-        try writer.writeAll("    const DataListBuilder = message.typed_list_helpers.DataListBuilder;\n");
-        try writer.writeAll("    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;\n");
-        try writer.writeAll("    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;\n\n");
+        if (usage.enum_list) {
+            try writer.writeAll("    const EnumListReader = message.typed_list_helpers.EnumListReader;\n");
+            try writer.writeAll("    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;\n");
+        }
+        if (usage.struct_list) {
+            try writer.writeAll("    const StructListReader = message.typed_list_helpers.StructListReader;\n");
+            try writer.writeAll("    const StructListBuilder = message.typed_list_helpers.StructListBuilder;\n");
+        }
+        if (usage.data_list) {
+            try writer.writeAll("    const DataListReader = message.typed_list_helpers.DataListReader;\n");
+            try writer.writeAll("    const DataListBuilder = message.typed_list_helpers.DataListBuilder;\n");
+        }
+        if (usage.capability_list) {
+            try writer.writeAll("    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;\n");
+            try writer.writeAll("    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;\n");
+        }
+        if (usage.any()) {
+            try writer.writeAll("\n");
+        }
     }
 
     fn generateReader(
@@ -168,10 +250,12 @@ pub const StructGenerator = struct {
 
         try self.generatePointerDefaults(struct_info, writer);
 
-        try writer.writeAll("        pub fn init(msg: *const message.Message) !Reader {\n");
-        try writer.writeAll("            const root = try msg.getRootStruct();\n");
-        try writer.writeAll("            return .{ ._reader = root };\n");
-        try writer.writeAll("        }\n\n");
+        if (self.api_profile == .full) {
+            try writer.writeAll("        pub fn init(msg: *const message.Message) !Reader {\n");
+            try writer.writeAll("            const root = try msg.getRootStruct();\n");
+            try writer.writeAll("            return .{ ._reader = root };\n");
+            try writer.writeAll("        }\n\n");
+        }
 
         try writer.writeAll("        pub fn wrap(reader: message.StructReader) Reader {\n");
         try writer.writeAll("            return .{ ._reader = reader };\n");
@@ -247,7 +331,9 @@ pub const StructGenerator = struct {
                 const read_fn = self.readFnForType(slot.type);
                 const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 if (slot.default_value) |default_value| {
-                    if (try self.defaultLiteral(slot.type, default_value)) |literal| {
+                    if (self.hasZeroDefaultBits(slot.type, default_value)) {
+                        try self.writeNumericGetterWithoutDefault(slot.type, byte_offset, writer);
+                    } else if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("            const raw = self._reader.{s}({});\n", .{ read_fn, byte_offset });
                         try writer.print("            const value = raw ^ {s};\n", .{literal});
@@ -267,8 +353,13 @@ pub const StructGenerator = struct {
                 const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
+                const zero_default = if (slot.default_value) |default_value|
+                    self.hasZeroDefaultBits(.uint16, default_value)
+                else
+                    false;
+                var emitted_default_path = false;
 
-                if (slot.default_value) |default_value| {
+                if (!zero_default) if (slot.default_value) |default_value| {
                     if (try self.defaultLiteral(.uint16, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("            const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
@@ -277,14 +368,11 @@ pub const StructGenerator = struct {
                         } else {
                             try writer.writeAll("            return raw;\n");
                         }
-                    } else {
-                        if (enum_name) |en| {
-                            try writer.print("            return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
-                        } else {
-                            try writer.print("            return self._reader.readU16({});\n", .{byte_offset});
-                        }
+                        emitted_default_path = true;
                     }
-                } else {
+                };
+
+                if (!emitted_default_path) {
                     if (enum_name) |en| {
                         try writer.print("            return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
                     } else {
@@ -582,7 +670,9 @@ pub const StructGenerator = struct {
                 const read_fn = self.readFnForType(slot.type);
                 const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 if (slot.default_value) |default_value| {
-                    if (try self.defaultLiteral(slot.type, default_value)) |literal| {
+                    if (self.hasZeroDefaultBits(slot.type, default_value)) {
+                        try self.writeNumericGroupGetterWithoutDefault(slot.type, byte_offset, writer);
+                    } else if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("                const raw = self._reader.{s}({});\n", .{ read_fn, byte_offset });
                         try writer.print("                const value = raw ^ {s};\n", .{literal});
@@ -602,7 +692,13 @@ pub const StructGenerator = struct {
                 const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
-                if (slot.default_value) |default_value| {
+                const zero_default = if (slot.default_value) |default_value|
+                    self.hasZeroDefaultBits(.uint16, default_value)
+                else
+                    false;
+                var emitted_default_path = false;
+
+                if (!zero_default) if (slot.default_value) |default_value| {
                     if (try self.defaultLiteral(.uint16, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("                const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
@@ -611,14 +707,11 @@ pub const StructGenerator = struct {
                         } else {
                             try writer.writeAll("                return raw;\n");
                         }
-                    } else {
-                        if (enum_name) |en| {
-                            try writer.print("                return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
-                        } else {
-                            try writer.print("                return self._reader.readU16({});\n", .{byte_offset});
-                        }
+                        emitted_default_path = true;
                     }
-                } else {
+                };
+
+                if (!emitted_default_path) {
                     if (enum_name) |en| {
                         try writer.print("                return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
                     } else {
@@ -808,7 +901,9 @@ pub const StructGenerator = struct {
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
                 if (slot.default_value) |default_value| {
-                    if (try self.defaultLiteral(.uint16, default_value)) |literal| {
+                    if (self.hasZeroDefaultBits(.uint16, default_value)) {
+                        try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
+                    } else if (try self.defaultLiteral(.uint16, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("                const raw = {s};\n", .{raw_expr});
                         try writer.print("                const stored = raw ^ {s};\n", .{literal});
@@ -909,10 +1004,12 @@ pub const StructGenerator = struct {
         try writer.writeAll("    pub const Builder = struct {\n");
         try writer.writeAll("        _builder: message.StructBuilder,\n\n");
 
-        try writer.print("        pub fn init(msg: *message.MessageBuilder) !Builder {{\n", .{});
-        try writer.print("            const builder = try msg.allocateStruct({}, {});\n", .{ data_word_count, pointer_count });
-        try writer.writeAll("            return .{ ._builder = builder };\n");
-        try writer.writeAll("        }\n\n");
+        if (self.api_profile == .full) {
+            try writer.print("        pub fn init(msg: *message.MessageBuilder) !Builder {{\n", .{});
+            try writer.print("            const builder = try msg.allocateStruct({}, {});\n", .{ data_word_count, pointer_count });
+            try writer.writeAll("            return .{ ._builder = builder };\n");
+            try writer.writeAll("        }\n\n");
+        }
 
         try writer.writeAll("        pub fn wrap(builder: message.StructBuilder) Builder {\n");
         try writer.writeAll("            return .{ ._builder = builder };\n");
@@ -1103,7 +1200,9 @@ pub const StructGenerator = struct {
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
                 if (slot.default_value) |default_value| {
-                    if (try self.defaultLiteral(.uint16, default_value)) |literal| {
+                    if (self.hasZeroDefaultBits(.uint16, default_value)) {
+                        try writer.print("            self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
+                    } else if (try self.defaultLiteral(.uint16, default_value)) |literal| {
                         defer self.allocator.free(literal);
                         try writer.print("            const raw = {s};\n", .{raw_expr});
                         try writer.print("            const stored = raw ^ {s};\n", .{literal});
@@ -1375,6 +1474,11 @@ pub const StructGenerator = struct {
         };
     }
 
+    fn hasZeroDefaultBits(self: *StructGenerator, typ: schema.Type, default_value: schema.Value) bool {
+        const bits = self.defaultBits(typ, default_value) orelse return false;
+        return bits == 0;
+    }
+
     fn defaultText(self: *StructGenerator, default_value: schema.Value) ?[]const u8 {
         _ = self;
         return switch (default_value) {
@@ -1638,7 +1742,9 @@ pub const StructGenerator = struct {
     ) !void {
         const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
         if (slot.default_value) |default_value| {
-            if (try self.defaultLiteral(slot.type, default_value)) |literal| {
+            if (self.hasZeroDefaultBits(slot.type, default_value)) {
+                // Zero XOR default is a no-op; emit direct write.
+            } else if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                 defer self.allocator.free(literal);
                 try writer.print("            const stored = @as({s}, @bitCast(value)) ^ {s};\n", .{ cast_width, literal });
                 try writer.print("            self._builder.{s}({}, stored);\n", .{ write_fn, byte_offset });
@@ -1709,7 +1815,9 @@ pub const StructGenerator = struct {
     ) !void {
         const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
         if (slot.default_value) |default_value| {
-            if (try self.defaultLiteral(slot.type, default_value)) |literal| {
+            if (self.hasZeroDefaultBits(slot.type, default_value)) {
+                // Zero XOR default is a no-op; emit direct write.
+            } else if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                 defer self.allocator.free(literal);
                 try writer.print("                const stored = @as({s}, @bitCast(value)) ^ {s};\n", .{ cast_width, literal });
                 try writer.print("                self._builder.{s}({}, stored);\n", .{ write_fn, byte_offset });

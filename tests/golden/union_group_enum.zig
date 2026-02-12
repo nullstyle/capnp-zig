@@ -18,15 +18,6 @@ pub const Color = enum(u16) {
 };
 
 pub const Shape = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         circle = 0,
         rectangle = 1,

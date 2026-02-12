@@ -1417,6 +1417,204 @@ test "Codegen: data and capability list fields use typed wrappers" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return CapabilityListBuilder{ ._list = raw };"));
 }
 
+test "Codegen: structs without list fields omit list helper aliases" {
+    const schema = @import("capnpc-zig").schema;
+    const Generator = @import("capnpc-zig").codegen.Generator;
+
+    var fields = [_]schema.Field{
+        .{
+            .name = "count",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = .uint32,
+                .default_value = null,
+            },
+            .group = null,
+        },
+    };
+
+    const holder_node = schema.Node{
+        .id = 2,
+        .display_name = "Holder",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "Holder", .id = 2 },
+    };
+
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "test.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ file_node, holder_node };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "test.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const EnumListReader = message.typed_list_helpers.EnumListReader;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const StructListReader = message.typed_list_helpers.StructListReader;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const StructListBuilder = message.typed_list_helpers.StructListBuilder;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const DataListReader = message.typed_list_helpers.DataListReader;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const DataListBuilder = message.typed_list_helpers.DataListBuilder;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;"));
+}
+
+test "Codegen: zero numeric and enum defaults skip xor paths" {
+    const schema = @import("capnpc-zig").schema;
+    const Generator = @import("capnpc-zig").codegen.Generator;
+
+    var enumerants = [_]schema.Enumerant{
+        .{ .name = "zero", .code_order = 0, .annotations = &[_]schema.AnnotationUse{} },
+        .{ .name = "one", .code_order = 1, .annotations = &[_]schema.AnnotationUse{} },
+    };
+    const enum_node = schema.Node{
+        .id = 2,
+        .display_name = "State",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"enum",
+        .struct_node = null,
+        .enum_node = .{ .enumerants = &enumerants },
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const state_type = schema.Type{ .@"enum" = .{ .type_id = 2 } };
+    var fields = [_]schema.Field{
+        .{
+            .name = "count",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = .uint32,
+                .default_value = .{ .uint32 = 0 },
+            },
+            .group = null,
+        },
+        .{
+            .name = "state",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 1,
+                .type = state_type,
+                .default_value = .{ .@"enum" = 0 },
+            },
+            .group = null,
+        },
+    };
+
+    const holder_node = schema.Node{
+        .id = 3,
+        .display_name = "Holder",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "State", .id = 2 },
+        .{ .name = "Holder", .id = 3 },
+    };
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "test.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ file_node, enum_node, holder_node };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "test.capnp",
+        .imports = &[_]schema.Import{},
+    };
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU32(0);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU32(0, @bitCast(value));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(State, self._reader.readU16(2)) catch return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, @as(u16, @intFromEnum(value)));"));
+
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u32, 0)"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u16, 0)"));
+}
+
 test "Codegen: declaration identifiers are normalized and escaped consistently" {
     const schema = @import("capnpc-zig").schema;
     const Generator = @import("capnpc-zig").codegen.Generator;

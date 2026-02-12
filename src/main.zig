@@ -4,6 +4,8 @@ const request_reader = @import("serialization/request_reader.zig");
 
 const RunOptions = struct {
     verbose: bool = false,
+    emit_schema_manifest: bool = true,
+    api_profile: Generator.ApiProfile = .full,
 };
 
 pub fn main() !void {
@@ -13,7 +15,8 @@ pub fn main() !void {
 
     const argv = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, argv);
-    const options = parseRunOptions(argv);
+    var options = parseRunOptions(argv);
+    try applyEnvRunOptions(allocator, &options);
 
     // Read CodeGeneratorRequest from stdin
     const stdin = std.fs.File.stdin();
@@ -22,8 +25,9 @@ pub fn main() !void {
     // For now, we'll implement a simple version that just reads and processes
     // In a full implementation, we would parse the Cap'n Proto message
 
-    // Read all data from stdin
-    const max_size = 10 * 1024 * 1024; // 10 MB max
+    // Read the full CodeGeneratorRequest from stdin. Keep this effectively
+    // unbounded and let allocator/OOM behavior enforce practical limits.
+    const max_size = std.math.maxInt(usize);
     const input_data = stdin.readToEndAlloc(allocator, max_size) catch |err| {
         logStderr(stderr, "Error reading stdin: {}\n", .{err});
         return err;
@@ -41,6 +45,8 @@ pub fn main() !void {
     var generator = try Generator.init(allocator, request.nodes);
     defer generator.deinit();
     generator.setVerbose(options.verbose);
+    generator.setEmitSchemaManifest(options.emit_schema_manifest);
+    generator.setApiProfile(options.api_profile);
 
     // Generate code for each requested file
     for (request.requested_files) |requested_file| {
@@ -80,25 +86,125 @@ fn parseRunOptions(argv: anytype) RunOptions {
 
     for (argv[1..]) |arg| {
         const arg_slice: []const u8 = arg;
-        if (isVerboseOption(arg_slice)) {
-            options.verbose = true;
-            continue;
-        }
+        applyOptionToken(arg_slice, &options);
         var tokens = std.mem.tokenizeAny(u8, arg_slice, ",");
-        while (tokens.next()) |token| {
-            if (isVerboseOption(token)) {
-                options.verbose = true;
-                break;
-            }
-        }
+        while (tokens.next()) |token| applyOptionToken(token, &options);
     }
     return options;
+}
+
+fn applyEnvRunOptions(allocator: std.mem.Allocator, options: *RunOptions) !void {
+    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_SCHEMA_MANIFEST")) |emit_manifest| {
+        options.emit_schema_manifest = emit_manifest;
+    }
+    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_NO_MANIFEST")) |no_manifest| {
+        if (no_manifest) options.emit_schema_manifest = false;
+    }
+
+    if (try getEnvStringOption(allocator, "CAPNPC_ZIG_API_PROFILE")) |profile_value| {
+        defer allocator.free(profile_value);
+        if (parseApiProfileToken(profile_value)) |profile| {
+            options.api_profile = profile;
+        }
+    }
+    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_COMPACT_API")) |compact_api| {
+        options.api_profile = if (compact_api) .compact else .full;
+    }
+}
+
+fn getEnvBoolOption(allocator: std.mem.Allocator, name: []const u8) !?bool {
+    const value = try getEnvStringOption(allocator, name) orelse return null;
+    defer allocator.free(value);
+    return parseBoolToken(value);
+}
+
+fn getEnvStringOption(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
+    return std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+}
+
+fn parseBoolToken(value: []const u8) ?bool {
+    if (value.len == 0) return null;
+    if (std.ascii.eqlIgnoreCase(value, "1") or
+        std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "on") or
+        std.ascii.eqlIgnoreCase(value, "yes"))
+    {
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(value, "0") or
+        std.ascii.eqlIgnoreCase(value, "false") or
+        std.ascii.eqlIgnoreCase(value, "off") or
+        std.ascii.eqlIgnoreCase(value, "no"))
+    {
+        return false;
+    }
+    return null;
+}
+
+fn applyOptionToken(token: []const u8, options: *RunOptions) void {
+    if (isVerboseOption(token)) {
+        options.verbose = true;
+    }
+
+    if (parseApiProfileToken(token)) |profile| {
+        options.api_profile = profile;
+    }
+
+    if (isNoManifestOption(token)) {
+        options.emit_schema_manifest = false;
+    } else if (isManifestOption(token)) {
+        options.emit_schema_manifest = true;
+    }
 }
 
 fn isVerboseOption(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--verbose") or
         std.mem.eql(u8, arg, "-v") or
         std.mem.eql(u8, arg, "verbose");
+}
+
+fn isNoManifestOption(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--no-manifest") or
+        std.mem.eql(u8, arg, "no-manifest") or
+        std.mem.eql(u8, arg, "no_manifest") or
+        std.mem.eql(u8, arg, "manifest=0") or
+        std.mem.eql(u8, arg, "manifest=false") or
+        std.mem.eql(u8, arg, "manifest=off");
+}
+
+fn isManifestOption(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--manifest") or
+        std.mem.eql(u8, arg, "manifest") or
+        std.mem.eql(u8, arg, "manifest=1") or
+        std.mem.eql(u8, arg, "manifest=true") or
+        std.mem.eql(u8, arg, "manifest=on");
+}
+
+fn parseApiProfileToken(token: []const u8) ?Generator.ApiProfile {
+    if (std.ascii.eqlIgnoreCase(token, "compact") or
+        std.ascii.eqlIgnoreCase(token, "--api-profile=compact") or
+        std.ascii.eqlIgnoreCase(token, "api=compact") or
+        std.ascii.eqlIgnoreCase(token, "api_profile=compact") or
+        std.ascii.eqlIgnoreCase(token, "profile=compact") or
+        std.ascii.eqlIgnoreCase(token, "compact-api") or
+        std.ascii.eqlIgnoreCase(token, "compact_api"))
+    {
+        return .compact;
+    }
+    if (std.ascii.eqlIgnoreCase(token, "full") or
+        std.ascii.eqlIgnoreCase(token, "--api-profile=full") or
+        std.ascii.eqlIgnoreCase(token, "api=full") or
+        std.ascii.eqlIgnoreCase(token, "api_profile=full") or
+        std.ascii.eqlIgnoreCase(token, "profile=full") or
+        std.ascii.eqlIgnoreCase(token, "full-api") or
+        std.ascii.eqlIgnoreCase(token, "full_api"))
+    {
+        return .full;
+    }
+    return null;
 }
 
 // Parsing and freeing are handled by request_reader.zig.
@@ -143,18 +249,86 @@ test "parseRunOptions defaults to quiet" {
     const argv = [_][]const u8{"capnpc-zig"};
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(!options.verbose);
+    try std.testing.expect(options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
 }
 
 test "parseRunOptions enables verbose for --verbose" {
     const argv = [_][]const u8{ "capnpc-zig", "--verbose" };
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(options.verbose);
+    try std.testing.expect(options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
 }
 
 test "parseRunOptions enables verbose for capnp style token" {
     const argv = [_][]const u8{ "capnpc-zig", "out,verbose,foo" };
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(options.verbose);
+    try std.testing.expect(options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+}
+
+test "parseRunOptions disables schema manifest via direct flag" {
+    const argv = [_][]const u8{ "capnpc-zig", "--no-manifest" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(!options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+}
+
+test "parseRunOptions disables schema manifest via capnp style token" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,no_manifest,foo" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(!options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+}
+
+test "parseRunOptions allows explicit manifest re-enable" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,no-manifest,manifest=on" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(options.emit_schema_manifest);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+}
+
+test "parseRunOptions enables compact api profile" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,compact-api,foo" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expectEqual(Generator.ApiProfile.compact, options.api_profile);
+}
+
+test "parseRunOptions allows explicit full api profile" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,compact-api,profile=full" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+}
+
+test "parseBoolToken accepts common true values" {
+    try std.testing.expectEqual(@as(?bool, true), parseBoolToken("1"));
+    try std.testing.expectEqual(@as(?bool, true), parseBoolToken("true"));
+    try std.testing.expectEqual(@as(?bool, true), parseBoolToken("ON"));
+    try std.testing.expectEqual(@as(?bool, true), parseBoolToken("yes"));
+}
+
+test "parseBoolToken accepts common false values" {
+    try std.testing.expectEqual(@as(?bool, false), parseBoolToken("0"));
+    try std.testing.expectEqual(@as(?bool, false), parseBoolToken("false"));
+    try std.testing.expectEqual(@as(?bool, false), parseBoolToken("Off"));
+    try std.testing.expectEqual(@as(?bool, false), parseBoolToken("NO"));
+}
+
+test "parseBoolToken rejects unknown values" {
+    try std.testing.expectEqual(@as(?bool, null), parseBoolToken(""));
+    try std.testing.expectEqual(@as(?bool, null), parseBoolToken("maybe"));
+}
+
+test "parseApiProfileToken parses supported values" {
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, .compact), parseApiProfileToken("compact"));
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, .compact), parseApiProfileToken("compact-api"));
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, .compact), parseApiProfileToken("API=COMPACT"));
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, .full), parseApiProfileToken("full"));
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, .full), parseApiProfileToken("profile=full"));
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, .full), parseApiProfileToken("--api-profile=full"));
+    try std.testing.expectEqual(@as(?Generator.ApiProfile, null), parseApiProfileToken("profile=other"));
 }
 
 test "createOutputFileInDir creates parent directories for nested output paths" {

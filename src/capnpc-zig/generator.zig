@@ -7,6 +7,8 @@ pub const TypeGenerator = types.TypeGenerator;
 /// Code generation driver that turns a set of parsed Cap'n Proto schema nodes
 /// into idiomatic Zig source code with Reader and Builder types for each struct.
 pub const Generator = struct {
+    pub const ApiProfile = StructGenerator.ApiProfile;
+
     allocator: std.mem.Allocator,
     nodes: []const schema.Node,
     node_map: std.AutoHashMap(schema.Id, usize),
@@ -18,6 +20,10 @@ pub const Generator = struct {
     used_import_file_ids: std.AutoHashMap(schema.Id, void),
     /// Emit codegen trace logs when true.
     verbose: bool = false,
+    /// Emit CAPNP_SCHEMA_MANIFEST_JSON and capnpSchemaManifestJson() when true.
+    emit_schema_manifest: bool = true,
+    /// Controls generated Reader/Builder convenience API surface.
+    api_profile: ApiProfile = .full,
 
     /// Build a generator from the full set of schema nodes, indexing them by ID.
     pub fn init(allocator: std.mem.Allocator, nodes: []const schema.Node) !Generator {
@@ -47,6 +53,16 @@ pub const Generator = struct {
     /// Enable/disable verbose codegen traces.
     pub fn setVerbose(self: *Generator, verbose: bool) void {
         self.verbose = verbose;
+    }
+
+    /// Enable/disable schema manifest emission in generated files.
+    pub fn setEmitSchemaManifest(self: *Generator, emit: bool) void {
+        self.emit_schema_manifest = emit;
+    }
+
+    /// Set generation profile for struct Reader/Builder convenience APIs.
+    pub fn setApiProfile(self: *Generator, profile: ApiProfile) void {
+        self.api_profile = profile;
     }
 
     fn clearImportModules(self: *Generator) void {
@@ -85,8 +101,10 @@ pub const Generator = struct {
 
         // Register import module aliases up-front so cross-file type resolution
         // works while generating declarations.
+        var import_aliases = std.StringHashMap(void).init(self.allocator);
+        defer import_aliases.deinit();
         for (requested_file.imports) |imp| {
-            const mod_name = try self.moduleNameFromFilename(imp.name);
+            const mod_name = try self.uniqueImportModuleName(imp.name, &import_aliases);
             errdefer self.allocator.free(mod_name);
             try self.import_modules.put(imp.id, mod_name);
         }
@@ -97,7 +115,9 @@ pub const Generator = struct {
         defer body.deinit(self.allocator);
         const body_writer = body.writer(self.allocator);
 
-        try self.writeSchemaManifest(requested_file, file_node, body_writer);
+        if (self.emit_schema_manifest) {
+            try self.writeSchemaManifest(requested_file, file_node, body_writer);
+        }
 
         var generated = std.AutoHashMap(schema.Id, void).init(self.allocator);
         defer generated.deinit();
@@ -419,6 +439,7 @@ pub const Generator = struct {
     fn generateStruct(self: *Generator, node: *const schema.Node, writer: anytype) !void {
         var struct_gen = StructGenerator.initWithLookup(self.allocator, lookupNode, self);
         struct_gen.type_prefix_fn = lookupTypePrefix;
+        struct_gen.setApiProfile(self.api_profile);
         try struct_gen.generate(node, writer);
     }
 
@@ -1332,6 +1353,32 @@ pub const Generator = struct {
         return self.toSnakeCaseLower(stem);
     }
 
+    fn uniqueImportModuleName(
+        self: *Generator,
+        filename: []const u8,
+        used_aliases: *std.StringHashMap(void),
+    ) ![]const u8 {
+        const base = try self.moduleNameFromFilename(filename);
+        defer self.allocator.free(base);
+
+        var suffix: usize = 0;
+        while (true) : (suffix += 1) {
+            const candidate_raw = if (suffix == 0)
+                try self.allocator.dupe(u8, base)
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ base, suffix + 1 });
+            defer self.allocator.free(candidate_raw);
+
+            const candidate = try types.escapeZigKeyword(self.allocator, candidate_raw);
+            errdefer self.allocator.free(candidate);
+
+            const gop = try used_aliases.getOrPut(candidate);
+            if (!gop.found_existing) return candidate;
+
+            self.allocator.free(candidate);
+        }
+    }
+
     /// Derive the .zig import path from a .capnp import name.
     /// E.g., "other.capnp" → "other.zig", "path/to/types.capnp" → "path/to/types.zig"
     fn importPathFromCapnpName(self: *Generator, capnp_name: []const u8) ![]const u8 {
@@ -1955,6 +2002,398 @@ test "Generator.moduleNameFromFilename extracts snake_case module name" {
     const r3 = try gen.moduleNameFromFilename("simple.capnp");
     defer alloc.free(r3);
     try std.testing.expectEqualStrings("simple", r3);
+}
+
+test "Generator.uniqueImportModuleName escapes keywords and disambiguates collisions" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    var used = std.StringHashMap(void).init(alloc);
+    defer used.deinit();
+
+    const r1 = try gen.uniqueImportModuleName("a/foo.capnp", &used);
+    defer alloc.free(r1);
+    try std.testing.expectEqualStrings("foo", r1);
+
+    const r2 = try gen.uniqueImportModuleName("b/foo.capnp", &used);
+    defer alloc.free(r2);
+    try std.testing.expectEqualStrings("foo_2", r2);
+
+    const r3 = try gen.uniqueImportModuleName("error.capnp", &used);
+    defer alloc.free(r3);
+    try std.testing.expectEqualStrings("@\"error\"", r3);
+
+    const r4 = try gen.uniqueImportModuleName("nested/error.capnp", &used);
+    defer alloc.free(r4);
+    try std.testing.expectEqualStrings("error_2", r4);
+}
+
+test "Generator.generateFile emits unique escaped import aliases" {
+    const alloc = std.testing.allocator;
+
+    var root_fields = [_]schema.Field{
+        .{
+            .name = "a",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0,
+            .slot = .{
+                .offset = 0,
+                .type = .{ .@"struct" = .{ .type_id = 10 } },
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "b",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0,
+            .slot = .{
+                .offset = 1,
+                .type = .{ .@"struct" = .{ .type_id = 20 } },
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "e",
+            .code_order = 2,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0,
+            .slot = .{
+                .offset = 2,
+                .type = .{ .@"struct" = .{ .type_id = 30 } },
+                .default_value = null,
+            },
+            .group = null,
+        },
+    };
+
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Root", .id = 2 },
+    };
+    const root_file = schema.Node{
+        .id = 1,
+        .display_name = "root.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = root_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const root_struct = schema.Node{
+        .id = 2,
+        .display_name = "Root",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 3,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &root_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var a_file_nested = [_]schema.Node.NestedNode{
+        .{ .name = "AType", .id = 10 },
+    };
+    const a_file = schema.Node{
+        .id = 100,
+        .display_name = "a/foo.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = a_file_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    const a_type = schema.Node{
+        .id = 10,
+        .display_name = "AType",
+        .display_name_prefix_length = 0,
+        .scope_id = 100,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &[_]schema.Field{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var b_file_nested = [_]schema.Node.NestedNode{
+        .{ .name = "BType", .id = 20 },
+    };
+    const b_file = schema.Node{
+        .id = 200,
+        .display_name = "b/foo.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = b_file_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    const b_type = schema.Node{
+        .id = 20,
+        .display_name = "BType",
+        .display_name_prefix_length = 0,
+        .scope_id = 200,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &[_]schema.Field{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var error_file_nested = [_]schema.Node.NestedNode{
+        .{ .name = "ErrorType", .id = 30 },
+    };
+    const error_file = schema.Node{
+        .id = 300,
+        .display_name = "error.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = error_file_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    const error_type = schema.Node{
+        .id = 30,
+        .display_name = "ErrorType",
+        .display_name_prefix_length = 0,
+        .scope_id = 300,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &[_]schema.Field{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{
+        root_file,
+        root_struct,
+        a_file,
+        a_type,
+        b_file,
+        b_type,
+        error_file,
+        error_type,
+    };
+
+    var imports = [_]schema.Import{
+        .{ .id = 100, .name = "a/foo.capnp" },
+        .{ .id = 200, .name = "b/foo.capnp" },
+        .{ .id = 300, .name = "error.capnp" },
+    };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = imports[0..],
+    };
+
+    const output = try gen.generateFile(requested);
+    defer alloc.free(output);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "const foo = @import(\"a/foo.zig\");"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "const foo_2 = @import(\"b/foo.zig\");"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "const @\"error\" = @import(\"error.zig\");"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getA(self: Reader) !foo.AType.Reader"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getB(self: Reader) !foo_2.BType.Reader"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getE(self: Reader) !@\"error\".ErrorType.Reader"));
+}
+
+test "Generator.generateFile can omit schema manifest emission" {
+    const alloc = std.testing.allocator;
+
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Root", .id = 2 },
+    };
+    const root_file = schema.Node{
+        .id = 1,
+        .display_name = "root.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = root_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const root_struct = schema.Node{
+        .id = 2,
+        .display_name = "Root",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &[_]schema.Field{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ root_file, root_struct };
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+    gen.setEmitSchemaManifest(false);
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested);
+    defer alloc.free(output);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const Root = struct {"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, output, 1, "CAPNP_SCHEMA_MANIFEST_JSON"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, output, 1, "capnpSchemaManifestJson"));
+}
+
+test "Generator.generateFile compact api profile omits root init helpers" {
+    const alloc = std.testing.allocator;
+
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Root", .id = 2 },
+    };
+    const root_file = schema.Node{
+        .id = 1,
+        .display_name = "root.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = root_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const root_struct = schema.Node{
+        .id = 2,
+        .display_name = "Root",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &[_]schema.Field{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ root_file, root_struct };
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+    gen.setApiProfile(.compact);
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested);
+    defer alloc.free(output);
+
+    try std.testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub fn init(msg: *const message.Message) !Reader"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub fn init(msg: *message.MessageBuilder) !Builder"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn wrap(reader: message.StructReader) Reader"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn wrap(builder: message.StructBuilder) Builder"));
 }
 
 test "Generator.getSimpleName extracts name after prefix" {
