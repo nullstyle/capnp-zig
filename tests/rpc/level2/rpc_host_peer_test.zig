@@ -200,7 +200,7 @@ test "host peer host-call bridge queues call and allows exception response" {
         }
 
         fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
     };
 
@@ -283,7 +283,7 @@ test "host peer host-call bridge can respond with results payload" {
         }
 
         fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
     };
 

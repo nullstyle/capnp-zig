@@ -46,10 +46,10 @@ fn resolveOutboundCapIndex(cap_list: message.StructListReader, index: u32) !Reso
     const descriptor = try protocol.CapDescriptor.fromReader(reader);
     return switch (descriptor.tag) {
         .none => .none,
-        .sender_hosted, .sender_promise => .{ .exported_id = descriptor.id orelse return error.MissingCapDescriptorId },
-        .receiver_hosted => .{ .imported_id = descriptor.id orelse return error.MissingCapDescriptorId },
-        .receiver_answer => .{ .promised = descriptor.promised_answer orelse return error.MissingPromisedAnswer },
-        .third_party_hosted => {
+        .senderHosted, .senderPromise => .{ .exported_id = descriptor.id orelse return error.MissingCapDescriptorId },
+        .receiverHosted => .{ .imported_id = descriptor.id orelse return error.MissingCapDescriptorId },
+        .receiverAnswer => .{ .promised = descriptor.promised_answer orelse return error.MissingPromisedAnswer },
+        .thirdPartyHosted => {
             const third = descriptor.third_party orelse return error.MissingThirdPartyCapDescriptor;
             return .{ .imported_id = third.vine_id };
         },
@@ -69,7 +69,7 @@ pub fn resolvePromisedAnswer(
         const op = try transform.get(idx);
         switch (op.tag) {
             .noop => {},
-            .get_pointer_field => {
+            .getPointerField => {
                 const struct_reader = try current.getStruct();
                 current = try struct_reader.readAnyPointer(op.pointer_index);
             },

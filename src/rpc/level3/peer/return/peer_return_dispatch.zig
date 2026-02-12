@@ -338,7 +338,7 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
         State,
         &state,
         44,
-        .results_sent_elsewhere,
+        .resultsSentElsewhere,
         Hooks.clear,
         Hooks.send,
     );
@@ -347,7 +347,7 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
     try std.testing.expectEqual(@as(usize, 1), state.send_calls);
     try std.testing.expectEqual(@as(u32, 44), state.clear_answer_id);
     try std.testing.expectEqual(@as(u32, 44), state.sent_answer_id);
-    try std.testing.expectEqual(protocol.ReturnTag.results_sent_elsewhere, state.sent_tag);
+    try std.testing.expectEqual(protocol.ReturnTag.resultsSentElsewhere, state.sent_tag);
 }
 
 test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await payload" {
@@ -370,7 +370,7 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
             var decoded = try protocol.DecodedMessage.init(state.allocator, frame);
             defer decoded.deinit();
             const ret = try decoded.asReturn();
-            try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret.tag);
+            try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, ret.tag);
             const await_ptr = ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
             state.await_text = try await_ptr.getText();
         }
@@ -467,7 +467,7 @@ test "peer_return_dispatch sendReturnTakeFromOtherQuestionForPeer clears routing
             var decoded = try protocol.DecodedMessage.init(state.allocator, frame);
             defer decoded.deinit();
             const ret = try decoded.asReturn();
-            try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, ret.tag);
+            try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, ret.tag);
             state.take_from_other_question = ret.take_from_other_question;
         }
     };

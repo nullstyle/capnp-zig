@@ -297,7 +297,7 @@ test "peer_provide_join_orchestration handleProvide rejects duplicate question i
             .{
                 .question_id = 9,
                 .target = .{
-                    .tag = .imported_cap,
+                    .tag = .importedCap,
                     .imported_cap = 1,
                     .promised_answer = null,
                 },
@@ -484,7 +484,7 @@ test "peer_provide_join_orchestration handleJoin rejects duplicate join question
             .{
                 .question_id = 5,
                 .target = .{
-                    .tag = .imported_cap,
+                    .tag = .importedCap,
                     .imported_cap = 1,
                     .promised_answer = null,
                 },
@@ -534,7 +534,7 @@ test "peer_provide_join_orchestration capture recipient/provision helper factori
     const recipient_key = try capture_recipient(&state, .{
         .question_id = 1,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 1,
             .promised_answer = null,
         },

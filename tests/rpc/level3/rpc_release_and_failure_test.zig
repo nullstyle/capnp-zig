@@ -304,7 +304,8 @@ test "peer call to exported capability returns exception" {
     defer builder.deinit();
     var call = try builder.beginCall(1, 0xABCD, 0);
     try call.setTargetImportedCap(export_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const frame = try builder.finish();
     defer allocator.free(frame);
 
@@ -314,7 +315,7 @@ test "peer call to exported capability returns exception" {
     try std.testing.expect(capture.frames.items.len >= 1);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 1), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -364,7 +365,8 @@ test "peer call handler error is reported as exception return" {
     defer builder.deinit();
     var call = try builder.beginCall(2, 0xBEEF, 0);
     try call.setTargetImportedCap(export_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const frame = try builder.finish();
     defer allocator.free(frame);
 
@@ -374,7 +376,7 @@ test "peer call handler error is reported as exception return" {
     try std.testing.expect(capture.frames.items.len >= 1);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
 }
@@ -430,7 +432,7 @@ test "peer handleFrame with obsolete_save tag sends unimplemented" {
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
     var root = try builder.allocateStruct(1, 1);
-    root.writeUnionDiscriminant(0, @intFromEnum(protocol.MessageTag.obsolete_save));
+    root.writeUnionDiscriminant(0, @intFromEnum(protocol.MessageTag.obsoleteSave));
     const bytes = try builder.toBytes();
     defer allocator.free(bytes);
 
@@ -511,7 +513,8 @@ test "peer call to unknown export returns exception" {
     defer builder.deinit();
     var call = try builder.beginCall(3, 0x1111, 0);
     try call.setTargetImportedCap(99999);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const frame = try builder.finish();
     defer allocator.free(frame);
 
@@ -521,7 +524,7 @@ test "peer call to unknown export returns exception" {
     try std.testing.expect(capture.frames.items.len >= 1);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 3), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -555,7 +558,7 @@ test "peer bootstrap without configured bootstrap returns exception" {
     try std.testing.expect(capture.frames.items.len >= 1);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 1), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -668,7 +671,7 @@ test "peer sendReturnException for answer creates and sends frame" {
     try std.testing.expect(capture.frames.items.len >= 1);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 42), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);

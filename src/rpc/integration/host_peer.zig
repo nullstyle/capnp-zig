@@ -161,9 +161,10 @@ pub const HostPeer = struct {
 
             fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
                 const ctx: *const @This() = @ptrCast(@alignCast(ctx_ptr));
-                const out = try ret.getResultsAnyPointer();
+                var payload = try ret.payloadTyped();
+                const out = try payload.initContent();
                 try message.cloneAnyPointer(ctx.any, out);
-                try ret.setEmptyCapTable();
+                _ = try ret.initCapTableTyped(0);
             }
         };
 
@@ -268,7 +269,7 @@ pub const HostPeer = struct {
         switch (ret.tag) {
             .results => if (ret.results == null) return error.InvalidReturnSemantics,
             .exception => if (ret.exception == null) return error.InvalidReturnSemantics,
-            .take_from_other_question => if (ret.take_from_other_question == null) return error.InvalidReturnSemantics,
+            .takeFromOtherQuestion => if (ret.take_from_other_question == null) return error.InvalidReturnSemantics,
             else => {},
         }
     }

@@ -87,10 +87,10 @@ pub fn handleForwardedReturnWithOps(
                 try ops.send_return_exception(peer, answer_id, ex.reason);
             },
             .canceled => try ops.send_return_tag(peer, answer_id, .canceled),
-            .results_sent_elsewhere => {
+            .resultsSentElsewhere => {
                 try ops.send_return_exception(peer, answer_id, "forwarded resultsSentElsewhere unsupported");
             },
-            .take_from_other_question => {
+            .takeFromOtherQuestion => {
                 const other_local_id = ret.take_from_other_question orelse return error.MissingQuestionId;
                 const translated = ops.lookup_forwarded_question(peer, other_local_id) orelse {
                     try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion missing mapping");
@@ -98,7 +98,7 @@ pub fn handleForwardedReturnWithOps(
                 };
                 try ops.send_take_from_other_question(peer, answer_id, translated);
             },
-            .accept_from_third_party => {
+            .awaitFromThirdParty => {
                 const await_payload = try ops.capture_payload(peer, ret.accept_from_third_party);
                 defer if (await_payload) |payload| ops.free_payload(peer, payload);
                 try ops.send_accept_from_third_party(peer, answer_id, await_payload);
@@ -107,13 +107,13 @@ pub fn handleForwardedReturnWithOps(
         // Tail-call completion mode: only terminal markers are valid after we already
         // redirected results ownership to another question.
         .sent_elsewhere => switch (ret.tag) {
-            .results_sent_elsewhere, .canceled => {},
+            .resultsSentElsewhere, .canceled => {},
             else => return error.UnexpectedForwardedTailReturn,
         },
         // When the original call requested `sendResultsTo.yourself`, preserve local state by
         // converting unsupported payload-bearing returns into resultsSentElsewhere.
         .propagate_results_sent_elsewhere => switch (ret.tag) {
-            .results_sent_elsewhere => try ops.send_return_tag(peer, answer_id, .results_sent_elsewhere),
+            .resultsSentElsewhere => try ops.send_return_tag(peer, answer_id, .resultsSentElsewhere),
             .canceled => try ops.send_return_tag(peer, answer_id, .canceled),
             .exception => {
                 const ex = ret.exception orelse {
@@ -122,20 +122,20 @@ pub fn handleForwardedReturnWithOps(
                 };
                 try ops.send_return_exception(peer, answer_id, ex.reason);
             },
-            .take_from_other_question => {
+            .takeFromOtherQuestion => {
                 try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion unsupported");
             },
-            .accept_from_third_party, .results => {
-                try ops.send_return_tag(peer, answer_id, .results_sent_elsewhere);
+            .awaitFromThirdParty, .results => {
+                try ops.send_return_tag(peer, answer_id, .resultsSentElsewhere);
             },
         },
         // Third-party propagation mode prefers acceptFromThirdParty; if the upstream sends
         // resultsSentElsewhere we fall back to the locally captured await payload.
         .propagate_accept_from_third_party => switch (ret.tag) {
-            .results_sent_elsewhere => {
+            .resultsSentElsewhere => {
                 try ops.send_accept_from_third_party(peer, answer_id, context_third_party_payload);
             },
-            .accept_from_third_party => {
+            .awaitFromThirdParty => {
                 const await_payload = try ops.capture_payload(peer, ret.accept_from_third_party);
                 defer if (await_payload) |payload| ops.free_payload(peer, payload);
                 try ops.send_accept_from_third_party(peer, answer_id, await_payload);
@@ -148,7 +148,7 @@ pub fn handleForwardedReturnWithOps(
                 };
                 try ops.send_return_exception(peer, answer_id, ex.reason);
             },
-            .take_from_other_question => {
+            .takeFromOtherQuestion => {
                 try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion unsupported");
             },
             .results => {

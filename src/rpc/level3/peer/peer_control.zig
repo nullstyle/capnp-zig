@@ -79,12 +79,13 @@ pub fn buildBootstrapReturnFrame(
     defer builder.deinit();
 
     var ret = try builder.beginReturn(question_id, .results);
-    var any = try ret.getResultsAnyPointer();
+    var payload = try ret.payloadTyped();
+    var any = try payload.initContent();
     try any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
-    const entry = try cap_list.get(0);
-    protocol.CapDescriptor.writeSenderHosted(entry, export_id);
+    var cap_list = try ret.initCapTableTyped(1);
+    var entry = try cap_list.get(0);
+    try entry.setSenderHosted(export_id);
 
     return builder.finish();
 }
@@ -329,12 +330,12 @@ pub fn handleResolveWithOps(
                 try ops.remember_pending_embargo(peer, new_embargo_id, promise_id);
                 const target = switch (resolved) {
                     .promised => |promised| protocol.MessageTarget{
-                        .tag = .promised_answer,
+                        .tag = .promisedAnswer,
                         .imported_cap = null,
                         .promised_answer = promised,
                     },
                     else => protocol.MessageTarget{
-                        .tag = .imported_cap,
+                        .tag = .importedCap,
                         .imported_cap = promise_id,
                         .promised_answer = null,
                     },
@@ -387,20 +388,20 @@ pub fn handleDisembargoWithOps(
     ops: DisembargoOps(PeerType),
 ) !void {
     switch (disembargo.context_tag) {
-        .sender_loopback => {
+        .senderLoopback => {
             // Peer echoes receiverLoopback so both sides can clear embargoed call paths.
             const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
             switch (disembargo.target.tag) {
-                .imported_cap => {
+                .importedCap => {
                     _ = disembargo.target.imported_cap orelse return error.MissingCallTarget;
                 },
-                .promised_answer => {
+                .promisedAnswer => {
                     _ = disembargo.target.promised_answer orelse return error.MissingPromisedAnswer;
                 },
             }
             try ops.send_disembargo_receiver_loopback(peer, disembargo.target, embargo_id);
         },
-        .receiver_loopback => {
+        .receiverLoopback => {
             // ReceiverLoopback completes the local embargo lifecycle for that promise id.
             const embargo_id = disembargo.embargo_id orelse return error.MissingEmbargoId;
             const promise_id = ops.take_pending_embargo_promise(peer, embargo_id) orelse {
@@ -596,11 +597,11 @@ pub fn resolveProvideTarget(
     resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
 ) !cap_table.ResolvedCap {
     return switch (target.tag) {
-        .imported_cap => {
+        .importedCap => {
             const export_id = target.imported_cap orelse return error.MissingCallTarget;
             return resolve_imported_cap(peer, export_id);
         },
-        .promised_answer => {
+        .promisedAnswer => {
             const promised = target.promised_answer orelse return error.MissingPromisedAnswer;
             return resolve_promised_answer(peer, promised);
         },
@@ -721,7 +722,7 @@ pub fn noteCallSendResults(
         .yourself => {
             try note_send_results_to_yourself(peer, call.question_id);
         },
-        .third_party => {
+        .thirdParty => {
             try note_send_results_to_third_party(peer, call.question_id, call.send_results_to.third_party);
         },
     }
@@ -906,7 +907,7 @@ fn forwardModeForSendResults(tag: protocol.SendResultsToTag) ForwardResolvedMode
     return switch (tag) {
         .caller => .sent_elsewhere,
         .yourself => .propagate_results_sent_elsewhere,
-        .third_party => .propagate_accept_from_third_party,
+        .thirdParty => .propagate_accept_from_third_party,
     };
 }
 
@@ -948,7 +949,7 @@ pub const ForwardedCallDestination = union(enum) {
         return switch (self) {
             .caller => .caller,
             .yourself => .yourself,
-            .third_party => .third_party,
+            .third_party => .thirdParty,
         };
     }
 
@@ -987,7 +988,7 @@ pub fn applyForwardedCallSendResults(
     switch (send_results_to) {
         .caller => call_builder.setSendResultsToCaller(),
         .yourself => call_builder.setSendResultsToYourself(),
-        .third_party => {
+        .thirdParty => {
             if (send_results_to_third_party_payload) |payload| {
                 try set_third_party_from_payload(peer, call_builder, payload);
             } else {

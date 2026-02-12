@@ -55,7 +55,8 @@ fn buildUnknownCallFrame(allocator: std.mem.Allocator, question_id: u32) ![]cons
 
     var call = try builder.beginCall(question_id, 0x1234, 9);
     try call.setTargetImportedCap(777);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     return builder.finish();
 }
 
@@ -105,7 +106,7 @@ fn extractBootstrapImportId(allocator: std.mem.Allocator, server: u32) !u32 {
     const bootstrap_cap_table = bootstrap_payload.cap_table orelse return error.MissingBootstrapCapTable;
     const bootstrap_desc_reader = try bootstrap_cap_table.get(bootstrap_cap.id);
     const bootstrap_desc = try protocol.CapDescriptor.fromReader(bootstrap_desc_reader);
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, bootstrap_desc.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, bootstrap_desc.tag);
     return bootstrap_desc.id orelse return error.MissingBootstrapImportId;
 }
 
@@ -129,7 +130,8 @@ fn queuePendingHostCall(
     defer call_builder.deinit();
     var call = try call_builder.beginCall(question_id, interface_id, method_id);
     try call.setTargetImportedCap(bootstrap_import_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const call_frame = try call_builder.finish();
     defer allocator.free(call_frame);
 
@@ -178,10 +180,14 @@ fn buildReturnResultsFrameWithCapAndFlags(
     ret.setReleaseParamCaps(false);
     ret.setNoFinishNeeded(true);
 
-    var out_any = try ret.getResultsAnyPointer();
+    var out_any_payload = try ret.payloadTyped();
+
+    var out_any = try out_any_payload.initContent();
+
     try out_any.setCapability(.{ .id = 0 });
 
-    var cap_table = try ret.initCapTable(1);
+    var cap_table = try ret.initCapTableTyped(1);
+
     const desc = try cap_table.get(0);
     protocol.CapDescriptor.writeSenderHosted(desc, export_id);
 
@@ -403,7 +409,7 @@ test "host call raw return frame accepts results with cap table and flags" {
     try std.testing.expectEqual(@as(u32, 1), cap_table.len());
     const desc_reader = try cap_table.get(0);
     const desc = try protocol.CapDescriptor.fromReader(desc_reader);
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, desc.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, desc.tag);
     try std.testing.expectEqual(pending.bootstrap_export_id, desc.id orelse return error.MissingDescriptorId);
 }
 
@@ -734,14 +740,15 @@ test "host call bridge exports can pop inbound calls and send exception response
     const bootstrap_cap_table = bootstrap_payload.cap_table orelse return error.MissingBootstrapCapTable;
     const bootstrap_desc_reader = try bootstrap_cap_table.get(bootstrap_cap.id);
     const bootstrap_desc = try protocol.CapDescriptor.fromReader(bootstrap_desc_reader);
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, bootstrap_desc.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, bootstrap_desc.tag);
     const bootstrap_import_id = bootstrap_desc.id orelse return error.MissingBootstrapImportId;
 
     var call_builder = protocol.MessageBuilder.init(std.testing.allocator);
     defer call_builder.deinit();
     var call = try call_builder.beginCall(2, 0x9999, 5);
     try call.setTargetImportedCap(bootstrap_import_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const call_frame = try call_builder.finish();
     defer std.testing.allocator.free(call_frame);
     try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(server, toAbiPtr(call_frame.ptr), @intCast(call_frame.len)));
@@ -824,7 +831,7 @@ test "host call frame release export supports repeated pop/free cycles" {
     const bootstrap_cap_table = bootstrap_payload.cap_table orelse return error.MissingBootstrapCapTable;
     const bootstrap_desc_reader = try bootstrap_cap_table.get(bootstrap_cap.id);
     const bootstrap_desc = try protocol.CapDescriptor.fromReader(bootstrap_desc_reader);
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, bootstrap_desc.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, bootstrap_desc.tag);
     const bootstrap_import_id = bootstrap_desc.id orelse return error.MissingBootstrapImportId;
 
     const reason = "cycle exception";
@@ -835,7 +842,8 @@ test "host call frame release export supports repeated pop/free cycles" {
         defer call_builder.deinit();
         var call = try call_builder.beginCall(@intCast(100 + idx), 0xAA00 + idx, @intCast(10 + idx));
         try call.setTargetImportedCap(bootstrap_import_id);
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
+
         const call_frame = try call_builder.finish();
         defer std.testing.allocator.free(call_frame);
         try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_push_frame(server, toAbiPtr(call_frame.ptr), @intCast(call_frame.len)));

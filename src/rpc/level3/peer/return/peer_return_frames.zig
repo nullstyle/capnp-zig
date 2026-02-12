@@ -35,7 +35,7 @@ pub fn buildReturnTakeFromOtherQuestionFrame(
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
-    var ret = try builder.beginReturn(answer_id, .take_from_other_question);
+    var ret = try builder.beginReturn(answer_id, .takeFromOtherQuestion);
     try ret.setTakeFromOtherQuestion(other_question_id);
     return builder.finish();
 }
@@ -48,7 +48,7 @@ pub fn buildReturnAcceptFromThirdPartyFrame(
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
-    var ret = try builder.beginReturn(answer_id, .accept_from_third_party);
+    var ret = try builder.beginReturn(answer_id, .awaitFromThirdParty);
     if (await_payload) |payload| {
         var await_msg = try message.Message.init(allocator, payload);
         defer await_msg.deinit();
@@ -93,7 +93,7 @@ test "peer_return_frames buildReturnTakeFromOtherQuestionFrame encodes reference
     defer decoded.deinit();
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 72), ret.answer_id);
-    try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, ret.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, ret.tag);
     try std.testing.expectEqual(@as(u32, 900), ret.take_from_other_question orelse return error.MissingQuestionId);
 }
 
@@ -104,7 +104,7 @@ test "peer_return_frames buildReturnAcceptFromThirdPartyFrame supports null and 
     var decoded_null = try protocol.DecodedMessage.init(std.testing.allocator, null_frame);
     defer decoded_null.deinit();
     const ret_null = try decoded_null.asReturn();
-    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret_null.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, ret_null.tag);
     const await_null = ret_null.accept_from_third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expect(await_null.isNull());
 
@@ -121,7 +121,7 @@ test "peer_return_frames buildReturnAcceptFromThirdPartyFrame supports null and 
     var decoded_non_null = try protocol.DecodedMessage.init(std.testing.allocator, non_null_frame);
     defer decoded_non_null.deinit();
     const ret_non_null = try decoded_non_null.asReturn();
-    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, ret_non_null.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, ret_non_null.tag);
     const await_ptr = ret_non_null.accept_from_third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("await-destination", try await_ptr.getText());
 }

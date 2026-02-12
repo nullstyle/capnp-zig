@@ -72,7 +72,8 @@ pub fn makeCallToBootstrapFixture(allocator: std.mem.Allocator) !FramePair {
     defer call_builder.deinit();
     var call = try call_builder.beginCall(2, 0x1234, 9);
     try call.setTargetImportedCap(export_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const inbound = try call_builder.finish();
     defer allocator.free(inbound);
 

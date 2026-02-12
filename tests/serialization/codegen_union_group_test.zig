@@ -447,10 +447,10 @@ test "Codegen: group generates nested struct with shared reader/builder" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return .{ ._builder = self._builder }"));
 
     // Group should have its own field accessors
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getX(self: Reader)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getY(self: Reader)"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setX(self: *Builder"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setY(self: *Builder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getX(self: @This())"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getY(self: @This())"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setX(self: *@This()"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setY(self: *@This()"));
 
     // Regular field should still work
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getColor(self: Reader)"));
@@ -608,4 +608,148 @@ test "Codegen: union group field sets discriminant on init" {
     // rectangle group init should write discriminant 1
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initRectangle(self: *Builder) Rectangle.Builder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(0, 1)"));
+}
+
+test "Codegen: group union generates WhichTag and which method" {
+    var group_fields = [_]schema.Field{
+        .{
+            .name = "senderLoopback",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0,
+            .slot = .{
+                .offset = 0,
+                .type = .uint32,
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "receiverLoopback",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 1,
+            .slot = .{
+                .offset = 0,
+                .type = .uint32,
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "accept",
+            .code_order = 2,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 2,
+            .slot = .{
+                .offset = 0,
+                .type = .data,
+                .default_value = null,
+            },
+            .group = null,
+        },
+    };
+
+    const context_group_node = schema.Node{
+        .id = 3,
+        .display_name = "test.capnp:Disembargo.context",
+        .display_name_prefix_length = 22,
+        .scope_id = 2,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 1,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = true,
+            .discriminant_count = 3,
+            .discriminant_offset = 2, // byte offset = 2 * 2 = 4
+            .fields = &group_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var parent_fields = [_]schema.Field{
+        .{
+            .name = "context",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = null,
+            .group = .{ .type_id = 3 },
+        },
+    };
+
+    const disembargo_node = schema.Node{
+        .id = 2,
+        .display_name = "Disembargo",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 1,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &parent_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "Disembargo", .id = 2 },
+    };
+
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "test.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ file_node, disembargo_node, context_group_node };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "test.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const Context = struct"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const WhichTag = enum(u16)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "senderLoopback = 0,"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "receiverLoopback = 1,"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "accept = 2,"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(WhichTag, self._reader.readU16(4)) catch return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setSenderLoopback(self: *@This(), value: u32) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 0)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setReceiverLoopback(self: *@This(), value: u32) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 1)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setAccept(self: *@This(), value: []const u8) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 2)"));
 }

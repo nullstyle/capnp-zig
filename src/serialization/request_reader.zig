@@ -395,7 +395,9 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
     const code_order = reader.readU16(0);
     const annotations = try parseAnnotations(allocator, reader, 1);
     errdefer freeAnnotations(allocator, annotations);
-    const discriminant_value = reader.readU16(2);
+    // schema.capnp declares Field.discriminantValue with a non-zero default
+    // (0xffff), so values are stored XOR'd with that default on the wire.
+    const discriminant_value = reader.readU16(2) ^ @as(u16, 0xffff);
 
     const which_raw = reader.readU16(8);
     const which_tag = std.meta.intToEnum(FieldWhich, which_raw) catch return error.InvalidFieldKind;

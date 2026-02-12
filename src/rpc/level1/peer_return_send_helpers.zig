@@ -52,7 +52,7 @@ pub fn noteOutboundReturnCapRefsForPeer(
         const reader = try cap_table_list.get(idx);
         const descriptor = try protocol.CapDescriptor.fromReader(reader);
         switch (descriptor.tag) {
-            .sender_hosted, .sender_promise => {
+            .senderHosted, .senderPromise => {
                 const id = descriptor.id orelse return error.MissingCapDescriptorId;
                 try note_export_ref(peer, id);
             },

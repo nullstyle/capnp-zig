@@ -4,6 +4,7 @@ const capnpc = @import("capnpc-zig");
 const protocol = capnpc.rpc.protocol;
 const cap_table = capnpc.rpc.cap_table;
 const message = capnpc.message;
+const rpc_capnp = capnpc.rpc.generated.rpc;
 
 test "RPC bootstrap return encodes cap table" {
     const allocator = std.testing.allocator;
@@ -12,10 +13,13 @@ test "RPC bootstrap return encodes cap table" {
     defer builder.deinit();
 
     var ret = try builder.beginReturn(123, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     try any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
+    var cap_list = try ret.initCapTableTyped(1);
+
     const entry = try cap_list.get(0);
     protocol.CapDescriptor.writeSenderHosted(entry, 42);
 
@@ -35,7 +39,7 @@ test "RPC bootstrap return encodes cap table" {
 
     const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
     const desc = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(0));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, desc.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, desc.tag);
     try std.testing.expectEqual(@as(u32, 42), desc.id.?);
 }
 
@@ -46,10 +50,13 @@ test "InboundCapTable resolves senderHosted and receiverHosted" {
     defer builder.deinit();
 
     var ret = try builder.beginReturn(7, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     try any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(2);
+    var cap_list = try ret.initCapTableTyped(2);
+
     const entry0 = try cap_list.get(0);
     protocol.CapDescriptor.writeSenderHosted(entry0, 5);
     const entry1 = try cap_list.get(1);
@@ -89,7 +96,7 @@ test "RPC call promised answer encodes transform" {
 
     const ops = [_]protocol.PromisedAnswerOp{
         .{ .tag = .noop, .pointer_index = 0 },
-        .{ .tag = .get_pointer_field, .pointer_index = 2 },
+        .{ .tag = .getPointerField, .pointer_index = 2 },
     };
 
     var builder = protocol.MessageBuilder.init(allocator);
@@ -97,7 +104,7 @@ test "RPC call promised answer encodes transform" {
 
     var call = try builder.beginCall(9, 0x1234, 2);
     try call.setTargetPromisedAnswerWithOps(77, &ops);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -106,7 +113,7 @@ test "RPC call promised answer encodes transform" {
     defer decoded.deinit();
 
     const call_decoded = try decoded.asCall();
-    try std.testing.expectEqual(protocol.MessageTargetTag.promised_answer, call_decoded.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.promisedAnswer, call_decoded.target.tag);
 
     const promised = call_decoded.target.promised_answer orelse return error.MissingPromisedAnswer;
     try std.testing.expectEqual(@as(u32, 77), promised.question_id);
@@ -115,7 +122,7 @@ test "RPC call promised answer encodes transform" {
     const op0 = try promised.transform.get(0);
     try std.testing.expectEqual(protocol.PromisedAnswerOpTag.noop, op0.tag);
     const op1 = try promised.transform.get(1);
-    try std.testing.expectEqual(protocol.PromisedAnswerOpTag.get_pointer_field, op1.tag);
+    try std.testing.expectEqual(protocol.PromisedAnswerOpTag.getPointerField, op1.tag);
     try std.testing.expectEqual(@as(u16, 2), op1.pointer_index);
 }
 
@@ -128,7 +135,7 @@ test "RPC call sendResultsTo.yourself encodes and decodes" {
     var call = try builder.beginCall(9, 0x1234, 2);
     try call.setTargetImportedCap(77);
     call.setSendResultsToYourself();
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -149,7 +156,7 @@ test "RPC call sendResultsTo.thirdParty encodes and decodes" {
     var call = try builder.beginCall(9, 0x1234, 2);
     try call.setTargetImportedCap(77);
     try call.setSendResultsToThirdPartyNull();
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -158,7 +165,7 @@ test "RPC call sendResultsTo.thirdParty encodes and decodes" {
     defer decoded.deinit();
 
     const call_decoded = try decoded.asCall();
-    try std.testing.expectEqual(protocol.SendResultsToTag.third_party, call_decoded.send_results_to.tag);
+    try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, call_decoded.send_results_to.tag);
 }
 
 test "RPC call sendResultsTo.thirdParty clones pointer payload" {
@@ -181,7 +188,7 @@ test "RPC call sendResultsTo.thirdParty clones pointer payload" {
     var call = try builder.beginCall(9, 0xAA, 2);
     try call.setTargetImportedCap(3);
     try call.setSendResultsToThirdParty(third_ptr);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -190,7 +197,7 @@ test "RPC call sendResultsTo.thirdParty clones pointer payload" {
     defer decoded.deinit();
 
     const call_decoded = try decoded.asCall();
-    try std.testing.expectEqual(protocol.SendResultsToTag.third_party, call_decoded.send_results_to.tag);
+    try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, call_decoded.send_results_to.tag);
     const payload = call_decoded.send_results_to.third_party orelse return error.MissingThirdPartyPayload;
     const text = try payload.getText();
     try std.testing.expectEqualStrings("vat-hint", text);
@@ -206,7 +213,7 @@ test "RPC call sendResultsTo conformance covers caller yourself and thirdParty" 
         var call = try builder.beginCall(15, 0x33, 1);
         try call.setTargetImportedCap(2);
         call.setSendResultsToCaller();
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
 
         const bytes = try builder.finish();
         defer allocator.free(bytes);
@@ -223,7 +230,7 @@ test "RPC call sendResultsTo conformance covers caller yourself and thirdParty" 
         var call = try builder.beginCall(16, 0x33, 1);
         try call.setTargetImportedCap(2);
         call.setSendResultsToYourself();
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
 
         const bytes = try builder.finish();
         defer allocator.free(bytes);
@@ -250,14 +257,14 @@ test "RPC call sendResultsTo conformance covers caller yourself and thirdParty" 
         var call = try builder.beginCall(17, 0x33, 1);
         try call.setTargetImportedCap(2);
         try call.setSendResultsToThirdParty(third_ptr);
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
 
         const bytes = try builder.finish();
         defer allocator.free(bytes);
         var decoded = try protocol.DecodedMessage.init(allocator, bytes);
         defer decoded.deinit();
         const call_decoded = try decoded.asCall();
-        try std.testing.expectEqual(protocol.SendResultsToTag.third_party, call_decoded.send_results_to.tag);
+        try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, call_decoded.send_results_to.tag);
         const payload = call_decoded.send_results_to.third_party orelse return error.MissingThirdPartyPayload;
         try std.testing.expectEqualStrings("conformance-third-party", try payload.getText());
     }
@@ -267,17 +274,20 @@ test "InboundCapTable resolves receiverAnswer" {
     const allocator = std.testing.allocator;
 
     const ops = [_]protocol.PromisedAnswerOp{
-        .{ .tag = .get_pointer_field, .pointer_index = 1 },
+        .{ .tag = .getPointerField, .pointer_index = 1 },
     };
 
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
     var ret = try builder.beginReturn(7, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     try any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
+    var cap_list = try ret.initCapTableTyped(1);
+
     const entry0 = try cap_list.get(0);
     try protocol.CapDescriptor.writeReceiverAnswer(entry0, 55, &ops);
 
@@ -301,7 +311,7 @@ test "InboundCapTable resolves receiverAnswer" {
             try std.testing.expectEqual(@as(u32, 55), pa.question_id);
             try std.testing.expectEqual(@as(u32, 1), pa.transform.len());
             const op = try pa.transform.get(0);
-            try std.testing.expectEqual(protocol.PromisedAnswerOpTag.get_pointer_field, op.tag);
+            try std.testing.expectEqual(protocol.PromisedAnswerOpTag.getPointerField, op.tag);
             try std.testing.expectEqual(@as(u16, 1), op.pointer_index);
         },
         else => return error.UnexpectedCapType,
@@ -317,10 +327,13 @@ test "InboundCapTable resolves thirdPartyHosted to vine import" {
     defer builder.deinit();
 
     var ret = try builder.beginReturn(8, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     try any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
+    var cap_list = try ret.initCapTableTyped(1);
+
     const entry0 = try cap_list.get(0);
     try protocol.CapDescriptor.writeThirdPartyHostedNull(entry0, 77);
 
@@ -354,7 +367,7 @@ test "RPC resolve encodes cap descriptor" {
     defer builder.deinit();
 
     const descriptor = protocol.CapDescriptor{
-        .tag = .sender_hosted,
+        .tag = .senderHosted,
         .id = 42,
     };
 
@@ -371,8 +384,38 @@ test "RPC resolve encodes cap descriptor" {
     try std.testing.expectEqual(protocol.ResolveTag.cap, resolve.tag);
 
     const cap = resolve.cap orelse return error.MissingResolveCap;
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, cap.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, cap.tag);
     try std.testing.expectEqual(@as(u32, 42), cap.id.?);
+}
+
+test "RPC resolve preserves attached_fd on cap descriptor" {
+    const allocator = std.testing.allocator;
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    const descriptor = protocol.CapDescriptor{
+        .tag = .senderHosted,
+        .id = 99,
+        .attached_fd = 7,
+    };
+
+    try builder.buildResolveCap(10, descriptor);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+
+    const resolve = try decoded.asResolve();
+    try std.testing.expectEqual(@as(u32, 10), resolve.promise_id);
+    try std.testing.expectEqual(protocol.ResolveTag.cap, resolve.tag);
+
+    const cap = resolve.cap orelse return error.MissingResolveCap;
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, cap.tag);
+    try std.testing.expectEqual(@as(u32, 99), cap.id.?);
+    try std.testing.expectEqual(@as(u8, 7), cap.attached_fd.?);
 }
 
 test "RPC resolve encodes thirdPartyHosted cap descriptor" {
@@ -393,7 +436,7 @@ test "RPC resolve encodes thirdPartyHosted cap descriptor" {
     defer builder.deinit();
 
     const descriptor = protocol.CapDescriptor{
-        .tag = .third_party_hosted,
+        .tag = .thirdPartyHosted,
         .third_party = .{
             .id = third_ptr,
             .vine_id = 21,
@@ -413,7 +456,7 @@ test "RPC resolve encodes thirdPartyHosted cap descriptor" {
     try std.testing.expectEqual(protocol.ResolveTag.cap, resolve.tag);
 
     const cap = resolve.cap orelse return error.MissingResolveCap;
-    try std.testing.expectEqual(protocol.CapDescriptorTag.third_party_hosted, cap.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.thirdPartyHosted, cap.tag);
     const third = cap.third_party orelse return error.MissingThirdPartyCapDescriptor;
     try std.testing.expectEqual(@as(u32, 21), third.vine_id);
     const id_ptr = third.id orelse return error.MissingThirdPartyPayload;
@@ -468,7 +511,7 @@ test "RPC return takeFromOtherQuestion encodes question id" {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
-    var ret = try builder.beginReturn(17, .take_from_other_question);
+    var ret = try builder.beginReturn(17, .takeFromOtherQuestion);
     try ret.setTakeFromOtherQuestion(5);
 
     const bytes = try builder.finish();
@@ -479,7 +522,7 @@ test "RPC return takeFromOtherQuestion encodes question id" {
 
     const parsed = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 17), parsed.answer_id);
-    try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, parsed.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, parsed.tag);
     try std.testing.expectEqual(@as(u32, 5), parsed.take_from_other_question.?);
 }
 
@@ -500,7 +543,7 @@ test "RPC return acceptFromThirdParty clones pointer payload" {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
-    var ret = try builder.beginReturn(41, .accept_from_third_party);
+    var ret = try builder.beginReturn(41, .awaitFromThirdParty);
     try ret.setAcceptFromThirdParty(third_ptr);
 
     const bytes = try builder.finish();
@@ -509,7 +552,7 @@ test "RPC return acceptFromThirdParty clones pointer payload" {
     var decoded = try protocol.DecodedMessage.init(allocator, bytes);
     defer decoded.deinit();
     const parsed = try decoded.asReturn();
-    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, parsed.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, parsed.tag);
 
     const await_ptr = parsed.accept_from_third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("await-vat", try await_ptr.getText());
@@ -522,7 +565,7 @@ test "RPC disembargo sender loopback encodes target" {
     defer builder.deinit();
 
     const target = protocol.MessageTarget{
-        .tag = .imported_cap,
+        .tag = .importedCap,
         .imported_cap = 12,
         .promised_answer = null,
     };
@@ -536,9 +579,9 @@ test "RPC disembargo sender loopback encodes target" {
     defer decoded.deinit();
 
     const disembargo = try decoded.asDisembargo();
-    try std.testing.expectEqual(protocol.DisembargoContextTag.sender_loopback, disembargo.context_tag);
+    try std.testing.expectEqual(protocol.DisembargoContextTag.senderLoopback, disembargo.context_tag);
     try std.testing.expectEqual(@as(u32, 77), disembargo.embargo_id.?);
-    try std.testing.expectEqual(protocol.MessageTargetTag.imported_cap, disembargo.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, disembargo.target.tag);
     try std.testing.expectEqual(@as(u32, 12), disembargo.target.imported_cap.?);
 }
 
@@ -549,7 +592,7 @@ test "RPC disembargo sender loopback supports promisedAnswer target" {
     defer builder.deinit();
 
     const target = protocol.MessageTarget{
-        .tag = .promised_answer,
+        .tag = .promisedAnswer,
         .imported_cap = null,
         .promised_answer = .{
             .question_id = 33,
@@ -566,9 +609,9 @@ test "RPC disembargo sender loopback supports promisedAnswer target" {
     defer decoded.deinit();
 
     const disembargo = try decoded.asDisembargo();
-    try std.testing.expectEqual(protocol.DisembargoContextTag.sender_loopback, disembargo.context_tag);
+    try std.testing.expectEqual(protocol.DisembargoContextTag.senderLoopback, disembargo.context_tag);
     try std.testing.expectEqual(@as(u32, 88), disembargo.embargo_id.?);
-    try std.testing.expectEqual(protocol.MessageTargetTag.promised_answer, disembargo.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.promisedAnswer, disembargo.target.tag);
     const promised = disembargo.target.promised_answer orelse return error.MissingPromisedAnswer;
     try std.testing.expectEqual(@as(u32, 33), promised.question_id);
     try std.testing.expectEqual(@as(u32, 0), promised.transform.len());
@@ -581,7 +624,7 @@ test "RPC disembargo accept encodes accept token" {
     defer builder.deinit();
 
     const target = protocol.MessageTarget{
-        .tag = .imported_cap,
+        .tag = .importedCap,
         .imported_cap = 21,
         .promised_answer = null,
     };
@@ -597,7 +640,7 @@ test "RPC disembargo accept encodes accept token" {
     const disembargo = try decoded.asDisembargo();
     try std.testing.expectEqual(protocol.DisembargoContextTag.accept, disembargo.context_tag);
     try std.testing.expectEqualStrings("accept-token", disembargo.accept.?);
-    try std.testing.expectEqual(protocol.MessageTargetTag.imported_cap, disembargo.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, disembargo.target.tag);
     try std.testing.expectEqual(@as(u32, 21), disembargo.target.imported_cap.?);
 }
 
@@ -619,7 +662,7 @@ test "RPC provide encodes and decodes" {
     try builder.buildProvide(
         60,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 11,
             .promised_answer = null,
         },
@@ -634,7 +677,7 @@ test "RPC provide encodes and decodes" {
 
     const provide = try decoded.asProvide();
     try std.testing.expectEqual(@as(u32, 60), provide.question_id);
-    try std.testing.expectEqual(protocol.MessageTargetTag.imported_cap, provide.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, provide.target.tag);
     try std.testing.expectEqual(@as(u32, 11), provide.target.imported_cap.?);
     const recipient = provide.recipient orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("recipient", try recipient.getText());
@@ -691,7 +734,7 @@ test "RPC thirdPartyAnswer encodes and decodes" {
 
     var decoded = try protocol.DecodedMessage.init(allocator, bytes);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.third_party_answer, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.thirdPartyAnswer, decoded.tag);
 
     const answer = try decoded.asThirdPartyAnswer();
     try std.testing.expectEqual(@as(u32, 62), answer.answer_id);
@@ -717,7 +760,7 @@ test "RPC join encodes and decodes" {
     try builder.buildJoin(
         63,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 7,
             .promised_answer = null,
         },
@@ -732,7 +775,7 @@ test "RPC join encodes and decodes" {
 
     const join = try decoded.asJoin();
     try std.testing.expectEqual(@as(u32, 63), join.question_id);
-    try std.testing.expectEqual(protocol.MessageTargetTag.imported_cap, join.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, join.target.tag);
     try std.testing.expectEqual(@as(u32, 7), join.target.imported_cap.?);
     const key_part = join.key_part orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("join-key-part", try key_part.getText());
@@ -742,18 +785,353 @@ test "RPC message tag ordinals match Cap'n Proto rpc.capnp" {
     try std.testing.expectEqual(@as(u16, 0), @intFromEnum(protocol.MessageTag.unimplemented));
     try std.testing.expectEqual(@as(u16, 1), @intFromEnum(protocol.MessageTag.abort));
     try std.testing.expectEqual(@as(u16, 2), @intFromEnum(protocol.MessageTag.call));
-    try std.testing.expectEqual(@as(u16, 3), @intFromEnum(protocol.MessageTag.return_));
+    try std.testing.expectEqual(@as(u16, 3), @intFromEnum(protocol.MessageTag.@"return"));
     try std.testing.expectEqual(@as(u16, 4), @intFromEnum(protocol.MessageTag.finish));
     try std.testing.expectEqual(@as(u16, 5), @intFromEnum(protocol.MessageTag.resolve));
     try std.testing.expectEqual(@as(u16, 6), @intFromEnum(protocol.MessageTag.release));
-    try std.testing.expectEqual(@as(u16, 7), @intFromEnum(protocol.MessageTag.obsolete_save));
+    try std.testing.expectEqual(@as(u16, 7), @intFromEnum(protocol.MessageTag.obsoleteSave));
     try std.testing.expectEqual(@as(u16, 8), @intFromEnum(protocol.MessageTag.bootstrap));
-    try std.testing.expectEqual(@as(u16, 9), @intFromEnum(protocol.MessageTag.obsolete_delete));
+    try std.testing.expectEqual(@as(u16, 9), @intFromEnum(protocol.MessageTag.obsoleteDelete));
     try std.testing.expectEqual(@as(u16, 10), @intFromEnum(protocol.MessageTag.provide));
     try std.testing.expectEqual(@as(u16, 11), @intFromEnum(protocol.MessageTag.accept));
     try std.testing.expectEqual(@as(u16, 12), @intFromEnum(protocol.MessageTag.join));
     try std.testing.expectEqual(@as(u16, 13), @intFromEnum(protocol.MessageTag.disembargo));
-    try std.testing.expectEqual(@as(u16, 14), @intFromEnum(protocol.MessageTag.third_party_answer));
+    try std.testing.expectEqual(@as(u16, 14), @intFromEnum(protocol.MessageTag.thirdPartyAnswer));
+}
+
+test "RPC protocol tags stay aligned with generated rpc.capnp bindings" {
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.unimplemented), @intFromEnum(protocol.MessageTag.unimplemented));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.abort), @intFromEnum(protocol.MessageTag.abort));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.call), @intFromEnum(protocol.MessageTag.call));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.@"return"), @intFromEnum(protocol.MessageTag.@"return"));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.finish), @intFromEnum(protocol.MessageTag.finish));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.resolve), @intFromEnum(protocol.MessageTag.resolve));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.release), @intFromEnum(protocol.MessageTag.release));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.obsoleteSave), @intFromEnum(protocol.MessageTag.obsoleteSave));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.bootstrap), @intFromEnum(protocol.MessageTag.bootstrap));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.obsoleteDelete), @intFromEnum(protocol.MessageTag.obsoleteDelete));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.provide), @intFromEnum(protocol.MessageTag.provide));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.accept), @intFromEnum(protocol.MessageTag.accept));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.join), @intFromEnum(protocol.MessageTag.join));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.disembargo), @intFromEnum(protocol.MessageTag.disembargo));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.thirdPartyAnswer), @intFromEnum(protocol.MessageTag.thirdPartyAnswer));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.results), @intFromEnum(protocol.ReturnTag.results));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.exception), @intFromEnum(protocol.ReturnTag.exception));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.canceled), @intFromEnum(protocol.ReturnTag.canceled));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.resultsSentElsewhere), @intFromEnum(protocol.ReturnTag.resultsSentElsewhere));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.takeFromOtherQuestion), @intFromEnum(protocol.ReturnTag.takeFromOtherQuestion));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.awaitFromThirdParty), @intFromEnum(protocol.ReturnTag.awaitFromThirdParty));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.MessageTarget.WhichTag.importedCap), @intFromEnum(protocol.MessageTargetTag.importedCap));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.MessageTarget.WhichTag.promisedAnswer), @intFromEnum(protocol.MessageTargetTag.promisedAnswer));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.none), @intFromEnum(protocol.CapDescriptorTag.none));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.senderHosted), @intFromEnum(protocol.CapDescriptorTag.senderHosted));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.senderPromise), @intFromEnum(protocol.CapDescriptorTag.senderPromise));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.receiverHosted), @intFromEnum(protocol.CapDescriptorTag.receiverHosted));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.receiverAnswer), @intFromEnum(protocol.CapDescriptorTag.receiverAnswer));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.thirdPartyHosted), @intFromEnum(protocol.CapDescriptorTag.thirdPartyHosted));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Resolve.WhichTag.cap), @intFromEnum(protocol.ResolveTag.cap));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Resolve.WhichTag.exception), @intFromEnum(protocol.ResolveTag.exception));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Op.WhichTag.noop), @intFromEnum(protocol.PromisedAnswerOpTag.noop));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Op.WhichTag.getPointerField), @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.caller), @intFromEnum(protocol.SendResultsToTag.caller));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.yourself), @intFromEnum(protocol.SendResultsToTag.yourself));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.thirdParty), @intFromEnum(protocol.SendResultsToTag.thirdParty));
+
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Disembargo.Context.WhichTag.senderLoopback), @intFromEnum(protocol.DisembargoContextTag.senderLoopback));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Disembargo.Context.WhichTag.receiverLoopback), @intFromEnum(protocol.DisembargoContextTag.receiverLoopback));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Disembargo.Context.WhichTag.accept), @intFromEnum(protocol.DisembargoContextTag.accept));
+}
+
+test "RPC call manual and generated decode agree on key fields" {
+    const allocator = std.testing.allocator;
+
+    var third_builder = message.MessageBuilder.init(allocator);
+    defer third_builder.deinit();
+    const third_root = try third_builder.initRootAnyPointer();
+    try third_root.setText("call-third-party");
+    const third_bytes = try third_builder.toBytes();
+    defer allocator.free(third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes);
+    defer third_msg.deinit();
+    const third_ptr = try third_msg.getRootAnyPointer();
+
+    const ops = [_]protocol.PromisedAnswerOp{
+        .{ .tag = .noop, .pointer_index = 0 },
+        .{ .tag = .getPointerField, .pointer_index = 3 },
+    };
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(91, 0x1020_3040_5060_7080, 77);
+    try call.setTargetPromisedAnswerWithOps(44, &ops);
+    try call.setSendResultsToThirdParty(third_ptr);
+    var params_any_payload = try call.payloadTyped();
+    var params_any = try params_any_payload.initContent();
+
+    try params_any.setText("call-payload");
+    var cap_list = try call.initCapTableTyped(1);
+
+    const cap0 = try cap_list.get(0);
+    protocol.CapDescriptor.writeSenderHosted(cap0, 22);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const manual_call = try decoded.asCall();
+
+    const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+    try std.testing.expectEqual(rpc_capnp.Message.WhichTag.call, try generated_msg.which());
+    const generated_call = try generated_msg.getCall();
+
+    try std.testing.expectEqual(manual_call.question_id, try generated_call.getQuestionId());
+    try std.testing.expectEqual(manual_call.interface_id, try generated_call.getInterfaceId());
+    try std.testing.expectEqual(manual_call.method_id, try generated_call.getMethodId());
+    try std.testing.expectEqual(manual_call.allow_third_party_tail, try generated_call.getAllowThirdPartyTailCall());
+    try std.testing.expectEqual(manual_call.no_promise_pipelining, try generated_call.getNoPromisePipelining());
+    try std.testing.expectEqual(manual_call.only_promise_pipeline, try generated_call.getOnlyPromisePipeline());
+
+    const generated_send_results_to = generated_call.getSendResultsTo();
+    try std.testing.expectEqual(manual_call.send_results_to.tag, try generated_send_results_to.which());
+    const manual_third_party = manual_call.send_results_to.third_party orelse return error.MissingThirdPartyPayload;
+    const generated_third_party = try generated_send_results_to.getThirdParty();
+    try std.testing.expectEqualStrings(try manual_third_party.getText(), try generated_third_party.getText());
+
+    const generated_target = try generated_call.getTarget();
+    try std.testing.expectEqual(manual_call.target.tag, try generated_target.which());
+    const manual_promised = manual_call.target.promised_answer orelse return error.MissingPromisedAnswer;
+    const generated_promised = try generated_target.getPromisedAnswer();
+    try std.testing.expectEqual(manual_promised.question_id, try generated_promised.getQuestionId());
+    const generated_transform = try generated_promised.getTransform();
+    try std.testing.expectEqual(manual_promised.transform.len(), generated_transform.len());
+    const manual_op1 = try manual_promised.transform.get(1);
+    const generated_op1 = try generated_transform.get(1);
+    try std.testing.expectEqual(manual_op1.tag, try generated_op1.which());
+    try std.testing.expectEqual(manual_op1.pointer_index, try generated_op1.getGetPointerField());
+
+    const generated_params = try generated_call.getParams();
+    const generated_content = try generated_params.getContent();
+    try std.testing.expectEqualStrings(try manual_call.params.content.getText(), try generated_content.getText());
+
+    const manual_cap_table = manual_call.params.cap_table orelse return error.MissingCapTable;
+    const manual_descriptor = try protocol.CapDescriptor.fromReader(try manual_cap_table.get(0));
+    const generated_cap_table = try generated_params.getCapTable();
+    try std.testing.expectEqual(@as(u32, 1), generated_cap_table.len());
+    const generated_descriptor = try generated_cap_table.get(0);
+    try std.testing.expectEqual(manual_descriptor.tag, try generated_descriptor.which());
+    try std.testing.expectEqual(manual_descriptor.id.?, try generated_descriptor.getSenderHosted());
+}
+
+test "RPC return manual and generated decode agree on key fields" {
+    const allocator = std.testing.allocator;
+
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        var ret = try builder.beginReturn(321, .results);
+        ret.setReleaseParamCaps(false);
+        ret.setNoFinishNeeded(true);
+        var any_payload = try ret.payloadTyped();
+        var any = try any_payload.initContent();
+
+        try any.setText("return-payload");
+        var cap_list = try ret.initCapTableTyped(1);
+
+        const cap0 = try cap_list.get(0);
+        protocol.CapDescriptor.writeSenderPromise(cap0, 66);
+
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+        defer decoded.deinit();
+        const manual_ret = try decoded.asReturn();
+
+        const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+        try std.testing.expectEqual(rpc_capnp.Message.WhichTag.@"return", try generated_msg.which());
+        const generated_ret = try generated_msg.getReturn();
+
+        try std.testing.expectEqual(manual_ret.answer_id, try generated_ret.getAnswerId());
+        try std.testing.expectEqual(manual_ret.tag, try generated_ret.which());
+        try std.testing.expectEqual(manual_ret.release_param_caps, try generated_ret.getReleaseParamCaps());
+        try std.testing.expectEqual(manual_ret.no_finish_needed, try generated_ret.getNoFinishNeeded());
+
+        const manual_results = manual_ret.results orelse return error.MissingPayload;
+        const generated_results = try generated_ret.getResults();
+        const generated_content = try generated_results.getContent();
+        try std.testing.expectEqualStrings(try manual_results.content.getText(), try generated_content.getText());
+
+        const manual_cap_table = manual_results.cap_table orelse return error.MissingCapTable;
+        const manual_descriptor = try protocol.CapDescriptor.fromReader(try manual_cap_table.get(0));
+        const generated_cap_table = try generated_results.getCapTable();
+        try std.testing.expectEqual(@as(u32, 1), generated_cap_table.len());
+        const generated_descriptor = try generated_cap_table.get(0);
+        try std.testing.expectEqual(manual_descriptor.tag, try generated_descriptor.which());
+        try std.testing.expectEqual(manual_descriptor.id.?, try generated_descriptor.getSenderPromise());
+    }
+
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        var ret = try builder.beginReturn(505, .takeFromOtherQuestion);
+        ret.setReleaseParamCaps(true);
+        ret.setNoFinishNeeded(false);
+        try ret.setTakeFromOtherQuestion(77);
+
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+        defer decoded.deinit();
+        const manual_ret = try decoded.asReturn();
+
+        const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+        try std.testing.expectEqual(rpc_capnp.Message.WhichTag.@"return", try generated_msg.which());
+        const generated_ret = try generated_msg.getReturn();
+
+        try std.testing.expectEqual(manual_ret.answer_id, try generated_ret.getAnswerId());
+        try std.testing.expectEqual(manual_ret.tag, try generated_ret.which());
+        try std.testing.expectEqual(manual_ret.release_param_caps, try generated_ret.getReleaseParamCaps());
+        try std.testing.expectEqual(manual_ret.no_finish_needed, try generated_ret.getNoFinishNeeded());
+        try std.testing.expectEqual(manual_ret.take_from_other_question.?, try generated_ret.getTakeFromOtherQuestion());
+    }
+}
+
+test "RPC resolve manual and generated decode agree on key fields" {
+    const allocator = std.testing.allocator;
+
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        const descriptor = protocol.CapDescriptor{
+            .tag = .receiverHosted,
+            .id = 333,
+        };
+        try builder.buildResolveCap(811, descriptor);
+
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+        defer decoded.deinit();
+        const manual_resolve = try decoded.asResolve();
+
+        const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+        try std.testing.expectEqual(rpc_capnp.Message.WhichTag.resolve, try generated_msg.which());
+        const generated_resolve = try generated_msg.getResolve();
+
+        try std.testing.expectEqual(manual_resolve.promise_id, try generated_resolve.getPromiseId());
+        try std.testing.expectEqual(manual_resolve.tag, try generated_resolve.which());
+
+        const manual_cap = manual_resolve.cap orelse return error.MissingResolveCap;
+        const generated_cap = try generated_resolve.getCap();
+        try std.testing.expectEqual(manual_cap.tag, try generated_cap.which());
+        try std.testing.expectEqual(manual_cap.id.?, try generated_cap.getReceiverHosted());
+    }
+
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        try builder.buildResolveException(812, "resolve-oops");
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+        defer decoded.deinit();
+        const manual_resolve = try decoded.asResolve();
+
+        const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+        try std.testing.expectEqual(rpc_capnp.Message.WhichTag.resolve, try generated_msg.which());
+        const generated_resolve = try generated_msg.getResolve();
+
+        try std.testing.expectEqual(manual_resolve.promise_id, try generated_resolve.getPromiseId());
+        try std.testing.expectEqual(manual_resolve.tag, try generated_resolve.which());
+        const manual_ex = manual_resolve.exception orelse return error.MissingException;
+        const generated_ex = try generated_resolve.getException();
+        try std.testing.expectEqualStrings(manual_ex.reason, try generated_ex.getReason());
+    }
+}
+
+test "RPC disembargo manual and generated decode agree on key fields" {
+    const allocator = std.testing.allocator;
+
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        const target = protocol.MessageTarget{
+            .tag = .importedCap,
+            .imported_cap = 12,
+            .promised_answer = null,
+        };
+        try builder.buildDisembargoSenderLoopback(target, 77);
+
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+        defer decoded.deinit();
+        const manual_disembargo = try decoded.asDisembargo();
+
+        const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+        try std.testing.expectEqual(rpc_capnp.Message.WhichTag.disembargo, try generated_msg.which());
+        const generated_disembargo = try generated_msg.getDisembargo();
+        const generated_context = generated_disembargo.getContext();
+
+        try std.testing.expectEqual(manual_disembargo.context_tag, try generated_context.which());
+        try std.testing.expectEqual(manual_disembargo.embargo_id.?, try generated_context.getSenderLoopback());
+        const generated_target = try generated_disembargo.getTarget();
+        try std.testing.expectEqual(manual_disembargo.target.tag, try generated_target.which());
+        try std.testing.expectEqual(manual_disembargo.target.imported_cap.?, try generated_target.getImportedCap());
+    }
+
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        const target = protocol.MessageTarget{
+            .tag = .promisedAnswer,
+            .imported_cap = null,
+            .promised_answer = .{
+                .question_id = 33,
+                .transform = .{ .list = null },
+            },
+        };
+        try builder.buildDisembargoAccept(target, "accept-77");
+
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+        defer decoded.deinit();
+        const manual_disembargo = try decoded.asDisembargo();
+
+        const generated_msg = try rpc_capnp.Message.Reader.init(&decoded.msg);
+        try std.testing.expectEqual(rpc_capnp.Message.WhichTag.disembargo, try generated_msg.which());
+        const generated_disembargo = try generated_msg.getDisembargo();
+        const generated_context = generated_disembargo.getContext();
+
+        try std.testing.expectEqual(manual_disembargo.context_tag, try generated_context.which());
+        try std.testing.expectEqualStrings(manual_disembargo.accept.?, try generated_context.getAccept());
+
+        const generated_target = try generated_disembargo.getTarget();
+        try std.testing.expectEqual(manual_disembargo.target.tag, try generated_target.which());
+        const manual_promised = manual_disembargo.target.promised_answer orelse return error.MissingPromisedAnswer;
+        const generated_promised = try generated_target.getPromisedAnswer();
+        try std.testing.expectEqual(manual_promised.question_id, try generated_promised.getQuestionId());
+    }
 }
 
 test "RPC decoded message recognizes every defined message tag discriminant" {
@@ -763,18 +1141,18 @@ test "RPC decoded message recognizes every defined message tag discriminant" {
         .unimplemented,
         .abort,
         .call,
-        .return_,
+        .@"return",
         .finish,
         .resolve,
         .release,
-        .obsolete_save,
+        .obsoleteSave,
         .bootstrap,
-        .obsolete_delete,
+        .obsoleteDelete,
         .provide,
         .accept,
         .join,
         .disembargo,
-        .third_party_answer,
+        .thirdPartyAnswer,
     };
 
     for (tags) |tag| {
@@ -816,7 +1194,8 @@ test "RPC unimplemented wraps nested message" {
     defer inner_builder.deinit();
     var inner_call = try inner_builder.beginCall(44, 0xAA, 9);
     try inner_call.setTargetImportedCap(123);
-    try inner_call.setEmptyCapTable();
+    _ = try inner_call.initCapTableTyped(0);
+
     const inner_bytes = try inner_builder.finish();
     defer allocator.free(inner_bytes);
 
@@ -872,7 +1251,7 @@ test "RPC protocol fuzz malformed frames does not crash decode" {
             .unimplemented => _ = decoded.asUnimplemented() catch {},
             .abort => _ = decoded.asAbort() catch {},
             .call => _ = decoded.asCall() catch {},
-            .return_ => _ = decoded.asReturn() catch {},
+            .@"return" => _ = decoded.asReturn() catch {},
             .finish => _ = decoded.asFinish() catch {},
             .resolve => _ = decoded.asResolve() catch {},
             .release => _ = decoded.asRelease() catch {},
@@ -881,8 +1260,8 @@ test "RPC protocol fuzz malformed frames does not crash decode" {
             .accept => _ = decoded.asAccept() catch {},
             .join => _ = decoded.asJoin() catch {},
             .disembargo => _ = decoded.asDisembargo() catch {},
-            .third_party_answer => _ = decoded.asThirdPartyAnswer() catch {},
-            .obsolete_save, .obsolete_delete => {},
+            .thirdPartyAnswer => _ = decoded.asThirdPartyAnswer() catch {},
+            .obsoleteSave, .obsoleteDelete => {},
         }
     }
 }

@@ -20,7 +20,7 @@ The runtime is organized into a small set of components, with strict ownership a
 - `rpc/Protocol` (`src/rpc/level0/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
 - `rpc/CapTable` (`src/rpc/level0/cap_table.zig`): export/import capability tracking with reference counting and lifetime management.
 - `rpc/Peer` (`src/rpc/level3/peer.zig` + `src/rpc/level3/peer/*`): inbound/outbound call orchestration, return handling, and lifecycle dispatch.
-- `rpc/Promise Pipeline` (`src/rpc/level1/promise_pipeline.zig`, `src/rpc/level1/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
+- `rpc/Promise Pipeline` (`src/rpc/common/promise_pipeline.zig`, `src/rpc/level1/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
 
 All runtime types are single-threaded unless explicitly documented. The event loop thread owns connections and transport IO.
 
@@ -80,7 +80,7 @@ Outbound call:
 - `src/rpc/level0/protocol.zig`
 - `src/rpc/level0/cap_table.zig`
 - `src/rpc/level0/framing.zig`
-- `src/rpc/level1/promise_pipeline.zig`
+- `src/rpc/common/promise_pipeline.zig`
 - `src/rpc/level1/peer_promises.zig`
 - `src/rpc/level3/peer.zig`
 

@@ -12,12 +12,15 @@ test "promised answer getPointerField resolves to cap table entry" {
     defer builder.deinit();
 
     var ret = try builder.beginReturn(1, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     var result_struct = try any.initStruct(0, 1);
     var field_any = try result_struct.getAnyPointer(0);
     try field_any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
+    var cap_list = try ret.initCapTableTyped(1);
+
     const entry = try cap_list.get(0);
     protocol.CapDescriptor.writeSenderHosted(entry, 42);
 
@@ -35,7 +38,7 @@ test "promised answer getPointerField resolves to cap table entry" {
     var root = try transform_builder.allocateStruct(0, 1);
     var list = try root.writeStructList(0, 1, 1, 0);
     const op = try list.get(0);
-    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.get_pointer_field));
+    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
     op.writeU16(2, 0);
 
     const transform_bytes = try transform_builder.toBytes();
@@ -62,12 +65,15 @@ test "promised answer getPointerField resolves senderPromise to exported cap" {
     defer builder.deinit();
 
     var ret = try builder.beginReturn(1, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     var result_struct = try any.initStruct(0, 1);
     var field_any = try result_struct.getAnyPointer(0);
     try field_any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
+    var cap_list = try ret.initCapTableTyped(1);
+
     const entry = try cap_list.get(0);
     protocol.CapDescriptor.writeSenderPromise(entry, 77);
 
@@ -85,7 +91,7 @@ test "promised answer getPointerField resolves senderPromise to exported cap" {
     var root = try transform_builder.allocateStruct(0, 1);
     var list = try root.writeStructList(0, 1, 1, 0);
     const op = try list.get(0);
-    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.get_pointer_field));
+    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
     op.writeU16(2, 0);
 
     const transform_bytes = try transform_builder.toBytes();
@@ -109,19 +115,22 @@ test "promised answer getPointerField resolves receiverAnswer to promised cap" {
     const allocator = std.testing.allocator;
 
     const receiver_ops = [_]protocol.PromisedAnswerOp{
-        .{ .tag = .get_pointer_field, .pointer_index = 2 },
+        .{ .tag = .getPointerField, .pointer_index = 2 },
     };
 
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
     var ret = try builder.beginReturn(1, .results);
-    var any = try ret.getResultsAnyPointer();
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+
     var result_struct = try any.initStruct(0, 1);
     var field_any = try result_struct.getAnyPointer(0);
     try field_any.setCapability(.{ .id = 0 });
 
-    var cap_list = try ret.initCapTable(1);
+    var cap_list = try ret.initCapTableTyped(1);
+
     const entry = try cap_list.get(0);
     try protocol.CapDescriptor.writeReceiverAnswer(entry, 88, &receiver_ops);
 
@@ -139,7 +148,7 @@ test "promised answer getPointerField resolves receiverAnswer to promised cap" {
     var root = try transform_builder.allocateStruct(0, 1);
     var list = try root.writeStructList(0, 1, 1, 0);
     const op = try list.get(0);
-    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.get_pointer_field));
+    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
     op.writeU16(2, 0);
 
     const transform_bytes = try transform_builder.toBytes();
@@ -158,7 +167,7 @@ test "promised answer getPointerField resolves receiverAnswer to promised cap" {
             try std.testing.expectEqual(@as(u32, 88), promised.question_id);
             try std.testing.expectEqual(@as(u32, 1), promised.transform.len());
             const resolved_op = try promised.transform.get(0);
-            try std.testing.expectEqual(protocol.PromisedAnswerOpTag.get_pointer_field, resolved_op.tag);
+            try std.testing.expectEqual(protocol.PromisedAnswerOpTag.getPointerField, resolved_op.tag);
             try std.testing.expectEqual(@as(u16, 2), resolved_op.pointer_index);
         },
         else => return error.UnexpectedCapType,

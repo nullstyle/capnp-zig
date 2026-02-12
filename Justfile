@@ -52,13 +52,14 @@ e2e-scaffold:
 
 # CI gate (unit + interop e2e)
 ci:
+    just src/rpc/check-rpc
     zig build test --summary all
     just e2e
 
 # Install to a local bin path (defaults to ~/.local/bin)
 install dest="${HOME}/.local/bin": release
-    mkdir -p "{{dest}}"
-    cp zig-out/bin/capnpc-zig "{{dest}}/capnpc-zig"
+    mkdir -p "{{ dest }}"
+    cp zig-out/bin/capnpc-zig "{{ dest }}/capnpc-zig"
 
 # Install to the first writable directory in PATH
 install-path: release
@@ -87,11 +88,11 @@ example: build
 
 # Run KVStore example server
 example-kvstore-server port="9000":
-    cd examples/kvstore && zig build server -- --port {{port}}
+    cd examples/kvstore && zig build server -- --port {{ port }}
 
 # Run KVStore example client
 example-kvstore-client port="9000":
-    cd examples/kvstore && zig build client -- --port {{port}}
+    cd examples/kvstore && zig build client -- --port {{ port }}
 
 # Check for errors without building
 check:

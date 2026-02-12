@@ -1,0 +1,26 @@
+gen-rpc:
+    @test -x ../../zig-out/bin/capnpc-zig || (echo "missing ../../zig-out/bin/capnpc-zig; run 'just build' first"; exit 1)
+    capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/rpc.capnp
+    capnpc -o../../zig-out/bin/capnpc-zig:gen ./capnp/persistent.capnp
+
+gen: gen-rpc
+
+# Sync canonical RPC schema into first-party src/rpc/ path
+sync-rpc:
+    mkdir -p capnp
+    cp ../../vendor/ext/capnproto/c++/src/capnp/rpc.capnp ./capnp/
+    cp ../../vendor/ext/capnproto/c++/src/capnp/c++.capnp ./capnp/
+    cp ../../vendor/ext/capnproto/c++/src/capnp/persistent.capnp ./capnp/
+
+sync: sync-rpc
+
+# Verify first-party RPC schema copy matches vendor source
+check-rpc:
+    cmp -s ../../vendor/ext/capnproto/c++/src/capnp/rpc.capnp ./capnp/rpc.capnp || (echo "rpc.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
+    cmp -s ../../vendor/ext/capnproto/c++/src/capnp/c++.capnp ./capnp/c++.capnp || (echo "c++.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
+    cmp -s ../../vendor/ext/capnproto/c++/src/capnp/persistent.capnp ./capnp/persistent.capnp || (echo "persistent.capnp is out of sync with vendor source; run 'just sync-rpc'"; exit 1)
+
+check: check-rpc
+
+clean:
+    rm -rf gen

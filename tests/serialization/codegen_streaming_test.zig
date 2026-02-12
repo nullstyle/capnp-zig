@@ -51,6 +51,9 @@ test "Codegen emits streaming method types and handlers" {
     const output = try generator.generateFile(file);
     defer allocator.free(output);
 
+    try expectContains(output, "const stream = @import(\"capnp/stream.zig\");");
+    try expectNotContains(output, "@import(\"/capnp/stream.zig\")");
+
     // Streaming methods should have StreamHandler instead of Handler
     try expectContains(output, "pub const DoStreamI = struct");
     try expectContains(output, "pub const DoStreamJ = struct");
@@ -149,4 +152,60 @@ test "Codegen emits streaming method types and handlers" {
     try expectContains(doStreamI_section, "pub const StreamCallContext = struct");
     try expectContains(doStreamI_section, "streamCallBuild");
     try expectContains(doStreamI_section, "streamCallReturn");
+}
+
+test "Codegen omits unused annotation-only imports from rpc.capnp" {
+    const allocator = std.testing.allocator;
+
+    const schema_path = blk: {
+        if (std.fs.cwd().access("src/rpc/rpc.capnp", .{})) {
+            break :blk "src/rpc/rpc.capnp";
+        } else |_| {}
+        if (std.fs.cwd().access("src/rpc/capnp/rpc.capnp", .{})) {
+            break :blk "src/rpc/capnp/rpc.capnp";
+        } else |_| {}
+        return error.SkipZigTest;
+    };
+    const src_prefix = std.fs.path.dirname(schema_path) orelse ".";
+    const src_prefix_arg = try std.fmt.allocPrint(allocator, "--src-prefix={s}", .{src_prefix});
+    defer allocator.free(src_prefix_arg);
+
+    const argv = &[_][]const u8{
+        "capnp",
+        "compile",
+        "-Ivendor/ext/capnproto/c++/src",
+        src_prefix_arg,
+        "-o-",
+        schema_path,
+    };
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .max_output_bytes = 20 * 1024 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+
+    try std.testing.expect(request.requested_files.len >= 1);
+    const file = request.requested_files[0];
+
+    var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
+    defer generator.deinit();
+
+    const output = try generator.generateFile(file);
+    defer allocator.free(output);
+
+    try expectNotContains(output, "@import(\"/capnp/c++.zig\")");
+    try expectNotContains(output, "c++.zig");
+    try expectNotContains(output, "const c = @import(");
+    try expectContains(output, "pub const Message = struct");
 }

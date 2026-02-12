@@ -134,9 +134,12 @@ test "peer_return_send_helpers noteOutboundReturnCapRefsForPeer tracks sender re
     defer builder.deinit();
 
     var ret_builder = try builder.beginReturn(77, .results);
-    var any = try ret_builder.getResultsAnyPointer();
+    var any_payload = try ret_builder.payloadTyped();
+    var any = try any_payload.initContent();
+
     try any.setNull();
-    var cap_table = try ret_builder.initCapTable(3);
+    var cap_table = try ret_builder.initCapTableTyped(3);
+
     protocol.CapDescriptor.writeSenderHosted(try cap_table.get(0), 1001);
     protocol.CapDescriptor.writeSenderPromise(try cap_table.get(1), 1002);
     protocol.CapDescriptor.writeReceiverHosted(try cap_table.get(2), 2001);

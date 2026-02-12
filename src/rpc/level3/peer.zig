@@ -734,7 +734,7 @@ pub const Peer = struct {
         if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
 
         const descriptor = protocol.CapDescriptor{
-            .tag = if (self.caps.isExportPromise(export_id)) .sender_promise else .sender_hosted,
+            .tag = if (self.caps.isExportPromise(export_id)) .senderPromise else .senderHosted,
             .id = export_id,
             .promised_answer = null,
             .attached_fd = null,
@@ -1006,7 +1006,7 @@ pub const Peer = struct {
             peer_control.setForwardedCallThirdPartyFromPayloadForPeerFn(Peer),
         );
 
-        const payload_builder = try call_builder.payloadBuilder();
+        const payload_builder = try call_builder.payloadTyped();
         try ctx.peer.clonePayloadWithRemappedCaps(
             call_builder.call.builder,
             payload_builder,
@@ -1049,7 +1049,7 @@ pub const Peer = struct {
 
     fn buildForwardedReturn(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {
         const ctx: *const ForwardReturnBuildContext = castCtx(*const ForwardReturnBuildContext, ctx_ptr);
-        const payload_builder = try ret_builder.payloadBuilder();
+        const payload_builder = try ret_builder.payloadTyped();
         try ctx.peer.clonePayloadWithRemappedCaps(
             ret_builder.ret.builder,
             payload_builder,
@@ -1061,7 +1061,7 @@ pub const Peer = struct {
     fn clonePayloadWithRemappedCaps(
         self: *Peer,
         builder: *message.MessageBuilder,
-        payload_builder: message.StructBuilder,
+        payload_builder: protocol.PayloadBuilder,
         source: protocol.Payload,
         inbound_caps: *const cap_table.InboundCapTable,
     ) !void {
@@ -1104,7 +1104,7 @@ pub const Peer = struct {
         }
 
         if (self.send_results_to_yourself.remove(answer_id)) {
-            try self.sendReturnTag(answer_id, .results_sent_elsewhere);
+            try self.sendReturnTag(answer_id, .resultsSentElsewhere);
             return;
         }
 
@@ -1157,8 +1157,10 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         const BuildCtx = struct {
             fn build(_: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
-                _ = try ret.initResultsStruct(0, 0);
-                try ret.setEmptyCapTable();
+                var payload = try ret.payloadTyped();
+                var any = try payload.initContent();
+                _ = try any.initStruct(0, 0);
+                _ = try ret.initCapTableTyped(0);
             }
         };
         var ctx: u8 = 0;
@@ -1225,7 +1227,8 @@ pub const Peer = struct {
 
             fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
                 const ctx: *const @This() = castCtx(*const @This(), ctx_ptr);
-                var any = try ret.getResultsAnyPointer();
+                var payload = try ret.payloadTyped();
+                var any = try payload.initContent();
 
                 const cap_id = switch (ctx.target.*) {
                     .cap_id => |id| id,
@@ -1396,7 +1399,7 @@ pub const Peer = struct {
     fn onOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
         const peer: *Peer = castCtx(*Peer, ctx);
         switch (tag) {
-            .sender_hosted, .sender_promise => try peer.noteExportRef(id),
+            .senderHosted, .senderPromise => try peer.noteExportRef(id),
             else => {},
         }
     }
@@ -1483,7 +1486,7 @@ pub const Peer = struct {
     fn deliverLoopbackReturn(self: *Peer, frame: []const u8) !void {
         var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
         defer decoded.deinit();
-        if (decoded.tag != .return_) return error.UnexpectedMessage;
+        if (decoded.tag != .@"return") return error.UnexpectedMessage;
         try self.handleReturn(frame, try decoded.asReturn());
     }
 
@@ -2071,7 +2074,13 @@ pub const Peer = struct {
             source: protocol.Payload,
             inbound_caps: *const cap_table.InboundCapTable,
         ) !void {
-            return Peer.clonePayloadWithRemappedCaps(self, builder, payload_builder, source, inbound_caps);
+            return Peer.clonePayloadWithRemappedCaps(
+                self,
+                builder,
+                protocol.PayloadBuilder.wrap(payload_builder),
+                source,
+                inbound_caps,
+            );
         }
 
         pub fn onForwardedReturn(

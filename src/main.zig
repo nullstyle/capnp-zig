@@ -51,8 +51,8 @@ pub fn main() !void {
         const output_filename = try getOutputFilename(allocator, requested_file.filename);
         defer allocator.free(output_filename);
 
-        // Write to file
-        const file = try std.fs.cwd().createFile(output_filename, .{});
+        // Write to file (creating parent directories for nested schema paths)
+        const file = try createOutputFileInDir(std.fs.cwd(), output_filename);
         defer file.close();
 
         try file.writeAll(output_code);
@@ -114,6 +114,15 @@ fn getOutputFilename(allocator: std.mem.Allocator, input_filename: []const u8) !
     return std.fmt.allocPrint(allocator, "{s}.zig", .{input_filename});
 }
 
+fn createOutputFileInDir(dir: std.fs.Dir, output_filename: []const u8) !std.fs.File {
+    if (std.fs.path.dirname(output_filename)) |parent_dir| {
+        if (parent_dir.len != 0 and !std.mem.eql(u8, parent_dir, ".")) {
+            try dir.makePath(parent_dir);
+        }
+    }
+    return dir.createFile(output_filename, .{});
+}
+
 test "main tests" {
     @import("std").testing.refAllDecls(@This());
 }
@@ -146,4 +155,16 @@ test "parseRunOptions enables verbose for capnp style token" {
     const argv = [_][]const u8{ "capnpc-zig", "out,verbose,foo" };
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(options.verbose);
+}
+
+test "createOutputFileInDir creates parent directories for nested output paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var file = try createOutputFileInDir(tmp.dir, "capnp/persistent.zig");
+    defer file.close();
+    try file.writeAll("// generated\n");
+
+    var reopened = try tmp.dir.openFile("capnp/persistent.zig", .{});
+    defer reopened.close();
 }

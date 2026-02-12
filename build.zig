@@ -19,12 +19,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "xev", .module = xev_module },
         },
     });
+    lib_module.addImport("capnpc-zig", lib_module);
 
     const core_module = b.addModule("capnpc-zig-core", .{
         .root_source_file = b.path("src/lib_core.zig"),
         .target = target,
         .optimize = optimize,
     });
+    core_module.addImport("capnpc-zig", core_module);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,

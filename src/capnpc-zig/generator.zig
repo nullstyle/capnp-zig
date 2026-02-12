@@ -14,6 +14,8 @@ pub const Generator = struct {
     current_file_id: ?schema.Id = null,
     /// Maps imported file node IDs to their Zig module const names.
     import_modules: std.AutoHashMap(schema.Id, []const u8),
+    /// Tracks imported files actually referenced by generated type resolution.
+    used_import_file_ids: std.AutoHashMap(schema.Id, void),
     /// Emit codegen trace logs when true.
     verbose: bool = false,
 
@@ -31,12 +33,14 @@ pub const Generator = struct {
             .nodes = nodes,
             .node_map = node_map,
             .import_modules = std.AutoHashMap(schema.Id, []const u8).init(allocator),
+            .used_import_file_ids = std.AutoHashMap(schema.Id, void).init(allocator),
         };
     }
 
     pub fn deinit(self: *Generator) void {
         self.clearImportModules();
         self.import_modules.deinit();
+        self.used_import_file_ids.deinit();
         self.node_map.deinit();
     }
 
@@ -74,13 +78,37 @@ pub const Generator = struct {
         self.current_file_id = requested_file.id;
         defer self.current_file_id = null;
         self.clearImportModules();
+        self.used_import_file_ids.clearRetainingCapacity();
 
         const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
         const needs_rpc = try self.fileNeedsRpc(file_node);
 
+        // Register import module aliases up-front so cross-file type resolution
+        // works while generating declarations.
+        for (requested_file.imports) |imp| {
+            const mod_name = try self.moduleNameFromFilename(imp.name);
+            errdefer self.allocator.free(mod_name);
+            try self.import_modules.put(imp.id, mod_name);
+        }
+
+        // Generate declarations into a body buffer first, then emit only imports
+        // that are actually referenced by generated declarations.
+        var body = std.ArrayList(u8){};
+        defer body.deinit(self.allocator);
+        const body_writer = body.writer(self.allocator);
+
+        try self.writeSchemaManifest(requested_file, file_node, body_writer);
+
+        var generated = std.AutoHashMap(schema.Id, void).init(self.allocator);
+        defer generated.deinit();
+
+        // Generate code for all nested nodes (including nested definitions).
+        for (file_node.nested_nodes) |nested| {
+            try self.generateNodeRecursive(nested.id, &generated, &body);
+        }
+
         var output = std.ArrayList(u8){};
         errdefer output.deinit(self.allocator);
-
         const writer = output.writer(self.allocator);
 
         // Write file header
@@ -94,26 +122,17 @@ pub const Generator = struct {
             try writer.writeAll("const rpc = capnpc.rpc;\n");
         }
 
-        // Emit @import for each cross-file import.
+        // Emit only imports that are referenced by generated declarations.
         for (requested_file.imports) |imp| {
-            const mod_name = try self.moduleNameFromFilename(imp.name);
-            errdefer self.allocator.free(mod_name);
+            if (!self.used_import_file_ids.contains(imp.id)) continue;
+            const mod_name = self.import_modules.get(imp.id) orelse continue;
             const import_path = try self.importPathFromCapnpName(imp.name);
             defer self.allocator.free(import_path);
             try writer.print("const {s} = @import(\"{s}\");\n", .{ mod_name, import_path });
-            try self.import_modules.put(imp.id, mod_name);
         }
         try writer.writeByte('\n');
 
-        try self.writeSchemaManifest(requested_file, file_node, writer);
-
-        var generated = std.AutoHashMap(schema.Id, void).init(self.allocator);
-        defer generated.deinit();
-
-        // Generate code for all nested nodes (including nested definitions).
-        for (file_node.nested_nodes) |nested| {
-            try self.generateNodeRecursive(nested.id, &generated, &output);
-        }
+        try writer.writeAll(body.items);
 
         return output.toOwnedSlice(self.allocator);
     }
@@ -622,12 +641,12 @@ pub const Generator = struct {
         try writer.writeAll("                response = .{ .exception = ex };\n");
         try writer.writeAll("            },\n");
         try writer.writeAll("            .canceled => response = .canceled,\n");
-        try writer.writeAll("            .results_sent_elsewhere => response = .results_sent_elsewhere,\n");
-        try writer.writeAll("            .take_from_other_question => {\n");
+        try writer.writeAll("            .resultsSentElsewhere => response = .results_sent_elsewhere,\n");
+        try writer.writeAll("            .takeFromOtherQuestion => {\n");
         try writer.writeAll("                const qid = ret.take_from_other_question orelse return error.MissingQuestionId;\n");
         try writer.writeAll("                response = .{ .take_from_other_question = qid };\n");
         try writer.writeAll("            },\n");
-        try writer.writeAll("            .accept_from_third_party => response = .accept_from_third_party,\n");
+        try writer.writeAll("            .awaitFromThirdParty => response = .accept_from_third_party,\n");
         try writer.writeAll("        }\n");
         try writer.writeAll("        try ctx.callback(ctx.user_ctx, peer, response);\n");
         try writer.writeAll("    }\n\n");
@@ -803,7 +822,9 @@ pub const Generator = struct {
 
         try writer.writeAll("        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {\n");
         try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
-        try writer.print("            const params_builder = try call.initParamsStruct({}, {});\n", .{
+        try writer.writeAll("            var payload = try call.payloadTyped();\n");
+        try writer.writeAll("            var params_any = try payload.initContent();\n");
+        try writer.print("            const params_builder = try params_any.initStruct({}, {});\n", .{
             param_layout.data_words,
             param_layout.pointer_words,
         });
@@ -811,7 +832,7 @@ pub const Generator = struct {
         try writer.writeAll("            if (ctx.build) |build_fn| {\n");
         try writer.writeAll("                try build_fn(ctx.user_ctx, &params);\n");
         try writer.writeAll("            }\n");
-        try writer.writeAll("            try call.setEmptyCapTable();\n");
+        try writer.writeAll("            _ = try call.initCapTableTyped(0);\n");
         try writer.writeAll("        }\n\n");
 
         try writer.writeAll("        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
@@ -830,12 +851,12 @@ pub const Generator = struct {
         try writer.writeAll("                    response = .{ .exception = ex };\n");
         try writer.writeAll("                },\n");
         try writer.writeAll("                .canceled => response = .canceled,\n");
-        try writer.writeAll("                .results_sent_elsewhere => response = .results_sent_elsewhere,\n");
-        try writer.writeAll("                .take_from_other_question => {\n");
+        try writer.writeAll("                .resultsSentElsewhere => response = .results_sent_elsewhere,\n");
+        try writer.writeAll("                .takeFromOtherQuestion => {\n");
         try writer.writeAll("                    const qid = ret.take_from_other_question orelse return error.MissingQuestionId;\n");
         try writer.writeAll("                    response = .{ .take_from_other_question = qid };\n");
         try writer.writeAll("                },\n");
-        try writer.writeAll("                .accept_from_third_party => response = .accept_from_third_party,\n");
+        try writer.writeAll("                .awaitFromThirdParty => response = .accept_from_third_party,\n");
         try writer.writeAll("            }\n");
         try writer.writeAll("            try ctx.callback(ctx.user_ctx, peer, response, caps);\n");
         try writer.writeAll("        }\n\n");
@@ -863,13 +884,15 @@ pub const Generator = struct {
 
             try writer.writeAll("        fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {\n");
             try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
-            try writer.print("            const params_builder = try call.initParamsStruct({}, {});\n", .{
+            try writer.writeAll("            var payload = try call.payloadTyped();\n");
+            try writer.writeAll("            var params_any = try payload.initContent();\n");
+            try writer.print("            const params_builder = try params_any.initStruct({}, {});\n", .{
                 param_layout.data_words,
                 param_layout.pointer_words,
             });
             try writer.writeAll("            var params = Params.Builder.wrap(params_builder);\n");
             try writer.writeAll("            if (ctx.build) |build_fn| try build_fn(ctx.build_ctx, &params);\n");
-            try writer.writeAll("            try call.setEmptyCapTable();\n");
+            try writer.writeAll("            _ = try call.initCapTableTyped(0);\n");
             try writer.writeAll("        }\n\n");
 
             try writer.writeAll("        fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
@@ -905,13 +928,15 @@ pub const Generator = struct {
 
             try writer.writeAll("        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {\n");
             try writer.writeAll("            const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));\n");
-            try writer.print("            const results_builder = try ret.initResultsStruct({}, {});\n", .{
+            try writer.writeAll("            var payload = try ret.payloadTyped();\n");
+            try writer.writeAll("            var results_any = try payload.initContent();\n");
+            try writer.print("            const results_builder = try results_any.initStruct({}, {});\n", .{
                 result_layout.data_words,
                 result_layout.pointer_words,
             });
             try writer.writeAll("            var results = Results.Builder.wrap(results_builder);\n");
             try writer.writeAll("            try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);\n");
-            try writer.writeAll("            try ret.setEmptyCapTable();\n");
+            try writer.writeAll("            _ = try ret.initCapTableTyped(0);\n");
             try writer.writeAll("        }\n");
         }
 
@@ -1122,7 +1147,7 @@ pub const Generator = struct {
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ method_prefix, dot, zig_name });
         try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
-        try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{{.{{ .tag = .get_pointer_field, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
+        try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
             iface_id, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
         });
         try writer.writeAll("        }\n\n");
@@ -1294,11 +1319,12 @@ pub const Generator = struct {
     /// Derive the .zig import path from a .capnp import name.
     /// E.g., "other.capnp" → "other.zig", "path/to/types.capnp" → "path/to/types.zig"
     fn importPathFromCapnpName(self: *Generator, capnp_name: []const u8) ![]const u8 {
-        if (std.mem.endsWith(u8, capnp_name, ".capnp")) {
-            const base = capnp_name[0 .. capnp_name.len - 6];
+        const normalized = if (std.mem.startsWith(u8, capnp_name, "/")) capnp_name[1..] else capnp_name;
+        if (std.mem.endsWith(u8, normalized, ".capnp")) {
+            const base = normalized[0 .. normalized.len - 6];
             return std.fmt.allocPrint(self.allocator, "{s}.zig", .{base});
         }
-        return std.fmt.allocPrint(self.allocator, "{s}.zig", .{capnp_name});
+        return std.fmt.allocPrint(self.allocator, "{s}.zig", .{normalized});
     }
 
     /// Walk the scope chain from a node to find its owning file node ID.
@@ -1316,11 +1342,13 @@ pub const Generator = struct {
 
     /// Return the import module name for a type if it belongs to a different file,
     /// or null if it belongs to the current file.
-    fn typeModulePrefix(self: *const Generator, type_id: schema.Id) ?[]const u8 {
+    fn typeModulePrefix(self: *Generator, type_id: schema.Id) ?[]const u8 {
         const current = self.current_file_id orelse return null;
         const owning_file = self.findOwningFileId(type_id) orelse return null;
         if (owning_file == current) return null;
-        return self.import_modules.get(owning_file);
+        const prefix = self.import_modules.get(owning_file) orelse return null;
+        self.used_import_file_ids.put(owning_file, {}) catch {};
+        return prefix;
     }
 
     /// Resolve a type name, qualifying with module prefix if it's from another file.
@@ -1380,7 +1408,8 @@ pub const Generator = struct {
     }
 
     fn lookupTypePrefix(ctx: ?*const anyopaque, id: schema.Id) ?[]const u8 {
-        const generator: *const Generator = @ptrCast(@alignCast(ctx.?));
+        const generator_const: *const Generator = @ptrCast(@alignCast(ctx.?));
+        const generator: *Generator = @constCast(generator_const);
         return generator.typeModulePrefix(id);
     }
 
@@ -1805,6 +1834,10 @@ test "Generator.importPathFromCapnpName replaces .capnp with .zig" {
     const r2 = try gen.importPathFromCapnpName("path/to/types.capnp");
     defer alloc.free(r2);
     try std.testing.expectEqualStrings("path/to/types.zig", r2);
+
+    const r3 = try gen.importPathFromCapnpName("/capnp/stream.capnp");
+    defer alloc.free(r3);
+    try std.testing.expectEqualStrings("capnp/stream.zig", r3);
 }
 
 test "Generator.importPathFromCapnpName appends .zig for non-.capnp" {

@@ -165,7 +165,7 @@ pub fn handleReturn(
     var inbound_caps = try init_inbound_caps(peer, ret);
     defer deinit_inbound_caps(&inbound_caps);
 
-    if (ret.tag == .accept_from_third_party) {
+    if (ret.tag == .awaitFromThirdParty) {
         // acceptFromThirdParty adopts a different question path and still needs the same
         // auto-finish policy as normal returns.
         try handle_return_accept_from_third_party(
@@ -424,7 +424,7 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
         .answer_id = 3,
         .release_param_caps = false,
         .no_finish_needed = true,
-        .tag = .accept_from_third_party,
+        .tag = .awaitFromThirdParty,
         .results = null,
         .exception = null,
         .take_from_other_question = null,

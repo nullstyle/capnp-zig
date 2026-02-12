@@ -118,7 +118,7 @@ test "peer_control noteCallSendResultsForPeerFn routes to yourself and third-par
     try note_send_results(&state, .{
         .question_id = 1,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 0,
             .promised_answer = null,
         },
@@ -142,7 +142,7 @@ test "peer_control noteCallSendResultsForPeerFn routes to yourself and third-par
     try note_send_results(&state, .{
         .question_id = 2,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 0,
             .promised_answer = null,
         },
@@ -166,7 +166,7 @@ test "peer_control noteCallSendResultsForPeerFn routes to yourself and third-par
     try note_send_results(&state, .{
         .question_id = 3,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 0,
             .promised_answer = null,
         },
@@ -177,7 +177,7 @@ test "peer_control noteCallSendResultsForPeerFn routes to yourself and third-par
             .cap_table = null,
         },
         .send_results_to = .{
-            .tag = .third_party,
+            .tag = .thirdParty,
             .third_party = null,
         },
         .allow_third_party_tail = false,
@@ -224,7 +224,7 @@ test "peer_control forwarded third-party/capture helper factories use peer alloc
     defer call_builder_msg.deinit();
     var call_builder = try call_builder_msg.beginCall(77, 0xAA, 2);
     try call_builder.setTargetImportedCap(0);
-    _ = try call_builder.payloadBuilder();
+    _ = try call_builder.payloadTyped();
 
     const set_third_party = setForwardedCallThirdPartyFromPayloadForPeerFn(FakePeer);
     try set_third_party(&peer, &call_builder, third_party_payload);
@@ -235,7 +235,7 @@ test "peer_control forwarded third-party/capture helper factories use peer alloc
     var decoded = try protocol.DecodedMessage.init(std.testing.allocator, encoded);
     defer decoded.deinit();
     const call = try decoded.asCall();
-    try std.testing.expectEqual(protocol.SendResultsToTag.third_party, call.send_results_to.tag);
+    try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, call.send_results_to.tag);
     const payload_ptr = call.send_results_to.third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("destination", try payload_ptr.getText());
 }
@@ -319,7 +319,7 @@ test "peer_control provide-target helper factories resolve imported and promised
     try std.testing.expectError(error.TestExpectedError, resolve_promised(&peer, promised));
 
     const imported_target = try resolve_target(&peer, .{
-        .tag = .imported_cap,
+        .tag = .importedCap,
         .imported_cap = 2,
         .promised_answer = null,
     });
@@ -331,7 +331,7 @@ test "peer_control provide-target helper factories resolve imported and promised
     try std.testing.expectError(
         error.MissingCallTarget,
         resolve_target(&peer, .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = null,
             .promised_answer = null,
         }),
@@ -339,7 +339,7 @@ test "peer_control provide-target helper factories resolve imported and promised
     try std.testing.expectError(
         error.MissingPromisedAnswer,
         resolve_target(&peer, .{
-            .tag = .promised_answer,
+            .tag = .promisedAnswer,
             .imported_cap = null,
             .promised_answer = null,
         }),

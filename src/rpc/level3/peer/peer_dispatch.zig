@@ -7,7 +7,7 @@ pub const InboundRoute = enum {
     abort,
     bootstrap,
     call,
-    return_,
+    @"return",
     finish,
     release,
     resolve,
@@ -15,7 +15,7 @@ pub const InboundRoute = enum {
     provide,
     accept,
     join,
-    third_party_answer,
+    thirdPartyAnswer,
     unknown,
 };
 
@@ -25,7 +25,7 @@ pub fn route(tag: protocol.MessageTag) InboundRoute {
         .abort => .abort,
         .bootstrap => .bootstrap,
         .call => .call,
-        .return_ => .return_,
+        .@"return" => .@"return",
         .finish => .finish,
         .release => .release,
         .resolve => .resolve,
@@ -33,7 +33,7 @@ pub fn route(tag: protocol.MessageTag) InboundRoute {
         .provide => .provide,
         .accept => .accept,
         .join => .join,
-        .third_party_answer => .third_party_answer,
+        .thirdPartyAnswer => .thirdPartyAnswer,
         else => .unknown,
     };
 }
@@ -63,7 +63,7 @@ pub fn dispatchDecodedForPeer(
         .abort => try handle_abort(peer, try decoded.asAbort()),
         .bootstrap => try handle_bootstrap(peer, try decoded.asBootstrap()),
         .call => try handle_call(peer, frame, try decoded.asCall()),
-        .return_ => try handle_return(peer, frame, try decoded.asReturn()),
+        .@"return" => try handle_return(peer, frame, try decoded.asReturn()),
         .finish => try handle_finish(peer, try decoded.asFinish()),
         .release => try handle_release(peer, try decoded.asRelease()),
         .resolve => try handle_resolve(peer, try decoded.asResolve()),
@@ -71,7 +71,7 @@ pub fn dispatchDecodedForPeer(
         .provide => try handle_provide(peer, try decoded.asProvide()),
         .accept => try handle_accept(peer, try decoded.asAccept()),
         .join => try handle_join(peer, try decoded.asJoin()),
-        .third_party_answer => try handle_third_party_answer(peer, try decoded.asThirdPartyAnswer()),
+        .thirdPartyAnswer => try handle_third_party_answer(peer, try decoded.asThirdPartyAnswer()),
         .unknown => {
             const root = try decoded.msg.getRootAnyPointer();
             try send_unimplemented(peer, root);
@@ -137,7 +137,8 @@ test "peer_dispatch dispatchDecodedForPeer routes call messages with original fr
     defer builder.deinit();
     var call = try builder.beginCall(88, 0xABCD, 5);
     try call.setTargetImportedCap(7);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const frame = try builder.finish();
     defer std.testing.allocator.free(frame);
 
@@ -231,7 +232,7 @@ test "peer_dispatch dispatchDecodedForPeer routes unknown tags to sendUnimplemen
 
     var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
     defer decoded.deinit();
-    decoded.tag = .obsolete_save;
+    decoded.tag = .obsoleteSave;
 
     var state = State{};
     try dispatchDecodedForPeer(

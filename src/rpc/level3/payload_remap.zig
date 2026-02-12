@@ -8,12 +8,13 @@ pub fn clonePayloadWithRemappedCaps(
     allocator: std.mem.Allocator,
     peer: *PeerType,
     builder: *message.MessageBuilder,
-    payload_builder: message.StructBuilder,
+    payload_builder: protocol.PayloadBuilder,
     source: protocol.Payload,
     inbound_caps: *const cap_table.InboundCapTable,
     map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?u32,
 ) !void {
-    const any_builder = try payload_builder.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
+    var payload = payload_builder;
+    const any_builder = try payload.initContent();
     try message.cloneAnyPointer(source.content, any_builder);
     try remapPayloadCapabilities(
         PeerType,

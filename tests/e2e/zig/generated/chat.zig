@@ -656,12 +656,15 @@ pub const ChatRoom = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 1);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 1);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -680,7 +683,7 @@ pub const ChatRoom = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -704,10 +707,13 @@ pub const ChatRoom = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(1, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.sendMessage(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -742,12 +748,15 @@ pub const ChatRoom = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 1);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 1);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -766,7 +775,7 @@ pub const ChatRoom = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -790,10 +799,13 @@ pub const ChatRoom = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(1, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.sendEmote(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -828,12 +840,15 @@ pub const ChatRoom = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(1, 0);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(1, 0);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -852,7 +867,7 @@ pub const ChatRoom = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -876,10 +891,13 @@ pub const ChatRoom = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(0, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(0, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.getHistory(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -914,12 +932,15 @@ pub const ChatRoom = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 0);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 0);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -938,7 +959,7 @@ pub const ChatRoom = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -962,10 +983,13 @@ pub const ChatRoom = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(0, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(0, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.getInfo(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1000,12 +1024,15 @@ pub const ChatRoom = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 0);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 0);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -1024,7 +1051,7 @@ pub const ChatRoom = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -1048,10 +1075,13 @@ pub const ChatRoom = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 0);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(1, 0);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.leave(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1132,7 +1162,7 @@ pub const ChatRoom = struct {
                 response = .{ .exception = ex };
             },
             .canceled => response = .canceled,
-            .results_sent_elsewhere => response = .results_sent_elsewhere,
+            .resultsSentElsewhere => response = .resultsSentElsewhere,
             .take_from_other_question => {
                 const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                 response = .{ .take_from_other_question = qid };
@@ -3064,12 +3094,15 @@ pub const ChatService = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 2);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 2);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -3088,7 +3121,7 @@ pub const ChatService = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -3112,10 +3145,13 @@ pub const ChatService = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 2);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(1, 2);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.createRoom(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -3150,12 +3186,15 @@ pub const ChatService = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 2);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 2);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -3174,7 +3213,7 @@ pub const ChatService = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -3198,10 +3237,13 @@ pub const ChatService = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(1, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.joinRoom(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -3236,12 +3278,15 @@ pub const ChatService = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 0);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 0);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -3260,7 +3305,7 @@ pub const ChatService = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -3284,10 +3329,13 @@ pub const ChatService = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(0, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(0, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.listRooms(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -3322,12 +3370,15 @@ pub const ChatService = struct {
 
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(0, 3);
+            var params_builder_payload = try call.payloadTyped();
+            var params_builder_any = try params_builder_payload.initContent();
+            const params_builder = try params_builder_any.initStruct(0, 3);
+
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -3346,7 +3397,7 @@ pub const ChatService = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
+                .resultsSentElsewhere => response = .resultsSentElsewhere,
                 .take_from_other_question => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
@@ -3370,10 +3421,13 @@ pub const ChatService = struct {
 
         fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
             const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 1);
+            var results_builder_payload = try ret.payloadTyped();
+            var results_builder_any = try results_builder_payload.initContent();
+            const results_builder = try results_builder_any.initStruct(1, 1);
+
             var results = Results.Builder.wrap(results_builder);
             try ctx.server.vtable.whisper(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -3448,7 +3502,7 @@ pub const ChatService = struct {
                 response = .{ .exception = ex };
             },
             .canceled => response = .canceled,
-            .results_sent_elsewhere => response = .results_sent_elsewhere,
+            .resultsSentElsewhere => response = .resultsSentElsewhere,
             .take_from_other_question => {
                 const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                 response = .{ .take_from_other_question = qid };

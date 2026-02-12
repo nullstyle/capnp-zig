@@ -2,9 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_worker_pool);
 const xev = @import("xev").Dynamic;
-const Connection = @import("connection.zig").Connection;
-const Listener = @import("runtime.zig").Listener;
-const Runtime = @import("runtime.zig").Runtime;
+const Connection = @import("../level2/connection.zig").Connection;
+const Listener = @import("../level2/runtime.zig").Listener;
+const Runtime = @import("../level2/runtime.zig").Runtime;
 const Peer = @import("../level3/peer.zig").Peer;
 
 /// A multi-threaded worker pool that runs N independent event loops, each

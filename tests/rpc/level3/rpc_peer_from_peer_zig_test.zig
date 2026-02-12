@@ -164,7 +164,10 @@ test "forwarded payload remaps capability index to local id" {
     defer src_builder.deinit();
     var src_call = try src_builder.beginCall(1, 0x01, 0x02);
     try src_call.setTargetImportedCap(0);
-    var src_payload = try src_call.payloadBuilder();
+    const src_payload_typed = try src_call.payloadTyped();
+
+    var src_payload = src_payload_typed._builder;
+
     var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
     try src_any.setCapability(.{ .id = 0 });
 
@@ -178,7 +181,10 @@ test "forwarded payload remaps capability index to local id" {
     defer dst_builder.deinit();
     var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
     try dst_call.setTargetImportedCap(0);
-    const dst_payload = try dst_call.payloadBuilder();
+    const dst_payload_typed = try dst_call.payloadTyped();
+
+    const dst_payload = dst_payload_typed._builder;
+
     try peer_test_hooks.clonePayloadWithRemappedCaps(
         &peer,
         dst_call.call.builder,
@@ -215,7 +221,10 @@ test "forwarded payload converts none capability to null pointer" {
     defer src_builder.deinit();
     var src_call = try src_builder.beginCall(1, 0x01, 0x02);
     try src_call.setTargetImportedCap(0);
-    var src_payload = try src_call.payloadBuilder();
+    const src_payload_typed = try src_call.payloadTyped();
+
+    var src_payload = src_payload_typed._builder;
+
     var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
     try src_any.setCapability(.{ .id = 0 });
 
@@ -229,7 +238,10 @@ test "forwarded payload converts none capability to null pointer" {
     defer dst_builder.deinit();
     var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
     try dst_call.setTargetImportedCap(0);
-    const dst_payload = try dst_call.payloadBuilder();
+    const dst_payload_typed = try dst_call.payloadTyped();
+
+    const dst_payload = dst_payload_typed._builder;
+
     try peer_test_hooks.clonePayloadWithRemappedCaps(
         &peer,
         dst_call.call.builder,
@@ -270,7 +282,10 @@ test "forwarded payload encodes promised capability descriptors as receiverAnswe
     defer src_builder.deinit();
     var src_call = try src_builder.beginCall(1, 0x01, 0x02);
     try src_call.setTargetImportedCap(0);
-    var src_payload = try src_call.payloadBuilder();
+    const src_payload_typed = try src_call.payloadTyped();
+
+    var src_payload = src_payload_typed._builder;
+
     var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
     try src_any.setCapability(.{ .id = 0 });
 
@@ -284,7 +299,10 @@ test "forwarded payload encodes promised capability descriptors as receiverAnswe
     defer dst_builder.deinit();
     var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
     try dst_call.setTargetImportedCap(0);
-    const dst_payload = try dst_call.payloadBuilder();
+    const dst_payload_typed = try dst_call.payloadTyped();
+
+    const dst_payload = dst_payload_typed._builder;
+
     try peer_test_hooks.clonePayloadWithRemappedCaps(
         &peer,
         dst_call.call.builder,
@@ -304,7 +322,7 @@ test "forwarded payload encodes promised capability descriptors as receiverAnswe
 
     const cap_table_reader = parsed_dst_call.params.cap_table orelse return error.MissingCapTable;
     const desc = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(0));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.receiver_answer, desc.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.receiverAnswer, desc.tag);
     const promised = desc.promised_answer orelse return error.MissingPromisedAnswer;
     try std.testing.expectEqual(@as(u32, 9), promised.question_id);
     try std.testing.expectEqual(@as(u32, 0), promised.transform.len());
@@ -383,7 +401,7 @@ test "forwarded return translates takeFromOtherQuestion id" {
             _ = caps;
             const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
-            try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, ret.tag);
+            try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, ret.tag);
             state.referenced_answer = ret.take_from_other_question orelse return error.MissingQuestionId;
         }
     };
@@ -424,7 +442,7 @@ test "forwarded return translates takeFromOtherQuestion id" {
         .answer_id = local_forwarded_question_id,
         .release_param_caps = false,
         .no_finish_needed = false,
-        .tag = .take_from_other_question,
+        .tag = .takeFromOtherQuestion,
         .results = null,
         .exception = null,
         .take_from_other_question = local_referenced_question_id,
@@ -486,7 +504,7 @@ test "forwarded return converts resultsSentElsewhere to exception" {
         .answer_id = local_forwarded_question_id,
         .release_param_caps = false,
         .no_finish_needed = false,
-        .tag = .results_sent_elsewhere,
+        .tag = .resultsSentElsewhere,
         .results = null,
         .exception = null,
         .take_from_other_question = null,
@@ -608,7 +626,7 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
         .answer_id = local_forwarded_question_id,
         .release_param_caps = false,
         .no_finish_needed = false,
-        .tag = .take_from_other_question,
+        .tag = .takeFromOtherQuestion,
         .results = null,
         .exception = null,
         .take_from_other_question = 900,
@@ -686,7 +704,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
         .answer_id = local_forwarded_question_id,
         .release_param_caps = false,
         .no_finish_needed = false,
-        .tag = .accept_from_third_party,
+        .tag = .awaitFromThirdParty,
         .results = null,
         .exception = null,
         .take_from_other_question = null,
@@ -699,7 +717,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
     const forwarded_ret = try decoded.asReturn();
-    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, forwarded_ret.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, forwarded_ret.tag);
     try std.testing.expect(forwarded_ret.exception == null);
     const await_ptr = forwarded_ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("await-destination", try await_ptr.getText());
@@ -754,7 +772,7 @@ test "forwarded return sentElsewhere mode accepts resultsSentElsewhere without u
         .answer_id = local_forwarded_question_id,
         .release_param_caps = false,
         .no_finish_needed = false,
-        .tag = .results_sent_elsewhere,
+        .tag = .resultsSentElsewhere,
         .results = null,
         .exception = null,
         .take_from_other_question = null,
@@ -827,7 +845,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
             _ = caps;
             const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
-            try std.testing.expectEqual(protocol.ReturnTag.results_sent_elsewhere, ret.tag);
+            try std.testing.expectEqual(protocol.ReturnTag.resultsSentElsewhere, ret.tag);
         }
     };
 
@@ -860,7 +878,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
     var call = try call_builder.beginCall(700, 0x10, 1);
     try call.setTargetImportedCap(77);
     call.setSendResultsToYourself();
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const bytes = try call_builder.finish();
     defer allocator.free(bytes);
@@ -880,7 +898,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
 
     var ret_builder = protocol.MessageBuilder.init(allocator);
     defer ret_builder.deinit();
-    _ = try ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+    _ = try ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
     const ret_frame = try ret_builder.finish();
     defer allocator.free(ret_frame);
     try peer.handleFrame(ret_frame);
@@ -943,7 +961,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     var call = try call_builder.beginCall(800, 0x10, 1);
     try call.setTargetImportedCap(77);
     try call.setSendResultsToThirdParty(third_ptr);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const bytes = try call_builder.finish();
     defer allocator.free(bytes);
@@ -963,7 +981,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     defer forwarded_call_msg.deinit();
     try std.testing.expectEqual(protocol.MessageTag.call, forwarded_call_msg.tag);
     const forwarded_call = try forwarded_call_msg.asCall();
-    try std.testing.expectEqual(protocol.SendResultsToTag.third_party, forwarded_call.send_results_to.tag);
+    try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, forwarded_call.send_results_to.tag);
     const forwarded_third_party = forwarded_call.send_results_to.third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("third-party-destination", try forwarded_third_party.getText());
     const forwarded_question_id = forwarded_call.question_id;
@@ -973,7 +991,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     // accept_from_third_party return to the upstream caller with the captured payload.
     var ret_builder = protocol.MessageBuilder.init(allocator);
     defer ret_builder.deinit();
-    _ = try ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+    _ = try ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
     const ret_frame = try ret_builder.finish();
     defer allocator.free(ret_frame);
     try peer.handleFrame(ret_frame);
@@ -984,7 +1002,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     var ret_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer ret_decoded.deinit();
     const forwarded_ret = try ret_decoded.asReturn();
-    try std.testing.expectEqual(protocol.ReturnTag.accept_from_third_party, forwarded_ret.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, forwarded_ret.tag);
     try std.testing.expect(forwarded_ret.exception == null);
     const await_ptr = forwarded_ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
     try std.testing.expectEqualStrings("third-party-destination", try await_ptr.getText());
@@ -1008,8 +1026,10 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
 
         fn buildResults(ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
             _ = ctx;
-            _ = try ret.initResultsStruct(0, 0);
-            try ret.setEmptyCapTable();
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            _ = try any.initStruct(0, 0);
+            _ = try ret.initCapTableTyped(0);
         }
 
         fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
@@ -1024,7 +1044,7 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
             _ = caps;
             const client: *ClientCtx = castCtx(*ClientCtx, ctx);
             client.returned = true;
-            try std.testing.expectEqual(protocol.ReturnTag.results_sent_elsewhere, ret.tag);
+            try std.testing.expectEqual(protocol.ReturnTag.resultsSentElsewhere, ret.tag);
             try std.testing.expect(ret.results == null);
         }
     };
@@ -1077,8 +1097,10 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
 
         fn buildResults(ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
             _ = ctx;
-            _ = try ret.initResultsStruct(0, 0);
-            try ret.setEmptyCapTable();
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            _ = try any.initStruct(0, 0);
+            _ = try ret.initCapTableTyped(0);
         }
 
         fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
@@ -1198,7 +1220,7 @@ test "handleReturn adopts thirdPartyAnswer when await arrives first" {
 
     var await_builder = protocol.MessageBuilder.init(allocator);
     defer await_builder.deinit();
-    var await_ret = try await_builder.beginReturn(original_answer_id, .accept_from_third_party);
+    var await_ret = try await_builder.beginReturn(original_answer_id, .awaitFromThirdParty);
     try await_ret.setAcceptFromThirdParty(completion_ptr);
     const await_frame = try await_builder.finish();
     defer allocator.free(await_frame);
@@ -1343,7 +1365,7 @@ test "handleReturn replays buffered thirdPartyAnswer return when await arrives l
 
     var await_builder = protocol.MessageBuilder.init(allocator);
     defer await_builder.deinit();
-    var await_ret = try await_builder.beginReturn(original_answer_id, .accept_from_third_party);
+    var await_ret = try await_builder.beginReturn(original_answer_id, .awaitFromThirdParty);
     try await_ret.setAcceptFromThirdParty(completion_ptr);
     const await_frame = try await_builder.finish();
     defer allocator.free(await_frame);
@@ -1439,7 +1461,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
         if ((round % 2) == 0) {
             var await_builder = protocol.MessageBuilder.init(allocator);
             defer await_builder.deinit();
-            var await_ret = try await_builder.beginReturn(original_answer_id, .accept_from_third_party);
+            var await_ret = try await_builder.beginReturn(original_answer_id, .awaitFromThirdParty);
             try await_ret.setAcceptFromThirdParty(completion_ptr);
             const await_frame = try await_builder.finish();
             defer allocator.free(await_frame);
@@ -1477,7 +1499,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
 
             var await_builder = protocol.MessageBuilder.init(allocator);
             defer await_builder.deinit();
-            var await_ret = try await_builder.beginReturn(original_answer_id, .accept_from_third_party);
+            var await_ret = try await_builder.beginReturn(original_answer_id, .awaitFromThirdParty);
             try await_ret.setAcceptFromThirdParty(completion_ptr);
             const await_frame = try await_builder.finish();
             defer allocator.free(await_frame);
@@ -1533,7 +1555,7 @@ test "peer deinit releases pending embargo and promised-call queues under load" 
         try provide_builder.buildProvide(
             6000,
             .{
-                .tag = .imported_cap,
+                .tag = .importedCap,
                 .imported_cap = export_id,
                 .promised_answer = null,
             },
@@ -1560,7 +1582,8 @@ test "peer deinit releases pending embargo and promised-call queues under load" 
             defer call_builder.deinit();
             var call = try call_builder.beginCall(call_qid, 0xA1, 0);
             try call.setTargetPromisedAnswer(accept_qid);
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
+
             const call_frame = try call_builder.finish();
             defer allocator.free(call_frame);
             try peer.handleFrame(call_frame);
@@ -1691,7 +1714,7 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
     var call = try call_builder.beginCall(upstream_question_id, interface_id, method_id);
     try call.setTargetImportedCap(999);
     call.setSendResultsToCaller();
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const call_bytes = try call_builder.finish();
     defer allocator.free(call_bytes);
@@ -1708,7 +1731,7 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
     try std.testing.expectEqual(protocol.MessageTag.call, out_call_decoded.tag);
     const forwarded_call = try out_call_decoded.asCall();
     try std.testing.expectEqual(protocol.SendResultsToTag.yourself, forwarded_call.send_results_to.tag);
-    try std.testing.expectEqual(protocol.MessageTargetTag.imported_cap, forwarded_call.target.tag);
+    try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, forwarded_call.target.tag);
     try std.testing.expectEqual(target_import_id, forwarded_call.target.imported_cap.?);
     try std.testing.expectEqual(interface_id, forwarded_call.interface_id);
     try std.testing.expectEqual(method_id, forwarded_call.method_id);
@@ -1716,10 +1739,10 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
 
     var out_ret_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer out_ret_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, out_ret_decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", out_ret_decoded.tag);
     const tail_ret = try out_ret_decoded.asReturn();
     try std.testing.expectEqual(upstream_question_id, tail_ret.answer_id);
-    try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, tail_ret.tag);
+    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, tail_ret.tag);
     try std.testing.expectEqual(forwarded_question_id, tail_ret.take_from_other_question.?);
 
     try std.testing.expectEqual(upstream_question_id, peer.forwarded_questions.get(forwarded_question_id).?);
@@ -1729,7 +1752,7 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
 
     var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
     defer fwd_ret_builder.deinit();
-    _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+    _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
     const fwd_ret_frame = try fwd_ret_builder.finish();
     defer allocator.free(fwd_ret_frame);
     try peer.handleFrame(fwd_ret_frame);
@@ -1790,7 +1813,7 @@ test "forwarded tail finish before forwarded return still emits single finish an
     var call = try call_builder.beginCall(upstream_question_id, 0x44, 3);
     try call.setTargetImportedCap(111);
     call.setSendResultsToCaller();
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const call_bytes = try call_builder.finish();
     defer allocator.free(call_bytes);
@@ -1823,7 +1846,7 @@ test "forwarded tail finish before forwarded return still emits single finish an
 
     var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
     defer fwd_ret_builder.deinit();
-    _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+    _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
     const fwd_ret_frame = try fwd_ret_builder.finish();
     defer allocator.free(fwd_ret_frame);
     try peer.handleFrame(fwd_ret_frame);
@@ -1875,7 +1898,7 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
         var call = try call_builder.beginCall(upstream_question_id, 0x44, 3);
         try call.setTargetImportedCap(111);
         call.setSendResultsToCaller();
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
 
         const call_bytes = try call_builder.finish();
         defer allocator.free(call_bytes);
@@ -1895,13 +1918,13 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
         defer out_ret_decoded.deinit();
         const tail_ret = try out_ret_decoded.asReturn();
         try std.testing.expectEqual(upstream_question_id, tail_ret.answer_id);
-        try std.testing.expectEqual(protocol.ReturnTag.take_from_other_question, tail_ret.tag);
+        try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, tail_ret.tag);
         try std.testing.expectEqual(forwarded_question_id, tail_ret.take_from_other_question.?);
 
         if ((round & 1) == 0) {
             var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
             defer fwd_ret_builder.deinit();
-            _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+            _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
             const fwd_ret_frame = try fwd_ret_builder.finish();
             defer allocator.free(fwd_ret_frame);
             try peer.handleFrame(fwd_ret_frame);
@@ -1923,7 +1946,7 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
 
             var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
             defer fwd_ret_builder.deinit();
-            _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+            _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
             const fwd_ret_frame = try fwd_ret_builder.finish();
             defer allocator.free(fwd_ret_frame);
             try peer.handleFrame(fwd_ret_frame);
@@ -1995,9 +2018,12 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
         var ret_builder = protocol.MessageBuilder.init(allocator);
         defer ret_builder.deinit();
         var ret = try ret_builder.beginReturn(promised_answer_id, .results);
-        var any = try ret.getResultsAnyPointer();
+        var any_payload = try ret.payloadTyped();
+        var any = try any_payload.initContent();
+
         try any.setCapability(.{ .id = 0 });
-        var cap_list = try ret.initCapTable(1);
+        var cap_list = try ret.initCapTableTyped(1);
+
         const entry = try cap_list.get(0);
         protocol.CapDescriptor.writeSenderPromise(entry, promise_export_id);
 
@@ -2013,7 +2039,7 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
     defer call_builder.deinit();
     var call = try call_builder.beginCall(queued_question_id, 0xABCD, 2);
     try call.setTargetPromisedAnswer(promised_answer_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
 
     const frame = try call_builder.finish();
     defer allocator.free(frame);
@@ -2041,12 +2067,12 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
     try std.testing.expectEqual(promise_export_id, resolve.promise_id);
     try std.testing.expectEqual(protocol.ResolveTag.cap, resolve.tag);
     const cap = resolve.cap orelse return error.MissingResolveCap;
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, cap.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, cap.tag);
     try std.testing.expectEqual(concrete_export_id, cap.id.?);
 
     var ret_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer ret_msg.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, ret_msg.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", ret_msg.tag);
     const ret = try ret_msg.asReturn();
     try std.testing.expectEqual(queued_question_id, ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -2119,7 +2145,7 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
         defer call_builder.deinit();
         var call = try call_builder.beginCall(pipelined_question_id, 0xABCD, 7);
         try call.setTargetPromisedAnswer(bootstrap_question_id);
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
 
         const call_frame = try call_builder.finish();
         defer allocator.free(call_frame);
@@ -2133,7 +2159,7 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
 
     var ret_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer ret_msg.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, ret_msg.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", ret_msg.tag);
     const ret = try ret_msg.asReturn();
     try std.testing.expectEqual(pipelined_question_id, ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -2210,7 +2236,7 @@ test "bootstrap promisedAnswer call still resolves after bootstrap export releas
         defer call_builder.deinit();
         var call = try call_builder.beginCall(pipelined_question_id, 0xCCDD, 7);
         try call.setTargetPromisedAnswer(bootstrap_question_id);
-        try call.setEmptyCapTable();
+        _ = try call.initCapTableTyped(0);
 
         const call_frame = try call_builder.finish();
         defer allocator.free(call_frame);
@@ -2222,7 +2248,7 @@ test "bootstrap promisedAnswer call still resolves after bootstrap export releas
 
     var ret_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer ret_msg.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, ret_msg.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", ret_msg.tag);
     const ret = try ret_msg.asReturn();
     try std.testing.expectEqual(pipelined_question_id, ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -2263,7 +2289,8 @@ test "handleFrame unimplemented call converts outstanding question to exception"
     defer inner_builder.deinit();
     var inner_call = try inner_builder.beginCall(question_id, 0x44, 3);
     try inner_call.setTargetImportedCap(1);
-    try inner_call.setEmptyCapTable();
+    _ = try inner_call.initCapTableTyped(0);
+
     const inner_bytes = try inner_builder.finish();
     defer allocator.free(inner_bytes);
 
@@ -2361,7 +2388,7 @@ test "handleFrame provide stores provision without immediate return" {
     try in_builder.buildProvide(
         900,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -2440,7 +2467,7 @@ test "handleFrame duplicate provide recipient sends abort" {
     try in_builder.buildProvide(
         901,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -2455,7 +2482,7 @@ test "handleFrame duplicate provide recipient sends abort" {
     try duplicate_builder.buildProvide(
         902,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -2538,7 +2565,7 @@ test "handleFrame accept returns provided capability" {
     try in_builder.buildProvide(
         902,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -2559,7 +2586,7 @@ test "handleFrame accept returns provided capability" {
 
     var out_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer out_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", out_decoded.tag);
     const ret = try out_decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 903), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
@@ -2567,7 +2594,7 @@ test "handleFrame accept returns provided capability" {
     const cap = try payload.content.getCapability();
     const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
     const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, descriptor.tag);
     try std.testing.expectEqual(export_id, descriptor.id.?);
 }
 
@@ -2610,7 +2637,7 @@ test "handleFrame accept unknown provision returns exception" {
 
     var out_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer out_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", out_decoded.tag);
     const ret = try out_decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 904), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -2682,7 +2709,7 @@ test "handleFrame finish clears stored provide entry" {
     try provide_builder.buildProvide(
         905,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -2709,7 +2736,7 @@ test "handleFrame finish clears stored provide entry" {
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
     var out_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer out_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", out_decoded.tag);
     const ret = try out_decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 906), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -2783,7 +2810,7 @@ test "handleFrame join returns capability" {
     try in_builder.buildJoin(
         907,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -2797,7 +2824,7 @@ test "handleFrame join returns capability" {
 
     var out_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer out_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", out_decoded.tag);
     const ret = try out_decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 907), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
@@ -2805,7 +2832,7 @@ test "handleFrame join returns capability" {
     const cap = try payload.content.getCapability();
     const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
     const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, descriptor.tag);
     try std.testing.expectEqual(export_id, descriptor.id.?);
 }
 
@@ -2880,7 +2907,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
     try join0_builder.buildJoin(
         920,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_a,
             .promised_answer = null,
         },
@@ -2909,7 +2936,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
     try join1_builder.buildJoin(
         921,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_b,
             .promised_answer = null,
         },
@@ -2925,7 +2952,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
     for (capture.frames.items) |out_frame| {
         var out_decoded = try protocol.DecodedMessage.init(allocator, out_frame);
         defer out_decoded.deinit();
-        try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+        try std.testing.expectEqual(protocol.MessageTag.@"return", out_decoded.tag);
         const ret = try out_decoded.asReturn();
         try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
         const ex = ret.exception orelse return error.MissingException;
@@ -3041,7 +3068,8 @@ fn queuePromisedCallOomImpl(allocator: std.mem.Allocator) !void {
     defer call_builder.deinit();
     var call = try call_builder.beginCall(100, 0xAA55, 1);
     try call.setTargetPromisedAnswer(77);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const frame = try call_builder.finish();
     defer allocator.free(frame);
 
@@ -3064,9 +3092,12 @@ fn queuePromiseExportCallOomImpl(allocator: std.mem.Allocator) !void {
         var ret_builder = protocol.MessageBuilder.init(allocator);
         defer ret_builder.deinit();
         var ret = try ret_builder.beginReturn(promised_answer_id, .results);
-        var any = try ret.getResultsAnyPointer();
+        var any_payload = try ret.payloadTyped();
+        var any = try any_payload.initContent();
+
         try any.setCapability(.{ .id = 0 });
-        var cap_list = try ret.initCapTable(1);
+        var cap_list = try ret.initCapTableTyped(1);
+
         const entry = try cap_list.get(0);
         protocol.CapDescriptor.writeSenderPromise(entry, promise_export_id);
 
@@ -3082,7 +3113,8 @@ fn queuePromiseExportCallOomImpl(allocator: std.mem.Allocator) !void {
     defer call_builder.deinit();
     var call = try call_builder.beginCall(301, 0xABCD, 2);
     try call.setTargetPromisedAnswer(promised_answer_id);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const frame = try call_builder.finish();
     defer allocator.free(frame);
 
@@ -3129,7 +3161,7 @@ fn embargoAcceptQueueOomImpl(allocator: std.mem.Allocator) !void {
     try provide_builder.buildProvide(
         910,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -3188,7 +3220,8 @@ fn sendResultsToThirdPartyLocalExportOomImpl(allocator: std.mem.Allocator) !void
     var call = try call_builder.beginCall(920, 0xBEEF, 9);
     try call.setTargetImportedCap(export_id);
     try call.setSendResultsToThirdParty(destination_ptr);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const call_frame = try call_builder.finish();
     defer allocator.free(call_frame);
 
@@ -3228,7 +3261,8 @@ fn sendResultsToYourselfLocalExportOomImpl(allocator: std.mem.Allocator) !void {
     var call = try call_builder.beginCall(921, 0xBEEF, 10);
     try call.setTargetImportedCap(export_id);
     call.setSendResultsToYourself();
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const call_frame = try call_builder.finish();
     defer allocator.free(call_frame);
 
@@ -3302,7 +3336,7 @@ fn acceptFromThirdPartyAwaitQueueOomImpl(allocator: std.mem.Allocator) !void {
 
     var await_builder = protocol.MessageBuilder.init(allocator);
     defer await_builder.deinit();
-    var await_ret = try await_builder.beginReturn(original_answer_id, .accept_from_third_party);
+    var await_ret = try await_builder.beginReturn(original_answer_id, .awaitFromThirdParty);
     try await_ret.setAcceptFromThirdParty(completion_ptr);
     const await_frame = try await_builder.finish();
     defer allocator.free(await_frame);
@@ -3349,7 +3383,8 @@ fn forwardResolvedCallThirdPartyContextOomImpl(allocator: std.mem.Allocator) !vo
     var call = try call_builder.beginCall(940, 0xCAFE, 1);
     try call.setTargetImportedCap(77);
     try call.setSendResultsToThirdParty(third_ptr);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const call_frame = try call_builder.finish();
     defer allocator.free(call_frame);
 
@@ -3366,12 +3401,12 @@ fn forwardResolvedCallThirdPartyContextOomImpl(allocator: std.mem.Allocator) !vo
     };
     const question = peer.questions.get(forwarded_question_id) orelse return error.UnknownQuestion;
     const fwd_ctx: *const ForwardCallContext = @ptrCast(@alignCast(question.ctx));
-    try std.testing.expectEqual(protocol.SendResultsToTag.third_party, fwd_ctx.send_results_to);
+    try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, fwd_ctx.send_results_to);
     try std.testing.expect(fwd_ctx.send_results_to_third_party_payload != null);
 
     var ret_builder = protocol.MessageBuilder.init(allocator);
     defer ret_builder.deinit();
-    _ = try ret_builder.beginReturn(forwarded_question_id, .results_sent_elsewhere);
+    _ = try ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
     const ret_frame = try ret_builder.finish();
     defer allocator.free(ret_frame);
     try peer.handleFrame(ret_frame);

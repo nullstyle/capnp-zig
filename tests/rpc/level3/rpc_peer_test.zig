@@ -193,10 +193,10 @@ test "peer handleFrame abort updates last inbound tag and abort reason" {
 
 test "peer dispatch route maps message tags" {
     try std.testing.expectEqual(peer_dispatch.InboundRoute.call, peer_dispatch.route(.call));
-    try std.testing.expectEqual(peer_dispatch.InboundRoute.return_, peer_dispatch.route(.return_));
-    try std.testing.expectEqual(peer_dispatch.InboundRoute.third_party_answer, peer_dispatch.route(.third_party_answer));
-    try std.testing.expectEqual(peer_dispatch.InboundRoute.unknown, peer_dispatch.route(.obsolete_save));
-    try std.testing.expectEqual(peer_dispatch.InboundRoute.unknown, peer_dispatch.route(.obsolete_delete));
+    try std.testing.expectEqual(peer_dispatch.InboundRoute.@"return", peer_dispatch.route(.@"return"));
+    try std.testing.expectEqual(peer_dispatch.InboundRoute.thirdPartyAnswer, peer_dispatch.route(.thirdPartyAnswer));
+    try std.testing.expectEqual(peer_dispatch.InboundRoute.unknown, peer_dispatch.route(.obsoleteSave));
+    try std.testing.expectEqual(peer_dispatch.InboundRoute.unknown, peer_dispatch.route(.obsoleteDelete));
 }
 
 test "peer provide+accept returns provided capability" {
@@ -227,7 +227,7 @@ test "peer provide+accept returns provided capability" {
     try provide_builder.buildProvide(
         100,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -248,7 +248,7 @@ test "peer provide+accept returns provided capability" {
 
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 101), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
@@ -256,7 +256,7 @@ test "peer provide+accept returns provided capability" {
     const cap = try payload.content.getCapability();
     const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
     const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, descriptor.tag);
     try std.testing.expectEqual(export_id, descriptor.id.?);
 }
 
@@ -288,7 +288,7 @@ test "peer finish clears stored provide entry" {
     try provide_builder.buildProvide(
         200,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -315,7 +315,7 @@ test "peer finish clears stored provide entry" {
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 201), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -351,7 +351,7 @@ test "peer accept with embargo waits for disembargo.accept" {
     try provide_builder.buildProvide(
         210,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -373,7 +373,7 @@ test "peer accept with embargo waits for disembargo.accept" {
     defer disembargo_builder.deinit();
     try disembargo_builder.buildDisembargoAccept(
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -386,7 +386,7 @@ test "peer accept with embargo waits for disembargo.accept" {
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 211), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
@@ -394,7 +394,7 @@ test "peer accept with embargo waits for disembargo.accept" {
     const cap = try payload.content.getCapability();
     const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
     const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, descriptor.tag);
     try std.testing.expectEqual(export_id, descriptor.id.?);
 }
 
@@ -426,7 +426,7 @@ test "peer finish cancels pending embargoed accept" {
     try provide_builder.buildProvide(
         220,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -454,7 +454,7 @@ test "peer finish cancels pending embargoed accept" {
     defer disembargo_builder.deinit();
     try disembargo_builder.buildDisembargoAccept(
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -509,7 +509,7 @@ test "peer pipelined call to embargoed accept answer waits for disembargo.accept
     try provide_builder.buildProvide(
         230,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -534,7 +534,8 @@ test "peer pipelined call to embargoed accept answer waits for disembargo.accept
         .question_id = 231,
         .transform = .{ .list = null },
     });
-    try pipelined_call.setEmptyCapTable();
+    _ = try pipelined_call.initCapTableTyped(0);
+
     const pipelined_frame = try pipelined_builder.finish();
     defer allocator.free(pipelined_frame);
     try peer.handleFrame(pipelined_frame);
@@ -546,7 +547,7 @@ test "peer pipelined call to embargoed accept answer waits for disembargo.accept
     defer disembargo_builder.deinit();
     try disembargo_builder.buildDisembargoAccept(
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -561,14 +562,14 @@ test "peer pipelined call to embargoed accept answer waits for disembargo.accept
 
     var accept_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer accept_ret.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, accept_ret.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", accept_ret.tag);
     const accept_return = try accept_ret.asReturn();
     try std.testing.expectEqual(@as(u32, 231), accept_return.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.results, accept_return.tag);
 
     var pipelined_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer pipelined_ret.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, pipelined_ret.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", pipelined_ret.tag);
     const replayed_return = try pipelined_ret.asReturn();
     try std.testing.expectEqual(@as(u32, 232), replayed_return.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, replayed_return.tag);
@@ -620,7 +621,7 @@ test "peer handleFrame embargoed accept + promised calls preserve ordering under
     try provide_builder.buildProvide(
         1200,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -649,7 +650,8 @@ test "peer handleFrame embargoed accept + promised calls preserve ordering under
         defer pipelined_builder.deinit();
         var pipelined_call = try pipelined_builder.beginCall(call_qid, 0x1234, 1);
         try pipelined_call.setTargetPromisedAnswer(accept_qid);
-        try pipelined_call.setEmptyCapTable();
+        _ = try pipelined_call.initCapTableTyped(0);
+
         const pipelined_frame = try pipelined_builder.finish();
         defer allocator.free(pipelined_frame);
         try peer.handleFrame(pipelined_frame);
@@ -662,7 +664,7 @@ test "peer handleFrame embargoed accept + promised calls preserve ordering under
         defer disembargo_builder.deinit();
         try disembargo_builder.buildDisembargoAccept(
             .{
-                .tag = .imported_cap,
+                .tag = .importedCap,
                 .imported_cap = export_id,
                 .promised_answer = null,
             },
@@ -678,14 +680,14 @@ test "peer handleFrame embargoed accept + promised calls preserve ordering under
 
         var accept_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start]);
         defer accept_ret.deinit();
-        try std.testing.expectEqual(protocol.MessageTag.return_, accept_ret.tag);
+        try std.testing.expectEqual(protocol.MessageTag.@"return", accept_ret.tag);
         const accept_return = try accept_ret.asReturn();
         try std.testing.expectEqual(accept_qid, accept_return.answer_id);
         try std.testing.expectEqual(protocol.ReturnTag.results, accept_return.tag);
 
         var pipelined_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 1]);
         defer pipelined_ret.deinit();
-        try std.testing.expectEqual(protocol.MessageTag.return_, pipelined_ret.tag);
+        try std.testing.expectEqual(protocol.MessageTag.@"return", pipelined_ret.tag);
         const replayed_return = try pipelined_ret.asReturn();
         try std.testing.expectEqual(call_qid, replayed_return.answer_id);
         try std.testing.expectEqual(protocol.ReturnTag.exception, replayed_return.tag);
@@ -740,7 +742,7 @@ test "peer duplicate provide recipient sends abort" {
     try first_builder.buildProvide(
         300,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -755,7 +757,7 @@ test "peer duplicate provide recipient sends abort" {
     try duplicate_builder.buildProvide(
         301,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -804,7 +806,7 @@ test "peer duplicate provide question sends abort" {
     try first_builder.buildProvide(
         302,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -819,7 +821,7 @@ test "peer duplicate provide question sends abort" {
     try duplicate_builder.buildProvide(
         302,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -875,7 +877,7 @@ test "peer join returns provided capability" {
     try join_builder.buildJoin(
         400,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -888,7 +890,7 @@ test "peer join returns provided capability" {
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 400), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
@@ -896,7 +898,7 @@ test "peer join returns provided capability" {
     const cap = try payload.content.getCapability();
     const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
     const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
-    try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, descriptor.tag);
     try std.testing.expectEqual(export_id, descriptor.id.?);
 }
 
@@ -928,7 +930,7 @@ test "peer handleFrame join aggregates parts and returns capability for each par
     try join0_builder.buildJoin(
         910,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -947,7 +949,7 @@ test "peer handleFrame join aggregates parts and returns capability for each par
     try join1_builder.buildJoin(
         911,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -963,7 +965,7 @@ test "peer handleFrame join aggregates parts and returns capability for each par
     for (capture.frames.items) |out_frame| {
         var out_decoded = try protocol.DecodedMessage.init(allocator, out_frame);
         defer out_decoded.deinit();
-        try std.testing.expectEqual(protocol.MessageTag.return_, out_decoded.tag);
+        try std.testing.expectEqual(protocol.MessageTag.@"return", out_decoded.tag);
         const ret = try out_decoded.asReturn();
         try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
 
@@ -979,7 +981,7 @@ test "peer handleFrame join aggregates parts and returns capability for each par
         const cap = try payload.content.getCapability();
         const cap_table_reader = payload.cap_table orelse return error.MissingCapTable;
         const descriptor = try protocol.CapDescriptor.fromReader(try cap_table_reader.get(cap.id));
-        try std.testing.expectEqual(protocol.CapDescriptorTag.sender_hosted, descriptor.tag);
+        try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, descriptor.tag);
         try std.testing.expectEqual(export_id, descriptor.id.?);
     }
     try std.testing.expect(seen_910);
@@ -1013,7 +1015,7 @@ test "peer duplicate join question sends abort" {
     try first_builder.buildJoin(
         410,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -1031,7 +1033,7 @@ test "peer duplicate join question sends abort" {
     try duplicate_builder.buildJoin(
         410,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -1076,7 +1078,7 @@ test "peer join part count mismatch returns exception" {
     try first_builder.buildJoin(
         420,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -1094,7 +1096,7 @@ test "peer join part count mismatch returns exception" {
     try mismatch_builder.buildJoin(
         421,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -1107,7 +1109,7 @@ test "peer join part count mismatch returns exception" {
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 421), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -1142,7 +1144,7 @@ test "peer duplicate join part returns exception" {
     try first_builder.buildJoin(
         430,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -1160,7 +1162,7 @@ test "peer duplicate join part returns exception" {
     try duplicate_builder.buildJoin(
         431,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = export_id,
             .promised_answer = null,
         },
@@ -1173,7 +1175,7 @@ test "peer duplicate join part returns exception" {
     try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
     var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 431), ret.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
@@ -1205,7 +1207,7 @@ test "peer provide with unresolved promise target sends abort" {
     try provide_builder.buildProvide(
         701,
         .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = promise_export_id,
             .promised_answer = null,
         },
@@ -1402,7 +1404,7 @@ test "peer duplicate awaitFromThirdParty completion sends abort" {
 
     var first_builder = protocol.MessageBuilder.init(allocator);
     defer first_builder.deinit();
-    var first = try first_builder.beginReturn(answer_id_1, .accept_from_third_party);
+    var first = try first_builder.beginReturn(answer_id_1, .awaitFromThirdParty);
     try first.setAcceptFromThirdParty(try completion.any());
     const first_frame = try first_builder.finish();
     defer allocator.free(first_frame);
@@ -1410,7 +1412,7 @@ test "peer duplicate awaitFromThirdParty completion sends abort" {
 
     var duplicate_builder = protocol.MessageBuilder.init(allocator);
     defer duplicate_builder.deinit();
-    var duplicate = try duplicate_builder.beginReturn(answer_id_2, .accept_from_third_party);
+    var duplicate = try duplicate_builder.beginReturn(answer_id_2, .awaitFromThirdParty);
     try duplicate.setAcceptFromThirdParty(try completion.any());
     const duplicate_frame = try duplicate_builder.finish();
     defer allocator.free(duplicate_frame);

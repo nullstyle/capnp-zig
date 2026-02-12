@@ -63,7 +63,7 @@ pub fn handlePendingReturnFrame(
 ) !void {
     var decoded = try protocol.DecodedMessage.init(allocator, frame);
     defer decoded.deinit();
-    if (decoded.tag != .return_) return error.UnexpectedMessage;
+    if (decoded.tag != .@"return") return error.UnexpectedMessage;
     try on_return(peer, frame, try decoded.asReturn());
 }
 

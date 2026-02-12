@@ -35,7 +35,7 @@ provides guidance for downstream consumers.
 | RPC Capability Table | `src/rpc/level0/cap_table.zig` | Export/import tracking for capabilities. |
 | RPC Framing | `src/rpc/level0/framing.zig` | Segment-framed message reassembly from byte streams. |
 | RPC Transport (xev) | `src/rpc/level2/transport_xev.zig` | Async TCP I/O via libxev. |
-| RPC Host Peer | `src/rpc/level2/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
+| RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/level3/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
 
 ### Internal
@@ -67,8 +67,8 @@ directly by consumers. They are subject to change without notice.
 | Peer forwarded return logic | `src/rpc/level3/peer/forward/peer_forwarded_return_logic.zig` | Forwarded return processing. |
 | Peer provide/join | `src/rpc/level3/peer/provide/peer_join_state.zig`, `peer_provides_state.zig`, `peer_provide_join_orchestration.zig` | Three-party handoff (provide/accept/join). |
 | Peer third-party | `src/rpc/level3/peer/third_party/peer_third_party_adoption.zig`, `peer_third_party_pending.zig`, `peer_third_party_returns.zig` | Third-party capability transfer. |
-| Promised answer copy | `src/rpc/level1/promised_answer_copy.zig` | Deep-copy utility for promised answers. |
-| Promise pipeline | `src/rpc/level1/promise_pipeline.zig` | Owned promised-answer state and transform traversal utilities. |
+| Promised answer copy | `src/rpc/common/promised_answer_copy.zig` | Deep-copy utility for promised answers. |
+| Promise pipeline | `src/rpc/common/promise_pipeline.zig` | Owned promised-answer state and transform traversal utilities. |
 | RPC mod (core) | `src/rpc/mod_core.zig` | Core RPC re-exports (subset without xev). |
 | List readers impl | `src/serialization/message/list_readers.zig` | List reader type definitions (re-exported by `message.zig`). |
 | List builders impl | `src/serialization/message/list_builders.zig` | List builder type definitions (re-exported by `message.zig`). |

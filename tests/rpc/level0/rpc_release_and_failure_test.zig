@@ -294,7 +294,7 @@ test "protocol return with exception round-trips reason string" {
     var decoded = try protocol.DecodedMessage.init(allocator, bytes);
     defer decoded.deinit();
 
-    try std.testing.expectEqual(protocol.MessageTag.return_, decoded.tag);
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
     const parsed = try decoded.asReturn();
     try std.testing.expectEqual(@as(u32, 55), parsed.answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.exception, parsed.tag);

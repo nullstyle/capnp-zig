@@ -213,6 +213,7 @@ capnpc-zig/
 │   ├── rpc/
 │   │   ├── mod.zig                    # RPC public module (full)
 │   │   ├── mod_core.zig               # RPC public module (no xev)
+│   │   ├── rpc.capnp                  # Canonical RPC schema copy
 │   │   ├── level0/                    # Framing, protocol defs, cap table
 │   │   ├── level1/                    # Promise pipeline, pipelined-call replay
 │   │   ├── level2/                    # Runtime, connection, transport, worker pool
@@ -245,6 +246,7 @@ capnpc-zig/
 The RPC runtime implements the Cap'n Proto RPC protocol over TCP, using [libxev](https://github.com/kprotty/libxev) as the async I/O backend. It is organized following the Cap'n Proto RPC specification levels.
 
 **Status**: In progress. Core protocol machinery (framing, cap table, connection state machine, peer dispatch) is functional with dedicated test suites. See `PLAN.md` and `docs/rpc_runtime_design.md` for details.
+Canonical RPC schema source-of-truth copy: `src/rpc/rpc.capnp` (integration plan: `docs/rpc-capnp-integration-plan.md`).
 
 ### Design Highlights
 

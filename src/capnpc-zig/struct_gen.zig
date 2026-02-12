@@ -98,8 +98,27 @@ pub const StructGenerator = struct {
 
             try writer.print("    pub const {s} = struct {{\n", .{group_name});
 
+            if (group_struct_info.discriminant_count > 0) {
+                try writer.writeAll("        pub const WhichTag = enum(u16) {\n");
+                for (group_struct_info.fields) |group_field| {
+                    if (group_field.discriminant_value == 0xFFFF) continue;
+                    const zig_name = try self.type_gen.toZigIdentifier(group_field.name);
+                    defer self.allocator.free(zig_name);
+                    const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+                    defer self.allocator.free(escaped_name);
+                    try writer.print("            {s} = {},\n", .{ escaped_name, group_field.discriminant_value });
+                }
+                try writer.writeAll("        };\n\n");
+            }
+
             // Generate group Reader
             try self.writeGroupWrapStruct(writer, "Reader", "_reader", "message.StructReader", "reader");
+            if (group_struct_info.discriminant_count > 0) {
+                const disc_byte_offset = group_struct_info.discriminant_offset * 2;
+                try writer.writeAll("            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {\n");
+                try writer.print("                return std.meta.intToEnum(WhichTag, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{disc_byte_offset});
+                try writer.writeAll("            }\n\n");
+            }
             for (group_struct_info.fields) |group_field| {
                 try self.generateGroupFieldGetter(group_field, writer);
             }
@@ -108,7 +127,7 @@ pub const StructGenerator = struct {
             // Generate group Builder
             try self.writeGroupWrapStruct(writer, "Builder", "_builder", "message.StructBuilder", "builder");
             for (group_struct_info.fields) |group_field| {
-                try self.generateGroupFieldSetter(group_field, struct_info, writer);
+                try self.generateGroupFieldSetter(group_field, group_struct_info, writer);
             }
             try writer.writeAll("        };\n");
 
@@ -188,7 +207,11 @@ pub const StructGenerator = struct {
         });
 
         switch (slot.type) {
-            .void => try writer.writeAll("            return {};\n"),
+            .void => try writer.writeAll(
+                \\            _ = self;
+                \\            return {};
+                \\
+            ),
             .bool => {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
@@ -516,10 +539,14 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
 
-        try writer.print("            pub fn get{s}(self: Reader) !{s} {{\n", .{ cap_name, zig_type });
+        try writer.print("            pub fn get{s}(self: @This()) !{s} {{\n", .{ cap_name, zig_type });
 
         switch (slot.type) {
-            .void => try writer.writeAll("                return {};\n"),
+            .void => try writer.writeAll(
+                \\                _ = self;
+                \\                return {};
+                \\
+            ),
             .bool => {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
@@ -640,7 +667,7 @@ pub const StructGenerator = struct {
         if (slot.type == .interface) {
             const iface_name = self.interfaceTypeName(slot.type.interface.type_id) orelse return;
             defer self.allocator.free(iface_name);
-            try writer.print("            pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+            try writer.print("            pub fn resolve{s}(self: @This(), peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("                const cap = try self._reader.readCapability({});\n", .{slot.offset});
             try writer.writeAll("                var mutable_caps = caps.*;\n");
             try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
@@ -655,7 +682,6 @@ pub const StructGenerator = struct {
 
     /// Generate field setter for a group's internal field (used inside group Builder)
     fn generateGroupFieldSetter(self: *StructGenerator, field: schema.Field, parent_struct_info: schema.StructNode, writer: anytype) !void {
-        _ = parent_struct_info;
         const slot = field.slot orelse return;
         const zig_name = try self.type_gen.toZigIdentifier(field.name);
         defer self.allocator.free(zig_name);
@@ -671,10 +697,11 @@ pub const StructGenerator = struct {
                 const builder_type = try self.listBuilderTypeString(list_info.element_type.*);
                 defer self.allocator.free(builder_type);
                 if (unresolved_struct_layout) {
-                    try writer.print("            pub fn init{s}(self: *Builder, element_count: u32, data_words: u16, pointer_words: u16) !{s} {{\n", .{ cap_name, builder_type });
+                    try writer.print("            pub fn init{s}(self: *@This(), element_count: u32, data_words: u16, pointer_words: u16) !{s} {{\n", .{ cap_name, builder_type });
                 } else {
-                    try writer.print("            pub fn init{s}(self: *Builder, element_count: u32) !{s} {{\n", .{ cap_name, builder_type });
+                    try writer.print("            pub fn init{s}(self: *@This(), element_count: u32) !{s} {{\n", .{ cap_name, builder_type });
                 }
+                try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                 try self.writeGroupListSetterBody(list_info.element_type.*, slot.offset, writer);
                 try writer.writeAll("            }\n\n");
                 return;
@@ -684,46 +711,54 @@ pub const StructGenerator = struct {
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (self.structLayout(struct_info.type_id)) |layout| {
                     if (struct_name) |name| {
-                        try writer.print("            pub fn init{s}(self: *Builder) !{s}.Builder {{\n", .{ cap_name, name });
+                        try writer.print("            pub fn init{s}(self: *@This()) !{s}.Builder {{\n", .{ cap_name, name });
+                        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                         try writer.print("                const builder = try self._builder.initStruct({}, {}, {});\n", .{ slot.offset, layout.data_words, layout.pointer_words });
                         try writer.print("                return {s}.Builder{{ ._builder = builder }};\n", .{name});
                     } else {
-                        try writer.print("            pub fn init{s}(self: *Builder) !message.StructBuilder {{\n", .{cap_name});
+                        try writer.print("            pub fn init{s}(self: *@This()) !message.StructBuilder {{\n", .{cap_name});
+                        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                         try writer.print("                return try self._builder.initStruct({}, {}, {});\n", .{ slot.offset, layout.data_words, layout.pointer_words });
                     }
                 } else {
-                    try writer.print("            pub fn init{s}(self: *Builder, data_words: u16, pointer_words: u16) !message.StructBuilder {{\n", .{cap_name});
+                    try writer.print("            pub fn init{s}(self: *@This(), data_words: u16, pointer_words: u16) !message.StructBuilder {{\n", .{cap_name});
+                    try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                     try writer.print("                return try self._builder.initStruct({}, data_words, pointer_words);\n", .{slot.offset});
                 }
                 try writer.writeAll("            }\n\n");
                 return;
             },
             .any_pointer => {
-                try writer.print("            pub fn init{s}(self: *Builder) !message.AnyPointerBuilder {{\n", .{cap_name});
+                try writer.print("            pub fn init{s}(self: *@This()) !message.AnyPointerBuilder {{\n", .{cap_name});
+                try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                 try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
                 try writer.writeAll("            }\n\n");
                 return;
             },
             .interface => {
-                try writer.print("            pub fn init{s}(self: *Builder) !message.AnyPointerBuilder {{\n", .{cap_name});
+                try writer.print("            pub fn init{s}(self: *@This()) !message.AnyPointerBuilder {{\n", .{cap_name});
+                try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                 try writer.print("                return try self._builder.getAnyPointer({});\n", .{slot.offset});
                 try writer.writeAll("            }\n\n");
 
                 // Typed helpers for group interface fields
                 if (self.interfaceTypeName(slot.type.interface.type_id)) |iface_name| {
                     defer self.allocator.free(iface_name);
-                    try writer.print("            pub fn set{s}Capability(self: *Builder, cap: message.Capability) !void {{\n", .{cap_name});
+                    try writer.print("            pub fn set{s}Capability(self: *@This(), cap: message.Capability) !void {{\n", .{cap_name});
+                    try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                     try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
                     try writer.writeAll("                try any.setCapability(cap);\n");
                     try writer.writeAll("            }\n\n");
 
-                    try writer.print("            pub fn set{s}Server(self: *Builder, peer: *rpc.peer.Peer, server: *{s}.Server) !void {{\n", .{ cap_name, iface_name });
+                    try writer.print("            pub fn set{s}Server(self: *@This(), peer: *rpc.peer.Peer, server: *{s}.Server) !void {{\n", .{ cap_name, iface_name });
+                    try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                     try writer.print("                const cap_id = try {s}.exportServer(peer, server);\n", .{iface_name});
                     try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
                     try writer.writeAll("                try any.setCapability(.{ .id = cap_id });\n");
                     try writer.writeAll("            }\n\n");
 
-                    try writer.print("            pub fn set{s}Client(self: *Builder, client: {s}.Client) !void {{\n", .{ cap_name, iface_name });
+                    try writer.print("            pub fn set{s}Client(self: *@This(), client: {s}.Client) !void {{\n", .{ cap_name, iface_name });
+                    try self.writeUnionDiscriminant(field, parent_struct_info, writer);
                     try writer.print("                var any = try self._builder.getAnyPointer({});\n", .{slot.offset});
                     try writer.writeAll("                try any.setCapability(.{ .id = client.cap_id });\n");
                     try writer.writeAll("            }\n\n");
@@ -737,7 +772,8 @@ pub const StructGenerator = struct {
         const zig_type = try self.writerTypeString(slot.type);
         defer self.allocator.free(zig_type);
 
-        try writer.print("            pub fn set{s}(self: *Builder, value: {s}) !void {{\n", .{ cap_name, zig_type });
+        try writer.print("            pub fn set{s}(self: *@This(), value: {s}) !void {{\n", .{ cap_name, zig_type });
+        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
 
         switch (slot.type) {
             .void => try writer.writeAll("                _ = value;\n"),
@@ -1480,7 +1516,7 @@ pub const StructGenerator = struct {
         _ = self;
         try writer.writeAll("        pub const " ++ type_name ++ " = struct {\n");
         try writer.writeAll("            " ++ field_name ++ ": " ++ field_type ++ ",\n\n");
-        try writer.writeAll("            pub fn wrap(" ++ param_name ++ ": " ++ field_type ++ ") " ++ type_name ++ " {\n");
+        try writer.writeAll("            pub fn wrap(" ++ param_name ++ ": " ++ field_type ++ ") @This() {\n");
         try writer.writeAll("                return .{ ." ++ field_name ++ " = " ++ param_name ++ " };\n");
         try writer.writeAll("            }\n\n");
     }

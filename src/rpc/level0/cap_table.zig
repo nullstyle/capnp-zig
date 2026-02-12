@@ -2,7 +2,7 @@ const std = @import("std");
 const log = std.log.scoped(.rpc_cap_table);
 const message = @import("../../serialization/message.zig");
 const protocol = @import("protocol.zig");
-const promise_pipeline = @import("../level1/promise_pipeline.zig");
+const promise_pipeline = @import("../common/promise_pipeline.zig");
 
 /// An exported (local) capability referenced by ID.
 pub const ExportCap = struct {
@@ -240,20 +240,20 @@ pub const InboundCapTable = struct {
 fn resolveDescriptor(table: *CapTable, descriptor: protocol.CapDescriptor) !ResolvedCap {
     return switch (descriptor.tag) {
         .none => .none,
-        .sender_hosted, .sender_promise => {
+        .senderHosted, .senderPromise => {
             const id = descriptor.id orelse return error.MissingCapDescriptorId;
             try table.noteImport(id);
             return .{ .imported = .{ .id = id } };
         },
-        .receiver_hosted => {
+        .receiverHosted => {
             const id = descriptor.id orelse return error.MissingCapDescriptorId;
             return .{ .exported = .{ .id = id } };
         },
-        .receiver_answer => {
+        .receiverAnswer => {
             const promised = descriptor.promised_answer orelse return error.MissingPromisedAnswer;
             return .{ .promised = promised };
         },
-        .third_party_hosted => {
+        .thirdPartyHosted => {
             const third = descriptor.third_party orelse return error.MissingThirdPartyCapDescriptor;
             try table.noteImport(third.vine_id);
             return .{ .imported = .{ .id = third.vine_id } };
@@ -343,10 +343,10 @@ fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_p
 }
 
 fn classifyCap(table: *CapTable, cap_id: u32) protocol.CapDescriptorTag {
-    if (table.receiver_answers.contains(cap_id)) return .receiver_answer;
-    if (table.imports.contains(cap_id)) return .receiver_hosted;
-    if (table.promised_exports.contains(cap_id)) return .sender_promise;
-    return .sender_hosted;
+    if (table.receiver_answers.contains(cap_id)) return .receiverAnswer;
+    if (table.imports.contains(cap_id)) return .receiverHosted;
+    if (table.promised_exports.contains(cap_id)) return .senderPromise;
+    return .senderHosted;
 }
 
 fn anyPointerReaderFromBuilder(
@@ -429,18 +429,19 @@ fn collectCapsFromPointer(
 
 fn encodePayloadCaps(
     table: *CapTable,
-    payload: message.StructBuilder,
+    payload: protocol.PayloadBuilder,
     ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
 ) !?ResolvedCap {
+    var payload_builder = payload;
     var outbound = OutboundCapTable.init(table.allocator);
     defer outbound.deinit();
 
-    const builder = payload.builder;
+    const builder = payload_builder._builder.builder;
     const view = try buildMessageView(table.allocator, builder);
     defer table.allocator.free(view.segments);
 
-    const any_builder = try payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
+    const any_builder = try payload_builder.initContent();
     const any_reader = anyPointerReaderFromBuilder(&view.msg, any_builder);
 
     var root_cap: ?ResolvedCap = null;
@@ -450,8 +451,8 @@ fn encodePayloadCaps(
             const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
             const tag = classifyCap(table, cap_id);
             root_cap = switch (tag) {
-                .receiver_hosted => .{ .imported = .{ .id = cap_id } },
-                .sender_hosted => .{ .exported = .{ .id = cap_id } },
+                .receiverHosted => .{ .imported = .{ .id = cap_id } },
+                .senderHosted => .{ .exported = .{ .id = cap_id } },
                 else => null,
             };
         }
@@ -459,22 +460,17 @@ fn encodePayloadCaps(
 
     try collectCapsFromPointer(&outbound, table, &view.msg, builder, any_reader.segment_id, any_reader.pointer_pos, any_reader.pointer_word, max_traversal_depth);
 
-    var cap_list = try payload.writeStructList(
-        protocol.PAYLOAD_CAP_TABLE_PTR,
-        @intCast(outbound.entries.items.len),
-        protocol.CAP_DESCRIPTOR_DATA_WORDS,
-        protocol.CAP_DESCRIPTOR_POINTER_WORDS,
-    );
+    var cap_list = try payload_builder.initCapTable(@intCast(outbound.entries.items.len));
 
     for (outbound.entries.items, 0..) |entry, idx| {
-        const elem = try cap_list.get(@intCast(idx));
+        var elem = try cap_list.get(@intCast(idx));
         switch (entry.tag) {
-            .sender_hosted => protocol.CapDescriptor.writeSenderHosted(elem, entry.id),
-            .sender_promise => protocol.CapDescriptor.writeSenderPromise(elem, entry.id),
-            .receiver_hosted => protocol.CapDescriptor.writeReceiverHosted(elem, entry.id),
-            .receiver_answer => {
+            .senderHosted => try elem.setSenderHosted(entry.id),
+            .senderPromise => try elem.setSenderPromise(entry.id),
+            .receiverHosted => try elem.setReceiverHosted(entry.id),
+            .receiverAnswer => {
                 const promised = table.getReceiverAnswer(entry.id) orelse return error.UnknownReceiverAnswerCap;
-                try protocol.CapDescriptor.writeReceiverAnswer(elem, promised.question_id, promised.ops);
+                try protocol.CapDescriptor.writeReceiverAnswer(elem._builder, promised.question_id, promised.ops);
             },
             else => {},
         }
@@ -485,7 +481,7 @@ fn encodePayloadCaps(
     }
 
     for (outbound.entries.items) |entry| {
-        if (entry.tag == .receiver_answer) {
+        if (entry.tag == .receiverAnswer) {
             if (table.receiver_answers.fetchRemove(entry.id)) |removed| {
                 removed.value.deinit(table.allocator);
             }
@@ -501,7 +497,7 @@ pub fn encodeCallPayloadCaps(
     ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
 ) !void {
-    const payload = try call.payloadBuilder();
+    const payload = try call.payloadTyped();
     _ = try encodePayloadCaps(table, payload, ctx, on_entry);
 }
 
@@ -511,7 +507,7 @@ pub fn encodeReturnPayloadCaps(
     ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
 ) !?ResolvedCap {
-    const payload = try ret.payloadBuilder();
+    const payload = try ret.payloadTyped();
     return encodePayloadCaps(table, payload, ctx, on_entry);
 }
 

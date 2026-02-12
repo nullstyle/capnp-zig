@@ -159,7 +159,7 @@ pub fn releaseResultCaps(
 ) !void {
     var decoded = try protocol.DecodedMessage.init(allocator, frame);
     defer decoded.deinit();
-    if (decoded.tag != .return_) return;
+    if (decoded.tag != .@"return") return;
     const ret = try decoded.asReturn();
     if (ret.tag != .results or ret.results == null) return;
     const cap_list = ret.results.?.cap_table orelse return;
@@ -167,7 +167,7 @@ pub fn releaseResultCaps(
     while (idx < cap_list.len()) : (idx += 1) {
         const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(idx));
         switch (desc.tag) {
-            .sender_hosted, .sender_promise => {
+            .senderHosted, .senderPromise => {
                 if (desc.id) |id| {
                     release_export(peer, id, 1);
                 }
@@ -290,7 +290,8 @@ test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-pro
     defer builder.deinit();
 
     var ret = try builder.beginReturn(9, .results);
-    var cap_list = try ret.initCapTable(3);
+    var cap_list = try ret.initCapTableTyped(3);
+
     protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), 10);
     protocol.CapDescriptor.writeNone(try cap_list.get(1));
     protocol.CapDescriptor.writeSenderPromise(try cap_list.get(2), 11);

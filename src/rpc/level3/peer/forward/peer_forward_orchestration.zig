@@ -211,7 +211,7 @@ test "peer_forward_orchestration buildForwardCallPlan maps modes to sendResultsT
             null,
             Hooks.capture,
         );
-        try std.testing.expectEqual(protocol.SendResultsToTag.third_party, plan.send_results_to);
+        try std.testing.expectEqual(protocol.SendResultsToTag.thirdParty, plan.send_results_to);
         try std.testing.expectEqualStrings(
             "third-party-destination",
             plan.send_results_to_third_party_payload orelse return error.MissingThirdPartyPayload,
@@ -332,7 +332,7 @@ test "peer_forward_orchestration forwardResolvedCallForPeerFn maps control mode 
     const call_msg = protocol.Call{
         .question_id = 5,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 1,
             .promised_answer = null,
         },

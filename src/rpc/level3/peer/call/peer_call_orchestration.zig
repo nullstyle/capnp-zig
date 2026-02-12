@@ -8,8 +8,8 @@ pub fn routeCallTarget(call: protocol.Call) !union(enum) {
     promised: protocol.PromisedAnswer,
 } {
     return switch (call.target.tag) {
-        .imported_cap => .{ .imported = call.target.imported_cap orelse return error.MissingCallTarget },
-        .promised_answer => .{ .promised = call.target.promised_answer orelse return error.MissingCallTarget },
+        .importedCap => .{ .imported = call.target.imported_cap orelse return error.MissingCallTarget },
+        .promisedAnswer => .{ .promised = call.target.promised_answer orelse return error.MissingCallTarget },
     };
 }
 
@@ -361,7 +361,7 @@ test "peer_call_orchestration routeCallTarget enforces required target payloads"
     const imported = protocol.Call{
         .question_id = 1,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 77,
             .promised_answer = null,
         },
@@ -382,7 +382,7 @@ test "peer_call_orchestration routeCallTarget enforces required target payloads"
     const bad_imported = protocol.Call{
         .question_id = 1,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = null,
             .promised_answer = null,
         },
@@ -441,7 +441,7 @@ test "peer_call_orchestration dispatchImportedTargetPlan invokes handler and not
     const call = protocol.Call{
         .question_id = 5,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 1,
             .promised_answer = null,
         },
@@ -536,7 +536,7 @@ test "peer_call_orchestration handleResolvedExportedCallForPeerFn reports unknow
     const call = protocol.Call{
         .question_id = 41,
         .target = .{
-            .tag = .imported_cap,
+            .tag = .importedCap,
             .imported_cap = 9,
             .promised_answer = null,
         },
@@ -597,7 +597,7 @@ test "peer_call_orchestration handleCallForPeer routes imported and promised tar
         .{
             .question_id = 1,
             .target = .{
-                .tag = .imported_cap,
+                .tag = .importedCap,
                 .imported_cap = 7,
                 .promised_answer = null,
             },
@@ -623,7 +623,7 @@ test "peer_call_orchestration handleCallForPeer routes imported and promised tar
         .{
             .question_id = 2,
             .target = .{
-                .tag = .promised_answer,
+                .tag = .promisedAnswer,
                 .imported_cap = null,
                 .promised_answer = .{
                     .question_id = 9,

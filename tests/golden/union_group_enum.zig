@@ -36,15 +36,15 @@ pub const Shape = struct {
         pub const Reader = struct {
             _reader: message.StructReader,
 
-            pub fn wrap(reader: message.StructReader) Reader {
+            pub fn wrap(reader: message.StructReader) @This() {
                 return .{ ._reader = reader };
             }
 
-            pub fn getWidth(self: Reader) !f32 {
+            pub fn getWidth(self: @This()) !f32 {
                 return @bitCast(self._reader.readU32(4));
             }
 
-            pub fn getHeight(self: Reader) !f32 {
+            pub fn getHeight(self: @This()) !f32 {
                 return @bitCast(self._reader.readU32(8));
             }
 
@@ -53,15 +53,15 @@ pub const Shape = struct {
         pub const Builder = struct {
             _builder: message.StructBuilder,
 
-            pub fn wrap(builder: message.StructBuilder) Builder {
+            pub fn wrap(builder: message.StructBuilder) @This() {
                 return .{ ._builder = builder };
             }
 
-            pub fn setWidth(self: *Builder, value: f32) !void {
+            pub fn setWidth(self: *@This(), value: f32) !void {
                 self._builder.writeU32(4, @bitCast(value));
             }
 
-            pub fn setHeight(self: *Builder, value: f32) !void {
+            pub fn setHeight(self: *@This(), value: f32) !void {
                 self._builder.writeU32(8, @bitCast(value));
             }
 

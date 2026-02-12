@@ -276,7 +276,8 @@ test "peer_promises replayResolvedPromiseExport none sends exception and release
     defer call_builder.deinit();
     var call = try call_builder.beginCall(41, 0xAA, 2);
     try call.setTargetImportedCap(7);
-    try call.setEmptyCapTable();
+    _ = try call.initCapTableTyped(0);
+
     const call_frame = try call_builder.finish();
     defer std.testing.allocator.free(call_frame);
 

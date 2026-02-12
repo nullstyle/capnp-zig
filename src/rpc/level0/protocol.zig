@@ -5,72 +5,29 @@
 /// structs write fields into a `MessageBuilder`.
 const std = @import("std");
 const message = @import("../../serialization/message.zig");
+const rpc_capnp = @import("../gen/capnp/rpc.zig");
 
 /// Discriminant tag for the top-level RPC `Message` union.
-pub const MessageTag = enum(u16) {
-    unimplemented = 0,
-    abort = 1,
-    call = 2,
-    return_ = 3,
-    finish = 4,
-    resolve = 5,
-    release = 6,
-    obsolete_save = 7,
-    bootstrap = 8,
-    obsolete_delete = 9,
-    provide = 10,
-    accept = 11,
-    join = 12,
-    disembargo = 13,
-    third_party_answer = 14,
-};
+pub const MessageTag = rpc_capnp.Message.WhichTag;
 
 /// Discriminant tag for the `Return` union variants.
-pub const ReturnTag = enum(u16) {
-    results = 0,
-    exception = 1,
-    canceled = 2,
-    results_sent_elsewhere = 3,
-    take_from_other_question = 4,
-    accept_from_third_party = 5,
-};
+pub const ReturnTag = rpc_capnp.Return.WhichTag;
 
-pub const MessageTargetTag = enum(u16) {
-    imported_cap = 0,
-    promised_answer = 1,
-};
+pub const MessageTargetTag = rpc_capnp.MessageTarget.WhichTag;
 
-pub const PromisedAnswerOpTag = enum(u16) {
-    noop = 0,
-    get_pointer_field = 1,
-};
+pub const PromisedAnswerOpTag = rpc_capnp.Op.WhichTag;
 
 /// Discriminant tag identifying the kind of capability being transferred.
-pub const CapDescriptorTag = enum(u16) {
-    none = 0,
-    sender_hosted = 1,
-    sender_promise = 2,
-    receiver_hosted = 3,
-    receiver_answer = 4,
-    third_party_hosted = 5,
-};
+pub const CapDescriptorTag = rpc_capnp.CapDescriptor.WhichTag;
 
-pub const SendResultsToTag = enum(u16) {
-    caller = 0,
-    yourself = 1,
-    third_party = 2,
-};
+pub const SendResultsToTag = rpc_capnp.Call.SendResultsTo.WhichTag;
 
-pub const ResolveTag = enum(u16) {
-    cap = 0,
-    exception = 1,
-};
+pub const ResolveTag = rpc_capnp.Resolve.WhichTag;
 
-pub const DisembargoContextTag = enum(u16) {
-    sender_loopback = 0,
-    receiver_loopback = 1,
-    accept = 2,
-};
+pub const DisembargoContextTag = rpc_capnp.Disembargo.Context.WhichTag;
+pub const PayloadBuilder = rpc_capnp.Payload.Builder;
+
+const CapDescriptorListBuilder = message.typed_list_helpers.StructListBuilder(rpc_capnp.CapDescriptor);
 
 /// Describes a capability being passed in a Call or Return payload's cap table.
 ///
@@ -91,20 +48,20 @@ pub const CapDescriptor = struct {
         var third_party: ?ThirdPartyCapDescriptor = null;
         var attached_fd: ?u8 = null;
         switch (tag) {
-            .sender_hosted, .sender_promise, .receiver_hosted => {
+            .senderHosted, .senderPromise, .receiverHosted => {
                 id = reader.readU32(byteOffsetU32(CAP_DESCRIPTOR_ID_OFFSET));
             },
-            .receiver_answer => {
+            .receiverAnswer => {
                 const pa_reader = try reader.readStruct(CAP_DESCRIPTOR_PTR);
                 promised_answer = try PromisedAnswer.fromReader(pa_reader);
             },
-            .third_party_hosted => {
+            .thirdPartyHosted => {
                 const third_reader = try reader.readStruct(CAP_DESCRIPTOR_PTR);
                 third_party = try ThirdPartyCapDescriptor.fromReader(third_reader);
             },
             .none => {},
         }
-        const fd_value = reader.readU8(byteOffsetU16(CAP_DESCRIPTOR_ATTACHED_FD_OFFSET));
+        const fd_value = reader.readU8(CAP_DESCRIPTOR_ATTACHED_FD_OFFSET_BYTES);
         if (fd_value != 0) {
             attached_fd = fd_value;
         }
@@ -117,52 +74,51 @@ pub const CapDescriptor = struct {
         };
     }
 
-    pub fn writeSenderHosted(builder: message.StructBuilder, id: u32) void {
-        builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.sender_hosted));
-        builder.writeU32(byteOffsetU32(CAP_DESCRIPTOR_ID_OFFSET), id);
+    fn asGeneratedBuilder(builder: anytype) rpc_capnp.CapDescriptor.Builder {
+        return switch (@TypeOf(builder)) {
+            message.StructBuilder => rpc_capnp.CapDescriptor.Builder.wrap(builder),
+            rpc_capnp.CapDescriptor.Builder => builder,
+            else => @compileError("expected message.StructBuilder or rpc_capnp.CapDescriptor.Builder"),
+        };
     }
 
-    pub fn writeSenderPromise(builder: message.StructBuilder, id: u32) void {
-        builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.sender_promise));
-        builder.writeU32(byteOffsetU32(CAP_DESCRIPTOR_ID_OFFSET), id);
+    pub fn writeSenderHosted(builder: anytype, id: u32) void {
+        var generated = asGeneratedBuilder(builder);
+        generated.setSenderHosted(id) catch unreachable;
     }
 
-    pub fn writeReceiverHosted(builder: message.StructBuilder, id: u32) void {
-        builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.receiver_hosted));
-        builder.writeU32(byteOffsetU32(CAP_DESCRIPTOR_ID_OFFSET), id);
+    pub fn writeSenderPromise(builder: anytype, id: u32) void {
+        var generated = asGeneratedBuilder(builder);
+        generated.setSenderPromise(id) catch unreachable;
     }
 
-    pub fn writeReceiverAnswer(builder: message.StructBuilder, question_id: u32, ops: []const PromisedAnswerOp) !void {
-        builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.receiver_answer));
-        const promised = try builder.initStruct(CAP_DESCRIPTOR_PTR, PROMISED_ANSWER_DATA_WORDS, PROMISED_ANSWER_POINTER_WORDS);
-        try writePromisedAnswerOps(promised, question_id, ops);
+    pub fn writeReceiverHosted(builder: anytype, id: u32) void {
+        var generated = asGeneratedBuilder(builder);
+        generated.setReceiverHosted(id) catch unreachable;
     }
 
-    pub fn writeThirdPartyHostedNull(builder: message.StructBuilder, vine_id: u32) !void {
-        builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.third_party_hosted));
-        const third = try builder.initStruct(
-            CAP_DESCRIPTOR_PTR,
-            THIRD_PARTY_CAP_DESCRIPTOR_DATA_WORDS,
-            THIRD_PARTY_CAP_DESCRIPTOR_POINTER_WORDS,
-        );
-        third.writeU32(byteOffsetU32(THIRD_PARTY_CAP_DESCRIPTOR_VINE_ID_OFFSET), vine_id);
-        var id_any = try third.getAnyPointer(THIRD_PARTY_CAP_DESCRIPTOR_ID_PTR);
-        try id_any.setNull();
+    pub fn writeReceiverAnswer(builder: anytype, question_id: u32, ops: []const PromisedAnswerOp) !void {
+        var generated = asGeneratedBuilder(builder);
+        var promised_builder = try generated.initReceiverAnswer();
+        try writePromisedAnswerOpsGenerated(&promised_builder, question_id, ops);
+    }
+
+    pub fn writeThirdPartyHostedNull(builder: anytype, vine_id: u32) !void {
+        var generated = asGeneratedBuilder(builder);
+        var third_builder = try generated.initThirdPartyHosted();
+        try third_builder.setVineId(vine_id);
+        try third_builder.setIdNull();
     }
 
     pub fn writeThirdPartyHosted(
-        builder: message.StructBuilder,
+        builder: anytype,
         third_party_id: message.AnyPointerReader,
         vine_id: u32,
     ) !void {
-        builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.third_party_hosted));
-        const third = try builder.initStruct(
-            CAP_DESCRIPTOR_PTR,
-            THIRD_PARTY_CAP_DESCRIPTOR_DATA_WORDS,
-            THIRD_PARTY_CAP_DESCRIPTOR_POINTER_WORDS,
-        );
-        third.writeU32(byteOffsetU32(THIRD_PARTY_CAP_DESCRIPTOR_VINE_ID_OFFSET), vine_id);
-        const id_any = try third.getAnyPointer(THIRD_PARTY_CAP_DESCRIPTOR_ID_PTR);
+        var generated = asGeneratedBuilder(builder);
+        var third_builder = try generated.initThirdPartyHosted();
+        try third_builder.setVineId(vine_id);
+        const id_any = try third_builder.initId();
         try message.cloneAnyPointer(third_party_id, id_any);
     }
 };
@@ -243,12 +199,6 @@ const RELEASE_POINTER_WORDS: u16 = 0;
 const RELEASE_ID_OFFSET: u32 = 0;
 const RELEASE_REFERENCE_COUNT_OFFSET: u32 = 1;
 
-const RESOLVE_DATA_WORDS: u16 = 1;
-const RESOLVE_POINTER_WORDS: u16 = 1;
-const RESOLVE_DISCRIMINANT_OFFSET_BYTES: usize = 4;
-const RESOLVE_PROMISE_ID_OFFSET: u32 = 0;
-const RESOLVE_CAP_PTR: usize = 0;
-
 const DISEMBARGO_DATA_WORDS: u16 = 1;
 const DISEMBARGO_POINTER_WORDS: u16 = 2;
 const DISEMBARGO_DISCRIMINANT_OFFSET_BYTES: usize = 4;
@@ -289,7 +239,7 @@ pub const CAP_DESCRIPTOR_POINTER_WORDS: u16 = 1;
 const CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES: usize = 0;
 const CAP_DESCRIPTOR_ID_OFFSET: u32 = 1;
 const CAP_DESCRIPTOR_PTR: usize = 0;
-const CAP_DESCRIPTOR_ATTACHED_FD_OFFSET: u32 = 2;
+const CAP_DESCRIPTOR_ATTACHED_FD_OFFSET_BYTES: usize = 2;
 
 const THIRD_PARTY_CAP_DESCRIPTOR_DATA_WORDS: u16 = 1;
 const THIRD_PARTY_CAP_DESCRIPTOR_POINTER_WORDS: u16 = 1;
@@ -368,7 +318,7 @@ pub const DecodedMessage = struct {
     }
 
     pub fn asReturn(self: *DecodedMessage) !Return {
-        if (self.tag != .return_) return error.UnexpectedMessage;
+        if (self.tag != .@"return") return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Return.fromReader(reader);
@@ -417,7 +367,7 @@ pub const DecodedMessage = struct {
     }
 
     pub fn asThirdPartyAnswer(self: *DecodedMessage) !ThirdPartyAnswer {
-        if (self.tag != .third_party_answer) return error.UnexpectedMessage;
+        if (self.tag != .thirdPartyAnswer) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return ThirdPartyAnswer.fromReader(reader);
@@ -539,12 +489,12 @@ pub const SendResultsTo = struct {
     third_party: ?message.AnyPointerReader = null,
 
     fn fromReader(reader: message.StructReader) !SendResultsTo {
-        const tag_value = reader.readUnionDiscriminant(CALL_SEND_RESULTS_TO_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(SendResultsToTag, tag_value) catch return error.InvalidDiscriminant;
+        const generated = rpc_capnp.Call.SendResultsTo.Reader.wrap(reader);
+        const tag = generated.which() catch return error.InvalidDiscriminant;
 
         var third_party: ?message.AnyPointerReader = null;
-        if (tag == .third_party) {
-            third_party = reader.readAnyPointer(CALL_SEND_RESULTS_TO_THIRD_PARTY_PTR) catch |err| switch (err) {
+        if (tag == .thirdParty) {
+            third_party = generated.getThirdParty() catch |err| switch (err) {
                 error.OutOfBounds => null,
                 else => return err,
             };
@@ -570,14 +520,11 @@ pub const Return = struct {
     accept_from_third_party: ?message.AnyPointerReader = null,
 
     fn fromReader(reader: message.StructReader) !Return {
-        const answer_id = reader.readU32(byteOffsetU32(RETURN_ANSWER_ID_OFFSET));
-        const release_bits = byteOffsetBool(RETURN_RELEASE_PARAM_CAPS_BIT);
-        const no_finish_bits = byteOffsetBool(RETURN_NO_FINISH_BIT);
-        const release_param_caps = !reader.readBool(release_bits.byte, release_bits.bit);
-        const no_finish_needed = reader.readBool(no_finish_bits.byte, no_finish_bits.bit);
-
-        const tag_value = reader.readUnionDiscriminant(RETURN_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(ReturnTag, tag_value) catch return error.InvalidDiscriminant;
+        const generated = rpc_capnp.Return.Reader.wrap(reader);
+        const answer_id = try generated.getAnswerId();
+        const release_param_caps = try generated.getReleaseParamCaps();
+        const no_finish_needed = try generated.getNoFinishNeeded();
+        const tag = generated.which() catch return error.InvalidDiscriminant;
 
         var results: ?Payload = null;
         var exception: ?Exception = null;
@@ -586,18 +533,18 @@ pub const Return = struct {
 
         switch (tag) {
             .results => {
-                const payload_reader = try reader.readStruct(RETURN_RESULTS_PTR);
-                results = try Payload.fromReader(payload_reader);
+                const payload_reader = try generated.getResults();
+                results = try Payload.fromReader(payload_reader._reader);
             },
             .exception => {
-                const ex_reader = try reader.readStruct(RETURN_RESULTS_PTR);
-                exception = try Exception.fromReader(ex_reader);
+                const ex_reader = try generated.getException();
+                exception = try Exception.fromReader(ex_reader._reader);
             },
-            .take_from_other_question => {
-                take_from_other_question = reader.readU32(byteOffsetU32(RETURN_TAKE_FROM_OTHER_Q_OFFSET));
+            .takeFromOtherQuestion => {
+                take_from_other_question = try generated.getTakeFromOtherQuestion();
             },
-            .accept_from_third_party => {
-                accept_from_third_party = reader.readAnyPointer(RETURN_RESULTS_PTR) catch |err| switch (err) {
+            .awaitFromThirdParty => {
+                accept_from_third_party = generated.getAwaitFromThirdParty() catch |err| switch (err) {
                     error.OutOfBounds => null,
                     else => return err,
                 };
@@ -643,17 +590,17 @@ pub const MessageTarget = struct {
     promised_answer: ?PromisedAnswer,
 
     fn fromReader(reader: message.StructReader) !MessageTarget {
-        const tag_value = reader.readUnionDiscriminant(MESSAGE_TARGET_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(MessageTargetTag, tag_value) catch return error.InvalidDiscriminant;
+        const generated = rpc_capnp.MessageTarget.Reader.wrap(reader);
+        const tag = generated.which() catch return error.InvalidDiscriminant;
         var imported_cap: ?u32 = null;
         var promised_answer: ?PromisedAnswer = null;
         switch (tag) {
-            .imported_cap => {
-                imported_cap = reader.readU32(byteOffsetU32(MESSAGE_TARGET_IMPORTED_CAP_OFFSET));
+            .importedCap => {
+                imported_cap = try generated.getImportedCap();
             },
-            .promised_answer => {
-                const pa_reader = try reader.readStruct(MESSAGE_TARGET_PROMISED_ANSWER_PTR);
-                promised_answer = try PromisedAnswer.fromReader(pa_reader);
+            .promisedAnswer => {
+                const pa_reader = try generated.getPromisedAnswer();
+                promised_answer = try PromisedAnswer.fromReader(pa_reader._reader);
             },
         }
         return .{ .tag = tag, .imported_cap = imported_cap, .promised_answer = promised_answer };
@@ -698,93 +645,83 @@ pub const PromisedAnswerOp = struct {
         const disc = reader.readUnionDiscriminant(PROMISED_ANSWER_OP_DISCRIMINANT_OFFSET_BYTES);
         const tag = std.meta.intToEnum(PromisedAnswerOpTag, disc) catch return error.InvalidDiscriminant;
         const pointer_index = switch (tag) {
-            .get_pointer_field => reader.readU16(PROMISED_ANSWER_OP_GET_POINTER_FIELD_OFFSET_BYTES),
+            .getPointerField => reader.readU16(PROMISED_ANSWER_OP_GET_POINTER_FIELD_OFFSET_BYTES),
             else => 0,
         };
         return .{ .tag = tag, .pointer_index = pointer_index };
     }
 };
 
-fn writePromisedAnswerFrom(builder: message.StructBuilder, promised: PromisedAnswer) !void {
-    builder.writeU32(byteOffsetU32(PROMISED_ANSWER_QUESTION_ID_OFFSET), promised.question_id);
+fn writePromisedAnswerGenerated(builder: *rpc_capnp.PromisedAnswer.Builder, promised: PromisedAnswer) !void {
+    try builder.setQuestionId(promised.question_id);
     const op_count = promised.transform.len();
     if (op_count == 0) return;
-    var list = try builder.writeStructList(
-        PROMISED_ANSWER_TRANSFORM_PTR,
-        op_count,
-        PROMISED_ANSWER_OP_DATA_WORDS,
-        PROMISED_ANSWER_OP_POINTER_WORDS,
-    );
+
+    var transform = try builder.initTransform(op_count);
     var idx: u32 = 0;
     while (idx < op_count) : (idx += 1) {
         const op = try promised.transform.get(idx);
-        const elem = try list.get(idx);
-        elem.writeUnionDiscriminant(PROMISED_ANSWER_OP_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(op.tag));
-        if (op.tag == .get_pointer_field) {
-            elem.writeU16(PROMISED_ANSWER_OP_GET_POINTER_FIELD_OFFSET_BYTES, op.pointer_index);
+        var op_builder = try transform.get(idx);
+        switch (op.tag) {
+            .noop => try op_builder.setNoop({}),
+            .getPointerField => try op_builder.setGetPointerField(op.pointer_index),
         }
     }
 }
 
-fn writePromisedAnswerOps(builder: message.StructBuilder, question_id: u32, ops: []const PromisedAnswerOp) !void {
-    builder.writeU32(byteOffsetU32(PROMISED_ANSWER_QUESTION_ID_OFFSET), question_id);
+fn writePromisedAnswerOpsGenerated(builder: *rpc_capnp.PromisedAnswer.Builder, question_id: u32, ops: []const PromisedAnswerOp) !void {
+    try builder.setQuestionId(question_id);
     if (ops.len == 0) return;
-    var list = try builder.writeStructList(
-        PROMISED_ANSWER_TRANSFORM_PTR,
-        @intCast(ops.len),
-        PROMISED_ANSWER_OP_DATA_WORDS,
-        PROMISED_ANSWER_OP_POINTER_WORDS,
-    );
+
+    var transform = try builder.initTransform(@intCast(ops.len));
     for (ops, 0..) |op, idx| {
-        const elem = try list.get(@intCast(idx));
-        elem.writeUnionDiscriminant(PROMISED_ANSWER_OP_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(op.tag));
-        if (op.tag == .get_pointer_field) {
-            elem.writeU16(PROMISED_ANSWER_OP_GET_POINTER_FIELD_OFFSET_BYTES, op.pointer_index);
+        var op_builder = try transform.get(@intCast(idx));
+        switch (op.tag) {
+            .noop => try op_builder.setNoop({}),
+            .getPointerField => try op_builder.setGetPointerField(op.pointer_index),
         }
     }
 }
 
-fn writeMessageTarget(builder: message.StructBuilder, target: MessageTarget) !void {
-    builder.writeUnionDiscriminant(MESSAGE_TARGET_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(target.tag));
+fn writeMessageTargetGenerated(builder: *rpc_capnp.MessageTarget.Builder, target: MessageTarget) !void {
     switch (target.tag) {
-        .imported_cap => {
-            const id = target.imported_cap orelse return error.MissingCallTarget;
-            builder.writeU32(byteOffsetU32(MESSAGE_TARGET_IMPORTED_CAP_OFFSET), id);
-        },
-        .promised_answer => {
+        .importedCap => try builder.setImportedCap(target.imported_cap orelse return error.MissingCallTarget),
+        .promisedAnswer => {
             const promised_answer = target.promised_answer orelse return error.MissingPromisedAnswer;
-            const promised = try builder.initStruct(MESSAGE_TARGET_PROMISED_ANSWER_PTR, PROMISED_ANSWER_DATA_WORDS, PROMISED_ANSWER_POINTER_WORDS);
-            try writePromisedAnswerFrom(promised, promised_answer);
+            var promised_builder = try builder.initPromisedAnswer();
+            try writePromisedAnswerGenerated(&promised_builder, promised_answer);
         },
     }
 }
 
-fn writeCapDescriptor(builder: message.StructBuilder, descriptor: CapDescriptor) !void {
+fn writeCapDescriptorGenerated(builder: *rpc_capnp.CapDescriptor.Builder, descriptor: CapDescriptor) !void {
     switch (descriptor.tag) {
-        .none => {
-            builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.none));
-        },
-        .sender_hosted => CapDescriptor.writeSenderHosted(builder, descriptor.id orelse return error.MissingCapDescriptorId),
-        .sender_promise => CapDescriptor.writeSenderPromise(builder, descriptor.id orelse return error.MissingCapDescriptorId),
-        .receiver_hosted => CapDescriptor.writeReceiverHosted(builder, descriptor.id orelse return error.MissingCapDescriptorId),
-        .receiver_answer => {
+        .none => try builder.setNone({}),
+        .senderHosted => try builder.setSenderHosted(descriptor.id orelse return error.MissingCapDescriptorId),
+        .senderPromise => try builder.setSenderPromise(descriptor.id orelse return error.MissingCapDescriptorId),
+        .receiverHosted => try builder.setReceiverHosted(descriptor.id orelse return error.MissingCapDescriptorId),
+        .receiverAnswer => {
             const promised_answer = descriptor.promised_answer orelse return error.MissingPromisedAnswer;
-            builder.writeUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(CapDescriptorTag.receiver_answer));
-            const promised = try builder.initStruct(CAP_DESCRIPTOR_PTR, PROMISED_ANSWER_DATA_WORDS, PROMISED_ANSWER_POINTER_WORDS);
-            try writePromisedAnswerFrom(promised, promised_answer);
+            var promised_builder = try builder.initReceiverAnswer();
+            try writePromisedAnswerGenerated(&promised_builder, promised_answer);
         },
-        .third_party_hosted => {
+        .thirdPartyHosted => {
             const third = descriptor.third_party orelse return error.MissingThirdPartyCapDescriptor;
+            var third_builder = try builder.initThirdPartyHosted();
+            try third_builder.setVineId(third.vine_id);
             if (third.id) |id| {
-                try CapDescriptor.writeThirdPartyHosted(builder, id, third.vine_id);
+                const id_builder = try third_builder.initId();
+                try message.cloneAnyPointer(id, id_builder);
             } else {
-                try CapDescriptor.writeThirdPartyHostedNull(builder, third.vine_id);
+                try third_builder.setIdNull();
             }
         },
     }
 
     if (descriptor.attached_fd) |fd| {
-        builder.writeU8(byteOffsetU16(CAP_DESCRIPTOR_ATTACHED_FD_OFFSET), fd);
+        // Preserve legacy protocol semantics for attached_fd while resolve encode
+        // is only partially migrated to generated builders.
+        builder._builder.writeU8(CAP_DESCRIPTOR_ATTACHED_FD_OFFSET_BYTES, fd);
     }
 }
 
@@ -825,20 +762,20 @@ pub const Resolve = struct {
     exception: ?Exception,
 
     fn fromReader(reader: message.StructReader) !Resolve {
-        const promise_id = reader.readU32(byteOffsetU32(RESOLVE_PROMISE_ID_OFFSET));
-        const tag_value = reader.readUnionDiscriminant(RESOLVE_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(ResolveTag, tag_value) catch return error.InvalidDiscriminant;
+        const generated = rpc_capnp.Resolve.Reader.wrap(reader);
+        const promise_id = try generated.getPromiseId();
+        const tag = generated.which() catch return error.InvalidDiscriminant;
         var cap: ?CapDescriptor = null;
         var exception: ?Exception = null;
 
         switch (tag) {
             .cap => {
-                const cap_reader = try reader.readStruct(RESOLVE_CAP_PTR);
-                cap = try CapDescriptor.fromReader(cap_reader);
+                const cap_reader = try generated.getCap();
+                cap = try CapDescriptor.fromReader(cap_reader._reader);
             },
             .exception => {
-                const ex_reader = try reader.readStruct(RESOLVE_CAP_PTR);
-                exception = try Exception.fromReader(ex_reader);
+                const ex_reader = try generated.getException();
+                exception = try Exception.fromReader(ex_reader._reader);
             },
         }
 
@@ -869,7 +806,7 @@ pub const Disembargo = struct {
         var accept: ?[]const u8 = null;
 
         switch (context_tag) {
-            .sender_loopback, .receiver_loopback => {
+            .senderLoopback, .receiverLoopback => {
                 embargo_id = reader.readU32(byteOffsetU32(DISEMBARGO_EMBARGO_ID_OFFSET));
             },
             .accept => {
@@ -1004,35 +941,29 @@ pub const MessageBuilder = struct {
     }
 
     pub fn buildBootstrap(self: *MessageBuilder, question_id: u32) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.bootstrap));
-
-        var bootstrap = try root.initStruct(0, BOOTSTRAP_DATA_WORDS, BOOTSTRAP_POINTER_WORDS);
-        bootstrap.writeU32(byteOffsetU32(BOOTSTRAP_QUESTION_ID_OFFSET), question_id);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var bootstrap_builder = try root_builder.initBootstrap();
+        try bootstrap_builder.setQuestionId(question_id);
     }
 
     pub fn buildUnimplementedFromAnyPointer(self: *MessageBuilder, original: message.AnyPointerReader) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.unimplemented));
-        const payload = try root.getAnyPointer(0);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        _ = try root_builder.initUnimplemented();
+        const payload = try root_builder._builder.getAnyPointer(0);
         try message.cloneAnyPointer(original, payload);
     }
 
     pub fn buildAbort(self: *MessageBuilder, reason: []const u8) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.abort));
-
-        var ex = try root.initStruct(0, EXCEPTION_DATA_WORDS, EXCEPTION_POINTER_WORDS);
-        try ex.writeText(EXCEPTION_REASON_PTR, reason);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var ex_builder = try root_builder.initAbort();
+        try ex_builder.setReason(reason);
     }
 
     pub fn buildRelease(self: *MessageBuilder, id: u32, reference_count: u32) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.release));
-
-        var release = try root.initStruct(0, RELEASE_DATA_WORDS, RELEASE_POINTER_WORDS);
-        release.writeU32(byteOffsetU32(RELEASE_ID_OFFSET), id);
-        release.writeU32(byteOffsetU32(RELEASE_REFERENCE_COUNT_OFFSET), reference_count);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var release_builder = try root_builder.initRelease();
+        try release_builder.setId(id);
+        try release_builder.setReferenceCount(reference_count);
     }
 
     pub fn buildFinish(
@@ -1041,61 +972,45 @@ pub const MessageBuilder = struct {
         release_result_caps: bool,
         require_early_cancellation: bool,
     ) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.finish));
-
-        var finish_struct = try root.initStruct(0, FINISH_DATA_WORDS, FINISH_POINTER_WORDS);
-        finish_struct.writeU32(byteOffsetU32(FINISH_QUESTION_ID_OFFSET), question_id);
-        const release_bits = byteOffsetBool(FINISH_RELEASE_RESULT_CAPS_BIT);
-        finish_struct.writeBool(release_bits.byte, release_bits.bit, !release_result_caps);
-        const require_bits = byteOffsetBool(FINISH_REQUIRE_EARLY_CANCEL_BIT);
-        finish_struct.writeBool(require_bits.byte, require_bits.bit, !require_early_cancellation);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var finish_builder = try root_builder.initFinish();
+        try finish_builder.setQuestionId(question_id);
+        try finish_builder.setReleaseResultCaps(release_result_caps);
+        try finish_builder.setRequireEarlyCancellationWorkaround(require_early_cancellation);
     }
 
     pub fn buildResolveCap(self: *MessageBuilder, promise_id: u32, descriptor: CapDescriptor) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.resolve));
-
-        var resolve = try root.initStruct(0, RESOLVE_DATA_WORDS, RESOLVE_POINTER_WORDS);
-        resolve.writeU32(byteOffsetU32(RESOLVE_PROMISE_ID_OFFSET), promise_id);
-        resolve.writeUnionDiscriminant(RESOLVE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(ResolveTag.cap));
-
-        const cap_builder = try resolve.initStruct(RESOLVE_CAP_PTR, CAP_DESCRIPTOR_DATA_WORDS, CAP_DESCRIPTOR_POINTER_WORDS);
-        try writeCapDescriptor(cap_builder, descriptor);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var resolve_builder = try root_builder.initResolve();
+        try resolve_builder.setPromiseId(promise_id);
+        var cap_builder = try resolve_builder.initCap();
+        try writeCapDescriptorGenerated(&cap_builder, descriptor);
     }
 
     pub fn buildResolveException(self: *MessageBuilder, promise_id: u32, reason: []const u8) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.resolve));
-
-        var resolve = try root.initStruct(0, RESOLVE_DATA_WORDS, RESOLVE_POINTER_WORDS);
-        resolve.writeU32(byteOffsetU32(RESOLVE_PROMISE_ID_OFFSET), promise_id);
-        resolve.writeUnionDiscriminant(RESOLVE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(ResolveTag.exception));
-
-        var ex = try resolve.initStruct(RESOLVE_CAP_PTR, EXCEPTION_DATA_WORDS, EXCEPTION_POINTER_WORDS);
-        try ex.writeText(EXCEPTION_REASON_PTR, reason);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var resolve_builder = try root_builder.initResolve();
+        try resolve_builder.setPromiseId(promise_id);
+        var ex_builder = try resolve_builder.initException();
+        try ex_builder.setReason(reason);
     }
 
     pub fn buildDisembargoSenderLoopback(self: *MessageBuilder, target: MessageTarget, embargo_id: u32) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.disembargo));
-
-        var disembargo = try root.initStruct(0, DISEMBARGO_DATA_WORDS, DISEMBARGO_POINTER_WORDS);
-        const target_builder = try disembargo.initStruct(DISEMBARGO_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        try writeMessageTarget(target_builder, target);
-        disembargo.writeUnionDiscriminant(DISEMBARGO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(DisembargoContextTag.sender_loopback));
-        disembargo.writeU32(byteOffsetU32(DISEMBARGO_EMBARGO_ID_OFFSET), embargo_id);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var disembargo_builder = try root_builder.initDisembargo();
+        var target_builder = try disembargo_builder.initTarget();
+        try writeMessageTargetGenerated(&target_builder, target);
+        var context = disembargo_builder.getContext();
+        try context.setSenderLoopback(embargo_id);
     }
 
     pub fn buildDisembargoReceiverLoopback(self: *MessageBuilder, target: MessageTarget, embargo_id: u32) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.disembargo));
-
-        var disembargo = try root.initStruct(0, DISEMBARGO_DATA_WORDS, DISEMBARGO_POINTER_WORDS);
-        const target_builder = try disembargo.initStruct(DISEMBARGO_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        try writeMessageTarget(target_builder, target);
-        disembargo.writeUnionDiscriminant(DISEMBARGO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(DisembargoContextTag.receiver_loopback));
-        disembargo.writeU32(byteOffsetU32(DISEMBARGO_EMBARGO_ID_OFFSET), embargo_id);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var disembargo_builder = try root_builder.initDisembargo();
+        var target_builder = try disembargo_builder.initTarget();
+        try writeMessageTargetGenerated(&target_builder, target);
+        var context = disembargo_builder.getContext();
+        try context.setReceiverLoopback(embargo_id);
     }
 
     pub fn buildDisembargoAccept(
@@ -1103,14 +1018,12 @@ pub const MessageBuilder = struct {
         target: MessageTarget,
         accept_embargo: []const u8,
     ) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.disembargo));
-
-        var disembargo = try root.initStruct(0, DISEMBARGO_DATA_WORDS, DISEMBARGO_POINTER_WORDS);
-        const target_builder = try disembargo.initStruct(DISEMBARGO_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        try writeMessageTarget(target_builder, target);
-        disembargo.writeUnionDiscriminant(DISEMBARGO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(DisembargoContextTag.accept));
-        try disembargo.writeData(DISEMBARGO_ACCEPT_PTR, accept_embargo);
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var disembargo_builder = try root_builder.initDisembargo();
+        var target_builder = try disembargo_builder.initTarget();
+        try writeMessageTargetGenerated(&target_builder, target);
+        var context = disembargo_builder.getContext();
+        try context.setAccept(accept_embargo);
     }
 
     pub fn buildProvide(
@@ -1119,19 +1032,17 @@ pub const MessageBuilder = struct {
         target: MessageTarget,
         recipient: ?message.AnyPointerReader,
     ) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.provide));
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var provide_builder = try root_builder.initProvide();
+        try provide_builder.setQuestionId(question_id);
+        var target_builder = try provide_builder.initTarget();
+        try writeMessageTargetGenerated(&target_builder, target);
 
-        var provide = try root.initStruct(0, PROVIDE_DATA_WORDS, PROVIDE_POINTER_WORDS);
-        provide.writeU32(byteOffsetU32(PROVIDE_QUESTION_ID_OFFSET), question_id);
-        const target_builder = try provide.initStruct(PROVIDE_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        try writeMessageTarget(target_builder, target);
-
-        const recipient_any = try provide.getAnyPointer(PROVIDE_RECIPIENT_PTR);
         if (recipient) |recipient_ptr| {
+            const recipient_any = try provide_builder.initRecipient();
             try message.cloneAnyPointer(recipient_ptr, recipient_any);
         } else {
-            try recipient_any.setNull();
+            try provide_builder.setRecipientNull();
         }
     }
 
@@ -1141,21 +1052,19 @@ pub const MessageBuilder = struct {
         provision: ?message.AnyPointerReader,
         embargo: ?[]const u8,
     ) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.accept));
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var accept_builder = try root_builder.initAccept();
+        try accept_builder.setQuestionId(question_id);
 
-        var accept = try root.initStruct(0, ACCEPT_DATA_WORDS, ACCEPT_POINTER_WORDS);
-        accept.writeU32(byteOffsetU32(ACCEPT_QUESTION_ID_OFFSET), question_id);
-
-        const provision_any = try accept.getAnyPointer(ACCEPT_PROVISION_PTR);
         if (provision) |provision_ptr| {
+            const provision_any = try accept_builder.initProvision();
             try message.cloneAnyPointer(provision_ptr, provision_any);
         } else {
-            try provision_any.setNull();
+            try accept_builder.setProvisionNull();
         }
 
         if (embargo) |embargo_bytes| {
-            try accept.writeData(ACCEPT_EMBARGO_PTR, embargo_bytes);
+            try accept_builder.setEmbargo(embargo_bytes);
         }
     }
 
@@ -1164,21 +1073,15 @@ pub const MessageBuilder = struct {
         answer_id: u32,
         completion: ?message.AnyPointerReader,
     ) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.third_party_answer));
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var third_party_answer_builder = try root_builder.initThirdPartyAnswer();
+        try third_party_answer_builder.setAnswerId(answer_id);
 
-        var third_party_answer = try root.initStruct(
-            0,
-            THIRD_PARTY_ANSWER_DATA_WORDS,
-            THIRD_PARTY_ANSWER_POINTER_WORDS,
-        );
-        third_party_answer.writeU32(byteOffsetU32(THIRD_PARTY_ANSWER_ANSWER_ID_OFFSET), answer_id);
-
-        const completion_any = try third_party_answer.getAnyPointer(THIRD_PARTY_ANSWER_COMPLETION_PTR);
         if (completion) |completion_ptr| {
+            const completion_any = try third_party_answer_builder.initCompletion();
             try message.cloneAnyPointer(completion_ptr, completion_any);
         } else {
-            try completion_any.setNull();
+            try third_party_answer_builder.setCompletionNull();
         }
     }
 
@@ -1188,55 +1091,49 @@ pub const MessageBuilder = struct {
         target: MessageTarget,
         key_part: ?message.AnyPointerReader,
     ) !void {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.join));
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var join_builder = try root_builder.initJoin();
+        try join_builder.setQuestionId(question_id);
+        var target_builder = try join_builder.initTarget();
+        try writeMessageTargetGenerated(&target_builder, target);
 
-        var join = try root.initStruct(0, JOIN_DATA_WORDS, JOIN_POINTER_WORDS);
-        join.writeU32(byteOffsetU32(JOIN_QUESTION_ID_OFFSET), question_id);
-        const target_builder = try join.initStruct(JOIN_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        try writeMessageTarget(target_builder, target);
-
-        const key_part_any = try join.getAnyPointer(JOIN_KEY_PART_PTR);
         if (key_part) |key_part_ptr| {
+            const key_part_any = try join_builder.initKeyPart();
             try message.cloneAnyPointer(key_part_ptr, key_part_any);
         } else {
-            try key_part_any.setNull();
+            try join_builder.setKeyPartNull();
         }
     }
 
     pub fn beginCall(self: *MessageBuilder, question_id: u32, interface_id: u64, method_id: u16) !CallBuilder {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.call));
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var call_builder = try root_builder.initCall();
+        try call_builder.setQuestionId(question_id);
+        try call_builder.setInterfaceId(interface_id);
+        try call_builder.setMethodId(method_id);
 
-        var call = try root.initStruct(0, CALL_DATA_WORDS, CALL_POINTER_WORDS);
-        call.writeU32(byteOffsetU32(CALL_QUESTION_ID_OFFSET), question_id);
-        call.writeU64(byteOffsetU64(CALL_INTERFACE_ID_OFFSET), interface_id);
-        call.writeU16(byteOffsetU16(CALL_METHOD_ID_OFFSET), method_id);
-
-        return CallBuilder{ .call = call };
+        return CallBuilder{ .call = call_builder._builder };
     }
 
     pub fn beginReturn(self: *MessageBuilder, answer_id: u32, tag: ReturnTag) !ReturnBuilder {
-        const root = try self.builder.allocateStruct(MESSAGE_DATA_WORDS, MESSAGE_POINTER_WORDS);
-        root.writeUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTag.return_));
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var ret_builder = try root_builder.initReturn();
+        try ret_builder.setAnswerId(answer_id);
+        ret_builder._builder.writeU16(RETURN_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(tag));
 
-        var ret = try root.initStruct(0, RETURN_DATA_WORDS, RETURN_POINTER_WORDS);
-        ret.writeU32(byteOffsetU32(RETURN_ANSWER_ID_OFFSET), answer_id);
-        ret.writeUnionDiscriminant(RETURN_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(tag));
-
-        return ReturnBuilder{ .ret = ret, .tag = tag };
+        return ReturnBuilder{ .ret = ret_builder._builder, .tag = tag };
     }
 };
 
 /// Builder for populating a Call message's target, parameters, and send-results-to fields.
 pub const CallBuilder = struct {
     call: message.StructBuilder,
-    payload: ?message.StructBuilder = null,
+    payload: ?rpc_capnp.Payload.Builder = null,
 
     pub fn setTargetImportedCap(self: *CallBuilder, cap_id: u32) !void {
-        var target = try self.call.initStruct(CALL_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        target.writeUnionDiscriminant(MESSAGE_TARGET_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTargetTag.imported_cap));
-        target.writeU32(byteOffsetU32(MESSAGE_TARGET_IMPORTED_CAP_OFFSET), cap_id);
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var target_builder = try call_builder.initTarget();
+        try target_builder.setImportedCap(cap_id);
     }
 
     pub fn setTargetPromisedAnswer(self: *CallBuilder, question_id: u32) !void {
@@ -1244,67 +1141,58 @@ pub const CallBuilder = struct {
     }
 
     pub fn setTargetPromisedAnswerWithOps(self: *CallBuilder, question_id: u32, ops: []const PromisedAnswerOp) !void {
-        var target = try self.call.initStruct(CALL_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        target.writeUnionDiscriminant(MESSAGE_TARGET_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTargetTag.promised_answer));
-        const promised = try target.initStruct(MESSAGE_TARGET_PROMISED_ANSWER_PTR, PROMISED_ANSWER_DATA_WORDS, PROMISED_ANSWER_POINTER_WORDS);
-        try writePromisedAnswerOps(promised, question_id, ops);
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var target_builder = try call_builder.initTarget();
+        var promised_builder = try target_builder.initPromisedAnswer();
+        try writePromisedAnswerOpsGenerated(&promised_builder, question_id, ops);
     }
 
     pub fn setTargetPromisedAnswerFrom(self: *CallBuilder, promised_answer: PromisedAnswer) !void {
-        var target = try self.call.initStruct(CALL_TARGET_PTR, MESSAGE_TARGET_DATA_WORDS, MESSAGE_TARGET_POINTER_WORDS);
-        target.writeUnionDiscriminant(MESSAGE_TARGET_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(MessageTargetTag.promised_answer));
-        const promised = try target.initStruct(MESSAGE_TARGET_PROMISED_ANSWER_PTR, PROMISED_ANSWER_DATA_WORDS, PROMISED_ANSWER_POINTER_WORDS);
-        try writePromisedAnswerFrom(promised, promised_answer);
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var target_builder = try call_builder.initTarget();
+        var promised_builder = try target_builder.initPromisedAnswer();
+        try writePromisedAnswerGenerated(&promised_builder, promised_answer);
     }
 
     pub fn setSendResultsToCaller(self: *CallBuilder) void {
-        self.call.writeUnionDiscriminant(CALL_SEND_RESULTS_TO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(SendResultsToTag.caller));
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var send_results_to = call_builder.getSendResultsTo();
+        send_results_to.setCaller({}) catch unreachable;
     }
 
     pub fn setSendResultsToYourself(self: *CallBuilder) void {
-        self.call.writeUnionDiscriminant(CALL_SEND_RESULTS_TO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(SendResultsToTag.yourself));
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var send_results_to = call_builder.getSendResultsTo();
+        send_results_to.setYourself({}) catch unreachable;
     }
 
     pub fn setSendResultsToThirdPartyNull(self: *CallBuilder) !void {
-        self.call.writeUnionDiscriminant(CALL_SEND_RESULTS_TO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(SendResultsToTag.third_party));
-        var ptr = try self.call.getAnyPointer(CALL_SEND_RESULTS_TO_THIRD_PARTY_PTR);
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var send_results_to = call_builder.getSendResultsTo();
+        var ptr = try send_results_to.initThirdParty();
         try ptr.setNull();
     }
 
     pub fn setSendResultsToThirdParty(self: *CallBuilder, third_party: message.AnyPointerReader) !void {
-        self.call.writeUnionDiscriminant(CALL_SEND_RESULTS_TO_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(SendResultsToTag.third_party));
-        const ptr = try self.call.getAnyPointer(CALL_SEND_RESULTS_TO_THIRD_PARTY_PTR);
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        var send_results_to = call_builder.getSendResultsTo();
+        const ptr = try send_results_to.initThirdParty();
         try message.cloneAnyPointer(third_party, ptr);
     }
 
-    pub fn initParamsStruct(self: *CallBuilder, data_words: u16, pointer_words: u16) !message.StructBuilder {
-        var payload = try self.ensurePayload();
-        const any = try payload.getAnyPointer(PAYLOAD_CONTENT_PTR);
-        return any.initStruct(data_words, pointer_words);
-    }
-
-    pub fn payloadBuilder(self: *CallBuilder) !message.StructBuilder {
+    pub fn payloadTyped(self: *CallBuilder) !rpc_capnp.Payload.Builder {
         return self.ensurePayload();
     }
 
-    pub fn getParamsAnyPointer(self: *CallBuilder) !message.AnyPointerBuilder {
+    pub fn initCapTableTyped(self: *CallBuilder, count: u32) !CapDescriptorListBuilder {
         var payload = try self.ensurePayload();
-        return payload.getAnyPointer(PAYLOAD_CONTENT_PTR);
+        return payload.initCapTable(count);
     }
 
-    pub fn initCapTable(self: *CallBuilder, count: u32) !message.StructListBuilder {
-        var payload = try self.ensurePayload();
-        return payload.writeStructList(PAYLOAD_CAP_TABLE_PTR, count, CAP_DESCRIPTOR_DATA_WORDS, CAP_DESCRIPTOR_POINTER_WORDS);
-    }
-
-    pub fn setEmptyCapTable(self: *CallBuilder) !void {
-        var payload = try self.ensurePayload();
-        _ = try payload.writeStructList(PAYLOAD_CAP_TABLE_PTR, 0, CAP_DESCRIPTOR_DATA_WORDS, CAP_DESCRIPTOR_POINTER_WORDS);
-    }
-
-    fn ensurePayload(self: *CallBuilder) !message.StructBuilder {
+    fn ensurePayload(self: *CallBuilder) !rpc_capnp.Payload.Builder {
         if (self.payload) |payload| return payload;
-        const payload = try self.call.initStruct(CALL_PARAMS_PTR, PAYLOAD_DATA_WORDS, PAYLOAD_POINTER_WORDS);
+        var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
+        const payload = try call_builder.initParams();
         self.payload = payload;
         return payload;
     }
@@ -1314,78 +1202,64 @@ pub const CallBuilder = struct {
 pub const ReturnBuilder = struct {
     ret: message.StructBuilder,
     tag: ReturnTag,
-    payload: ?message.StructBuilder = null,
+    payload: ?rpc_capnp.Payload.Builder = null,
 
     pub fn setReleaseParamCaps(self: *ReturnBuilder, release_param_caps: bool) void {
-        const release_bits = byteOffsetBool(RETURN_RELEASE_PARAM_CAPS_BIT);
-        self.ret.writeBool(release_bits.byte, release_bits.bit, !release_param_caps);
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        ret_builder.setReleaseParamCaps(release_param_caps) catch unreachable;
     }
 
     pub fn setNoFinishNeeded(self: *ReturnBuilder, no_finish_needed: bool) void {
-        const no_finish_bits = byteOffsetBool(RETURN_NO_FINISH_BIT);
-        self.ret.writeBool(no_finish_bits.byte, no_finish_bits.bit, no_finish_needed);
-    }
-
-    pub fn initResultsStruct(self: *ReturnBuilder, data_words: u16, pointer_words: u16) !message.StructBuilder {
-        if (self.tag != .results) return error.InvalidReturnTag;
-        var payload = try self.ensurePayload();
-        const any = try payload.getAnyPointer(PAYLOAD_CONTENT_PTR);
-        return any.initStruct(data_words, pointer_words);
-    }
-
-    pub fn payloadBuilder(self: *ReturnBuilder) !message.StructBuilder {
-        if (self.tag != .results) return error.InvalidReturnTag;
-        return self.ensurePayload();
-    }
-
-    pub fn getResultsAnyPointer(self: *ReturnBuilder) !message.AnyPointerBuilder {
-        if (self.tag != .results) return error.InvalidReturnTag;
-        var payload = try self.ensurePayload();
-        return payload.getAnyPointer(PAYLOAD_CONTENT_PTR);
-    }
-
-    pub fn initCapTable(self: *ReturnBuilder, count: u32) !message.StructListBuilder {
-        if (self.tag != .results) return error.InvalidReturnTag;
-        var payload = try self.ensurePayload();
-        return payload.writeStructList(PAYLOAD_CAP_TABLE_PTR, count, CAP_DESCRIPTOR_DATA_WORDS, CAP_DESCRIPTOR_POINTER_WORDS);
-    }
-
-    pub fn setEmptyCapTable(self: *ReturnBuilder) !void {
-        if (self.tag != .results) return error.InvalidReturnTag;
-        var payload = try self.ensurePayload();
-        _ = try payload.writeStructList(PAYLOAD_CAP_TABLE_PTR, 0, CAP_DESCRIPTOR_DATA_WORDS, CAP_DESCRIPTOR_POINTER_WORDS);
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        ret_builder.setNoFinishNeeded(no_finish_needed) catch unreachable;
     }
 
     pub fn setException(self: *ReturnBuilder, reason: []const u8) !void {
         if (self.tag != .exception) return error.InvalidReturnTag;
-        var ex = try self.ret.initStruct(RETURN_RESULTS_PTR, EXCEPTION_DATA_WORDS, EXCEPTION_POINTER_WORDS);
-        try ex.writeText(EXCEPTION_REASON_PTR, reason);
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        var ex_builder = try ret_builder.initException();
+        try ex_builder.setReason(reason);
     }
 
     pub fn setCanceled(self: *ReturnBuilder) void {
-        _ = self;
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        ret_builder.setCanceled({}) catch unreachable;
     }
 
     pub fn setTakeFromOtherQuestion(self: *ReturnBuilder, question_id: u32) !void {
-        if (self.tag != .take_from_other_question) return error.InvalidReturnTag;
-        self.ret.writeU32(byteOffsetU32(RETURN_TAKE_FROM_OTHER_Q_OFFSET), question_id);
+        if (self.tag != .takeFromOtherQuestion) return error.InvalidReturnTag;
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        try ret_builder.setTakeFromOtherQuestion(question_id);
     }
 
     pub fn setAcceptFromThirdPartyNull(self: *ReturnBuilder) !void {
-        if (self.tag != .accept_from_third_party) return error.InvalidReturnTag;
-        var any = try self.ret.getAnyPointer(RETURN_RESULTS_PTR);
-        try any.setNull();
+        if (self.tag != .awaitFromThirdParty) return error.InvalidReturnTag;
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        try ret_builder.setAwaitFromThirdPartyNull();
     }
 
     pub fn setAcceptFromThirdParty(self: *ReturnBuilder, third_party: message.AnyPointerReader) !void {
-        if (self.tag != .accept_from_third_party) return error.InvalidReturnTag;
-        const any = try self.ret.getAnyPointer(RETURN_RESULTS_PTR);
+        if (self.tag != .awaitFromThirdParty) return error.InvalidReturnTag;
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        const any = try ret_builder.initAwaitFromThirdParty();
         try message.cloneAnyPointer(third_party, any);
     }
 
-    fn ensurePayload(self: *ReturnBuilder) !message.StructBuilder {
+    pub fn payloadTyped(self: *ReturnBuilder) !rpc_capnp.Payload.Builder {
+        if (self.tag != .results) return error.InvalidReturnTag;
+        return self.ensurePayload();
+    }
+
+    pub fn initCapTableTyped(self: *ReturnBuilder, count: u32) !CapDescriptorListBuilder {
+        if (self.tag != .results) return error.InvalidReturnTag;
+        var payload = try self.ensurePayload();
+        return payload.initCapTable(count);
+    }
+
+    fn ensurePayload(self: *ReturnBuilder) !rpc_capnp.Payload.Builder {
         if (self.payload) |payload| return payload;
-        const payload = try self.ret.initStruct(RETURN_RESULTS_PTR, PAYLOAD_DATA_WORDS, PAYLOAD_POINTER_WORDS);
+        var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        const payload = try ret_builder.initResults();
         self.payload = payload;
         return payload;
     }
