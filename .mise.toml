@@ -1,4 +1,5 @@
 [tools]
+act = "latest"
 deno = "latest"
 go = "latest"
 just = "latest"

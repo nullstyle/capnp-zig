@@ -23,6 +23,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 - Cap'n Proto compiler (`capnp`) - optional, for schema compilation
 - `mise` (recommended, for environment management)
 - `just` (recommended, for task automation)
+- Docker (optional, for local GitHub Actions runs via `act`)
 
 ### Building from Source
 
@@ -328,6 +329,28 @@ zig build test-message       # Message tests
 zig build test-codegen       # Codegen tests
 just e2e                    # Cross-language interop harness
 ```
+
+### Run GitHub Actions Locally
+
+Use [`act`](https://github.com/nektos/act) to run `.github/workflows/ci.yml` on your machine.
+
+```bash
+# Install toolchain declared in mise config (includes act)
+mise install
+
+# List available CI jobs
+just act-list
+
+# Run CI workflow locally (default event: pull_request)
+just act-ci
+
+# Run a single job
+just act-ci-job test
+```
+
+Notes:
+- The repo `.actrc` maps all matrix runner labels to a Linux container image for local execution.
+- Ensure Docker is running before invoking `act`.
 
 ### Test Coverage
 

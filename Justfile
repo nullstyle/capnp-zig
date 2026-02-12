@@ -56,6 +56,18 @@ ci:
     zig build test --summary all
     just e2e
 
+# List CI workflow jobs as seen by `act`
+act-list:
+    act -W .github/workflows/ci.yml -l
+
+# Run GitHub Actions CI workflow locally with `act`
+act-ci event="pull_request":
+    act {{ event }} -W .github/workflows/ci.yml
+
+# Run a single CI job locally with `act` (example: `just act-ci-job test`)
+act-ci-job job event="pull_request":
+    act {{ event }} -W .github/workflows/ci.yml -j {{ job }}
+
 # Install to a local bin path (defaults to ~/.local/bin)
 install dest="${HOME}/.local/bin": release
     mkdir -p "{{ dest }}"
