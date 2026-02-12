@@ -1,88 +1,177 @@
 # KVStore Example
 
-A complete Cap'n Proto RPC example with a key-value store server and client running as separate processes.
+**WARNING: this shit was entirely vibed into existence.  pretty cool it actually works though**
 
-## What it demonstrates
+Cap'n Proto RPC key/value service backed by RocksDB, with an interactive Zig TUI client.
 
-- 4-method RPC interface (get, set, delete, list)
-- Text, Data, nested structs, and List types
-- Stateful server with in-memory storage
-- Separate client/server processes over TCP
-- Callback-driven async RPC with chained operations
+This example is intentionally close to a real service shape:
 
-## Schema
+- Persistent storage (RocksDB)
+- Batch writes (`writeBatch`) with per-batch version assignment
+- Prefix listing for browser-style reads
+- Server-driven client notifications
+- Backup/restore operations through the RPC protocol
 
-See `kvstore.capnp` for the interface definition. The generated Zig code is checked in as `kvstore.zig`.
+## What You Get
 
-## Running
+- `server.zig`: TCP RPC server that hosts `KvStore`
+- `client.zig`: interactive browser + REPL client built with `zigzag`
+- `kvstore.capnp`: protocol schema
+- `gen/kvstore.zig`: generated Zig bindings
 
-All commands should be run from this directory (`examples/kvstore/`).
+## Protocol Summary
 
-### Option 1: Two terminals
+Schema: `examples/kvstore/kvstore.capnp`
 
-Terminal 1 (server):
-```bash
-zig build server -- --port 9000
-```
+`KvStore` methods:
 
-Terminal 2 (client):
-```bash
-zig build client -- --port 9000
-```
+- `get(key)` -> `(entry, found)`
+- `writeBatch(ops)` -> `(results, applied, nextVersion)`
+- `list(prefix, limit)` -> `(entries)`
+- `subscribe(notifier)` -> `()`
+- `setWatchedKeys(keys)` -> `()`
+- `createBackup(flushBeforeBackup)` -> `(backup, backupCount)`
+- `listBackups()` -> `(backups)`
+- `restoreFromBackup(backupId, keepLogFiles)` -> `(restoredBackupId, nextVersion)`
 
-### Option 2: Procfile
+`KvClientNotifier` methods:
 
-```bash
-overmind start
-# or
-foreman start
-```
+- `keysChanged(changes)`: keyed change notifications for watched keys
+- `stateResetRequired(restoredBackupId, nextVersion)`: sent when another client restores a backup
 
-### Option 3: just recipes (from repo root)
+## Semantics That Matter
 
-```bash
-just example-kvstore-server      # default port 9000
-just example-kvstore-client 9001 # custom port
-```
+### Versioning
 
-## Expected output
+- Versions are persisted in RocksDB metadata.
+- A `writeBatch` that contains at least one `put` consumes exactly one new version.
+- All `put` operations in that batch share the same assigned version.
+- Delete-only batches do not consume a new version.
 
-Server:
-```
-READY on 0.0.0.0:9000
-info: client connected
-info: SET "hello" (5 bytes) -> version 1 (new)
-info: SET "count" (4 bytes) -> version 2 (new)
-info: GET "hello"
-info: SET "hello" (7 bytes) -> version 3 (update)
-info: LIST prefix="" limit=10
-info: DELETE "count"
-info: GET "count"
-info: client disconnected
-```
+### Notifications
 
-Client:
-```
-Connected to KvStore server
+- Clients subscribe once, then keep their watched key set current with `setWatchedKeys`.
+- The included TUI client automatically watches keys currently visible in the browser table.
+- `keysChanged` is delivered only to other clients (not the writer) and only when changed keys intersect each client's watched set.
+- `restoreFromBackup` triggers `stateResetRequired` to all other subscribed clients (not filtered by watched keys). Clients should clear local state and reload.
 
-1. SET "hello" = "world" -> version 1
-2. SET "count" = [0,0,0,42] -> version 2
-3. GET "hello" -> found=true, value="world"
-4. SET "hello" = "updated" -> version 3
-5. LIST "" limit=10 -> 2 entries:
-     [0] "hello" = 7 bytes, version 3
-     [1] "count" = 4 bytes, version 2
-6. DELETE "count" -> found=true
-7. GET "count" -> found=false
+## Build And Run
 
-All operations completed successfully!
-```
+Run from `examples/kvstore/`.
 
-## Regenerating the schema
-
-If you modify `kvstore.capnp`, regenerate the Zig code from the repo root:
+### Common tasks
 
 ```bash
-zig build && capnp compile -o ./zig-out/bin/capnpc-zig examples/kvstore/kvstore.capnp
-mv kvstore.capnp.zig examples/kvstore/kvstore.zig
+just gen
+just build
+just test
+```
+
+### Start server
+
+```bash
+just server
+# custom:
+just server host=0.0.0.0 port=9000 db_path=kvstore-data backup_dir=kvstore-backups
+```
+
+Server flags:
+
+- `--host` (default `0.0.0.0`)
+- `--port` (default `9000`)
+- `--db-path` (default `kvstore-data`)
+- `--backup-dir` (default `kvstore-backups`)
+
+### Start client
+
+```bash
+just client
+# custom:
+just client host=127.0.0.1 port=9000
+```
+
+Client flags:
+
+- `--host` (default `127.0.0.1`)
+- `--port` (default `9000`)
+
+## Client UI
+
+Two working areas:
+
+- Browser table: key, version, preview
+- REPL input: command execution + history + autocomplete
+
+Useful keys:
+
+- `Tab`: autocomplete (REPL) or mode switch when appropriate
+- `Enter`: run command (REPL) or open selected key (browser)
+- `Up` / `Down`: REPL history
+- `Ctrl+L`: clear log panel
+- `Ctrl+C`: quit
+- `q`: quit from browser mode
+
+## REPL Commands
+
+- `help`
+- `ls [prefix] [limit]` (alias: `list`)
+- `get <key>`
+- `put <key> <value>`
+- `del <key>` (alias: `delete`)
+- `batch <ops>`
+- `backup [noflush]`
+- `backups`
+- `restore <latest|backupId> [keep-logs]`
+- `open [index]`
+- `quit` (alias: `exit`)
+
+## Batch Syntax
+
+Batch operations are semicolon-separated.
+
+Supported ops:
+
+- `put <key> <value>`
+- `puthex <key> <hex>` (optional `0x` prefix)
+- `del <key>` (alias `delete`)
+
+Examples:
+
+```text
+batch put user:1 alice; put user:2 bob; del user:3
+batch puthex blob:1 000102ff; del old:key
+```
+
+## Backup And Restore Workflow
+
+Create and inspect backups:
+
+```text
+backup
+backups
+```
+
+Restore latest:
+
+```text
+restore latest
+```
+
+Restore a specific backup and keep log files:
+
+```text
+restore 12 keep-logs
+```
+
+After restore:
+
+- Restoring client receives normal RPC response with `(restoredBackupId, nextVersion)`.
+- Other connected subscribed clients receive `stateResetRequired` and should reload their view/state.
+
+## Regeneration
+
+If you change `kvstore.capnp`, regenerate bindings:
+
+```bash
+just gen
 ```

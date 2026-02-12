@@ -5,6 +5,14 @@
         .capnpc_zig = .{
             .path = "../..",
         },
+        .rocksdb = .{
+            .url = "git+https://github.com/Syndica/rocksdb-zig.git#baceb67dc9c66e8ba40a83da3de3fd959b889e57",
+            .hash = "rocksdb-9.7.4-z_CUTg_HAABgQurZzAhpJL5Erij8ZnppTmy3g1LIM8br",
+        },
+        .zigzag = .{
+            .url = "git+https://github.com/meszmate/zigzag.git#40e75f19185d08fc4b23605f05f7532623b2baa2",
+            .hash = "zigzag-0.1.0-YXwYS_f5BQB5yna7zCiQNd0hWcmmCHtnSorDtpR2a7nJ",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x2124e4f37c596927,

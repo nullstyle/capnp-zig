@@ -87,8 +87,8 @@ example: build
     capnp compile -o ./zig-out/bin/capnpc-zig tests/test_schemas/example.capnp
 
 # Run KVStore example server
-example-kvstore-server port="9000":
-    cd examples/kvstore && zig build server -- --port {{ port }}
+example-kvstore-server port="9000" db_path="kvstore-data":
+    cd examples/kvstore && zig build server -- --port {{ port }} --db-path {{ db_path }}
 
 # Run KVStore example client
 example-kvstore-client port="9000":

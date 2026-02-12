@@ -1,0 +1,19 @@
+# Regenerate gen/kvstore.zig from kvstore.capnp using the repository plugin.
+gen:
+    capnpc -ozig:gen kvstore.capnp
+
+# Build kvstore server + client.
+build:
+    zig build
+
+# Run local compile tests for server + client modules.
+test:
+    zig build test
+
+# Run the KVStore server.
+server host="0.0.0.0" port="9000" db_path="kvstore-data" backup_dir="kvstore-backups":
+    zig build server -- --host {{ host }} --port {{ port }} --db-path {{ db_path }} --backup-dir {{ backup_dir }}
+
+# Run the interactive KVStore client.
+client host="127.0.0.1" port="9000":
+    zig build client -- --host {{ host }} --port {{ port }}

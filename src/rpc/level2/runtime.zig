@@ -1,7 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_runtime);
-const xev = @import("xev").Dynamic;
+const xev_pkg = @import("xev");
+const xev = xev_pkg.Dynamic;
 const Connection = @import("connection.zig").Connection;
 
 /// The RPC event-loop runtime.
@@ -14,6 +15,7 @@ const Connection = @import("connection.zig").Connection;
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
     loop: xev.Loop,
+    thread_pool: ?*xev_pkg.ThreadPool = null,
 
     /// Thread ID captured at creation time. Used by debug-mode assertions
     /// to verify single-threaded access. Initialized to 0 and set to the
@@ -62,10 +64,21 @@ pub const Runtime = struct {
     /// checks.
     pub fn init(allocator: std.mem.Allocator) !Runtime {
         try Runtime.ensureBackend();
-        const loop = try xev.Loop.init(.{});
+        const thread_pool = try allocator.create(xev_pkg.ThreadPool);
+        errdefer allocator.destroy(thread_pool);
+        thread_pool.* = xev_pkg.ThreadPool.init(.{});
+        errdefer {
+            thread_pool.shutdown();
+            thread_pool.deinit();
+        }
+
+        const loop = try xev.Loop.init(.{
+            .thread_pool = thread_pool,
+        });
         return .{
             .allocator = allocator,
             .loop = loop,
+            .thread_pool = thread_pool,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) 0 else std.Thread.getCurrentId(),
         };
     }
@@ -74,6 +87,12 @@ pub const Runtime = struct {
     pub fn deinit(self: *Runtime) void {
         self.assertThreadAffinity();
         self.loop.deinit();
+        if (self.thread_pool) |thread_pool| {
+            thread_pool.shutdown();
+            thread_pool.deinit();
+            self.allocator.destroy(thread_pool);
+            self.thread_pool = null;
+        }
     }
 
     /// Drive the event loop. Must be called from the owner thread.
