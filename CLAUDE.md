@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is this project?
 
-capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/) — a serialization framework and RPC system. It includes a compiler plugin (`capnpc-zig`), a message serialization library, and an in-progress RPC runtime built on libxev.
+capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/) — a serialization framework and RPC system. It includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on libxev.
 
 ## Build & Test Commands
 
@@ -42,7 +42,7 @@ Four-layer design, each building on the previous:
 
 **Code Generation** (`src/capnpc-zig/`) — Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-**RPC Runtime** (`src/rpc/`, IN PROGRESS) — Cap'n Proto RPC over TCP using libxev. Modules: `runtime.zig` (event loop), `connection.zig` (state machine), `framing.zig` (message framing), `transport_xev.zig` (async I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
+**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP using libxev. Modules: `runtime.zig` (event loop), `connection.zig` (state machine), `framing.zig` (message framing), `transport_xev.zig` (async I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
 
 ### Key data flows
 
@@ -71,4 +71,4 @@ Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation
 
 ## Current Status
 
-Phases 1–5 complete (wire format, builder, codegen, interop, benchmarks). Phase 6 (RPC runtime + codegen) is in progress — see `PLAN.md` and `docs/rpc_runtime_design.md`.
+Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC runtime + codegen). Phase 7 (production hardening) is in progress — see `PLAN.md` and `docs/rpc_runtime_design.md`.

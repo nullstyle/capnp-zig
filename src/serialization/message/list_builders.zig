@@ -59,6 +59,7 @@ pub fn define(
             pub fn setAll(self: U8ListBuilder, data: []const u8) !void {
                 if (data.len != self.element_count) return error.InvalidLength;
                 const segment = &self.builder.segments.items[self.segment_id];
+                std.debug.assert(self.elements_offset + data.len <= segment.items.len);
                 const slice = segment.items[self.elements_offset .. self.elements_offset + data.len];
                 std.mem.copyForwards(u8, slice, data);
             }

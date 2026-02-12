@@ -106,7 +106,7 @@ const PendingThirdPartyAwait = struct {
 const ForwardCallContext = struct {
     peer: *Peer,
     payload: protocol.Payload,
-    inbound_caps: *const cap_table.InboundCapTable,
+    inbound_caps: cap_table.InboundCapTable,
     send_results_to: protocol.SendResultsToTag,
     send_results_to_third_party_payload: ?[]u8 = null,
     answer_id: u32,
@@ -114,6 +114,7 @@ const ForwardCallContext = struct {
 
     fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *ForwardCallContext = @ptrCast(@alignCast(ctx_ptr));
+        ctx.inbound_caps.deinit();
         if (ctx.send_results_to_third_party_payload) |payload| allocator.free(payload);
         allocator.destroy(ctx);
     }
@@ -338,6 +339,14 @@ pub const Peer = struct {
     /// null and set to the real thread ID in `initDetached`.
     owner_thread_id: ?std.Thread.Id = null,
 
+    /// Disable the thread-affinity check so that any thread may call
+    /// methods on this peer. This is intended for use by the WASM ABI
+    /// layer where a global mutex provides synchronization and the peer
+    /// may be accessed from different host threads.
+    pub fn disableThreadAffinity(self: *Peer) void {
+        self.owner_thread_id = null;
+    }
+
     /// Assert that the caller is on the thread that created this peer.
     /// This is a no-op in release builds. In debug builds, it panics
     /// with a clear message if the current thread is not the owner.
@@ -394,8 +403,14 @@ pub const Peer = struct {
     }
 
     /// Bind a typed connection to this peer, wiring up transport callbacks.
+    ///
+    /// Asserts that no transport is already attached. Call `detachConnection`
+    /// first if you need to replace an existing transport.
     pub fn attachConnection(self: *Peer, conn: anytype) void {
         self.assertThreadAffinity();
+        if (self.hasAttachedTransport()) {
+            @panic("attachConnection called while a transport is already attached; call detachConnection first");
+        }
         const ConnPtr = @TypeOf(conn);
         comptime {
             const info = @typeInfo(ConnPtr);
@@ -450,6 +465,9 @@ pub const Peer = struct {
         is_closing: ?TransportIsClosingFn,
     ) void {
         self.assertThreadAffinity();
+        if (self.hasAttachedTransport()) {
+            @panic("attachTransport called while a transport is already attached; call detachTransport first");
+        }
         peer_transport_state.attachTransportForPeer(
             Peer,
             TransportStartFn,
@@ -552,11 +570,9 @@ pub const Peer = struct {
             self.allocator,
             &self.pending_accepts_by_embargo,
         );
-        peer_cleanup.deinitOwnedBytesMap(
-            @TypeOf(self.pending_accept_embargo_by_question),
-            self.allocator,
-            &self.pending_accept_embargo_by_question,
-        );
+        // Values in pending_accept_embargo_by_question are borrowed from
+        // pending_accepts_by_embargo (already freed above), so just deinit.
+        self.pending_accept_embargo_by_question.deinit();
         peer_cleanup.deinitOwnedStringKeyMap(
             @TypeOf(self.pending_third_party_awaits),
             self.allocator,
@@ -590,7 +606,20 @@ pub const Peer = struct {
 
     /// Best-effort: send Release messages for all remaining imports so the
     /// remote peer can decrement its export ref counts.
+    ///
+    /// Errors are logged but not propagated because this runs during `deinit`
+    /// when the transport may already be closed or in an error state.
+    ///
+    /// If the transport send function is null (i.e. the connection was
+    /// already destroyed or never attached), we skip sending entirely --
+    /// there is no peer to receive the Release messages.
     fn releaseAllImports(self: *Peer) void {
+        // If neither a send-frame override nor the transport send function is
+        // available, the connection is already gone -- skip sending.
+        if (self.send_frame_override == null and self.transport_send == null) {
+            log.debug("releaseAllImports: transport not attached, skipping release messages", .{});
+            return;
+        }
         var it = self.caps.imports.iterator();
         while (it.next()) |entry| {
             peer_outbound_control.sendReleaseViaSendFrame(
@@ -599,7 +628,9 @@ pub const Peer = struct {
                 entry.key_ptr.*,
                 entry.value_ptr.ref_count,
                 Peer.sendFrame,
-            ) catch {};
+            ) catch |err| {
+                log.debug("releaseAllImports: failed to send release for import {}: {}", .{ entry.key_ptr.*, err });
+            };
         }
     }
 
@@ -948,7 +979,7 @@ pub const Peer = struct {
         ctx.* = .{
             .peer = self,
             .payload = call.params,
-            .inbound_caps = inbound_caps,
+            .inbound_caps = try inbound_caps.clone(),
             .send_results_to = .caller,
             .send_results_to_third_party_payload = null,
             .answer_id = call.question_id,
@@ -1011,7 +1042,7 @@ pub const Peer = struct {
             call_builder.call.builder,
             payload_builder,
             ctx.payload,
-            ctx.inbound_caps,
+            &ctx.inbound_caps,
         );
     }
 
@@ -1023,6 +1054,7 @@ pub const Peer = struct {
     ) anyerror!void {
         const ctx: *ForwardCallContext = castCtx(*ForwardCallContext, ctx_ptr);
         defer {
+            ctx.inbound_caps.deinit();
             if (ctx.send_results_to_third_party_payload) |payload| peer.allocator.free(payload);
             peer.allocator.destroy(ctx);
         }
@@ -1121,6 +1153,7 @@ pub const Peer = struct {
         try self.sendReturnFrameWithLoopback(answer_id, bytes);
 
         const copy = try self.allocator.alloc(u8, bytes.len);
+        errdefer self.allocator.free(copy);
         std.mem.copyForwards(u8, copy, bytes);
         try self.recordResolvedAnswer(answer_id, copy);
     }
@@ -1133,6 +1166,7 @@ pub const Peer = struct {
 
         if (ret.tag == .results) {
             const copy = try self.allocator.alloc(u8, frame.len);
+            errdefer self.allocator.free(copy);
             std.mem.copyForwards(u8, copy, frame);
             try self.recordResolvedAnswer(ret.answer_id, copy);
         }

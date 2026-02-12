@@ -16,6 +16,8 @@ fn noopLog(
     _: anytype,
 ) void {}
 
+const log = std.log.scoped(.wasm_abi);
+
 const HostPeer = core.rpc.host_peer.HostPeer;
 const message = core.message;
 const Peer = core.rpc.peer.Peer;
@@ -107,6 +109,10 @@ const PeerState = struct {
     fn init(self: *PeerState) !void {
         self.outgoing_fba = std.heap.FixedBufferAllocator.init(&self.outgoing_storage);
         self.host = HostPeer.initWithOutgoingAllocator(allocator, self.outgoing_fba.allocator());
+        // The WASM ABI's global mutex serializes all access, so thread
+        // affinity checking is redundant. Disable it so that peers created
+        // on one thread can be used from another without a debug panic.
+        self.host.peer.disableThreadAffinity();
         self.host.start(null, null);
         try self.host.enableHostCallBridge();
         self.last_popped = null;
@@ -194,25 +200,25 @@ fn asSlice(ptr: AbiPtr, len: u32) ![]const u8 {
 
 fn writeU32(ptr: AbiPtr, value: u32) !void {
     if (ptr == 0) return error.NullPointer;
-    const out: *u32 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    const out: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
 fn writeU16(ptr: AbiPtr, value: u16) !void {
     if (ptr == 0) return error.NullPointer;
-    const out: *u16 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    const out: *align(1) u16 = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
 fn writeU64(ptr: AbiPtr, value: u64) !void {
     if (ptr == 0) return error.NullPointer;
-    const out: *u64 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    const out: *align(1) u64 = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
 fn writeAbiPtr(ptr: AbiPtr, value: AbiPtr) !void {
     if (ptr == 0) return error.NullPointer;
-    const out: *AbiPtr = @ptrFromInt(@as(usize, @intCast(ptr)));
+    const out: *align(1) AbiPtr = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
@@ -307,7 +313,7 @@ pub export fn capnp_last_error_ptr() AbiPtr {
     global_mutex.lock();
     defer global_mutex.unlock();
 
-    return @intCast(@intFromPtr(&last_error_buf));
+    return ptrToAbi(@intFromPtr(&last_error_buf)) catch 0;
 }
 
 /// Return the length of the current error message, or 0 if no error is pending.
@@ -352,11 +358,17 @@ pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, ou
     global_mutex.lock();
     defer global_mutex.unlock();
 
+    // Validate ALL output pointers before performing any writes, so that a
+    // failure on the second or third pointer cannot overwrite the original
+    // error state after the first pointer has already been written.
     if (out_code_ptr == 0 or out_msg_ptr_ptr == 0 or out_msg_len_ptr == 0) {
         setError(ERROR_INVALID_ARG, "output pointer is null");
         return 0;
     }
 
+    // Verify each pointer is usable by checking alignment/validity upfront.
+    // writeU32 and writeAbiPtr only fail on null, which is already checked
+    // above. Collect all values before writing anything.
     const code = last_error_code;
     const len = last_error_len;
     const msg_ptr: AbiPtr = if (code == 0 or len == 0)
@@ -367,18 +379,11 @@ pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, ou
             return 0;
         };
 
-    writeU32(out_code_ptr, code) catch {
-        setError(ERROR_INVALID_ARG, "invalid out_code_ptr");
-        return 0;
-    };
-    writeAbiPtr(out_msg_ptr_ptr, msg_ptr) catch {
-        setError(ERROR_INVALID_ARG, "invalid out_msg_ptr_ptr");
-        return 0;
-    };
-    writeU32(out_msg_len_ptr, len) catch {
-        setError(ERROR_INVALID_ARG, "invalid out_msg_len_ptr");
-        return 0;
-    };
+    // All validation passed — perform writes. These cannot fail because
+    // null pointers were rejected above.
+    writeU32(out_code_ptr, code) catch unreachable;
+    writeAbiPtr(out_msg_ptr_ptr, msg_ptr) catch unreachable;
+    writeU32(out_msg_len_ptr, len) catch unreachable;
 
     clearErrorState();
     return if (code == 0) 0 else 1;
@@ -406,12 +411,10 @@ pub export fn capnp_peer_new() u32 {
         setError(ERROR_PEER_CREATE, @errorName(err));
         return 0;
     };
-    errdefer {
-        state.deinit();
-        allocator.destroy(state);
-    }
 
     peers.put(allocator, id, state) catch {
+        state.deinit();
+        allocator.destroy(state);
         setError(ERROR_PEER_CREATE, "peer map insert failed");
         return 0;
     };
@@ -479,10 +482,9 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
         return 0;
     }
 
-    if (state.last_popped) |frame| {
-        state.host.freeFrame(frame);
-        state.last_popped = null;
-        state.resetScratchIfIdle();
+    if (state.last_popped != null) {
+        setError(ERROR_PEER_POP, "previous frame not committed; call capnp_peer_pop_commit first");
+        return 0;
     }
 
     const frame = state.host.popOutgoingFrame() orelse {
@@ -503,6 +505,11 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
         setError(ERROR_PEER_POP, "frame pointer overflow");
         return 0;
     };
+    if (frame.len > std.math.maxInt(u32)) {
+        state.host.freeFrame(frame);
+        setError(ERROR_PEER_POP, "frame too large for ABI");
+        return 0;
+    }
     const frame_len_u32: u32 = @intCast(frame.len);
 
     writeAbiPtr(out_ptr_ptr, frame_ptr) catch {
@@ -541,6 +548,13 @@ pub export fn capnp_peer_pop_commit(peer: u32) void {
 }
 
 /// Install the default bootstrap stub on the peer.
+///
+/// This replaces any previously configured bootstrap capability (including the
+/// host call bridge bootstrap set during peer initialization). The old export
+/// entry is not reclaimed. Callers should only call this once per peer; repeated
+/// calls are idempotent (they return the same export ID without replacing the
+/// bootstrap again).
+///
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_peer_set_bootstrap_stub(peer: u32) u32 {
     global_mutex.lock();
@@ -554,6 +568,10 @@ pub export fn capnp_peer_set_bootstrap_stub(peer: u32) u32 {
     };
 
     if (state.bootstrap_stub_export_id != null) return 1;
+
+    if (state.host.host_bridge_enabled) {
+        log.warn("peer {d}: replacing host call bridge bootstrap with bootstrap stub", .{peer});
+    }
 
     const export_id = state.host.peer.setBootstrap(.{
         .ctx = &bootstrap_stub_ctx,
@@ -771,6 +789,11 @@ pub export fn capnp_peer_pop_host_call(
         setError(ERROR_HOST_CALL, "host call frame pointer overflow");
         return 0;
     };
+    if (call.frame.len > std.math.maxInt(u32)) {
+        state.host.freeHostCallFrame(call.frame);
+        setError(ERROR_HOST_CALL, "frame too large for ABI");
+        return 0;
+    }
     const frame_len: u32 = @intCast(call.frame.len);
 
     writeU32(out_question_id_ptr, call.question_id) catch {
@@ -994,7 +1017,6 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
         setError(ERROR_ALLOC, "schema manifest allocation failed");
         return 0;
     };
-    errdefer allocator.free(copy);
     std.mem.copyForwards(u8, copy, manifest);
 
     writeOutBuffer(out_ptr_ptr, out_len_ptr, copy) catch |err| {

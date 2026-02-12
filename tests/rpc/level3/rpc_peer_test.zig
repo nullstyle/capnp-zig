@@ -1427,6 +1427,171 @@ test "peer duplicate awaitFromThirdParty completion sends abort" {
     try std.testing.expectEqualStrings("duplicate awaitFromThirdParty completion", abort.exception.reason);
 }
 
+test "peer attachConnection sets hasAttachedTransport to true" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    // Before attaching, no transport is present.
+    try std.testing.expect(!peer.hasAttachedTransport());
+
+    var conn: Connection = undefined;
+    peer.attachConnection(&conn);
+
+    // After attaching, the transport is present — this is the condition
+    // that would trigger the @panic guard on a second attachConnection call.
+    try std.testing.expect(peer.hasAttachedTransport());
+}
+
+test "peer attachTransport sets hasAttachedTransport to true" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    try std.testing.expect(!peer.hasAttachedTransport());
+
+    const DummyTransport = struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn start(_: *anyopaque, _: *Peer) void {}
+        fn close(_: *anyopaque) void {}
+        fn isClosing(_: *anyopaque) bool {
+            return false;
+        }
+    };
+
+    var ctx: u8 = 0;
+    peer.attachTransport(
+        @ptrCast(&ctx),
+        DummyTransport.start,
+        DummyTransport.send,
+        DummyTransport.close,
+        DummyTransport.isClosing,
+    );
+
+    // After attaching, the transport is present — this is the condition
+    // that would trigger the @panic guard on a second attachTransport call.
+    try std.testing.expect(peer.hasAttachedTransport());
+}
+
+test "peer detachConnection then re-attachConnection succeeds" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var conn1: Connection = undefined;
+    peer.attachConnection(&conn1);
+    try std.testing.expect(peer.hasAttachedTransport());
+
+    // Detach the connection.
+    peer.detachConnection();
+    try std.testing.expect(!peer.hasAttachedTransport());
+
+    // Re-attach a different connection — this must succeed because the
+    // transport was properly detached first. Without detach, this would
+    // trigger the @panic in attachConnection.
+    var conn2: Connection = undefined;
+    peer.attachConnection(&conn2);
+    try std.testing.expect(peer.hasAttachedTransport());
+}
+
+test "peer detachTransport then re-attachTransport succeeds" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const DummyTransport = struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn start(_: *anyopaque, _: *Peer) void {}
+        fn close(_: *anyopaque) void {}
+        fn isClosing(_: *anyopaque) bool {
+            return false;
+        }
+    };
+
+    var ctx1: u8 = 0;
+    peer.attachTransport(
+        @ptrCast(&ctx1),
+        DummyTransport.start,
+        DummyTransport.send,
+        DummyTransport.close,
+        DummyTransport.isClosing,
+    );
+    try std.testing.expect(peer.hasAttachedTransport());
+
+    // Detach the transport.
+    peer.detachTransport();
+    try std.testing.expect(!peer.hasAttachedTransport());
+
+    // Re-attach a different transport — this must succeed because the
+    // transport was properly detached first. Without detach, this would
+    // trigger the @panic in attachTransport.
+    var ctx2: u8 = 0;
+    peer.attachTransport(
+        @ptrCast(&ctx2),
+        DummyTransport.start,
+        DummyTransport.send,
+        DummyTransport.close,
+        DummyTransport.isClosing,
+    );
+    try std.testing.expect(peer.hasAttachedTransport());
+}
+
+test "peer attachConnection after attachTransport triggers hasAttachedTransport guard" {
+    // Verify that mixing attachConnection and attachTransport correctly
+    // detects the double-attach condition. The @panic cannot be caught
+    // in-process, so we verify the precondition that triggers it.
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const DummyTransport = struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn start(_: *anyopaque, _: *Peer) void {}
+        fn close(_: *anyopaque) void {}
+        fn isClosing(_: *anyopaque) bool {
+            return false;
+        }
+    };
+
+    var ctx: u8 = 0;
+    peer.attachTransport(
+        @ptrCast(&ctx),
+        DummyTransport.start,
+        DummyTransport.send,
+        DummyTransport.close,
+        DummyTransport.isClosing,
+    );
+
+    // The transport is attached; attempting attachConnection now would
+    // hit the @panic guard. We verify the guard condition holds.
+    try std.testing.expect(peer.hasAttachedTransport());
+
+    // Detach first, then attachConnection succeeds.
+    peer.detachTransport();
+    try std.testing.expect(!peer.hasAttachedTransport());
+
+    var conn: Connection = undefined;
+    peer.attachConnection(&conn);
+    try std.testing.expect(peer.hasAttachedTransport());
+}
+
+test "peer init attaches connection immediately" {
+    // Peer.init calls attachConnection internally. Verify the transport
+    // is attached right away, meaning a second attach would panic.
+    const allocator = std.testing.allocator;
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    try std.testing.expect(peer.hasAttachedTransport());
+}
+
 test {
     _ = @import("rpc_peer_control_from_peer_control_zig_test.zig");
 }

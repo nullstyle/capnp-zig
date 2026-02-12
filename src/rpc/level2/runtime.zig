@@ -93,6 +93,23 @@ pub const Runtime = struct {
 /// All methods and callbacks execute on the event-loop owner thread.
 /// The `on_accept` callback is invoked for each new connection; the
 /// callee takes ownership of the heap-allocated `Connection`.
+///
+/// ## Cleanup
+///
+/// `Listener` has no synchronous `deinit`. The only cleanup path is
+/// `close()`, which enqueues an asynchronous close on the event loop.
+/// The underlying socket fd is not released until the event loop
+/// processes the close completion. Therefore:
+///
+///  1. Call `close()` to initiate shutdown.
+///  2. Continue driving the event loop (e.g., `runtime.run(.until_done)`)
+///     until all pending completions — including the listener's close —
+///     have fired.
+///  3. Only after the event loop has been fully drained is it safe to
+///     tear down the `Runtime`.
+///
+/// If the process exits or the event loop is torn down before the close
+/// completion fires, the listener's socket file descriptor will leak.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     loop: *xev.Loop,
@@ -114,6 +131,7 @@ pub const Listener = struct {
         conn_options: Connection.Options,
     ) !Listener {
         var socket = try xev.TCP.init(addr);
+        errdefer std.posix.close(socketFd(socket));
         try socket.bind(addr);
         try socket.listen(128);
 
@@ -152,7 +170,12 @@ pub const Listener = struct {
         self.queueAccept();
     }
 
-    /// Stop accepting and close the listener socket.
+    /// Stop accepting and close the listener socket asynchronously.
+    ///
+    /// The socket is not actually closed until the event loop processes
+    /// the close completion. Callers must continue running the event loop
+    /// after calling this method to ensure the fd is released. See the
+    /// struct-level documentation for the full cleanup protocol.
     pub fn close(self: *Listener) void {
         self.socket.close(self.loop, &self.close_completion, Listener, self, Listener.onClosed);
     }
@@ -178,21 +201,8 @@ pub const Listener = struct {
         // interaction adding ~40ms request/response stalls for some clients.
         enableTcpNoDelay(socket);
 
-        const conn_ptr = listener.allocator.create(Connection) catch |err| {
-            log.debug("connection alloc failed: {}", .{err});
-            std.posix.close(socketFd(socket));
-            listener.queueAccept();
-            return .disarm;
-        };
-
-        conn_ptr.* = Connection.init(
-            listener.allocator,
-            listener.loop,
-            socket,
-            listener.conn_options,
-        ) catch |err| {
-            log.debug("connection init failed: {}", .{err});
-            listener.allocator.destroy(conn_ptr);
+        const conn_ptr = listener.createConnection(socket) catch |err| {
+            log.debug("connection setup failed: {}", .{err});
             std.posix.close(socketFd(socket));
             listener.queueAccept();
             return .disarm;
@@ -201,6 +211,21 @@ pub const Listener = struct {
         listener.on_accept(listener, conn_ptr);
         listener.queueAccept();
         return .disarm;
+    }
+
+    /// Allocate and initialize a Connection. Uses errdefer to guarantee
+    /// the heap allocation is freed if Connection.init fails.
+    fn createConnection(self: *Listener, socket: xev.TCP) !*Connection {
+        const conn_ptr = try self.allocator.create(Connection);
+        errdefer self.allocator.destroy(conn_ptr);
+
+        conn_ptr.* = try Connection.init(
+            self.allocator,
+            self.loop,
+            socket,
+            self.conn_options,
+        );
+        return conn_ptr;
     }
 
     fn onClosed(
@@ -237,4 +262,53 @@ test "runtime backend selection can initialize a loop" {
     try Runtime.ensureBackend();
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
+}
+
+test "createConnection returns OOM when Connection allocation fails" {
+    try Runtime.ensureBackend();
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+
+    const DummyAccept = struct {
+        fn onAccept(_: *Listener, _: *Connection) void {}
+    };
+
+    // fail_index = 0: the very first allocation (create(Connection)) fails.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var listener = Listener{
+        .allocator = failing.allocator(),
+        .loop = &loop,
+        .socket = undefined,
+        .on_accept = DummyAccept.onAccept,
+        .conn_options = .{},
+    };
+
+    // createConnection should propagate OutOfMemory. No memory should leak.
+    try std.testing.expectError(error.OutOfMemory, listener.createConnection(undefined));
+}
+
+test "createConnection errdefer frees Connection when Transport.init fails" {
+    try Runtime.ensureBackend();
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+
+    const DummyAccept = struct {
+        fn onAccept(_: *Listener, _: *Connection) void {}
+    };
+
+    // fail_index = 1: the first allocation (create(Connection)) succeeds,
+    // but the second allocation (read buffer inside Transport.init) fails.
+    // The errdefer in createConnection must free the Connection to avoid a leak.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var listener = Listener{
+        .allocator = failing.allocator(),
+        .loop = &loop,
+        .socket = undefined,
+        .on_accept = DummyAccept.onAccept,
+        .conn_options = .{},
+    };
+
+    // createConnection should propagate OutOfMemory. The errdefer ensures
+    // the already-allocated Connection is freed — no leak.
+    try std.testing.expectError(error.OutOfMemory, listener.createConnection(undefined));
 }

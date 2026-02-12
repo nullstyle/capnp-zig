@@ -322,7 +322,7 @@ fn parseSuperclasses(allocator: std.mem.Allocator, reader: message.StructReader)
 
 fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.ConstNode {
     const type_reader = try reader.readStruct(3);
-    const typ = try parseType(allocator, type_reader);
+    const typ = try parseType(allocator, type_reader, 0);
     errdefer freeType(allocator, typ);
 
     const value_reader = reader.readStruct(4) catch |err| switch (err) {
@@ -342,7 +342,7 @@ fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !s
 
 fn parseAnnotationNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.AnnotationNode {
     const type_reader = try reader.readStruct(3);
-    const typ = try parseType(allocator, type_reader);
+    const typ = try parseType(allocator, type_reader, 0);
 
     return .{
         .type = typ,
@@ -409,7 +409,7 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
         .slot => {
             const offset = reader.readU32(4);
             const type_reader = try reader.readStruct(2);
-            const field_type = try parseType(allocator, type_reader);
+            const field_type = try parseType(allocator, type_reader, 0);
             errdefer freeType(allocator, field_type);
 
             const default_value_reader = reader.readStruct(3) catch |err| switch (err) {
@@ -542,7 +542,9 @@ fn parseImports(allocator: std.mem.Allocator, reader: message.StructReader) ![]s
     return imports;
 }
 
-fn parseType(allocator: std.mem.Allocator, reader: message.StructReader) !schema.Type {
+fn parseType(allocator: std.mem.Allocator, reader: message.StructReader, depth: u8) !schema.Type {
+    if (depth > 64) return error.TypeNestingTooDeep;
+
     const which_raw = reader.readU16(0);
     const which_tag = std.meta.intToEnum(TypeWhich, which_raw) catch return error.InvalidTypeKind;
 
@@ -563,7 +565,7 @@ fn parseType(allocator: std.mem.Allocator, reader: message.StructReader) !schema
         .data => .data,
         .list => blk: {
             const element_reader = try reader.readStruct(0);
-            const element_type = try parseType(allocator, element_reader);
+            const element_type = try parseType(allocator, element_reader, depth + 1);
             errdefer freeType(allocator, element_type);
             const element_ptr = try allocator.create(schema.Type);
             element_ptr.* = element_type;

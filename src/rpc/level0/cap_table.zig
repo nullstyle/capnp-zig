@@ -59,7 +59,7 @@ pub const CapTable = struct {
         self.receiver_answers.deinit();
     }
 
-    pub fn totalEntries(self: *CapTable) u32 {
+    pub fn totalEntries(self: *const CapTable) u32 {
         return @as(u32, @intCast(self.imports.count())) +
             @as(u32, @intCast(self.promised_exports.count())) +
             @as(u32, @intCast(self.receiver_answers.count()));
@@ -190,11 +190,19 @@ pub const InboundCapTable = struct {
         const retained = try allocator.alloc(bool, count);
         errdefer allocator.free(retained);
         @memset(retained, false);
-        var idx: u32 = 0;
-        while (idx < count) : (idx += 1) {
-            const reader = try list.get(idx);
+        var processed: u32 = 0;
+        errdefer {
+            // Roll back noteImport calls for already-processed entries
+            for (entries[0..processed]) |entry| {
+                if (entry == .imported) {
+                    _ = table.releaseImport(entry.imported.id);
+                }
+            }
+        }
+        while (processed < count) : (processed += 1) {
+            const reader = try list.get(processed);
             const descriptor = try protocol.CapDescriptor.fromReader(reader);
-            entries[idx] = try resolveDescriptor(table, descriptor);
+            entries[processed] = try resolveDescriptor(table, descriptor);
         }
 
         return .{
@@ -234,6 +242,18 @@ pub const InboundCapTable = struct {
 
     pub fn resolveCapability(self: *const InboundCapTable, cap: message.Capability) !ResolvedCap {
         return self.get(cap.id);
+    }
+
+    /// Create an independent deep copy that owns its own slices.
+    pub fn clone(self: *const InboundCapTable) !InboundCapTable {
+        const entries = try self.allocator.dupe(ResolvedCap, self.entries);
+        errdefer self.allocator.free(entries);
+        const retained = try self.allocator.dupe(bool, self.retained);
+        return .{
+            .allocator = self.allocator,
+            .entries = entries,
+            .retained = retained,
+        };
     }
 };
 
@@ -301,6 +321,9 @@ const OutboundCapTable = struct {
         if (self.index_map.get(map_key)) |existing| return existing;
         const index: u32 = @intCast(self.entries.items.len);
         try self.entries.append(self.allocator, .{ .tag = tag, .id = id });
+        errdefer {
+            _ = self.entries.pop();
+        }
         try self.index_map.put(map_key, index);
         return index;
     }
@@ -394,10 +417,12 @@ fn collectCapsFromPointer(
         1 => {
             const list = try msg.resolveListPointer(resolved.segment_id, resolved.pointer_pos, resolved.pointer_word);
             if (list.element_size == 6) {
+                const segment = msg.segments[list.segment_id];
                 var idx: u32 = 0;
                 while (idx < list.element_count) : (idx += 1) {
                     const pos = list.content_offset + @as(usize, idx) * 8;
-                    const word = std.mem.readInt(u64, msg.segments[list.segment_id][pos..][0..8], .little);
+                    if (pos + 8 > segment.len) return error.OutOfBounds;
+                    const word = std.mem.readInt(u64, segment[pos..][0..8], .little);
                     try collectCapsFromPointer(outbound, table, msg, builder, list.segment_id, pos, word, depth - 1);
                 }
             } else if (list.element_size == 7) {
@@ -427,6 +452,14 @@ fn collectCapsFromPointer(
     }
 }
 
+/// Encode capability descriptors into the outbound payload's cap table.
+///
+/// **Known limitation:** Receiver-answer entries referenced by the payload
+/// are permanently removed from the `CapTable` after encoding. If the
+/// caller encounters an error after this function returns but before the
+/// encoded message is sent on the wire, those receiver-answer entries will
+/// be lost and cannot be recovered. Callers must ensure the encoded message
+/// is sent or accept that the receiver-answer state may be irrecoverable.
 fn encodePayloadCaps(
     table: *CapTable,
     payload: protocol.PayloadBuilder,

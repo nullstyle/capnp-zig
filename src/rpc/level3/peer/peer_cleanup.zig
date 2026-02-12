@@ -1,23 +1,5 @@
 const std = @import("std");
 
-pub fn deinitPendingCallMap(
-    comptime MapType: type,
-    comptime PendingCallType: type,
-    allocator: std.mem.Allocator,
-    map: *MapType,
-    deinit_pending_call: *const fn (std.mem.Allocator, *PendingCallType) void,
-) void {
-    // Pending call queues own both frame bytes and inbound-cap snapshots.
-    var it = map.valueIterator();
-    while (it.next()) |list| {
-        for (list.items) |*pending| {
-            deinit_pending_call(allocator, pending);
-        }
-        list.deinit(allocator);
-    }
-    map.deinit();
-}
-
 pub fn deinitPendingCallMapOwned(
     comptime MapType: type,
     allocator: std.mem.Allocator,
@@ -34,40 +16,10 @@ pub fn deinitPendingCallMapOwned(
     map.deinit();
 }
 
-pub fn deinitValueMap(
-    comptime MapType: type,
-    comptime ValueType: type,
-    allocator: std.mem.Allocator,
-    map: *MapType,
-    deinit_value: *const fn (std.mem.Allocator, *ValueType) void,
-) void {
-    var it = map.valueIterator();
-    while (it.next()) |value| {
-        deinit_value(allocator, value);
-    }
-    map.deinit();
-}
-
 pub fn deinitOwnedStringKeyMap(comptime MapType: type, allocator: std.mem.Allocator, map: *MapType) void {
     var it = map.iterator();
     while (it.next()) |entry| {
         allocator.free(entry.key_ptr.*);
-    }
-    map.deinit();
-}
-
-pub fn deinitOwnedStringKeyMapValues(
-    comptime MapType: type,
-    comptime ValueType: type,
-    allocator: std.mem.Allocator,
-    map: *MapType,
-    deinit_value: *const fn (std.mem.Allocator, *ValueType) void,
-) void {
-    // String-key maps in peer state own duplicated keys that must be freed explicitly.
-    var it = map.iterator();
-    while (it.next()) |entry| {
-        allocator.free(entry.key_ptr.*);
-        deinit_value(allocator, entry.value_ptr);
     }
     map.deinit();
 }

@@ -84,16 +84,19 @@ pub const CapDescriptor = struct {
 
     pub fn writeSenderHosted(builder: anytype, id: u32) void {
         var generated = asGeneratedBuilder(builder);
+        // Generated setter is !void but only calls writeU16/writeU32 on already-allocated data section.
         generated.setSenderHosted(id) catch unreachable;
     }
 
     pub fn writeSenderPromise(builder: anytype, id: u32) void {
         var generated = asGeneratedBuilder(builder);
+        // Generated setter is !void but only calls writeU16/writeU32 on already-allocated data section.
         generated.setSenderPromise(id) catch unreachable;
     }
 
     pub fn writeReceiverHosted(builder: anytype, id: u32) void {
         var generated = asGeneratedBuilder(builder);
+        // Generated setter is !void but only calls writeU16/writeU32 on already-allocated data section.
         generated.setReceiverHosted(id) catch unreachable;
     }
 
@@ -289,91 +292,91 @@ pub const DecodedMessage = struct {
         self.msg.deinit();
     }
 
-    pub fn asBootstrap(self: *DecodedMessage) !Bootstrap {
+    pub fn asBootstrap(self: *const DecodedMessage) !Bootstrap {
         if (self.tag != .bootstrap) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Bootstrap.fromReader(reader);
     }
 
-    pub fn asUnimplemented(self: *DecodedMessage) !Unimplemented {
+    pub fn asUnimplemented(self: *const DecodedMessage) !Unimplemented {
         if (self.tag != .unimplemented) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Unimplemented.fromReader(reader);
     }
 
-    pub fn asAbort(self: *DecodedMessage) !Abort {
+    pub fn asAbort(self: *const DecodedMessage) !Abort {
         if (self.tag != .abort) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Abort.fromReader(reader);
     }
 
-    pub fn asCall(self: *DecodedMessage) !Call {
+    pub fn asCall(self: *const DecodedMessage) !Call {
         if (self.tag != .call) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Call.fromReader(reader);
     }
 
-    pub fn asReturn(self: *DecodedMessage) !Return {
+    pub fn asReturn(self: *const DecodedMessage) !Return {
         if (self.tag != .@"return") return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Return.fromReader(reader);
     }
 
-    pub fn asFinish(self: *DecodedMessage) !Finish {
+    pub fn asFinish(self: *const DecodedMessage) !Finish {
         if (self.tag != .finish) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Finish.fromReader(reader);
     }
 
-    pub fn asRelease(self: *DecodedMessage) !Release {
+    pub fn asRelease(self: *const DecodedMessage) !Release {
         if (self.tag != .release) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Release.fromReader(reader);
     }
 
-    pub fn asResolve(self: *DecodedMessage) !Resolve {
+    pub fn asResolve(self: *const DecodedMessage) !Resolve {
         if (self.tag != .resolve) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Resolve.fromReader(reader);
     }
 
-    pub fn asDisembargo(self: *DecodedMessage) !Disembargo {
+    pub fn asDisembargo(self: *const DecodedMessage) !Disembargo {
         if (self.tag != .disembargo) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Disembargo.fromReader(reader);
     }
 
-    pub fn asProvide(self: *DecodedMessage) !Provide {
+    pub fn asProvide(self: *const DecodedMessage) !Provide {
         if (self.tag != .provide) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Provide.fromReader(reader);
     }
 
-    pub fn asAccept(self: *DecodedMessage) !Accept {
+    pub fn asAccept(self: *const DecodedMessage) !Accept {
         if (self.tag != .accept) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return Accept.fromReader(reader);
     }
 
-    pub fn asThirdPartyAnswer(self: *DecodedMessage) !ThirdPartyAnswer {
+    pub fn asThirdPartyAnswer(self: *const DecodedMessage) !ThirdPartyAnswer {
         if (self.tag != .thirdPartyAnswer) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
         return ThirdPartyAnswer.fromReader(reader);
     }
 
-    pub fn asJoin(self: *DecodedMessage) !Join {
+    pub fn asJoin(self: *const DecodedMessage) !Join {
         if (self.tag != .join) return error.UnexpectedMessage;
         const root = try self.msg.getRootStruct();
         const reader = try root.readStruct(0);
@@ -569,6 +572,11 @@ pub const Return = struct {
 pub const Finish = struct {
     question_id: u32,
     release_result_caps: bool,
+    // TODO: implement requireEarlyCancellationWorkaround behavior — when true and
+    // the Finish arrives before the call is delivered, defer cancellation until
+    // after delivery so the callee can opt out (see rpc.capnp Finish.requireEarlyCancellationWorkaround).
+    // Currently this field is parsed and forwarded but the deferred-cancellation
+    // logic is not yet implemented.
     require_early_cancellation: bool,
 
     fn fromReader(reader: message.StructReader) !Finish {
@@ -1157,12 +1165,14 @@ pub const CallBuilder = struct {
     pub fn setSendResultsToCaller(self: *CallBuilder) void {
         var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
         var send_results_to = call_builder.getSendResultsTo();
+        // Generated setter is !void but only calls writeU16 on already-allocated data section.
         send_results_to.setCaller({}) catch unreachable;
     }
 
     pub fn setSendResultsToYourself(self: *CallBuilder) void {
         var call_builder = rpc_capnp.Call.Builder.wrap(self.call);
         var send_results_to = call_builder.getSendResultsTo();
+        // Generated setter is !void but only calls writeU16 on already-allocated data section.
         send_results_to.setYourself({}) catch unreachable;
     }
 
@@ -1206,11 +1216,13 @@ pub const ReturnBuilder = struct {
 
     pub fn setReleaseParamCaps(self: *ReturnBuilder, release_param_caps: bool) void {
         var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        // Generated setter is !void but only calls writeBool on already-allocated data section.
         ret_builder.setReleaseParamCaps(release_param_caps) catch unreachable;
     }
 
     pub fn setNoFinishNeeded(self: *ReturnBuilder, no_finish_needed: bool) void {
         var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        // Generated setter is !void but only calls writeBool on already-allocated data section.
         ret_builder.setNoFinishNeeded(no_finish_needed) catch unreachable;
     }
 
@@ -1223,6 +1235,7 @@ pub const ReturnBuilder = struct {
 
     pub fn setCanceled(self: *ReturnBuilder) void {
         var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
+        // Generated setter is !void but only calls writeU16 on already-allocated data section.
         ret_builder.setCanceled({}) catch unreachable;
     }
 

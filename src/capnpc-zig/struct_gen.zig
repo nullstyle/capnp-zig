@@ -9,11 +9,11 @@ const TypeGenerator = types.TypeGenerator;
 pub const StructGenerator = struct {
     allocator: std.mem.Allocator,
     type_gen: TypeGenerator,
-    node_lookup_ctx: ?*const anyopaque,
-    node_lookup: ?*const fn (ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node,
+    node_lookup_ctx: ?*anyopaque,
+    node_lookup: ?*const fn (ctx: ?*anyopaque, id: schema.Id) ?*const schema.Node,
     /// Optional callback returning the import module prefix for cross-file types.
     /// Returns null for types in the current file.
-    type_prefix_fn: ?*const fn (ctx: ?*const anyopaque, id: schema.Id) ?[]const u8 = null,
+    type_prefix_fn: ?*const fn (ctx: ?*anyopaque, id: schema.Id) std.mem.Allocator.Error!?[]const u8 = null,
 
     /// Create a standalone struct generator (no cross-node lookup support).
     pub fn init(allocator: std.mem.Allocator) StructGenerator {
@@ -29,8 +29,8 @@ pub const StructGenerator = struct {
     /// type references to other schema nodes.
     pub fn initWithLookup(
         allocator: std.mem.Allocator,
-        node_lookup: *const fn (ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node,
-        node_lookup_ctx: ?*const anyopaque,
+        node_lookup: *const fn (ctx: ?*anyopaque, id: schema.Id) ?*const schema.Node,
+        node_lookup_ctx: ?*anyopaque,
     ) StructGenerator {
         return .{
             .allocator = allocator,
@@ -43,6 +43,13 @@ pub const StructGenerator = struct {
     fn getNode(self: *const StructGenerator, id: schema.Id) ?*const schema.Node {
         const lookup = self.node_lookup orelse return null;
         return lookup(self.node_lookup_ctx, id);
+    }
+
+    /// Convert a discriminant_offset (u32, in units of u16) to a byte offset.
+    /// Returns an error if the multiplication overflows, which indicates a
+    /// malicious or corrupt schema.
+    fn discriminantByteOffset(discriminant_offset: u32) error{InvalidDiscriminantOffset}!u32 {
+        return std.math.mul(u32, discriminant_offset, 2) catch return error.InvalidDiscriminantOffset;
     }
 
     /// Emit the complete Zig type definition for a struct node, including
@@ -114,7 +121,7 @@ pub const StructGenerator = struct {
             // Generate group Reader
             try self.writeGroupWrapStruct(writer, "Reader", "_reader", "message.StructReader", "reader");
             if (group_struct_info.discriminant_count > 0) {
-                const disc_byte_offset = group_struct_info.discriminant_offset * 2;
+                const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
                 try writer.writeAll("            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {\n");
                 try writer.print("                return std.meta.intToEnum(WhichTag, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{disc_byte_offset});
                 try writer.writeAll("            }\n\n");
@@ -172,7 +179,7 @@ pub const StructGenerator = struct {
 
         // Generate which() method if this struct has a union
         if (struct_info.discriminant_count > 0) {
-            const disc_byte_offset = struct_info.discriminant_offset * 2;
+            const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
             try writer.print("        pub fn which(self: Reader) error{{InvalidEnumValue}}!WhichTag {{\n", .{});
             try writer.print("            return std.meta.intToEnum(WhichTag, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{disc_byte_offset});
             try writer.writeAll("        }\n\n");
@@ -258,7 +265,7 @@ pub const StructGenerator = struct {
             },
             .@"enum" => |enum_info| {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                const enum_name = self.enumTypeName(enum_info.type_id);
+                const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
 
                 if (slot.default_value) |default_value| {
@@ -308,7 +315,7 @@ pub const StructGenerator = struct {
             .list => |list_info| {
                 if (list_info.element_type.* == .@"enum") {
                     const enum_info = list_info.element_type.@"enum";
-                    const enum_name = self.enumTypeName(enum_info.type_id);
+                    const enum_name = try self.enumTypeName(enum_info.type_id);
                     defer if (enum_name) |name| self.allocator.free(name);
                     if (slot.default_value) |default_value| {
                         if (self.defaultPointerBytes(default_value)) |bytes| {
@@ -371,7 +378,7 @@ pub const StructGenerator = struct {
                     try writer.writeAll("        }\n\n");
 
                     // Generate typed resolve helper for List(Interface) fields
-                    if (self.interfaceTypeName(list_info.element_type.interface.type_id)) |iface_name| {
+                    if (try self.interfaceTypeName(list_info.element_type.interface.type_id)) |iface_name| {
                         defer self.allocator.free(iface_name);
                         try writer.print("        pub fn resolve{s}(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
                         try writer.print("            const raw_list = try self._reader.readPointerList({});\n", .{slot.offset});
@@ -390,7 +397,7 @@ pub const StructGenerator = struct {
                 }
                 if (list_info.element_type.* == .@"struct") {
                     const struct_info = list_info.element_type.@"struct";
-                    const struct_name = self.structTypeName(struct_info.type_id);
+                    const struct_name = try self.structTypeName(struct_info.type_id);
                     defer if (struct_name) |name| self.allocator.free(name);
                     if (slot.default_value) |default_value| {
                         if (self.defaultPointerBytes(default_value)) |bytes| {
@@ -432,7 +439,7 @@ pub const StructGenerator = struct {
                 try writer.print("            return try self._reader.{s}({});\n", .{ method, slot.offset });
             },
             .@"struct" => |struct_info| {
-                const struct_name = self.structTypeName(struct_info.type_id);
+                const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (struct_name) |name| {
                     if (slot.default_value) |default_value| {
@@ -472,7 +479,7 @@ pub const StructGenerator = struct {
 
         // Generate typed resolve helper for interface fields
         if (slot.type == .interface) {
-            const iface_name = self.interfaceTypeName(slot.type.interface.type_id) orelse return;
+            const iface_name = try self.interfaceTypeName(slot.type.interface.type_id) orelse return;
             defer self.allocator.free(iface_name);
             try writer.print("        pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("            const cap = try self._reader.readCapability({});\n", .{slot.offset});
@@ -515,7 +522,7 @@ pub const StructGenerator = struct {
         defer self.allocator.free(cap_name);
 
         if (field.discriminant_value != 0xFFFF and struct_info.discriminant_count > 0) {
-            const disc_byte_offset = struct_info.discriminant_offset * 2;
+            const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
             try writer.print("        pub fn init{s}(self: *Builder) {s}.Builder {{\n", .{ cap_name, group_name });
             try writer.print("            self._builder.writeU16({}, {});\n", .{ disc_byte_offset, field.discriminant_value });
             try writer.writeAll("            return .{ ._builder = self._builder };\n");
@@ -593,7 +600,7 @@ pub const StructGenerator = struct {
             },
             .@"enum" => |enum_info| {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                const enum_name = self.enumTypeName(enum_info.type_id);
+                const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 if (slot.default_value) |default_value| {
                     if (try self.defaultLiteral(.uint16, default_value)) |literal| {
@@ -640,7 +647,7 @@ pub const StructGenerator = struct {
                 try writer.print("                return try self._reader.readData({});\n", .{slot.offset});
             },
             .@"struct" => |struct_info| {
-                const struct_name = self.structTypeName(struct_info.type_id);
+                const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (struct_name) |name| {
                     try writer.print("                const value = try self._reader.readStruct({});\n", .{slot.offset});
@@ -665,7 +672,7 @@ pub const StructGenerator = struct {
 
         // Generate typed resolve helper for interface fields in groups
         if (slot.type == .interface) {
-            const iface_name = self.interfaceTypeName(slot.type.interface.type_id) orelse return;
+            const iface_name = try self.interfaceTypeName(slot.type.interface.type_id) orelse return;
             defer self.allocator.free(iface_name);
             try writer.print("            pub fn resolve{s}(self: @This(), peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("                const cap = try self._reader.readCapability({});\n", .{slot.offset});
@@ -707,7 +714,7 @@ pub const StructGenerator = struct {
                 return;
             },
             .@"struct" => |struct_info| {
-                const struct_name = self.structTypeName(struct_info.type_id);
+                const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (self.structLayout(struct_info.type_id)) |layout| {
                     if (struct_name) |name| {
@@ -742,7 +749,7 @@ pub const StructGenerator = struct {
                 try writer.writeAll("            }\n\n");
 
                 // Typed helpers for group interface fields
-                if (self.interfaceTypeName(slot.type.interface.type_id)) |iface_name| {
+                if (try self.interfaceTypeName(slot.type.interface.type_id)) |iface_name| {
                     defer self.allocator.free(iface_name);
                     try writer.print("            pub fn set{s}Capability(self: *@This(), cap: message.Capability) !void {{\n", .{cap_name});
                     try self.writeUnionDiscriminant(field, parent_struct_info, writer);
@@ -797,7 +804,7 @@ pub const StructGenerator = struct {
             .int64, .uint64, .float64 => try self.writeNumericGroupSetterBody(slot, "writeU64", "u64", writer),
             .@"enum" => |enum_info| {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                const enum_name = self.enumTypeName(enum_info.type_id);
+                const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
                 if (slot.default_value) |default_value| {
@@ -975,7 +982,7 @@ pub const StructGenerator = struct {
                         try writer.writeAll("            return CapabilityListBuilder{ ._list = raw };\n");
                     },
                     .@"enum" => |enum_info| {
-                        const enum_name = self.enumTypeName(enum_info.type_id);
+                        const enum_name = try self.enumTypeName(enum_info.type_id);
                         defer if (enum_name) |name| self.allocator.free(name);
                         if (enum_name) |name| {
                             try writer.print("            const raw = try self._builder.writeU16List({}, element_count);\n", .{slot.offset});
@@ -985,7 +992,7 @@ pub const StructGenerator = struct {
                         }
                     },
                     .@"struct" => |struct_info| {
-                        const struct_name = self.structTypeName(struct_info.type_id);
+                        const struct_name = try self.structTypeName(struct_info.type_id);
                         defer if (struct_name) |name| self.allocator.free(name);
                         if (self.structLayout(struct_info.type_id)) |layout| {
                             if (struct_name) |name| {
@@ -1016,7 +1023,7 @@ pub const StructGenerator = struct {
                 return;
             },
             .@"struct" => |struct_info| {
-                const struct_name = self.structTypeName(struct_info.type_id);
+                const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (self.structLayout(struct_info.type_id)) |layout| {
                     if (struct_name) |name| {
@@ -1092,7 +1099,7 @@ pub const StructGenerator = struct {
             .int64, .uint64, .float64 => try self.writeNumericSetterBody(slot, "writeU64", "u64", writer),
             .@"enum" => |enum_info| {
                 const byte_offset = self.dataByteOffset(slot.type, slot.offset);
-                const enum_name = self.enumTypeName(enum_info.type_id);
+                const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
                 if (slot.default_value) |default_value| {
@@ -1155,11 +1162,11 @@ pub const StructGenerator = struct {
             .any_pointer => try self.allocator.dupe(u8, "message.AnyPointerReader"),
             .interface => try self.allocator.dupe(u8, "message.Capability"),
             .@"enum" => |enum_info| blk: {
-                if (self.enumTypeName(enum_info.type_id)) |name| break :blk name;
+                if (try self.enumTypeName(enum_info.type_id)) |name| break :blk name;
                 break :blk try self.allocator.dupe(u8, "u16");
             },
             .@"struct" => |struct_info| blk: {
-                if (self.structTypeName(struct_info.type_id)) |name| {
+                if (try self.structTypeName(struct_info.type_id)) |name| {
                     defer self.allocator.free(name);
                     break :blk try std.fmt.allocPrint(self.allocator, "{s}.Reader", .{name});
                 }
@@ -1186,7 +1193,7 @@ pub const StructGenerator = struct {
             .text => try self.allocator.dupe(u8, "[]const u8"),
             .data => try self.allocator.dupe(u8, "[]const u8"),
             .@"enum" => |enum_info| blk: {
-                if (self.enumTypeName(enum_info.type_id)) |name| break :blk name;
+                if (try self.enumTypeName(enum_info.type_id)) |name| break :blk name;
                 break :blk try self.allocator.dupe(u8, "u16");
             },
             else => try self.allocator.dupe(u8, "void"),
@@ -1241,14 +1248,14 @@ pub const StructGenerator = struct {
             .data => try self.allocator.dupe(u8, "DataListReader"),
             .interface => try self.allocator.dupe(u8, "CapabilityListReader"),
             .@"enum" => |enum_info| blk: {
-                if (self.enumTypeName(enum_info.type_id)) |name| {
+                if (try self.enumTypeName(enum_info.type_id)) |name| {
                     defer self.allocator.free(name);
                     break :blk try std.fmt.allocPrint(self.allocator, "EnumListReader({s})", .{name});
                 }
                 break :blk try self.allocator.dupe(u8, "message.U16ListReader");
             },
             .@"struct" => |struct_info| blk: {
-                if (self.structTypeName(struct_info.type_id)) |name| {
+                if (try self.structTypeName(struct_info.type_id)) |name| {
                     defer self.allocator.free(name);
                     break :blk try std.fmt.allocPrint(self.allocator, "StructListReader({s})", .{name});
                 }
@@ -1276,14 +1283,14 @@ pub const StructGenerator = struct {
             .data => try self.allocator.dupe(u8, "DataListBuilder"),
             .interface => try self.allocator.dupe(u8, "CapabilityListBuilder"),
             .@"enum" => |enum_info| blk: {
-                if (self.enumTypeName(enum_info.type_id)) |name| {
+                if (try self.enumTypeName(enum_info.type_id)) |name| {
                     defer self.allocator.free(name);
                     break :blk try std.fmt.allocPrint(self.allocator, "EnumListBuilder({s})", .{name});
                 }
                 break :blk try self.allocator.dupe(u8, "message.U16ListBuilder");
             },
             .@"struct" => |struct_info| blk: {
-                if (self.structTypeName(struct_info.type_id)) |name| {
+                if (try self.structTypeName(struct_info.type_id)) |name| {
                     defer self.allocator.free(name);
                     break :blk try std.fmt.allocPrint(self.allocator, "StructListBuilder({s})", .{name});
                 }
@@ -1293,29 +1300,29 @@ pub const StructGenerator = struct {
         };
     }
 
-    fn structTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
+    fn structTypeName(self: *StructGenerator, id: schema.Id) !?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"struct") return null;
-        return self.qualifiedTypeName(node, id) catch null;
+        return try self.qualifiedTypeName(node, id);
     }
 
-    fn enumTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
+    fn enumTypeName(self: *StructGenerator, id: schema.Id) !?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"enum") return null;
-        return self.qualifiedTypeName(node, id) catch null;
+        return try self.qualifiedTypeName(node, id);
     }
 
-    fn interfaceTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
+    fn interfaceTypeName(self: *StructGenerator, id: schema.Id) !?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .interface) return null;
-        return self.qualifiedTypeName(node, id) catch null;
+        return try self.qualifiedTypeName(node, id);
     }
 
     /// Return the type name, qualified with import module prefix for cross-file types.
     fn qualifiedTypeName(self: *StructGenerator, node: *const schema.Node, id: schema.Id) ![]const u8 {
         const bare_name = try self.allocTypeName(node);
         if (self.type_prefix_fn) |prefix_fn| {
-            if (prefix_fn(self.node_lookup_ctx, id)) |prefix| {
+            if (try prefix_fn(self.node_lookup_ctx, id)) |prefix| {
                 defer self.allocator.free(bare_name);
                 return std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, bare_name });
             }
@@ -1530,7 +1537,7 @@ pub const StructGenerator = struct {
     ) !void {
         _ = self;
         if (field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0) {
-            const disc_byte_offset = parent_struct_info.discriminant_offset * 2;
+            const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
             try writer.print("            self._builder.writeU16({}, {});\n", .{ disc_byte_offset, field.discriminant_value });
         }
     }
@@ -1602,7 +1609,7 @@ pub const StructGenerator = struct {
         slot_offset: u32,
         writer: anytype,
     ) !void {
-        const iface_name = self.interfaceTypeName(type_id) orelse return;
+        const iface_name = try self.interfaceTypeName(type_id) orelse return;
         defer self.allocator.free(iface_name);
 
         // setXxxServer: exports a server and writes the capability pointer
@@ -1666,7 +1673,7 @@ pub const StructGenerator = struct {
                 try writer.writeAll("                return CapabilityListBuilder{ ._list = raw };\n");
             },
             .@"enum" => |enum_info| {
-                const enum_name = self.enumTypeName(enum_info.type_id);
+                const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 if (enum_name) |name| {
                     try writer.print("                const raw = try self._builder.writeU16List({}, element_count);\n", .{slot_offset});
@@ -1676,7 +1683,7 @@ pub const StructGenerator = struct {
                 }
             },
             .@"struct" => |struct_info| {
-                const struct_name = self.structTypeName(struct_info.type_id);
+                const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (self.structLayout(struct_info.type_id)) |layout| {
                     if (struct_name) |name| {

@@ -259,8 +259,16 @@ fn canonicalStructSize(
         }
     }
 
-    const data_words = if (max_data_word < 0) 0 else @as(u16, @intCast(max_data_word + 1));
-    const pointer_words = if (max_pointer_index < 0) 0 else @as(u16, @intCast(max_pointer_index + 1));
+    const data_words: u16 = if (max_data_word < 0) 0 else blk: {
+        const word_count = max_data_word + 1;
+        if (word_count > std.math.maxInt(u16)) return error.InvalidSchema;
+        break :blk @intCast(word_count);
+    };
+    const pointer_words: u16 = if (max_pointer_index < 0) 0 else blk: {
+        const word_count = max_pointer_index + 1;
+        if (word_count > std.math.maxInt(u16)) return error.InvalidSchema;
+        break :blk @intCast(word_count);
+    };
     return .{ .data_words = data_words, .pointer_words = pointer_words };
 }
 

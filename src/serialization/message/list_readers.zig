@@ -69,7 +69,6 @@ pub fn define(
     comptime CapabilityType: type,
     comptime InlineCompositeListType: type,
     comptime list_content_bytes: *const fn (u3, u32) anyerror!usize,
-    comptime list_content_words: *const fn (u3, u32) anyerror!usize,
     comptime decode_capability_pointer: *const fn (u64) anyerror!u32,
 ) type {
     return struct {
@@ -369,17 +368,16 @@ pub fn define(
             }
 
             pub fn getStructList(self: PointerListReader, index: u32) !StructListReader {
-                const list = try self.readList(index);
-                if (list.element_size != 7) return error.InvalidPointer;
-                const total_words = try list_content_words(list.element_size, list.element_count);
-                try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_words * 8);
+                const ptr = try self.readPointer(index);
+                if (ptr.word == 0) return error.InvalidPointer;
+                const list = try self.message.resolveInlineCompositeList(self.segment_id, ptr.pos, ptr.word);
                 return .{
                     .message = self.message,
                     .segment_id = list.segment_id,
-                    .elements_offset = list.content_offset,
+                    .elements_offset = list.elements_offset,
                     .element_count = list.element_count,
-                    .data_words = @intCast(list.inline_data_words),
-                    .pointer_words = @intCast(list.inline_pointer_words),
+                    .data_words = list.data_words,
+                    .pointer_words = list.pointer_words,
                 };
             }
 

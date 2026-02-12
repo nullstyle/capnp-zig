@@ -2,7 +2,7 @@
 
 **WARNING: This code was extensively vibed;  It's only for me for now, use at your own risk**
 
-A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an in-progress RPC runtime built on libxev. Written entirely in Zig 0.15.2.
+A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on libxev. Written entirely in Zig 0.15.2.
 
 ## Features
 
@@ -11,7 +11,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
 - **Schema-Driven Code Generation**: Generates idiomatic Zig Reader/Builder types from `.capnp` schemas
-- **In-Progress RPC Runtime**: Cap'n Proto RPC over TCP using libxev, with capability-based messaging
+- **RPC Runtime**: Cap'n Proto RPC over TCP using libxev, with capability-based messaging
 - **Comprehensive Tests**: Extensive message/codegen/RPC/interop coverage
 - **Type Safe**: Leverages Zig's compile-time type system
 
@@ -163,7 +163,7 @@ Schema type definitions (Node, Field, Type, Value), `CodeGeneratorRequest` parsi
 
 Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-### Layer 4: RPC Runtime (In Progress)
+### Layer 4: RPC Runtime
 
 `src/rpc/`
 
@@ -213,7 +213,8 @@ capnpc-zig/
 │   ├── rpc/
 │   │   ├── mod.zig                    # RPC public module (full)
 │   │   ├── mod_core.zig               # RPC public module (no xev)
-│   │   ├── rpc.capnp                  # Canonical RPC schema copy
+│   │   ├── capnp/
+│   │   │   └── rpc.capnp             # Canonical RPC schema copy
 │   │   ├── level0/                    # Framing, protocol defs, cap table
 │   │   ├── level1/                    # Promise pipeline, pipelined-call replay
 │   │   ├── level2/                    # Runtime, connection, transport, worker pool
@@ -245,8 +246,8 @@ capnpc-zig/
 
 The RPC runtime implements the Cap'n Proto RPC protocol over TCP, using [libxev](https://github.com/kprotty/libxev) as the async I/O backend. It is organized following the Cap'n Proto RPC specification levels.
 
-**Status**: In progress. Core protocol machinery (framing, cap table, connection state machine, peer dispatch) is functional with dedicated test suites. See `PLAN.md` and `docs/rpc_runtime_design.md` for details.
-Canonical RPC schema source-of-truth copy: `src/rpc/rpc.capnp` (integration plan: `docs/rpc-capnp-integration-plan.md`).
+**Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `PLAN.md` and `docs/rpc_runtime_design.md` for details.
+Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp` (integration plan: `docs/rpc-capnp-integration-plan.md`).
 
 ### Design Highlights
 

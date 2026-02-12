@@ -18,6 +18,7 @@ fn decodeOffsetWords(pointer_word: u64) i32 {
 }
 
 fn encodeOffsetWords(offset_words: i32) u32 {
+    std.debug.assert(offset_words >= -(1 << 29) and offset_words < (1 << 29));
     if (offset_words < 0) {
         const base: i64 = 1 << 30;
         return @as(u32, @intCast(base + offset_words));
@@ -440,8 +441,8 @@ pub const Message = struct {
         if (content_override) |override| {
             return override;
         }
-        const signed = @as(isize, @intCast(pointer_pos)) + 8 + @as(isize, offset_words) * 8;
-        if (signed < 0) return error.OutOfBounds;
+        const signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset_words) * 8;
+        if (signed < 0 or signed > std.math.maxInt(usize)) return error.OutOfBounds;
         return @as(usize, @intCast(signed));
     }
 
@@ -501,8 +502,8 @@ pub const Message = struct {
         if (resolved.content_override) |override| {
             struct_offset = override;
         } else {
-            const struct_offset_signed = @as(isize, @intCast(resolved.pointer_pos)) + 8 + @as(isize, offset) * 8;
-            if (struct_offset_signed < 0) return error.InvalidRootPointer;
+            const struct_offset_signed = @as(i64, @intCast(resolved.pointer_pos)) + 8 + @as(i64, offset) * 8;
+            if (struct_offset_signed < 0 or struct_offset_signed > std.math.maxInt(usize)) return error.InvalidRootPointer;
             struct_offset = @as(usize, @intCast(struct_offset_signed));
         }
 
@@ -556,8 +557,8 @@ pub const Message = struct {
             const offset = decodeOffsetWords(pointer_word);
             const word_count = @as(u32, @truncate(pointer_word >> 35));
 
-            const tag_pos_signed = @as(isize, @intCast(pointer_pos)) + 8 + @as(isize, offset) * 8;
-            if (tag_pos_signed < 0) return error.OutOfBounds;
+            const tag_pos_signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset) * 8;
+            if (tag_pos_signed < 0 or tag_pos_signed > std.math.maxInt(usize)) return error.OutOfBounds;
             const tag_pos = @as(usize, @intCast(tag_pos_signed));
 
             const tag_word = try self.readWord(segment_id, tag_pos);
@@ -768,8 +769,8 @@ pub const Message = struct {
             struct_offset = override;
         } else {
             const offset = decodeOffsetWords(pointer_word);
-            const struct_offset_signed = @as(isize, @intCast(pointer_pos)) + 8 + @as(isize, offset) * 8;
-            if (struct_offset_signed < 0) return error.OutOfBounds;
+            const struct_offset_signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset) * 8;
+            if (struct_offset_signed < 0 or struct_offset_signed > std.math.maxInt(usize)) return error.OutOfBounds;
             struct_offset = @as(usize, @intCast(struct_offset_signed));
         }
 
@@ -805,7 +806,47 @@ pub const Message = struct {
             return self.validateInlineCompositeList(segment_id, pointer_pos, pointer_word, remaining, nesting);
         }
         if (element_size == 7 and content_override != null) {
-            return error.InvalidInlineCompositePointer;
+            // Layout B double-far inline-composite list: the list pointer (pointer_word)
+            // is in the landing pad with element_size 7 and word_count; the tag word is
+            // at content_override in the target segment.
+            const word_count = @as(u32, @truncate(pointer_word >> 35));
+            const tag_pos = content_override.?;
+            const tag_word = try self.readWord(segment_id, tag_pos);
+            const tag_type = @as(u2, @truncate(tag_word & 0x3));
+            if (tag_type != 0) return error.InvalidInlineCompositePointer;
+
+            const element_count_signed = decodeOffsetWords(tag_word);
+            if (element_count_signed < 0) return error.InvalidInlineCompositePointer;
+            const element_count = @as(u32, @intCast(element_count_signed));
+            const data_words = @as(u16, @truncate((tag_word >> 32) & 0xFFFF));
+            const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
+
+            const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
+            const expected_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
+            if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
+
+            const elements_offset = tag_pos + 8;
+            const total_bytes = @as(usize, word_count) * 8;
+            const segment = self.segments[segment_id];
+            if (elements_offset > segment.len) return error.OutOfBounds;
+            if (total_bytes > segment.len - elements_offset) return error.OutOfBounds;
+
+            try consumeWords(remaining, @as(usize, word_count));
+
+            if (pointer_words == 0 or element_count == 0) return;
+            const element_stride = (@as(usize, data_words) + @as(usize, pointer_words)) * 8;
+            var element_index: u32 = 0;
+            while (element_index < element_count) : (element_index += 1) {
+                const element_base = elements_offset + @as(usize, element_index) * element_stride;
+                const pointer_section = element_base + @as(usize, data_words) * 8;
+                var ptr_index: u16 = 0;
+                while (ptr_index < pointer_words) : (ptr_index += 1) {
+                    const ptr_pos = pointer_section + @as(usize, ptr_index) * 8;
+                    const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
+                    try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
+                }
+            }
+            return;
         }
 
         const element_count = @as(u32, @truncate((pointer_word >> 35)));
@@ -814,8 +855,8 @@ pub const Message = struct {
             content_offset = override;
         } else {
             const offset = decodeOffsetWords(pointer_word);
-            const content_offset_signed = @as(isize, @intCast(pointer_pos)) + 8 + @as(isize, offset) * 8;
-            if (content_offset_signed < 0) return error.OutOfBounds;
+            const content_offset_signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset) * 8;
+            if (content_offset_signed < 0 or content_offset_signed > std.math.maxInt(usize)) return error.OutOfBounds;
             content_offset = @as(usize, @intCast(content_offset_signed));
         }
 
@@ -1401,7 +1442,6 @@ const list_reader_defs = list_reader_module.define(
     Capability,
     InlineCompositeList,
     listContentBytes,
-    listContentWords,
     decodeCapabilityPointer,
 );
 
@@ -2247,3 +2287,7 @@ pub const cloneAnyPointer = clone_defs.cloneAnyPointer;
 /// StructListReader/Builder (typed wrappers), DataListReader/Builder,
 /// CapabilityListReader/Builder.
 pub const typed_list_helpers = typed_list_helpers_module.define(@This());
+
+test {
+    _ = bounds;
+}

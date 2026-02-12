@@ -364,7 +364,7 @@ test "forwarded return passes through canceled tag" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .caller,
         .answer_id = upstream_answer_id,
         .mode = .translate_to_caller,
@@ -429,7 +429,7 @@ test "forwarded return translates takeFromOtherQuestion id" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .caller,
         .answer_id = upstream_answer_id,
         .mode = .translate_to_caller,
@@ -491,7 +491,7 @@ test "forwarded return converts resultsSentElsewhere to exception" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .caller,
         .answer_id = upstream_answer_id,
         .mode = .translate_to_caller,
@@ -552,7 +552,7 @@ test "forwarded return translate mode missing payload sends exception" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .caller,
         .answer_id = upstream_answer_id,
         .mode = .translate_to_caller,
@@ -613,7 +613,7 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .yourself,
         .answer_id = upstream_answer_id,
         .mode = .propagate_results_sent_elsewhere,
@@ -691,7 +691,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .caller,
         .answer_id = upstream_answer_id,
         .mode = .translate_to_caller,
@@ -759,7 +759,7 @@ test "forwarded return sentElsewhere mode accepts resultsSentElsewhere without u
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .yourself,
         .answer_id = upstream_answer_id,
         .mode = .sent_elsewhere,
@@ -796,7 +796,7 @@ test "forwarded return sentElsewhere mode rejects unexpected result payload" {
     forward_ctx.* = .{
         .peer = &peer,
         .payload = undefined,
-        .inbound_caps = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
         .send_results_to = .yourself,
         .answer_id = 600,
         .mode = .sent_elsewhere,

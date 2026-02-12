@@ -11,6 +11,9 @@ pub fn queuePendingCall(
     frame: []const u8,
     inbound_caps: InboundCapsType,
 ) !void {
+    var inbound_caps_owned = inbound_caps;
+    errdefer inbound_caps_owned.deinit();
+
     const copy = try allocator.alloc(u8, frame.len);
     errdefer allocator.free(copy);
     std.mem.copyForwards(u8, copy, frame);
@@ -19,7 +22,7 @@ pub fn queuePendingCall(
     if (!entry.found_existing) {
         entry.value_ptr.* = std.ArrayList(PendingCallType){};
     }
-    try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps });
+    try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps_owned });
 }
 
 pub fn deinitPendingCallOwnedFrame(comptime PendingCallType: type, pending_call: *PendingCallType, allocator: std.mem.Allocator) void {

@@ -102,6 +102,21 @@ pub const Transport = struct {
     /// After `deinit` returns, no registered callbacks will fire. Any
     /// write operations still in the xev queue have their callback
     /// pointers cleared so they become harmless no-ops.
+    ///
+    /// **Important**: The caller must ensure that `close()` has been called
+    /// before `deinit()`, or that the event loop has been fully drained so
+    /// that no pending read completions reference this transport. `close()`
+    /// sets `shutting_down`, which causes the read callback (`onRead`) to
+    /// return `.disarm` without re-arming, effectively cancelling pending
+    /// reads. If `deinit()` is called while a read completion is still
+    /// queued in the event loop, the completion may fire with a dangling
+    /// pointer to the freed transport. The typical safe sequence is:
+    ///
+    /// ```
+    /// transport.close();       // cancels pending reads, initiates socket close
+    /// // ... run event loop until close callback fires ...
+    /// transport.deinit();      // free resources
+    /// ```
     pub fn deinit(self: *Transport) void {
         self.shutting_down = true;
         self.drainPendingWrites();

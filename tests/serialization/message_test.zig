@@ -1073,6 +1073,76 @@ test "Message: fuzz malformed buffers do not crash decode" {
     }
 }
 
+test "Message: fuzz malformed packed buffers do not crash decode" {
+    var prng = std.Random.DefaultPrng.init(0xA7C4_1E59_F032_8D6B);
+    const random = prng.random();
+
+    var i: usize = 0;
+    while (i < 1024) : (i += 1) {
+        const len = random.uintLessThan(usize, 160);
+        const bytes = try testing.allocator.alloc(u8, len);
+        defer testing.allocator.free(bytes);
+        random.bytes(bytes);
+
+        var msg = message.Message.initPacked(testing.allocator, bytes) catch continue;
+        defer msg.deinit();
+
+        _ = msg.getRootStruct() catch {};
+        _ = msg.validate(.{}) catch {};
+    }
+}
+
+test "Message: packed format adversarial edge cases do not crash" {
+    // Each entry is a hand-crafted adversarial byte sequence targeting specific
+    // edge cases in the packed decoder's tag-byte processing.
+    const cases = [_][]const u8{
+        // Zero-length input
+        &[_]u8{},
+        // Single byte (just a tag byte, no payload)
+        &[_]u8{0x01},
+        // Tag 0x00 with no count byte (truncated)
+        &[_]u8{0x00},
+        // Tag 0x00 with zero extra words (one all-zero word)
+        &[_]u8{ 0x00, 0x00 },
+        // Tag 0x00 with max count (255 extra zero words)
+        &[_]u8{ 0x00, 0xFF },
+        // Tag 0xFF with no literal word (truncated)
+        &[_]u8{0xFF},
+        // Tag 0xFF with partial literal word (truncated at 4 bytes)
+        &[_]u8{ 0xFF, 0x01, 0x02, 0x03, 0x04 },
+        // Tag 0xFF with full literal word but no count byte
+        &[_]u8{ 0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 },
+        // Tag 0xFF with full literal word, count=0 (no extra literal words)
+        &[_]u8{ 0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00 },
+        // Tag 0xFF with full literal word, count=1 but no data (truncated literal run)
+        &[_]u8{ 0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01 },
+        // Tag 0xFF with full literal word, count=1 but only partial run data
+        &[_]u8{ 0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x01, 0xAA, 0xBB },
+        // Tag 0xFF with full literal word, count=255 (huge literal run, truncated)
+        &[_]u8{ 0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xFF },
+        // Regular tag with all bits set (0xFE) but insufficient payload bytes
+        &[_]u8{ 0xFE, 0x01, 0x02 },
+        // Regular tag with one bit set but no payload byte
+        &[_]u8{0x80},
+        // Multiple tags in sequence: zero word then truncated regular tag
+        &[_]u8{ 0x00, 0x00, 0x01 },
+        // Two zero-word tags back to back
+        &[_]u8{ 0x00, 0x00, 0x00, 0x00 },
+        // All 0xFF bytes (tag=0xFF, literal word=all-FF, count=0xFF, then truncated run)
+        &[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
+        // Minimal valid packed message attempt: a zero word that could be a header
+        &[_]u8{ 0x00, 0x03 },
+    };
+
+    for (cases) |packed_bytes| {
+        var msg = message.Message.initPacked(testing.allocator, packed_bytes) catch continue;
+        defer msg.deinit();
+
+        _ = msg.getRootStruct() catch {};
+        _ = msg.validate(.{}) catch {};
+    }
+}
+
 test "readTextStrict: valid UTF-8 passes" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -1124,4 +1194,471 @@ test "readTextStrict: null pointer returns empty string" {
     const root = try msg.getRootStruct();
     const text = try root.readTextStrict(0);
     try testing.expectEqualStrings("", text);
+}
+
+test "TextListReader.getStrict: valid UTF-8 succeeds" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try struct_builder.writeTextList(0, 3);
+
+    try list_builder.set(0, "hello");
+    try list_builder.set(1, "\xc3\xa9\xc3\xa0"); // valid UTF-8: e-acute, a-grave
+    try list_builder.set(2, "\xe2\x9c\x93"); // valid UTF-8: checkmark
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readTextList(0);
+    try testing.expectEqual(@as(u32, 3), list_reader.len());
+    try testing.expectEqualStrings("hello", try list_reader.getStrict(0));
+    try testing.expectEqualStrings("\xc3\xa9\xc3\xa0", try list_reader.getStrict(1));
+    try testing.expectEqualStrings("\xe2\x9c\x93", try list_reader.getStrict(2));
+}
+
+test "TextListReader.getStrict: invalid UTF-8 returns error" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try struct_builder.writeTextList(0, 2);
+
+    try list_builder.set(0, "good");
+    try list_builder.set(1, "bad!");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    // Copy the bytes so we can mutate them to inject invalid UTF-8.
+    const mutated = try testing.allocator.alloc(u8, bytes.len);
+    defer testing.allocator.free(mutated);
+    @memcpy(mutated, bytes);
+
+    // Find "bad!" in the buffer and replace 'b' with 0xFF (invalid UTF-8 lead byte).
+    const needle = "bad!";
+    const pos = std.mem.indexOf(u8, mutated, needle) orelse return error.TestSetupFailed;
+    mutated[pos] = 0xFF;
+
+    var msg = try message.Message.init(testing.allocator, mutated);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readTextList(0);
+
+    // Element 0 is still valid UTF-8.
+    try testing.expectEqualStrings("good", try list_reader.getStrict(0));
+
+    // Element 1 contains invalid UTF-8 and must fail.
+    try testing.expectError(error.InvalidUtf8, list_reader.getStrict(1));
+
+    // Non-strict get still works and returns the raw bytes.
+    const raw = try list_reader.get(1);
+    try testing.expectEqual(@as(u8, 0xFF), raw[0]);
+}
+
+test "PointerListReader.getTextStrict: valid UTF-8 succeeds" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writePointerList(0, 3);
+
+    try list_builder.setText(0, "alpha");
+    try list_builder.setText(1, "\xc3\xbc\xc3\xb6"); // valid UTF-8: u-umlaut, o-umlaut
+    try list_builder.setText(2, "\xf0\x9f\x98\x80"); // valid UTF-8: grinning face emoji
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readPointerList(0);
+    try testing.expectEqual(@as(u32, 3), list_reader.len());
+    try testing.expectEqualStrings("alpha", try list_reader.getTextStrict(0));
+    try testing.expectEqualStrings("\xc3\xbc\xc3\xb6", try list_reader.getTextStrict(1));
+    try testing.expectEqualStrings("\xf0\x9f\x98\x80", try list_reader.getTextStrict(2));
+}
+
+test "PointerListReader.getTextStrict: invalid UTF-8 returns error" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writePointerList(0, 2);
+
+    try list_builder.setText(0, "fine");
+    try list_builder.setText(1, "oops");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    // Copy the bytes so we can mutate them to inject invalid UTF-8.
+    const mutated = try testing.allocator.alloc(u8, bytes.len);
+    defer testing.allocator.free(mutated);
+    @memcpy(mutated, bytes);
+
+    // Find "oops" in the buffer and replace first 'o' with 0xFE
+    // (invalid UTF-8 byte — never valid as a start or continuation byte).
+    const needle = "oops";
+    const pos = std.mem.indexOf(u8, mutated, needle) orelse return error.TestSetupFailed;
+    mutated[pos] = 0xFE;
+
+    var msg = try message.Message.init(testing.allocator, mutated);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readPointerList(0);
+
+    // Element 0 is still valid UTF-8.
+    try testing.expectEqualStrings("fine", try list_reader.getTextStrict(0));
+
+    // Element 1 contains invalid UTF-8 and must fail.
+    try testing.expectError(error.InvalidUtf8, list_reader.getTextStrict(1));
+
+    // Non-strict getText still works and returns the raw bytes.
+    const raw = try list_reader.getText(1);
+    try testing.expectEqual(@as(u8, 0xFE), raw[0]);
+}
+
+test "Message: far pointer to inline-composite list (raw bytes)" {
+    // Layout:
+    //   Segment 0 (2 words):
+    //     word 0: root struct pointer -> struct at word 1 (0 data, 1 pointer)
+    //     word 1: far pointer (single) -> segment 1, offset 0
+    //   Segment 1 (6 words):
+    //     word 0: list pointer (element_size=7, offset=0, word_count=4)
+    //     word 1: tag word (struct pointer: element_count=2, data_words=1, pointer_words=1)
+    //     word 2: element 0 data (u32 = 42)
+    //     word 3: element 0 pointer (null)
+    //     word 4: element 1 data (u32 = 99)
+    //     word 5: element 1 pointer (null)
+    const allocator = testing.allocator;
+
+    var segment0 = [_]u8{0} ** (2 * 8);
+    var segment1 = [_]u8{0} ** (6 * 8);
+
+    // Word 0: root struct pointer -> struct at offset 0 (i.e. word 1), 0 data words, 1 pointer word
+    const root_ptr = makeStructPointer(0, 0, 1);
+    std.mem.writeInt(u64, segment0[0..8], root_ptr, .little);
+
+    // Word 1: far pointer -> segment 1, word offset 0, single (not double)
+    const far_ptr = makeFarPointer(false, 0, 1);
+    std.mem.writeInt(u64, segment0[8..16], far_ptr, .little);
+
+    // Segment 1, word 0: list pointer, element_size=7 (inline composite), offset=0, word_count=4
+    // After far pointer resolution, resolveInlineCompositeList is called recursively
+    // with segment_id=1, pointer_pos=0, and this list pointer word.
+    // tag_pos = pointer_pos + 8 + offset*8 = 0 + 8 + 0*8 = 8 (word 1 of segment 1)
+    const list_ptr = makeListPointer(0, 7, 4);
+    std.mem.writeInt(u64, segment1[0..8], list_ptr, .little);
+
+    // Segment 1, word 1: tag word = struct pointer with element_count=2, data_words=1, pointer_words=1
+    const tag_word = makeStructPointer(2, 1, 1);
+    std.mem.writeInt(u64, segment1[8..16], tag_word, .little);
+
+    // Segment 1, word 2: element 0, data word (u32 = 42)
+    std.mem.writeInt(u32, segment1[16..20], 42, .little);
+
+    // Segment 1, word 3: element 0, pointer word (null = 0)
+    // Segment 1, word 4: element 1, data word (u32 = 99)
+    std.mem.writeInt(u32, segment1[32..36], 99, .little);
+
+    // Segment 1, word 5: element 1, pointer word (null = 0)
+
+    // Frame the message: 2 segments
+    var framed = std.ArrayList(u8){};
+    defer framed.deinit(allocator);
+
+    var header: [16]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 1, .little); // segment_count - 1 = 1 (2 segments)
+    std.mem.writeInt(u32, header[4..8], 2, .little); // segment 0 size: 2 words
+    std.mem.writeInt(u32, header[8..12], 6, .little); // segment 1 size: 6 words
+    std.mem.writeInt(u32, header[12..16], 0, .little); // padding
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &segment1);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.init(allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readStructList(0);
+    try testing.expectEqual(@as(u32, 2), list_reader.len());
+    try testing.expectEqual(@as(u32, 42), (try list_reader.get(0)).readU32(0));
+    try testing.expectEqual(@as(u32, 99), (try list_reader.get(1)).readU32(0));
+}
+
+test "Message: double-far pointer Layout A inline-composite list (raw bytes)" {
+    // Layout A: the landing pad's second word is a struct-pointer tag (type 0).
+    // This is the layout our builder produces.
+    //
+    //   Segment 0 (2 words):
+    //     word 0: root struct pointer -> struct at word 1 (0 data, 1 pointer)
+    //     word 1: double-far pointer -> segment 1, offset 0
+    //   Segment 1 (2 words = landing pad):
+    //     word 0: far pointer (single) -> segment 2, offset 0
+    //     word 1: struct pointer tag (element_count=2, data_words=1, pointer_words=0)
+    //   Segment 2 (2 words = list content):
+    //     word 0: element 0 data (u32 = 10)
+    //     word 1: element 1 data (u32 = 20)
+    const allocator = testing.allocator;
+
+    var segment0 = [_]u8{0} ** (2 * 8);
+    var segment1 = [_]u8{0} ** (2 * 8);
+    var segment2 = [_]u8{0} ** (2 * 8);
+
+    // Segment 0, word 0: root struct pointer -> word 1, 0 data, 1 pointer
+    std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
+    // Segment 0, word 1: double-far pointer -> segment 1, word 0
+    std.mem.writeInt(u64, segment0[8..16], makeFarPointer(true, 0, 1), .little);
+
+    // Segment 1, word 0: far pointer (single) -> segment 2, word 0
+    std.mem.writeInt(u64, segment1[0..8], makeFarPointer(false, 0, 2), .little);
+    // Segment 1, word 1: tag = struct pointer, element_count=2, data_words=1, pointer_words=0
+    // This is Layout A: second word type = 0 (struct pointer)
+    std.mem.writeInt(u64, segment1[8..16], makeStructPointer(2, 1, 0), .little);
+
+    // Segment 2, word 0: element 0 data
+    std.mem.writeInt(u32, segment2[0..4], 10, .little);
+    // Segment 2, word 1: element 1 data
+    std.mem.writeInt(u32, segment2[8..12], 20, .little);
+
+    // Frame the message: 3 segments
+    var framed = std.ArrayList(u8){};
+    defer framed.deinit(allocator);
+
+    var header: [16]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 2, .little); // segment_count - 1 = 2 (3 segments)
+    std.mem.writeInt(u32, header[4..8], 2, .little); // segment 0: 2 words
+    std.mem.writeInt(u32, header[8..12], 2, .little); // segment 1: 2 words
+    std.mem.writeInt(u32, header[12..16], 2, .little); // segment 2: 2 words
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &segment1);
+    try framed.appendSlice(allocator, &segment2);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.init(allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readStructList(0);
+    try testing.expectEqual(@as(u32, 2), list_reader.len());
+    try testing.expectEqual(@as(u32, 10), (try list_reader.get(0)).readU32(0));
+    try testing.expectEqual(@as(u32, 20), (try list_reader.get(1)).readU32(0));
+}
+
+test "Message: double-far pointer Layout B inline-composite list (raw bytes)" {
+    // Layout B: the landing pad's second word is a list pointer (type 1).
+    // This is the layout used by the C++ reference implementation.
+    //
+    //   Segment 0 (2 words):
+    //     word 0: root struct pointer -> struct at word 1 (0 data, 1 pointer)
+    //     word 1: double-far pointer -> segment 1, offset 0
+    //   Segment 1 (2 words = landing pad):
+    //     word 0: far pointer (single) -> segment 2, offset 0
+    //     word 1: list pointer (element_size=7, word_count=4) -- type=1
+    //   Segment 2 (5 words = tag + list content):
+    //     word 0: tag word = struct pointer (element_count=2, data_words=1, pointer_words=1)
+    //     word 1: element 0 data (u32 = 55)
+    //     word 2: element 0 pointer (null)
+    //     word 3: element 1 data (u32 = 66)
+    //     word 4: element 1 pointer (null)
+    const allocator = testing.allocator;
+
+    var segment0 = [_]u8{0} ** (2 * 8);
+    var segment1 = [_]u8{0} ** (2 * 8);
+    var segment2 = [_]u8{0} ** (5 * 8);
+
+    // Segment 0, word 0: root struct pointer -> word 1, 0 data, 1 pointer
+    std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
+    // Segment 0, word 1: double-far pointer -> segment 1, word 0
+    std.mem.writeInt(u64, segment0[8..16], makeFarPointer(true, 0, 1), .little);
+
+    // Segment 1, word 0: far pointer (single) -> segment 2, word 0
+    std.mem.writeInt(u64, segment1[0..8], makeFarPointer(false, 0, 2), .little);
+    // Segment 1, word 1: list pointer (element_size=7 = inline composite, word_count=4)
+    // This is Layout B: second word type = 1 (list pointer)
+    // The offset field in this list pointer is ignored; word_count=4.
+    std.mem.writeInt(u64, segment1[8..16], makeListPointer(0, 7, 4), .little);
+
+    // Segment 2, word 0: tag word = struct pointer, element_count=2, data_words=1, pointer_words=1
+    std.mem.writeInt(u64, segment2[0..8], makeStructPointer(2, 1, 1), .little);
+    // Segment 2, word 1: element 0 data
+    std.mem.writeInt(u32, segment2[8..12], 55, .little);
+    // Segment 2, word 2: element 0 pointer (null = 0, already zeroed)
+    // Segment 2, word 3: element 1 data
+    std.mem.writeInt(u32, segment2[24..28], 66, .little);
+    // Segment 2, word 4: element 1 pointer (null = 0, already zeroed)
+
+    // Frame the message: 3 segments (odd count -> padding word in header)
+    var framed = std.ArrayList(u8){};
+    defer framed.deinit(allocator);
+
+    var header: [16]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 2, .little); // segment_count - 1 = 2 (3 segments)
+    std.mem.writeInt(u32, header[4..8], 2, .little); // segment 0: 2 words
+    std.mem.writeInt(u32, header[8..12], 2, .little); // segment 1: 2 words
+    std.mem.writeInt(u32, header[12..16], 5, .little); // segment 2: 5 words
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &segment1);
+    try framed.appendSlice(allocator, &segment2);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.init(allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readStructList(0);
+    try testing.expectEqual(@as(u32, 2), list_reader.len());
+
+    const elem0 = try list_reader.get(0);
+    try testing.expectEqual(@as(u32, 55), elem0.readU32(0));
+
+    const elem1 = try list_reader.get(1);
+    try testing.expectEqual(@as(u32, 66), elem1.readU32(0));
+}
+
+test "Message: double-far pointer Layout B with multi-word struct elements" {
+    // Verifies Layout B with structs having 2 data words and 0 pointers.
+    //
+    //   Segment 0 (2 words): root struct + double-far pointer
+    //   Segment 1 (2 words): landing pad (far ptr to seg 2 + list pointer)
+    //   Segment 2 (5 words): tag word + 2 elements x 2 data words
+    const allocator = testing.allocator;
+
+    var segment0 = [_]u8{0} ** (2 * 8);
+    var segment1 = [_]u8{0} ** (2 * 8);
+    var segment2 = [_]u8{0} ** (5 * 8);
+
+    // Segment 0: root struct (0 data, 1 ptr) + double-far -> seg 1
+    std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, segment0[8..16], makeFarPointer(true, 0, 1), .little);
+
+    // Segment 1 landing pad: far -> seg 2 word 0, list pointer (size=7, word_count=4)
+    std.mem.writeInt(u64, segment1[0..8], makeFarPointer(false, 0, 2), .little);
+    std.mem.writeInt(u64, segment1[8..16], makeListPointer(0, 7, 4), .little);
+
+    // Segment 2: tag (2 elements, 2 data words, 0 pointer words)
+    std.mem.writeInt(u64, segment2[0..8], makeStructPointer(2, 2, 0), .little);
+    // Element 0: two data words
+    std.mem.writeInt(u32, segment2[8..12], 100, .little);
+    std.mem.writeInt(u32, segment2[12..16], 1, .little);
+    std.mem.writeInt(u32, segment2[16..20], 200, .little);
+    // Element 1: two data words
+    std.mem.writeInt(u32, segment2[24..28], 300, .little);
+    std.mem.writeInt(u32, segment2[28..32], 3, .little);
+    std.mem.writeInt(u32, segment2[32..36], 400, .little);
+
+    // Frame
+    var framed = std.ArrayList(u8){};
+    defer framed.deinit(allocator);
+
+    var header: [16]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 2, .little);
+    std.mem.writeInt(u32, header[4..8], 2, .little);
+    std.mem.writeInt(u32, header[8..12], 2, .little);
+    std.mem.writeInt(u32, header[12..16], 5, .little);
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &segment1);
+    try framed.appendSlice(allocator, &segment2);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.init(allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readStructList(0);
+    try testing.expectEqual(@as(u32, 2), list_reader.len());
+
+    const elem0 = try list_reader.get(0);
+    try testing.expectEqual(@as(u32, 100), elem0.readU32(0));
+    try testing.expectEqual(@as(u32, 1), elem0.readU32(4));
+    try testing.expectEqual(@as(u32, 200), elem0.readU32(8));
+
+    const elem1 = try list_reader.get(1);
+    try testing.expectEqual(@as(u32, 300), elem1.readU32(0));
+    try testing.expectEqual(@as(u32, 3), elem1.readU32(4));
+    try testing.expectEqual(@as(u32, 400), elem1.readU32(8));
+}
+
+test "Message: far pointer inline-composite list at nonzero offset in target segment" {
+    // Tests the far pointer path where the landing pad is not at the start
+    // of the target segment (landing_pad_offset_words > 0).
+    //
+    //   Segment 0 (2 words): root struct + far pointer -> segment 1 word 1
+    //   Segment 1 (7 words):
+    //     word 0: padding / unused
+    //     word 1: list pointer (element_size=7, offset=0, word_count=4)
+    //     word 2: tag (element_count=2, data_words=1, pointer_words=1)
+    //     words 3-6: 2 elements x (1 data + 1 pointer)
+    const allocator = testing.allocator;
+
+    var segment0 = [_]u8{0} ** (2 * 8);
+    var segment1 = [_]u8{0} ** (7 * 8);
+
+    // Root struct -> word 1, 0 data, 1 pointer
+    std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
+    // Far pointer -> segment 1, word offset 1 (not 0!)
+    std.mem.writeInt(u64, segment0[8..16], makeFarPointer(false, 1, 1), .little);
+
+    // Segment 1, word 0: unused padding (0xDEADBEEF as marker)
+    std.mem.writeInt(u64, segment1[0..8], 0xDEADBEEFDEADBEEF, .little);
+
+    // Segment 1, word 1: list pointer at the landing pad position
+    std.mem.writeInt(u64, segment1[8..16], makeListPointer(0, 7, 4), .little);
+
+    // Segment 1, word 2: tag word
+    std.mem.writeInt(u64, segment1[16..24], makeStructPointer(2, 1, 1), .little);
+
+    // Element 0: data=77, pointer=null
+    std.mem.writeInt(u32, segment1[24..28], 77, .little);
+    // word 4: element 0 pointer (null)
+
+    // Element 1: data=88, pointer=null
+    std.mem.writeInt(u32, segment1[40..44], 88, .little);
+    // word 6: element 1 pointer (null)
+
+    // Frame
+    var framed = std.ArrayList(u8){};
+    defer framed.deinit(allocator);
+
+    var header: [16]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 1, .little);
+    std.mem.writeInt(u32, header[4..8], 2, .little);
+    std.mem.writeInt(u32, header[8..12], 7, .little);
+    std.mem.writeInt(u32, header[12..16], 0, .little); // padding
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &segment1);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.init(allocator, bytes);
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list_reader = try root.readStructList(0);
+    try testing.expectEqual(@as(u32, 2), list_reader.len());
+    try testing.expectEqual(@as(u32, 77), (try list_reader.get(0)).readU32(0));
+    try testing.expectEqual(@as(u32, 88), (try list_reader.get(1)).readU32(0));
 }

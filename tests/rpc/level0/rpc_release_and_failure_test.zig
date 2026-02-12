@@ -217,6 +217,155 @@ test "InboundCapTable isRetained out of bounds returns false" {
 }
 
 // ---------------------------------------------------------------------------
+// InboundCapTable.clone() tests
+// ---------------------------------------------------------------------------
+
+/// Helper: create an InboundCapTable by manually allocating its entries/retained
+/// slices with the given resolved caps and retained flags.
+fn makeInboundCapTable(
+    allocator: std.mem.Allocator,
+    caps: []const cap_table.ResolvedCap,
+    retained_flags: []const bool,
+) !cap_table.InboundCapTable {
+    std.debug.assert(caps.len == retained_flags.len);
+    const entries = try allocator.dupe(cap_table.ResolvedCap, caps);
+    errdefer allocator.free(entries);
+    const retained = try allocator.dupe(bool, retained_flags);
+    return .{
+        .allocator = allocator,
+        .entries = entries,
+        .retained = retained,
+    };
+}
+
+test "InboundCapTable clone produces independent copy with identical contents" {
+    const allocator = std.testing.allocator;
+
+    const caps = [_]cap_table.ResolvedCap{
+        .{ .exported = .{ .id = 1 } },
+        .{ .imported = .{ .id = 2 } },
+        .none,
+    };
+    const retained_flags = [_]bool{ true, false, true };
+
+    var original = try makeInboundCapTable(allocator, &caps, &retained_flags);
+    defer original.deinit();
+
+    var cloned = try original.clone();
+    defer cloned.deinit();
+
+    // Both should have the same length.
+    try std.testing.expectEqual(original.len(), cloned.len());
+
+    // Contents should match entry by entry.
+    var i: u32 = 0;
+    while (i < original.len()) : (i += 1) {
+        const orig_entry = try original.get(i);
+        const clone_entry = try cloned.get(i);
+        try std.testing.expectEqual(orig_entry, clone_entry);
+        try std.testing.expectEqual(original.isRetained(i), cloned.isRetained(i));
+    }
+
+    // The underlying slices must be different pointers (deep copy).
+    try std.testing.expect(original.entries.ptr != cloned.entries.ptr);
+    try std.testing.expect(original.retained.ptr != cloned.retained.ptr);
+}
+
+test "InboundCapTable clone is independent: modifying original does not affect clone" {
+    const allocator = std.testing.allocator;
+
+    const caps = [_]cap_table.ResolvedCap{
+        .{ .exported = .{ .id = 10 } },
+        .{ .imported = .{ .id = 20 } },
+    };
+    const retained_flags = [_]bool{ false, false };
+
+    var original = try makeInboundCapTable(allocator, &caps, &retained_flags);
+    defer original.deinit();
+
+    var cloned = try original.clone();
+    defer cloned.deinit();
+
+    // Mutate the original entries and retained flags.
+    original.entries[0] = .none;
+    original.entries[1] = .{ .exported = .{ .id = 999 } };
+    original.retained[0] = true;
+    original.retained[1] = true;
+
+    // The clone should still have the original values.
+    try std.testing.expectEqual(cap_table.ResolvedCap{ .exported = .{ .id = 10 } }, try cloned.get(0));
+    try std.testing.expectEqual(cap_table.ResolvedCap{ .imported = .{ .id = 20 } }, try cloned.get(1));
+    try std.testing.expect(!cloned.isRetained(0));
+    try std.testing.expect(!cloned.isRetained(1));
+}
+
+test "InboundCapTable clone survives deinit of original (no use-after-free)" {
+    const allocator = std.testing.allocator;
+
+    const caps = [_]cap_table.ResolvedCap{
+        .{ .imported = .{ .id = 5 } },
+        .{ .exported = .{ .id = 7 } },
+        .{ .imported = .{ .id = 9 } },
+    };
+    const retained_flags = [_]bool{ true, false, true };
+
+    var original = try makeInboundCapTable(allocator, &caps, &retained_flags);
+
+    var cloned = try original.clone();
+    defer cloned.deinit();
+
+    // Deinit the original before accessing the clone.
+    original.deinit();
+
+    // The clone must still be fully usable.
+    try std.testing.expectEqual(@as(u32, 3), cloned.len());
+    try std.testing.expectEqual(cap_table.ResolvedCap{ .imported = .{ .id = 5 } }, try cloned.get(0));
+    try std.testing.expectEqual(cap_table.ResolvedCap{ .exported = .{ .id = 7 } }, try cloned.get(1));
+    try std.testing.expectEqual(cap_table.ResolvedCap{ .imported = .{ .id = 9 } }, try cloned.get(2));
+    try std.testing.expect(cloned.isRetained(0));
+    try std.testing.expect(!cloned.isRetained(1));
+    try std.testing.expect(cloned.isRetained(2));
+
+    // Retained state should be mutable on the clone independently.
+    try cloned.retainIndex(1);
+    try std.testing.expect(cloned.isRetained(1));
+}
+
+test "InboundCapTable clone of empty table produces empty clone" {
+    const allocator = std.testing.allocator;
+
+    var caps_table = cap_table.CapTable.init(allocator);
+    defer caps_table.deinit();
+
+    var empty = try cap_table.InboundCapTable.init(allocator, null, &caps_table);
+    defer empty.deinit();
+
+    var cloned = try empty.clone();
+    defer cloned.deinit();
+
+    try std.testing.expectEqual(@as(u32, 0), cloned.len());
+    try std.testing.expectError(error.CapabilityIndexOutOfBounds, cloned.get(0));
+}
+
+fn inboundCapTableCloneOomImpl(allocator: std.mem.Allocator) !void {
+    const caps = [_]cap_table.ResolvedCap{
+        .{ .exported = .{ .id = 1 } },
+        .{ .imported = .{ .id = 2 } },
+    };
+    const retained_flags = [_]bool{ true, false };
+
+    var original = try makeInboundCapTable(allocator, &caps, &retained_flags);
+    defer original.deinit();
+
+    var cloned = try original.clone();
+    cloned.deinit();
+}
+
+test "InboundCapTable clone propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, inboundCapTableCloneOomImpl, .{});
+}
+
+// ---------------------------------------------------------------------------
 // Protocol-level failure injection tests
 // ---------------------------------------------------------------------------
 

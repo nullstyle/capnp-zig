@@ -50,6 +50,12 @@ fn normalizeIdentifier(allocator: std.mem.Allocator, name: []const u8, capitaliz
         }
     }
 
+    // If all characters were separators, the result is empty which would
+    // produce an invalid Zig identifier.  Fall back to "_".
+    if (result.items.len == 0) {
+        try result.append(allocator, '_');
+    }
+
     return result.toOwnedSlice(allocator);
 }
 
@@ -76,8 +82,8 @@ pub fn normalizeAndEscapeTypeIdentifier(allocator: std.mem.Allocator, name: []co
 /// Generate Zig type code for Cap'n Proto types
 pub const TypeGenerator = struct {
     allocator: std.mem.Allocator,
-    node_lookup_ctx: ?*const anyopaque,
-    node_lookup: ?*const fn (ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node,
+    node_lookup_ctx: ?*anyopaque,
+    node_lookup: ?*const fn (ctx: ?*anyopaque, id: schema.Id) ?*const schema.Node,
 
     pub fn init(allocator: std.mem.Allocator) TypeGenerator {
         return .{
@@ -89,8 +95,8 @@ pub const TypeGenerator = struct {
 
     pub fn initWithLookup(
         allocator: std.mem.Allocator,
-        node_lookup: *const fn (ctx: ?*const anyopaque, id: schema.Id) ?*const schema.Node,
-        node_lookup_ctx: ?*const anyopaque,
+        node_lookup: *const fn (ctx: ?*anyopaque, id: schema.Id) ?*const schema.Node,
+        node_lookup_ctx: ?*anyopaque,
     ) TypeGenerator {
         return .{
             .allocator = allocator,
@@ -249,6 +255,30 @@ test "identToZigValueName converts underscores to camelCase" {
     const result3 = try identToZigValueName(alloc, "already_camel");
     defer alloc.free(result3);
     try std.testing.expectEqualStrings("alreadyCamel", result3);
+}
+
+test "identToZigValueName returns underscore for all-separator input" {
+    const alloc = std.testing.allocator;
+
+    const result1 = try identToZigValueName(alloc, "___");
+    defer alloc.free(result1);
+    try std.testing.expectEqualStrings("_", result1);
+
+    const result2 = try identToZigValueName(alloc, "$");
+    defer alloc.free(result2);
+    try std.testing.expectEqualStrings("_", result2);
+
+    const result3 = try identToZigValueName(alloc, "_$_");
+    defer alloc.free(result3);
+    try std.testing.expectEqualStrings("_", result3);
+}
+
+test "identToZigTypeName returns underscore for all-separator input" {
+    const alloc = std.testing.allocator;
+
+    const result = try identToZigTypeName(alloc, "___");
+    defer alloc.free(result);
+    try std.testing.expectEqualStrings("_", result);
 }
 
 test "identToZigValueName handles dollar signs" {

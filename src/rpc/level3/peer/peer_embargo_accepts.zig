@@ -10,27 +10,26 @@ pub fn queueEmbargoedAccept(
     embargo: []const u8,
 ) !void {
     // Maintain both lookup directions:
-    // - embargo key -> pending accept list
-    // - answer id -> embargo key (for finish/cancel cleanup)
+    // - embargo key -> pending accept list (owns the key allocation)
+    // - answer id -> embargo key (borrows the key from the embargo map)
     //
-    // Register the question→embargo mapping first so that if the embargo→accepts
-    // update fails we can undo it without leaving a partial commit.
-    const embargo_copy = try allocator.alloc(u8, embargo.len);
-    errdefer allocator.free(embargo_copy);
-    std.mem.copyForwards(u8, embargo_copy, embargo);
+    // When the embargo key already exists in the embargo map, reuse that
+    // allocation for the question→embargo entry. Otherwise allocate once
+    // and share the same slice between both maps.
 
-    try pending_accept_embargo_by_question.put(answer_id, embargo_copy);
-    errdefer _ = pending_accept_embargo_by_question.remove(answer_id);
-
-    if (pending_accepts_by_embargo.getPtr(embargo)) |pending| {
-        try pending.append(allocator, .{
+    if (pending_accepts_by_embargo.getEntry(embargo)) |entry| {
+        try entry.value_ptr.append(allocator, .{
             .answer_id = answer_id,
             .provided_question_id = provided_question_id,
         });
+        errdefer _ = entry.value_ptr.pop();
+        // Borrow the key owned by pending_accepts_by_embargo.
+        // The const cast is safe: the key was heap-allocated by us and
+        // pending_accepts_by_embargo stores keys as []const u8.
+        try pending_accept_embargo_by_question.put(answer_id, @constCast(entry.key_ptr.*));
     } else {
-        const key = try allocator.alloc(u8, embargo.len);
+        const key = try allocator.dupe(u8, embargo);
         errdefer allocator.free(key);
-        std.mem.copyForwards(u8, key, embargo);
 
         var pending = std.ArrayList(PendingAcceptType){};
         errdefer pending.deinit(allocator);
@@ -39,6 +38,9 @@ pub fn queueEmbargoedAccept(
             .provided_question_id = provided_question_id,
         });
         try pending_accepts_by_embargo.put(key, pending);
+        // The question map borrows the same key slice owned by the embargo map.
+        errdefer _ = pending_accepts_by_embargo.remove(key);
+        try pending_accept_embargo_by_question.put(answer_id, key);
     }
 }
 
@@ -88,7 +90,7 @@ pub fn clearPendingAcceptQuestion(
 ) void {
     const embargo_entry = pending_accept_embargo_by_question.fetchRemove(question_id) orelse return;
     const embargo_key = embargo_entry.value;
-    defer allocator.free(embargo_key);
+    // embargo_key is borrowed from pending_accepts_by_embargo — do not free here.
 
     if (pending_accepts_by_embargo.getEntry(embargo_key)) |entry| {
         const pending = entry.value_ptr;
@@ -163,9 +165,9 @@ pub fn releaseEmbargoedAccepts(
     }
 
     for (pending_list.items) |pending| {
-        if (pending_accept_embargo_by_question.fetchRemove(pending.answer_id)) |embargo_key| {
-            allocator.free(embargo_key.value);
-        }
+        // Remove the borrowed reference; the key allocation is owned by
+        // pending_accepts_by_embargo and freed in the outer defer.
+        _ = pending_accept_embargo_by_question.remove(pending.answer_id);
 
         const provided = provides_by_question.getPtr(pending.provided_question_id) orelse {
             try send_return_exception(peer, pending.answer_id, "unknown provision");
@@ -246,10 +248,8 @@ fn cleanupPendingMaps(
     }
     pending_accepts_by_embargo.deinit();
 
-    var question_it = pending_accept_embargo_by_question.valueIterator();
-    while (question_it.next()) |embargo_key| {
-        allocator.free(embargo_key.*);
-    }
+    // Values in pending_accept_embargo_by_question are borrowed from
+    // pending_accepts_by_embargo (already freed above), so just deinit.
     pending_accept_embargo_by_question.deinit();
 }
 

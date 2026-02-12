@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_conn);
 const framing = @import("../level0/framing.zig");
 const transport_xev = @import("transport_xev.zig");
@@ -38,6 +39,26 @@ pub const Connection = struct {
     /// callback, if applicable).
     on_close: ?*const fn (conn: *Connection) void = null,
 
+    // -- Thread-affinity check (debug only) ---------------------------------
+
+    /// Thread ID captured at init time. In debug builds, key entry points
+    /// assert that the current thread matches this value.
+    owner_thread_id: ?std.Thread.Id = null,
+
+    /// Assert that the caller is on the thread that created this connection.
+    /// This is a no-op in release builds. In debug builds, it panics
+    /// with a clear message if the current thread is not the owner.
+    pub fn assertThreadAffinity(self: *const Connection) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        if (builtin.mode == .Debug) {
+            const owner = self.owner_thread_id orelse return;
+            const current = std.Thread.getCurrentId();
+            if (current != owner) {
+                @panic("Connection method called from wrong thread: Connection is not thread-safe, all calls must be on the owner thread");
+            }
+        }
+    }
+
     pub const Options = struct {
         read_buffer_size: usize = 64 * 1024,
     };
@@ -52,10 +73,27 @@ pub const Connection = struct {
             .allocator = allocator,
             .transport = try transport_xev.Transport.init(allocator, loop, socket, options.read_buffer_size),
             .framer = framing.Framer.init(allocator),
+            .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
     }
 
+    /// Release all internal state: clears callbacks, drains pending
+    /// writes, and tears down the transport and framer.
+    ///
+    /// This does **not** free the `Connection` object itself. When the
+    /// `Connection` was heap-allocated (e.g., via `Listener.createConnection`
+    /// or `allocator.create(Connection)`), the caller must follow up with
+    /// `allocator.destroy(conn)` to release the heap memory:
+    ///
+    /// ```
+    /// conn.deinit();
+    /// allocator.destroy(conn);
+    /// ```
+    ///
+    /// For stack-allocated or embedded connections (e.g., in tests), only
+    /// `deinit()` is needed.
     pub fn deinit(self: *Connection) void {
+        self.assertThreadAffinity();
         self.ctx = null;
         self.on_message = null;
         self.on_error = null;
@@ -73,6 +111,7 @@ pub const Connection = struct {
         on_error: *const fn (conn: *Connection, err: anyerror) void,
         on_close: *const fn (conn: *Connection) void,
     ) void {
+        self.assertThreadAffinity();
         log.debug("connection starting", .{});
         self.ctx = ctx;
         self.on_message = on_message;
@@ -84,15 +123,18 @@ pub const Connection = struct {
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
+        self.assertThreadAffinity();
         try self.transport.queueWrite(frame, self, onWriteDone);
     }
 
     pub fn close(self: *Connection) void {
+        self.assertThreadAffinity();
         log.debug("connection closing", .{});
         self.transport.close();
     }
 
     pub fn isClosing(self: *const Connection) bool {
+        self.assertThreadAffinity();
         return self.transport.isClosing();
     }
 
@@ -115,6 +157,11 @@ pub const Connection = struct {
         }
 
         while (true) {
+            // Re-check callbacks each iteration: a prior on_message callback
+            // may have nulled them (e.g. by calling close/deinit on the
+            // connection). Without this guard the `.?` unwrap would panic.
+            if (self.on_message == null or self.on_error == null) break;
+
             const frame = self.framer.popFrame() catch |err| {
                 log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.on_error.?(self, err);
@@ -127,8 +174,16 @@ pub const Connection = struct {
             const bytes = frame.?;
             defer self.allocator.free(bytes);
 
+            // Design note: message handler errors are treated as non-fatal.
+            // Unlike framing errors (which corrupt the byte stream and make
+            // all subsequent frames untrustworthy), a handler error is
+            // application-level and recoverable — the framer state remains
+            // valid. We report the error via on_error and stop processing
+            // further buffered frames from *this* read, but do not reset the
+            // framer or null the callbacks, so the connection can continue
+            // receiving future reads normally.
             self.on_message.?(self, bytes) catch |err| {
-                self.on_error.?(self, err);
+                if (self.on_error) |cb| cb(self, err);
                 return;
             };
         }

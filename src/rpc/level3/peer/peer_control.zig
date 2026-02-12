@@ -810,91 +810,8 @@ pub fn handleJoin(
     }
 }
 
-pub fn handleThirdPartyAnswer(
-    comptime PeerType: type,
-    peer: *PeerType,
-    third_party_answer: protocol.ThirdPartyAnswer,
-    is_third_party_answer_id: *const fn (u32) bool,
-    capture_completion: *const fn (*PeerType, protocol.ThirdPartyAnswer) anyerror!?[]u8,
-    free_payload: *const fn (*PeerType, []u8) void,
-    send_abort: *const fn (*PeerType, []const u8) anyerror!void,
-    adopt_pending_await: *const fn (*PeerType, []const u8, u32) anyerror!bool,
-    get_pending_answer_id: *const fn (*PeerType, []const u8) ?u32,
-    put_pending_answer: *const fn (*PeerType, []u8, u32) anyerror!void,
-) !void {
-    if (!is_third_party_answer_id(third_party_answer.answer_id)) {
-        try send_abort(peer, "invalid thirdPartyAnswer answerId");
-        return error.InvalidThirdPartyAnswerId;
-    }
-
-    const completion_payload = try capture_completion(peer, third_party_answer);
-    const completion_key = completion_payload orelse {
-        try send_abort(peer, "thirdPartyAnswer missing completion");
-        return error.MissingThirdPartyPayload;
-    };
-    var owns_completion_key = true;
-    errdefer if (owns_completion_key) free_payload(peer, completion_key);
-
-    if (try adopt_pending_await(peer, completion_key, third_party_answer.answer_id)) {
-        owns_completion_key = false;
-        free_payload(peer, completion_key);
-        return;
-    }
-
-    if (get_pending_answer_id(peer, completion_key)) |existing_id| {
-        if (existing_id == third_party_answer.answer_id) {
-            owns_completion_key = false;
-            free_payload(peer, completion_key);
-            return;
-        }
-        try send_abort(peer, "conflicting thirdPartyAnswer completion");
-        return error.ConflictingThirdPartyAnswer;
-    }
-
-    try put_pending_answer(peer, completion_key, third_party_answer.answer_id);
-    owns_completion_key = false;
-}
-
 pub fn isThirdPartyAnswerId(answer_id: u32) bool {
     return (answer_id & 0x4000_0000) != 0 and (answer_id & 0x8000_0000) == 0;
-}
-
-pub fn adoptThirdPartyAnswer(
-    comptime PeerType: type,
-    comptime QuestionType: type,
-    peer: *PeerType,
-    question_id: u32,
-    adopted_answer_id: u32,
-    question: QuestionType,
-    has_question: *const fn (*PeerType, u32) bool,
-    has_adopted_answer: *const fn (*PeerType, u32) bool,
-    send_abort: *const fn (*PeerType, []const u8) anyerror!void,
-    put_question: *const fn (*PeerType, u32, QuestionType) anyerror!void,
-    remove_question: *const fn (*PeerType, u32) void,
-    put_adopted_answer: *const fn (*PeerType, u32, u32) anyerror!void,
-    remove_adopted_answer: *const fn (*PeerType, u32) void,
-    take_pending_return_frame: *const fn (*PeerType, u32) ?[]u8,
-    free_frame: *const fn (*PeerType, []u8) void,
-    handle_pending_return_frame: *const fn (*PeerType, []const u8) anyerror!void,
-) !void {
-    if (!isThirdPartyAnswerId(adopted_answer_id)) {
-        try send_abort(peer, "invalid thirdPartyAnswer answerId");
-        return error.InvalidThirdPartyAnswerId;
-    }
-    if (has_question(peer, adopted_answer_id) or has_adopted_answer(peer, adopted_answer_id)) {
-        try send_abort(peer, "duplicate thirdPartyAnswer answerId");
-        return error.DuplicateThirdPartyAnswerId;
-    }
-
-    try put_question(peer, adopted_answer_id, question);
-    errdefer remove_question(peer, adopted_answer_id);
-    try put_adopted_answer(peer, adopted_answer_id, question_id);
-    errdefer remove_adopted_answer(peer, adopted_answer_id);
-
-    if (take_pending_return_frame(peer, adopted_answer_id)) |pending_frame| {
-        defer free_frame(peer, pending_frame);
-        try handle_pending_return_frame(peer, pending_frame);
-    }
 }
 
 pub const ForwardResolvedMode = enum {
@@ -1136,41 +1053,6 @@ pub fn handleMissingReturnQuestion(
         return;
     }
     return error.UnknownQuestion;
-}
-
-pub fn handleReturnAcceptFromThirdParty(
-    comptime PeerType: type,
-    comptime QuestionType: type,
-    peer: *PeerType,
-    answer_id: u32,
-    question: QuestionType,
-    accept_from_third_party: ?message.AnyPointerReader,
-    capture_completion_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
-    free_payload: *const fn (*PeerType, []u8) void,
-    has_pending_await: *const fn (*PeerType, []const u8) bool,
-    send_abort: *const fn (*PeerType, []const u8) anyerror!void,
-    take_pending_answer_id: *const fn (*PeerType, []const u8) ?u32,
-    adopt_third_party_answer: *const fn (*PeerType, u32, u32, QuestionType) anyerror!void,
-    put_pending_await: *const fn (*PeerType, []u8, u32, QuestionType) anyerror!void,
-) !void {
-    const completion_payload = try capture_completion_payload(peer, accept_from_third_party);
-    const completion_key = completion_payload orelse return error.MissingThirdPartyPayload;
-    var owns_completion_key = true;
-    errdefer if (owns_completion_key) free_payload(peer, completion_key);
-
-    if (has_pending_await(peer, completion_key)) {
-        try send_abort(peer, "duplicate awaitFromThirdParty completion");
-        return error.DuplicateThirdPartyAwait;
-    }
-
-    if (take_pending_answer_id(peer, completion_key)) |pending_answer_id| {
-        free_payload(peer, completion_key);
-        owns_completion_key = false;
-        try adopt_third_party_answer(peer, answer_id, pending_answer_id, question);
-    } else {
-        try put_pending_await(peer, completion_key, answer_id, question);
-        owns_completion_key = false;
-    }
 }
 
 pub fn handleReturnRegular(
