@@ -6,6 +6,7 @@ const RunOptions = struct {
     verbose: bool = false,
     emit_schema_manifest: bool = true,
     api_profile: Generator.ApiProfile = .full,
+    shape_sharing: bool = false,
 };
 
 pub fn main() !void {
@@ -47,6 +48,7 @@ pub fn main() !void {
     generator.setVerbose(options.verbose);
     generator.setEmitSchemaManifest(options.emit_schema_manifest);
     generator.setApiProfile(options.api_profile);
+    generator.setShapeSharing(options.shape_sharing);
 
     // Generate code for each requested file
     for (request.requested_files) |requested_file| {
@@ -110,6 +112,9 @@ fn applyEnvRunOptions(allocator: std.mem.Allocator, options: *RunOptions) !void 
     if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_COMPACT_API")) |compact_api| {
         options.api_profile = if (compact_api) .compact else .full;
     }
+    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_SHAPE_SHARING")) |shape_sharing| {
+        options.shape_sharing = shape_sharing;
+    }
 }
 
 fn getEnvBoolOption(allocator: std.mem.Allocator, name: []const u8) !?bool {
@@ -151,6 +156,9 @@ fn applyOptionToken(token: []const u8, options: *RunOptions) void {
 
     if (parseApiProfileToken(token)) |profile| {
         options.api_profile = profile;
+    }
+    if (parseShapeSharingToken(token)) |enabled| {
+        options.shape_sharing = enabled;
     }
 
     if (isNoManifestOption(token)) {
@@ -207,6 +215,28 @@ fn parseApiProfileToken(token: []const u8) ?Generator.ApiProfile {
     return null;
 }
 
+fn parseShapeSharingToken(token: []const u8) ?bool {
+    if (std.ascii.eqlIgnoreCase(token, "shape-sharing") or
+        std.ascii.eqlIgnoreCase(token, "shape_sharing") or
+        std.ascii.eqlIgnoreCase(token, "share-shapes") or
+        std.ascii.eqlIgnoreCase(token, "share_shapes") or
+        std.ascii.eqlIgnoreCase(token, "shape=shared") or
+        std.ascii.eqlIgnoreCase(token, "shape-sharing=on") or
+        std.ascii.eqlIgnoreCase(token, "shape-sharing=true") or
+        std.ascii.eqlIgnoreCase(token, "--shape-sharing"))
+    {
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(token, "shape=inline") or
+        std.ascii.eqlIgnoreCase(token, "shape-sharing=off") or
+        std.ascii.eqlIgnoreCase(token, "shape-sharing=false") or
+        std.ascii.eqlIgnoreCase(token, "--no-shape-sharing"))
+    {
+        return false;
+    }
+    return null;
+}
+
 // Parsing and freeing are handled by request_reader.zig.
 
 /// Get output filename from input filename
@@ -251,6 +281,7 @@ test "parseRunOptions defaults to quiet" {
     try std.testing.expect(!options.verbose);
     try std.testing.expect(options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions enables verbose for --verbose" {
@@ -259,6 +290,7 @@ test "parseRunOptions enables verbose for --verbose" {
     try std.testing.expect(options.verbose);
     try std.testing.expect(options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions enables verbose for capnp style token" {
@@ -267,6 +299,7 @@ test "parseRunOptions enables verbose for capnp style token" {
     try std.testing.expect(options.verbose);
     try std.testing.expect(options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions disables schema manifest via direct flag" {
@@ -274,6 +307,7 @@ test "parseRunOptions disables schema manifest via direct flag" {
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(!options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions disables schema manifest via capnp style token" {
@@ -281,6 +315,7 @@ test "parseRunOptions disables schema manifest via capnp style token" {
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(!options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions allows explicit manifest re-enable" {
@@ -288,18 +323,33 @@ test "parseRunOptions allows explicit manifest re-enable" {
     const options = parseRunOptions(argv[0..]);
     try std.testing.expect(options.emit_schema_manifest);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions enables compact api profile" {
     const argv = [_][]const u8{ "capnpc-zig", "out,compact-api,foo" };
     const options = parseRunOptions(argv[0..]);
     try std.testing.expectEqual(Generator.ApiProfile.compact, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseRunOptions allows explicit full api profile" {
     const argv = [_][]const u8{ "capnpc-zig", "out,compact-api,profile=full" };
     const options = parseRunOptions(argv[0..]);
     try std.testing.expectEqual(Generator.ApiProfile.full, options.api_profile);
+    try std.testing.expect(!options.shape_sharing);
+}
+
+test "parseRunOptions enables shape sharing" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,shape-sharing,foo" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(options.shape_sharing);
+}
+
+test "parseRunOptions disables shape sharing explicitly" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,shape-sharing,--no-shape-sharing" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expect(!options.shape_sharing);
 }
 
 test "parseBoolToken accepts common true values" {
@@ -329,6 +379,15 @@ test "parseApiProfileToken parses supported values" {
     try std.testing.expectEqual(@as(?Generator.ApiProfile, .full), parseApiProfileToken("profile=full"));
     try std.testing.expectEqual(@as(?Generator.ApiProfile, .full), parseApiProfileToken("--api-profile=full"));
     try std.testing.expectEqual(@as(?Generator.ApiProfile, null), parseApiProfileToken("profile=other"));
+}
+
+test "parseShapeSharingToken parses supported values" {
+    try std.testing.expectEqual(@as(?bool, true), parseShapeSharingToken("shape-sharing"));
+    try std.testing.expectEqual(@as(?bool, true), parseShapeSharingToken("SHARE_SHAPES"));
+    try std.testing.expectEqual(@as(?bool, true), parseShapeSharingToken("shape=shared"));
+    try std.testing.expectEqual(@as(?bool, false), parseShapeSharingToken("--no-shape-sharing"));
+    try std.testing.expectEqual(@as(?bool, false), parseShapeSharingToken("shape=inline"));
+    try std.testing.expectEqual(@as(?bool, null), parseShapeSharingToken("shape=unknown"));
 }
 
 test "createOutputFileInDir creates parent directories for nested output paths" {

@@ -24,6 +24,10 @@ pub const Generator = struct {
     emit_schema_manifest: bool = true,
     /// Controls generated Reader/Builder convenience API surface.
     api_profile: ApiProfile = .full,
+    /// When enabled, reuse the first emitted struct declaration for later
+    /// structs with identical generated bodies.
+    shape_sharing: bool = false,
+    shape_share_map: std.StringHashMap([]const u8),
 
     /// Build a generator from the full set of schema nodes, indexing them by ID.
     pub fn init(allocator: std.mem.Allocator, nodes: []const schema.Node) !Generator {
@@ -40,10 +44,13 @@ pub const Generator = struct {
             .node_map = node_map,
             .import_modules = std.AutoHashMap(schema.Id, []const u8).init(allocator),
             .used_import_file_ids = std.AutoHashMap(schema.Id, void).init(allocator),
+            .shape_share_map = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *Generator) void {
+        self.clearShapeShareMap();
+        self.shape_share_map.deinit();
         self.clearImportModules();
         self.import_modules.deinit();
         self.used_import_file_ids.deinit();
@@ -65,10 +72,24 @@ pub const Generator = struct {
         self.api_profile = profile;
     }
 
+    /// Enable/disable shape-based sharing for identical struct declarations.
+    pub fn setShapeSharing(self: *Generator, enabled: bool) void {
+        self.shape_sharing = enabled;
+    }
+
     fn clearImportModules(self: *Generator) void {
         var it = self.import_modules.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
         self.import_modules.clearRetainingCapacity();
+    }
+
+    fn clearShapeShareMap(self: *Generator) void {
+        var it = self.shape_share_map.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.shape_share_map.clearRetainingCapacity();
     }
 
     fn verboseLog(self: *const Generator, comptime fmt: []const u8, args: anytype) void {
@@ -95,6 +116,7 @@ pub const Generator = struct {
         defer self.current_file_id = null;
         self.clearImportModules();
         self.used_import_file_ids.clearRetainingCapacity();
+        self.clearShapeShareMap();
 
         const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
         const needs_rpc = try self.fileNeedsRpc(file_node);
@@ -316,7 +338,13 @@ pub const Generator = struct {
         const writer = output.writer(self.allocator);
 
         switch (node.kind) {
-            .@"struct" => try self.generateStruct(node, writer),
+            .@"struct" => {
+                if (self.shape_sharing) {
+                    try self.generateStructWithShapeSharing(node, writer);
+                } else {
+                    try self.generateStruct(node, writer);
+                }
+            },
             .@"enum" => try self.generateEnum(node, writer),
             .interface => try self.generateInterface(node, writer),
             .@"const" => try self.generateConst(node, writer),
@@ -441,6 +469,39 @@ pub const Generator = struct {
         struct_gen.type_prefix_fn = lookupTypePrefix;
         struct_gen.setApiProfile(self.api_profile);
         try struct_gen.generate(node, writer);
+    }
+
+    /// Generate a struct definition with optional shape sharing.
+    ///
+    /// Reuses the first declaration for identical struct bodies by emitting a
+    /// type alias for later occurrences.
+    fn generateStructWithShapeSharing(self: *Generator, node: *const schema.Node, writer: anytype) !void {
+        var struct_buf = std.ArrayList(u8){};
+        defer struct_buf.deinit(self.allocator);
+
+        {
+            const struct_writer = struct_buf.writer(self.allocator);
+            try self.generateStruct(node, struct_writer);
+        }
+
+        if (struct_buf.items.len == 0) return;
+        const first_newline = std.mem.indexOfScalar(u8, struct_buf.items, '\n') orelse return;
+        const shape_key_slice = struct_buf.items[first_newline + 1 ..];
+        const decl_name = try self.allocTypeDeclName(node);
+        defer self.allocator.free(decl_name);
+
+        if (self.shape_share_map.get(shape_key_slice)) |canonical_name| {
+            try writer.print("pub const {s} = {s};\n\n", .{ decl_name, canonical_name });
+            return;
+        }
+
+        const owned_key = try self.allocator.dupe(u8, shape_key_slice);
+        errdefer self.allocator.free(owned_key);
+        const owned_decl_name = try self.allocator.dupe(u8, decl_name);
+        errdefer self.allocator.free(owned_decl_name);
+
+        try self.shape_share_map.put(owned_key, owned_decl_name);
+        try writer.writeAll(struct_buf.items);
     }
 
     /// Generate an enum definition
@@ -2394,6 +2455,121 @@ test "Generator.generateFile compact api profile omits root init helpers" {
     try std.testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub fn init(msg: *message.MessageBuilder) !Builder"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn wrap(reader: message.StructReader) Reader"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn wrap(builder: message.StructBuilder) Builder"));
+}
+
+test "Generator.generateFile shape sharing aliases identical structs" {
+    const alloc = std.testing.allocator;
+
+    var fields_a = [_]schema.Field{
+        .{
+            .name = "value",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = .uint32,
+                .default_value = null,
+            },
+            .group = null,
+        },
+    };
+    var fields_b = [_]schema.Field{
+        .{
+            .name = "value",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = .uint32,
+                .default_value = null,
+            },
+            .group = null,
+        },
+    };
+
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "A", .id = 2 },
+        .{ .name = "B", .id = 3 },
+    };
+    const root_file = schema.Node{
+        .id = 1,
+        .display_name = "root.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = root_nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const node_a = schema.Node{
+        .id = 2,
+        .display_name = "A",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = fields_a[0..],
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const node_b = schema.Node{
+        .id = 3,
+        .display_name = "B",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = fields_b[0..],
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ root_file, node_a, node_b };
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+    gen.setShapeSharing(true);
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested);
+    defer alloc.free(output);
+
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const A = struct {"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const B = A;"));
 }
 
 test "Generator.getSimpleName extracts name after prefix" {

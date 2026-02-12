@@ -178,6 +178,34 @@ Measured impact after Phase 3 (50k synthetic schema):
 - `compact` + no manifest: `54,089,069` bytes, `2,200,008` lines.
 - Delta from compact profile alone (vs full+manifest): `-16,800,000` bytes (`-21.35%`) and `-500,000` lines.
 
+## Phase 4 Implementation Status (2026-02-12)
+
+Implemented:
+
+- Optional shape sharing in `src/capnpc-zig/generator.zig`:
+  - `Generator.setShapeSharing(bool)` enables reuse of the first emitted struct declaration when a later struct has an identical generated body.
+  - Later matches emit `pub const X = Canonical;` aliases.
+- Runtime/plugin control:
+  - `CAPNPC_ZIG_SHAPE_SHARING=1` to enable.
+  - token parsing for direct invocation (`shape-sharing`, `share-shapes`, etc.).
+
+Measured impact after Phase 4 (50k synthetic schema):
+
+- Full (manifest on, no shape sharing): `78,701,676` bytes, `2,700,013` lines.
+- Full + shape sharing: `9,003,070` bytes, `100,065` lines.
+- Shape sharing + compact + no manifest: `1,190,127` bytes, `100,050` lines.
+- Alias count in 50k synthetic: `49,999`.
+
+10k timing sample (`refAllDeclsRecursive` harness):
+
+- Default: codegen `4.85s`, recursive decl test `20.81s`.
+- Shape sharing enabled: codegen `5.64s`, recursive decl test `3.17s`.
+
+Notes:
+
+- Current shape sharing is exact-body matching; it targets output size and Zig compile pressure, not plugin codegen throughput.
+- Because body matching currently generates full struct text before deciding to alias, plugin-side codegen time may increase in some cases.
+
 ## Ranked Dedup Opportunities
 
 ## 1) Conditional list helper alias emission (high impact, low risk)
@@ -294,6 +322,10 @@ Risks:
 
 - More complex generated API internals.
 - Potentially harder diagnostics and larger migration/testing surface.
+
+Status:
+
+- Implemented (2026-02-12) as an opt-in exact-body sharing mode.
 
 ## Additional Observations
 
