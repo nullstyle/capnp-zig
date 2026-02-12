@@ -19,9 +19,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - uses: jdx/mise-action@v3
 
       - name: Run tests
         run: zig build test --summary all
@@ -35,9 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - uses: jdx/mise-action@v3
 
       - name: Check formatting
         run: zig fmt --check --exclude tests/golden src/ tests/ bench/ tools/
@@ -50,9 +46,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - uses: jdx/mise-action@v3
 
       - name: Run benchmark regression checks
         run: zig build bench-check
@@ -65,9 +59,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - uses: jdx/mise-action@v3
 
       - name: Build WASM host
         run: zig build wasm-host
@@ -80,9 +72,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.2
+      - uses: jdx/mise-action@v3
 
       - name: Build ReleaseSafe
         run: zig build -Doptimize=ReleaseSafe

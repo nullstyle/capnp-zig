@@ -1,0 +1,3 @@
+[tools]
+just = "latest"
+zig = "0.15.2"
