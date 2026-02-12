@@ -108,12 +108,19 @@ pub const Connection = struct {
         if (push_result) |_| {} else |err| {
             log.debug("framer push failed: {}", .{err});
             self.on_error.?(self, err);
+            self.framer.reset();
+            self.on_message = null;
+            self.on_error = null;
             return;
         }
 
         while (true) {
             const frame = self.framer.popFrame() catch |err| {
+                log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.on_error.?(self, err);
+                self.framer.reset();
+                self.on_message = null;
+                self.on_error = null;
                 return;
             };
             if (frame == null) break;

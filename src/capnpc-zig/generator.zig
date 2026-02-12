@@ -1728,3 +1728,281 @@ pub const Generator = struct {
         try writer.writeAll("}");
     }
 };
+
+// ---------------------------------------------------------------------------
+// Inline unit tests for pure helper functions
+// ---------------------------------------------------------------------------
+
+test "Generator.toSnakeCaseLower converts camelCase" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r1 = try gen.toSnakeCaseLower("myFieldName");
+    defer alloc.free(r1);
+    try std.testing.expectEqualStrings("my_field_name", r1);
+}
+
+test "Generator.toSnakeCaseLower handles simple lowercase" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.toSnakeCaseLower("simple");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("simple", r);
+}
+
+test "Generator.toSnakeCaseLower converts PascalCase" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.toSnakeCaseLower("PascalCase");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("pascal_case", r);
+}
+
+test "Generator.toSnakeCaseLower strips non-alphanumeric separators" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.toSnakeCaseLower("foo-bar.baz");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("foo_bar_baz", r);
+}
+
+test "Generator.toSnakeCaseLower handles empty input" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.toSnakeCaseLower("");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("x", r);
+}
+
+test "Generator.toSnakeCaseLower trims trailing separator" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.toSnakeCaseLower("foo-");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("foo", r);
+}
+
+test "Generator.importPathFromCapnpName replaces .capnp with .zig" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r1 = try gen.importPathFromCapnpName("other.capnp");
+    defer alloc.free(r1);
+    try std.testing.expectEqualStrings("other.zig", r1);
+
+    const r2 = try gen.importPathFromCapnpName("path/to/types.capnp");
+    defer alloc.free(r2);
+    try std.testing.expectEqualStrings("path/to/types.zig", r2);
+}
+
+test "Generator.importPathFromCapnpName appends .zig for non-.capnp" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.importPathFromCapnpName("something_else");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("something_else.zig", r);
+}
+
+test "Generator.lowerFirst lowercases first character" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r1 = try gen.lowerFirst("FooBar");
+    defer alloc.free(r1);
+    try std.testing.expectEqualStrings("fooBar", r1);
+
+    const r2 = try gen.lowerFirst("already");
+    defer alloc.free(r2);
+    try std.testing.expectEqualStrings("already", r2);
+}
+
+test "Generator.lowerFirst handles empty string" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.lowerFirst("");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "Generator.lowerFirst handles single character" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r = try gen.lowerFirst("X");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("x", r);
+}
+
+test "Generator.listElementSize returns correct Cap'n Proto element sizes" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    try std.testing.expectEqual(@as(u3, 0), try gen.listElementSize(.void));
+    try std.testing.expectEqual(@as(u3, 1), try gen.listElementSize(.bool));
+    try std.testing.expectEqual(@as(u3, 2), try gen.listElementSize(.int8));
+    try std.testing.expectEqual(@as(u3, 2), try gen.listElementSize(.uint8));
+    try std.testing.expectEqual(@as(u3, 3), try gen.listElementSize(.int16));
+    try std.testing.expectEqual(@as(u3, 3), try gen.listElementSize(.uint16));
+    try std.testing.expectEqual(@as(u3, 4), try gen.listElementSize(.int32));
+    try std.testing.expectEqual(@as(u3, 4), try gen.listElementSize(.uint32));
+    try std.testing.expectEqual(@as(u3, 4), try gen.listElementSize(.float32));
+    try std.testing.expectEqual(@as(u3, 5), try gen.listElementSize(.int64));
+    try std.testing.expectEqual(@as(u3, 5), try gen.listElementSize(.uint64));
+    try std.testing.expectEqual(@as(u3, 5), try gen.listElementSize(.float64));
+    try std.testing.expectEqual(@as(u3, 6), try gen.listElementSize(.text));
+    try std.testing.expectEqual(@as(u3, 6), try gen.listElementSize(.data));
+    try std.testing.expectEqual(@as(u3, 6), try gen.listElementSize(.any_pointer));
+}
+
+test "Generator.moduleNameFromFilename extracts snake_case module name" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const r1 = try gen.moduleNameFromFilename("MySchema.capnp");
+    defer alloc.free(r1);
+    try std.testing.expectEqualStrings("my_schema", r1);
+
+    const r2 = try gen.moduleNameFromFilename("path/to/types.capnp");
+    defer alloc.free(r2);
+    try std.testing.expectEqualStrings("types", r2);
+
+    const r3 = try gen.moduleNameFromFilename("simple.capnp");
+    defer alloc.free(r3);
+    try std.testing.expectEqualStrings("simple", r3);
+}
+
+test "Generator.getSimpleName extracts name after prefix" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const node1 = schema.Node{
+        .id = 1,
+        .display_name = "test.capnp:MyStruct",
+        .display_name_prefix_length = 11,
+        .scope_id = 0,
+        .kind = .file,
+        .nested_nodes = &.{},
+        .annotations = &.{},
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    try std.testing.expectEqualStrings("MyStruct", gen.getSimpleName(&node1));
+
+    const node2 = schema.Node{
+        .id = 2,
+        .display_name = "Standalone",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .kind = .file,
+        .nested_nodes = &.{},
+        .annotations = &.{},
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    try std.testing.expectEqualStrings("Standalone", gen.getSimpleName(&node2));
+
+    // Prefix length exceeds display_name length -- should return entire display_name
+    const node3 = schema.Node{
+        .id = 3,
+        .display_name = "short",
+        .display_name_prefix_length = 100,
+        .scope_id = 0,
+        .kind = .file,
+        .nested_nodes = &.{},
+        .annotations = &.{},
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    try std.testing.expectEqualStrings("short", gen.getSimpleName(&node3));
+}
+
+test "Generator.getNode returns null for unknown ID" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    try std.testing.expect(gen.getNode(12345) == null);
+}
+
+test "Generator.getNode returns node by ID" {
+    const alloc = std.testing.allocator;
+    const nodes = [_]schema.Node{
+        .{
+            .id = 0xABCD,
+            .display_name = "test",
+            .display_name_prefix_length = 0,
+            .scope_id = 0,
+            .kind = .file,
+            .nested_nodes = &.{},
+            .annotations = &.{},
+            .struct_node = null,
+            .enum_node = null,
+            .interface_node = null,
+            .const_node = null,
+            .annotation_node = null,
+        },
+    };
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const found = gen.getNode(0xABCD);
+    try std.testing.expect(found != null);
+    try std.testing.expectEqualStrings("test", found.?.display_name);
+    try std.testing.expect(gen.getNode(0xDEAD) == null);
+}
+
+test "Generator.writeByteArrayLiteral formats bytes" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(alloc);
+    const writer = buf.writer(alloc);
+
+    try gen.writeByteArrayLiteral(writer, &[_]u8{ 0x00, 0xFF, 0x42 });
+    try std.testing.expectEqualStrings("&[_]u8{0x00, 0xFF, 0x42}", buf.items);
+}
+
+test "Generator.writeByteArrayLiteral handles empty data" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(alloc);
+    const writer = buf.writer(alloc);
+
+    try gen.writeByteArrayLiteral(writer, &[_]u8{});
+    try std.testing.expectEqualStrings("&[_]u8{}", buf.items);
+}

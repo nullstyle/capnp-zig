@@ -118,118 +118,14 @@ pub const StructGenerator = struct {
 
     fn generateListHelpers(self: *StructGenerator, writer: anytype) !void {
         _ = self;
-        try writer.writeAll("    fn EnumListReader(comptime EnumType: type) type {\n");
-        try writer.writeAll("        return struct {\n");
-        try writer.writeAll("            _list: message.U16ListReader,\n\n");
-        try writer.writeAll("            pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("                return self._list.len();\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn get(self: @This(), index: u32) !EnumType {\n");
-        try writer.writeAll("                return std.meta.intToEnum(EnumType, try self._list.get(index)) catch return error.InvalidEnumValue;\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn raw(self: @This()) message.U16ListReader {\n");
-        try writer.writeAll("                return self._list;\n");
-        try writer.writeAll("            }\n");
-        try writer.writeAll("        };\n");
-        try writer.writeAll("    }\n\n");
-        try writer.writeAll("    fn EnumListBuilder(comptime EnumType: type) type {\n");
-        try writer.writeAll("        return struct {\n");
-        try writer.writeAll("            _list: message.U16ListBuilder,\n\n");
-        try writer.writeAll("            pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("                return self._list.len();\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn set(self: @This(), index: u32, value: EnumType) !void {\n");
-        try writer.writeAll("                try self._list.set(index, @intFromEnum(value));\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn raw(self: @This()) message.U16ListBuilder {\n");
-        try writer.writeAll("                return self._list;\n");
-        try writer.writeAll("            }\n");
-        try writer.writeAll("        };\n");
-        try writer.writeAll("    }\n\n");
-        try writer.writeAll("    fn StructListReader(comptime StructType: type) type {\n");
-        try writer.writeAll("        return struct {\n");
-        try writer.writeAll("            _list: message.StructListReader,\n\n");
-        try writer.writeAll("            pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("                return self._list.len();\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn get(self: @This(), index: u32) !StructType.Reader {\n");
-        try writer.writeAll("                const item = try self._list.get(index);\n");
-        try writer.writeAll("                return StructType.Reader.wrap(item);\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn raw(self: @This()) message.StructListReader {\n");
-        try writer.writeAll("                return self._list;\n");
-        try writer.writeAll("            }\n");
-        try writer.writeAll("        };\n");
-        try writer.writeAll("    }\n\n");
-        try writer.writeAll("    fn StructListBuilder(comptime StructType: type) type {\n");
-        try writer.writeAll("        return struct {\n");
-        try writer.writeAll("            _list: message.StructListBuilder,\n\n");
-        try writer.writeAll("            pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("                return self._list.len();\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn get(self: @This(), index: u32) !StructType.Builder {\n");
-        try writer.writeAll("                const item = try self._list.get(index);\n");
-        try writer.writeAll("                return StructType.Builder.wrap(item);\n");
-        try writer.writeAll("            }\n\n");
-        try writer.writeAll("            pub fn raw(self: @This()) message.StructListBuilder {\n");
-        try writer.writeAll("                return self._list;\n");
-        try writer.writeAll("            }\n");
-        try writer.writeAll("        };\n");
-        try writer.writeAll("    }\n\n");
-        try writer.writeAll("    const DataListReader = struct {\n");
-        try writer.writeAll("        _list: message.PointerListReader,\n\n");
-        try writer.writeAll("        pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("            return self._list.len();\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn get(self: @This(), index: u32) ![]const u8 {\n");
-        try writer.writeAll("            return try self._list.getData(index);\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn raw(self: @This()) message.PointerListReader {\n");
-        try writer.writeAll("            return self._list;\n");
-        try writer.writeAll("        }\n");
-        try writer.writeAll("    };\n\n");
-        try writer.writeAll("    const DataListBuilder = struct {\n");
-        try writer.writeAll("        _list: message.PointerListBuilder,\n\n");
-        try writer.writeAll("        pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("            return self._list.len();\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn set(self: @This(), index: u32, value: []const u8) !void {\n");
-        try writer.writeAll("            try self._list.setData(index, value);\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn setNull(self: @This(), index: u32) !void {\n");
-        try writer.writeAll("            try self._list.setNull(index);\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn raw(self: @This()) message.PointerListBuilder {\n");
-        try writer.writeAll("            return self._list;\n");
-        try writer.writeAll("        }\n");
-        try writer.writeAll("    };\n\n");
-        try writer.writeAll("    const CapabilityListReader = struct {\n");
-        try writer.writeAll("        _list: message.PointerListReader,\n\n");
-        try writer.writeAll("        pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("            return self._list.len();\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn get(self: @This(), index: u32) !message.Capability {\n");
-        try writer.writeAll("            return try self._list.getCapability(index);\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn raw(self: @This()) message.PointerListReader {\n");
-        try writer.writeAll("            return self._list;\n");
-        try writer.writeAll("        }\n");
-        try writer.writeAll("    };\n\n");
-        try writer.writeAll("    const CapabilityListBuilder = struct {\n");
-        try writer.writeAll("        _list: message.PointerListBuilder,\n\n");
-        try writer.writeAll("        pub fn len(self: @This()) u32 {\n");
-        try writer.writeAll("            return self._list.len();\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn set(self: @This(), index: u32, cap: message.Capability) !void {\n");
-        try writer.writeAll("            try self._list.setCapability(index, cap);\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn setNull(self: @This(), index: u32) !void {\n");
-        try writer.writeAll("            try self._list.setNull(index);\n");
-        try writer.writeAll("        }\n\n");
-        try writer.writeAll("        pub fn raw(self: @This()) message.PointerListBuilder {\n");
-        try writer.writeAll("            return self._list;\n");
-        try writer.writeAll("        }\n");
-        try writer.writeAll("    };\n\n");
+        try writer.writeAll("    const EnumListReader = message.typed_list_helpers.EnumListReader;\n");
+        try writer.writeAll("    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;\n");
+        try writer.writeAll("    const StructListReader = message.typed_list_helpers.StructListReader;\n");
+        try writer.writeAll("    const StructListBuilder = message.typed_list_helpers.StructListBuilder;\n");
+        try writer.writeAll("    const DataListReader = message.typed_list_helpers.DataListReader;\n");
+        try writer.writeAll("    const DataListBuilder = message.typed_list_helpers.DataListBuilder;\n");
+        try writer.writeAll("    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;\n");
+        try writer.writeAll("    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;\n\n");
     }
 
     fn generateReader(
@@ -1780,3 +1676,331 @@ pub const StructGenerator = struct {
         try writer.print("                self._builder.{s}({}, @bitCast(value));\n", .{ write_fn, byte_offset });
     }
 };
+
+// ---------------------------------------------------------------------------
+// Inline unit tests for pure helper functions
+// ---------------------------------------------------------------------------
+
+test "StructGenerator.capitalizeFirst capitalizes first character" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const r1 = try sg.capitalizeFirst("fooBar");
+    defer alloc.free(r1);
+    try std.testing.expectEqualStrings("FooBar", r1);
+
+    const r2 = try sg.capitalizeFirst("x");
+    defer alloc.free(r2);
+    try std.testing.expectEqualStrings("X", r2);
+
+    const r3 = try sg.capitalizeFirst("Already");
+    defer alloc.free(r3);
+    try std.testing.expectEqualStrings("Already", r3);
+}
+
+test "StructGenerator.capitalizeFirst handles empty string" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const r = try sg.capitalizeFirst("");
+    defer alloc.free(r);
+    try std.testing.expectEqualStrings("", r);
+}
+
+test "StructGenerator.dataByteOffset computes correct offsets" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    // bool: offset / 8
+    try std.testing.expectEqual(@as(u32, 1), sg.dataByteOffset(.bool, 8));
+    try std.testing.expectEqual(@as(u32, 0), sg.dataByteOffset(.bool, 0));
+    try std.testing.expectEqual(@as(u32, 0), sg.dataByteOffset(.bool, 7));
+
+    // u8/i8: offset * 1
+    try std.testing.expectEqual(@as(u32, 3), sg.dataByteOffset(.uint8, 3));
+    try std.testing.expectEqual(@as(u32, 0), sg.dataByteOffset(.int8, 0));
+
+    // u16/i16/enum: offset * 2
+    try std.testing.expectEqual(@as(u32, 4), sg.dataByteOffset(.uint16, 2));
+    try std.testing.expectEqual(@as(u32, 6), sg.dataByteOffset(.int16, 3));
+
+    // u32/i32/f32: offset * 4
+    try std.testing.expectEqual(@as(u32, 8), sg.dataByteOffset(.uint32, 2));
+    try std.testing.expectEqual(@as(u32, 4), sg.dataByteOffset(.float32, 1));
+
+    // u64/i64/f64: offset * 8
+    try std.testing.expectEqual(@as(u32, 8), sg.dataByteOffset(.uint64, 1));
+    try std.testing.expectEqual(@as(u32, 16), sg.dataByteOffset(.float64, 2));
+}
+
+test "StructGenerator.readFnForType maps types to reader methods" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    try std.testing.expectEqualStrings("readU8", sg.readFnForType(.int8));
+    try std.testing.expectEqualStrings("readU8", sg.readFnForType(.uint8));
+    try std.testing.expectEqualStrings("readU16", sg.readFnForType(.int16));
+    try std.testing.expectEqualStrings("readU16", sg.readFnForType(.uint16));
+    try std.testing.expectEqualStrings("readU32", sg.readFnForType(.int32));
+    try std.testing.expectEqualStrings("readU32", sg.readFnForType(.uint32));
+    try std.testing.expectEqualStrings("readU32", sg.readFnForType(.float32));
+    try std.testing.expectEqualStrings("readU64", sg.readFnForType(.int64));
+    try std.testing.expectEqualStrings("readU64", sg.readFnForType(.uint64));
+    try std.testing.expectEqualStrings("readU64", sg.readFnForType(.float64));
+}
+
+test "StructGenerator.isUnsigned identifies unsigned integer types" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    try std.testing.expect(sg.isUnsigned(.uint8));
+    try std.testing.expect(sg.isUnsigned(.uint16));
+    try std.testing.expect(sg.isUnsigned(.uint32));
+    try std.testing.expect(sg.isUnsigned(.uint64));
+
+    try std.testing.expect(!sg.isUnsigned(.int8));
+    try std.testing.expect(!sg.isUnsigned(.int16));
+    try std.testing.expect(!sg.isUnsigned(.int32));
+    try std.testing.expect(!sg.isUnsigned(.int64));
+    try std.testing.expect(!sg.isUnsigned(.float32));
+    try std.testing.expect(!sg.isUnsigned(.float64));
+    try std.testing.expect(!sg.isUnsigned(.bool));
+    try std.testing.expect(!sg.isUnsigned(.void));
+}
+
+test "StructGenerator.bitWidth returns correct widths" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    try std.testing.expectEqual(@as(?u8, 8), sg.bitWidth(.int8));
+    try std.testing.expectEqual(@as(?u8, 8), sg.bitWidth(.uint8));
+    try std.testing.expectEqual(@as(?u8, 16), sg.bitWidth(.int16));
+    try std.testing.expectEqual(@as(?u8, 16), sg.bitWidth(.uint16));
+    try std.testing.expectEqual(@as(?u8, 32), sg.bitWidth(.int32));
+    try std.testing.expectEqual(@as(?u8, 32), sg.bitWidth(.uint32));
+    try std.testing.expectEqual(@as(?u8, 32), sg.bitWidth(.float32));
+    try std.testing.expectEqual(@as(?u8, 64), sg.bitWidth(.int64));
+    try std.testing.expectEqual(@as(?u8, 64), sg.bitWidth(.uint64));
+    try std.testing.expectEqual(@as(?u8, 64), sg.bitWidth(.float64));
+    try std.testing.expectEqual(@as(?u8, null), sg.bitWidth(.void));
+    try std.testing.expectEqual(@as(?u8, null), sg.bitWidth(.bool));
+    try std.testing.expectEqual(@as(?u8, null), sg.bitWidth(.text));
+}
+
+test "StructGenerator.listReaderMethod maps types to list reader methods" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    try std.testing.expectEqualStrings("readVoidList", sg.listReaderMethod(.void));
+    try std.testing.expectEqualStrings("readBoolList", sg.listReaderMethod(.bool));
+    try std.testing.expectEqualStrings("readI8List", sg.listReaderMethod(.int8));
+    try std.testing.expectEqualStrings("readU8List", sg.listReaderMethod(.uint8));
+    try std.testing.expectEqualStrings("readI16List", sg.listReaderMethod(.int16));
+    try std.testing.expectEqualStrings("readU16List", sg.listReaderMethod(.uint16));
+    try std.testing.expectEqualStrings("readI32List", sg.listReaderMethod(.int32));
+    try std.testing.expectEqualStrings("readU32List", sg.listReaderMethod(.uint32));
+    try std.testing.expectEqualStrings("readF32List", sg.listReaderMethod(.float32));
+    try std.testing.expectEqualStrings("readI64List", sg.listReaderMethod(.int64));
+    try std.testing.expectEqualStrings("readU64List", sg.listReaderMethod(.uint64));
+    try std.testing.expectEqualStrings("readF64List", sg.listReaderMethod(.float64));
+    try std.testing.expectEqualStrings("readTextList", sg.listReaderMethod(.text));
+    try std.testing.expectEqualStrings("readPointerList", sg.listReaderMethod(.data));
+    try std.testing.expectEqualStrings("readPointerList", sg.listReaderMethod(.any_pointer));
+}
+
+test "StructGenerator.listElementSize returns correct Cap'n Proto element sizes" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    try std.testing.expectEqual(@as(u3, 0), try sg.listElementSize(.void));
+    try std.testing.expectEqual(@as(u3, 1), try sg.listElementSize(.bool));
+    try std.testing.expectEqual(@as(u3, 2), try sg.listElementSize(.int8));
+    try std.testing.expectEqual(@as(u3, 2), try sg.listElementSize(.uint8));
+    try std.testing.expectEqual(@as(u3, 3), try sg.listElementSize(.int16));
+    try std.testing.expectEqual(@as(u3, 3), try sg.listElementSize(.uint16));
+    try std.testing.expectEqual(@as(u3, 4), try sg.listElementSize(.int32));
+    try std.testing.expectEqual(@as(u3, 4), try sg.listElementSize(.uint32));
+    try std.testing.expectEqual(@as(u3, 4), try sg.listElementSize(.float32));
+    try std.testing.expectEqual(@as(u3, 5), try sg.listElementSize(.int64));
+    try std.testing.expectEqual(@as(u3, 5), try sg.listElementSize(.uint64));
+    try std.testing.expectEqual(@as(u3, 5), try sg.listElementSize(.float64));
+    try std.testing.expectEqual(@as(u3, 6), try sg.listElementSize(.text));
+    try std.testing.expectEqual(@as(u3, 6), try sg.listElementSize(.data));
+    try std.testing.expectEqual(@as(u3, 6), try sg.listElementSize(.any_pointer));
+}
+
+test "StructGenerator.defaultBool extracts boolean default" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    try std.testing.expectEqual(true, sg.defaultBool(schema.Value{ .bool = true }));
+    try std.testing.expectEqual(false, sg.defaultBool(schema.Value{ .bool = false }));
+    try std.testing.expectEqual(false, sg.defaultBool(schema.Value{ .void = {} }));
+    try std.testing.expectEqual(false, sg.defaultBool(schema.Value{ .uint32 = 42 }));
+}
+
+test "StructGenerator.defaultText extracts text default" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const text_val = schema.Value{ .text = "hello" };
+    try std.testing.expectEqualStrings("hello", sg.defaultText(text_val).?);
+
+    const non_text = schema.Value{ .uint32 = 42 };
+    try std.testing.expect(sg.defaultText(non_text) == null);
+}
+
+test "StructGenerator.defaultData extracts data default" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const data_val = schema.Value{ .data = &[_]u8{ 1, 2, 3 } };
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, sg.defaultData(data_val).?);
+
+    const non_data = schema.Value{ .void = {} };
+    try std.testing.expect(sg.defaultData(non_data) == null);
+}
+
+test "StructGenerator.defaultBits extracts numeric default bits" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    // uint32 default
+    try std.testing.expectEqual(@as(?u64, 42), sg.defaultBits(.uint32, schema.Value{ .uint32 = 42 }));
+
+    // int8 default (-1 as u8 = 255)
+    try std.testing.expectEqual(@as(?u64, 255), sg.defaultBits(.int8, schema.Value{ .int8 = -1 }));
+
+    // Type mismatch returns null
+    try std.testing.expectEqual(@as(?u64, null), sg.defaultBits(.uint32, schema.Value{ .uint16 = 5 }));
+
+    // Non-numeric type returns null
+    try std.testing.expectEqual(@as(?u64, null), sg.defaultBits(.void, schema.Value{ .void = {} }));
+}
+
+test "StructGenerator.defaultLiteral formats XOR default literal" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    // A u32 default of 42 should produce a literal
+    const literal = try sg.defaultLiteral(.uint32, schema.Value{ .uint32 = 42 });
+    if (literal) |lit| {
+        defer alloc.free(lit);
+        try std.testing.expectEqualStrings("@as(u32, 42)", lit);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Zero default should also produce a literal
+    const zero_lit = try sg.defaultLiteral(.uint16, schema.Value{ .uint16 = 0 });
+    if (zero_lit) |lit| {
+        defer alloc.free(lit);
+        try std.testing.expectEqualStrings("@as(u16, 0)", lit);
+    } else {
+        return error.TestUnexpectedResult;
+    }
+
+    // Mismatched type returns null
+    const no_lit = try sg.defaultLiteral(.uint32, schema.Value{ .void = {} });
+    try std.testing.expect(no_lit == null);
+}
+
+test "StructGenerator.readerTypeString maps primitive types" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const cases = .{
+        .{ .typ = schema.Type.void, .expected = "void" },
+        .{ .typ = schema.Type.bool, .expected = "bool" },
+        .{ .typ = schema.Type.int8, .expected = "i8" },
+        .{ .typ = schema.Type.int16, .expected = "i16" },
+        .{ .typ = schema.Type.int32, .expected = "i32" },
+        .{ .typ = schema.Type.int64, .expected = "i64" },
+        .{ .typ = schema.Type.uint8, .expected = "u8" },
+        .{ .typ = schema.Type.uint16, .expected = "u16" },
+        .{ .typ = schema.Type.uint32, .expected = "u32" },
+        .{ .typ = schema.Type.uint64, .expected = "u64" },
+        .{ .typ = schema.Type.float32, .expected = "f32" },
+        .{ .typ = schema.Type.float64, .expected = "f64" },
+        .{ .typ = schema.Type.text, .expected = "[]const u8" },
+        .{ .typ = schema.Type.data, .expected = "[]const u8" },
+        .{ .typ = schema.Type.any_pointer, .expected = "message.AnyPointerReader" },
+        .{ .typ = @as(schema.Type, .{ .interface = .{ .type_id = 0 } }), .expected = "message.Capability" },
+    };
+
+    inline for (cases) |case| {
+        const result = try sg.readerTypeString(case.typ);
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings(case.expected, result);
+    }
+}
+
+test "StructGenerator.writerTypeString maps primitive types" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const cases = .{
+        .{ .typ = schema.Type.void, .expected = "void" },
+        .{ .typ = schema.Type.bool, .expected = "bool" },
+        .{ .typ = schema.Type.int8, .expected = "i8" },
+        .{ .typ = schema.Type.uint32, .expected = "u32" },
+        .{ .typ = schema.Type.float64, .expected = "f64" },
+        .{ .typ = schema.Type.text, .expected = "[]const u8" },
+        .{ .typ = schema.Type.data, .expected = "[]const u8" },
+    };
+
+    inline for (cases) |case| {
+        const result = try sg.writerTypeString(case.typ);
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings(case.expected, result);
+    }
+}
+
+test "StructGenerator.writeByteArrayLiteral formats bytes" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(alloc);
+    const writer = buf.writer(alloc);
+
+    try sg.writeByteArrayLiteral(writer, &[_]u8{ 0xDE, 0xAD });
+    try std.testing.expectEqualStrings("&[_]u8{0xDE, 0xAD}", buf.items);
+}
+
+test "StructGenerator.getSimpleName extracts name from display_name" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const node = schema.Node{
+        .id = 1,
+        .display_name = "file.capnp:Nested",
+        .display_name_prefix_length = 11,
+        .scope_id = 0,
+        .kind = .file,
+        .nested_nodes = &.{},
+        .annotations = &.{},
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    try std.testing.expectEqualStrings("Nested", sg.getSimpleName(&node));
+}
+
+test "StructGenerator.defaultPointerBytes extracts bytes from pointer defaults" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+
+    const list_bytes = [_]u8{ 1, 2, 3 };
+    const list_val = schema.Value{ .list = .{ .message_bytes = &list_bytes } };
+    try std.testing.expectEqualSlices(u8, &list_bytes, sg.defaultPointerBytes(list_val).?);
+
+    const struct_bytes = [_]u8{ 4, 5 };
+    const struct_val = schema.Value{ .@"struct" = .{ .message_bytes = &struct_bytes } };
+    try std.testing.expectEqualSlices(u8, &struct_bytes, sg.defaultPointerBytes(struct_val).?);
+
+    const non_pointer = schema.Value{ .uint32 = 0 };
+    try std.testing.expect(sg.defaultPointerBytes(non_pointer) == null);
+}

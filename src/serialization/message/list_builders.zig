@@ -1,4 +1,9 @@
 const std = @import("std");
+const bounds = @import("bounds.zig");
+const list_readers = @import("list_readers.zig");
+
+// Re-use the shared comptime generic from list_readers.
+const PrimitiveListBuilder = list_readers.PrimitiveListBuilder;
 
 pub fn define(
     comptime MessageBuilderType: type,
@@ -47,7 +52,7 @@ pub fn define(
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const offset = self.elements_offset + @as(usize, index);
                 const segment = &self.builder.segments.items[self.segment_id];
-                if (offset >= segment.items.len) return error.OutOfBounds;
+                try bounds.checkOffsetMut(segment.items, offset);
                 segment.items[offset] = value;
             }
 
@@ -73,162 +78,20 @@ pub fn define(
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const offset = self.elements_offset + @as(usize, index);
                 const segment = &self.builder.segments.items[self.segment_id];
-                if (offset >= segment.items.len) return error.OutOfBounds;
+                try bounds.checkOffsetMut(segment.items, offset);
                 segment.items[offset] = @bitCast(value);
             }
         };
 
-        pub const U16ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: U16ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: U16ListBuilder, index: u32, value: u16) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 2;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 2 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(u16, segment.items[offset..][0..2], value, .little);
-            }
-        };
-
-        pub const I16ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: I16ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: I16ListBuilder, index: u32, value: i16) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 2;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 2 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(i16, segment.items[offset..][0..2], value, .little);
-            }
-        };
-
-        pub const U32ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: U32ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: U32ListBuilder, index: u32, value: u32) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 4;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 4 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(u32, segment.items[offset..][0..4], value, .little);
-            }
-        };
-
-        pub const I32ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: I32ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: I32ListBuilder, index: u32, value: i32) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 4;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 4 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(i32, segment.items[offset..][0..4], value, .little);
-            }
-        };
-
-        pub const F32ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: F32ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: F32ListBuilder, index: u32, value: f32) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 4;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 4 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(u32, segment.items[offset..][0..4], @bitCast(value), .little);
-            }
-        };
-
-        pub const U64ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: U64ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: U64ListBuilder, index: u32, value: u64) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 8;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 8 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(u64, segment.items[offset..][0..8], value, .little);
-            }
-        };
-
-        pub const I64ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: I64ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: I64ListBuilder, index: u32, value: i64) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 8;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 8 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(i64, segment.items[offset..][0..8], value, .little);
-            }
-        };
-
-        pub const F64ListBuilder = struct {
-            builder: *MessageBuilderType,
-            segment_id: u32,
-            elements_offset: usize,
-            element_count: u32,
-
-            pub fn len(self: F64ListBuilder) u32 {
-                return self.element_count;
-            }
-
-            pub fn set(self: F64ListBuilder, index: u32, value: f64) !void {
-                if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index) * 8;
-                const segment = &self.builder.segments.items[self.segment_id];
-                if (offset + 8 > segment.items.len) return error.OutOfBounds;
-                std.mem.writeInt(u64, segment.items[offset..][0..8], @bitCast(value), .little);
-            }
-        };
+        // Multi-byte primitive list builders — generated via comptime generic.
+        pub const U16ListBuilder = PrimitiveListBuilder(u16, MessageBuilderType);
+        pub const I16ListBuilder = PrimitiveListBuilder(i16, MessageBuilderType);
+        pub const U32ListBuilder = PrimitiveListBuilder(u32, MessageBuilderType);
+        pub const I32ListBuilder = PrimitiveListBuilder(i32, MessageBuilderType);
+        pub const F32ListBuilder = PrimitiveListBuilder(f32, MessageBuilderType);
+        pub const U64ListBuilder = PrimitiveListBuilder(u64, MessageBuilderType);
+        pub const I64ListBuilder = PrimitiveListBuilder(i64, MessageBuilderType);
+        pub const F64ListBuilder = PrimitiveListBuilder(f64, MessageBuilderType);
 
         pub const BoolListBuilder = struct {
             builder: *MessageBuilderType,
@@ -246,7 +109,7 @@ pub fn define(
                 const bit_index: u3 = @intCast(index % 8);
                 const offset = self.elements_offset + byte_index;
                 const segment = &self.builder.segments.items[self.segment_id];
-                if (offset >= segment.items.len) return error.OutOfBounds;
+                try bounds.checkOffsetMut(segment.items, offset);
                 const mask = @as(u8, 1) << bit_index;
                 if (value) {
                     segment.items[offset] |= mask;

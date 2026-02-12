@@ -1174,8 +1174,8 @@ test "Codegen: enum list fields use typed wrappers" {
     const output = try gen.generateFile(requested_file);
     defer testing.allocator.free(output);
 
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "fn EnumListReader(comptime EnumType: type) type"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "fn EnumListBuilder(comptime EnumType: type) type"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const EnumListReader = message.typed_list_helpers.EnumListReader;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getColors(self: Reader) !EnumListReader(Color)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const raw = try self._reader.readU16List(0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return EnumListReader(Color){ ._list = raw };"));
@@ -1284,8 +1284,8 @@ test "Codegen: struct list fields use typed wrappers" {
     const output = try gen.generateFile(requested_file);
     defer testing.allocator.free(output);
 
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "fn StructListReader(comptime StructType: type) type"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "fn StructListBuilder(comptime StructType: type) type"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const StructListReader = message.typed_list_helpers.StructListReader;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const StructListBuilder = message.typed_list_helpers.StructListBuilder;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getChildren(self: Reader) !StructListReader(Child)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const raw = try self._reader.readStructList(0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return StructListReader(Child){ ._list = raw };"));
@@ -1400,10 +1400,10 @@ test "Codegen: data and capability list fields use typed wrappers" {
     const output = try gen.generateFile(requested_file);
     defer testing.allocator.free(output);
 
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const DataListReader = struct"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const DataListBuilder = struct"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const CapabilityListReader = struct"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const CapabilityListBuilder = struct"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const DataListReader = message.typed_list_helpers.DataListReader;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const DataListBuilder = message.typed_list_helpers.DataListBuilder;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getDataItems(self: Reader) !DataListReader"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return DataListReader{ ._list = raw };"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initDataItems(self: *Builder, element_count: u32) !DataListBuilder"));

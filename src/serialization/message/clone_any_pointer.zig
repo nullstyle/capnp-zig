@@ -1,4 +1,5 @@
 const std = @import("std");
+const bounds = @import("bounds.zig");
 
 pub fn define(
     comptime MessageBuilderType: type,
@@ -62,14 +63,14 @@ pub fn define(
             const dest_segment = &dest.builder.segments.items[dest.segment_id];
             const dest_start = dest.offset;
             const dest_end = dest_start + src_data.len;
-            if (dest_end > dest_segment.items.len) return error.OutOfBounds;
+            try bounds.checkBoundsMut(dest_segment.items, dest_start, src_data.len);
             std.mem.copyForwards(u8, dest_segment.items[dest_start..dest_end], src_data);
 
             const pointer_section = src.getPointerSection();
             var ptr_index: u16 = 0;
             while (ptr_index < src.pointer_count) : (ptr_index += 1) {
                 const pointer_offset = @as(usize, ptr_index) * 8;
-                if (pointer_offset + 8 > pointer_section.len) return error.OutOfBounds;
+                try bounds.checkBounds(pointer_section, pointer_offset, 8);
                 const pointer_word = std.mem.readInt(u64, pointer_section[pointer_offset..][0..8], .little);
                 const pointer_pos = src.offset + @as(usize, src.data_size) * 8 + pointer_offset;
                 var dest_ptr = try dest.getAnyPointer(ptr_index);
@@ -129,7 +130,7 @@ pub fn define(
                 var idx: u32 = 0;
                 while (idx < element_count) : (idx += 1) {
                     const src_ptr_pos = list.content_offset + @as(usize, idx) * 8;
-                    if (src_ptr_pos + 8 > src_segment.len) return error.OutOfBounds;
+                    try bounds.checkBounds(src_segment, src_ptr_pos, 8);
                     const pointer_word = std.mem.readInt(u64, src_segment[src_ptr_pos..][0..8], .little);
                     const src_ptr = AnyPointerReaderType{
                         .message = src.message,
@@ -158,10 +159,10 @@ pub fn define(
             const dest_offset = try dest.builder.writeListPointer(dest.segment_id, dest.pointer_pos, element_size, element_count, dest.segment_id);
             if (total_bytes == 0) return;
             const src_segment = src.message.segments[list.segment_id];
-            if (list.content_offset + total_bytes > src_segment.len) return error.OutOfBounds;
+            try bounds.checkBounds(src_segment, list.content_offset, total_bytes);
 
             const dest_segment = &dest.builder.segments.items[dest.segment_id];
-            if (dest_offset + total_bytes > dest_segment.items.len) return error.OutOfBounds;
+            try bounds.checkBoundsMut(dest_segment.items, dest_offset, total_bytes);
             std.mem.copyForwards(
                 u8,
                 dest_segment.items[dest_offset .. dest_offset + total_bytes],

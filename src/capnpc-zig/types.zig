@@ -211,6 +211,78 @@ test "escapeZigKeyword escapes usingnamespace" {
     try std.testing.expectEqualStrings("@\"usingnamespace\"", escaped);
 }
 
+test "escapeZigKeyword escapes common keywords" {
+    const alloc = std.testing.allocator;
+
+    const keywords = [_][]const u8{ "type", "error", "return", "struct", "enum", "union", "const", "var", "fn", "if", "else", "for", "while", "true", "false", "null", "try", "switch", "break", "continue", "test", "pub" };
+    for (keywords) |kw| {
+        const escaped = try escapeZigKeyword(alloc, kw);
+        defer alloc.free(escaped);
+        const expected = try std.fmt.allocPrint(alloc, "@\"{s}\"", .{kw});
+        defer alloc.free(expected);
+        try std.testing.expectEqualStrings(expected, escaped);
+    }
+}
+
+test "escapeZigKeyword passes through non-keywords" {
+    const alloc = std.testing.allocator;
+
+    const non_keywords = [_][]const u8{ "myField", "fooBar", "hello", "x", "data_word_count", "Type", "Error", "Return" };
+    for (non_keywords) |name| {
+        const result = try escapeZigKeyword(alloc, name);
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings(name, result);
+    }
+}
+
+test "identToZigValueName converts underscores to camelCase" {
+    const alloc = std.testing.allocator;
+
+    const result1 = try identToZigValueName(alloc, "my_field_name");
+    defer alloc.free(result1);
+    try std.testing.expectEqualStrings("myFieldName", result1);
+
+    const result2 = try identToZigValueName(alloc, "simple");
+    defer alloc.free(result2);
+    try std.testing.expectEqualStrings("simple", result2);
+
+    const result3 = try identToZigValueName(alloc, "already_camel");
+    defer alloc.free(result3);
+    try std.testing.expectEqualStrings("alreadyCamel", result3);
+}
+
+test "identToZigValueName handles dollar signs" {
+    const alloc = std.testing.allocator;
+
+    const result = try identToZigValueName(alloc, "foo$bar");
+    defer alloc.free(result);
+    try std.testing.expectEqualStrings("fooBar", result);
+}
+
+test "identToZigTypeName converts to PascalCase" {
+    const alloc = std.testing.allocator;
+
+    const result1 = try identToZigTypeName(alloc, "my_struct");
+    defer alloc.free(result1);
+    try std.testing.expectEqualStrings("MyStruct", result1);
+
+    const result2 = try identToZigTypeName(alloc, "simple");
+    defer alloc.free(result2);
+    try std.testing.expectEqualStrings("Simple", result2);
+
+    const result3 = try identToZigTypeName(alloc, "foo_bar_baz");
+    defer alloc.free(result3);
+    try std.testing.expectEqualStrings("FooBarBaz", result3);
+}
+
+test "identToZigTypeName preserves existing capitals" {
+    const alloc = std.testing.allocator;
+
+    const result = try identToZigTypeName(alloc, "myType");
+    defer alloc.free(result);
+    try std.testing.expectEqualStrings("MyType", result);
+}
+
 test "normalizeAndEscapeValueIdentifier normalizes and escapes" {
     const normalized = try normalizeAndEscapeValueIdentifier(std.testing.allocator, "my_value");
     defer std.testing.allocator.free(normalized);
@@ -219,4 +291,77 @@ test "normalizeAndEscapeValueIdentifier normalizes and escapes" {
     const escaped = try normalizeAndEscapeValueIdentifier(std.testing.allocator, "usingnamespace");
     defer std.testing.allocator.free(escaped);
     try std.testing.expectEqualStrings("@\"usingnamespace\"", escaped);
+}
+
+test "normalizeAndEscapeTypeIdentifier normalizes and escapes" {
+    const alloc = std.testing.allocator;
+
+    const result1 = try normalizeAndEscapeTypeIdentifier(alloc, "my_type");
+    defer alloc.free(result1);
+    try std.testing.expectEqualStrings("MyType", result1);
+
+    // "Type" is not a keyword (keywords are lowercase)
+    const result2 = try normalizeAndEscapeTypeIdentifier(alloc, "type");
+    defer alloc.free(result2);
+    try std.testing.expectEqualStrings("Type", result2);
+}
+
+test "TypeGenerator.typeSize returns correct sizes" {
+    try std.testing.expectEqual(@as(usize, 0), TypeGenerator.typeSize(.void));
+    try std.testing.expectEqual(@as(usize, 1), TypeGenerator.typeSize(.bool));
+    try std.testing.expectEqual(@as(usize, 1), TypeGenerator.typeSize(.int8));
+    try std.testing.expectEqual(@as(usize, 1), TypeGenerator.typeSize(.uint8));
+    try std.testing.expectEqual(@as(usize, 2), TypeGenerator.typeSize(.int16));
+    try std.testing.expectEqual(@as(usize, 2), TypeGenerator.typeSize(.uint16));
+    try std.testing.expectEqual(@as(usize, 4), TypeGenerator.typeSize(.int32));
+    try std.testing.expectEqual(@as(usize, 4), TypeGenerator.typeSize(.uint32));
+    try std.testing.expectEqual(@as(usize, 4), TypeGenerator.typeSize(.float32));
+    try std.testing.expectEqual(@as(usize, 8), TypeGenerator.typeSize(.int64));
+    try std.testing.expectEqual(@as(usize, 8), TypeGenerator.typeSize(.uint64));
+    try std.testing.expectEqual(@as(usize, 8), TypeGenerator.typeSize(.float64));
+    try std.testing.expectEqual(@as(usize, 8), TypeGenerator.typeSize(.text));
+    try std.testing.expectEqual(@as(usize, 8), TypeGenerator.typeSize(.data));
+    try std.testing.expectEqual(@as(usize, 8), TypeGenerator.typeSize(.any_pointer));
+}
+
+test "TypeGenerator.isPointer identifies pointer types" {
+    try std.testing.expect(TypeGenerator.isPointer(.text));
+    try std.testing.expect(TypeGenerator.isPointer(.data));
+    try std.testing.expect(TypeGenerator.isPointer(.any_pointer));
+
+    try std.testing.expect(!TypeGenerator.isPointer(.void));
+    try std.testing.expect(!TypeGenerator.isPointer(.bool));
+    try std.testing.expect(!TypeGenerator.isPointer(.int32));
+    try std.testing.expect(!TypeGenerator.isPointer(.uint64));
+    try std.testing.expect(!TypeGenerator.isPointer(.float64));
+}
+
+test "TypeGenerator.typeToZig maps primitive types" {
+    const alloc = std.testing.allocator;
+    var gen = TypeGenerator.init(alloc);
+
+    const cases = .{
+        .{ .typ = schema.Type.void, .expected = "void" },
+        .{ .typ = schema.Type.bool, .expected = "bool" },
+        .{ .typ = schema.Type.int8, .expected = "i8" },
+        .{ .typ = schema.Type.int16, .expected = "i16" },
+        .{ .typ = schema.Type.int32, .expected = "i32" },
+        .{ .typ = schema.Type.int64, .expected = "i64" },
+        .{ .typ = schema.Type.uint8, .expected = "u8" },
+        .{ .typ = schema.Type.uint16, .expected = "u16" },
+        .{ .typ = schema.Type.uint32, .expected = "u32" },
+        .{ .typ = schema.Type.uint64, .expected = "u64" },
+        .{ .typ = schema.Type.float32, .expected = "f32" },
+        .{ .typ = schema.Type.float64, .expected = "f64" },
+        .{ .typ = schema.Type.text, .expected = "[]const u8" },
+        .{ .typ = schema.Type.data, .expected = "[]const u8" },
+        .{ .typ = schema.Type.any_pointer, .expected = "message.AnyPointerReader" },
+        .{ .typ = @as(schema.Type, .{ .interface = .{ .type_id = 0 } }), .expected = "message.Capability" },
+    };
+
+    inline for (cases) |case| {
+        const result = try gen.typeToZig(case.typ);
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings(case.expected, result);
+    }
 }

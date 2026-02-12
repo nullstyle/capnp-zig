@@ -286,6 +286,20 @@ pub fn build(b: *std.Build) void {
 
     const run_message_tests = b.addRunArtifact(message_tests);
 
+    // Serialization fuzz/property-based tests
+    const serialization_fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/serialization/serialization_fuzz_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_serialization_fuzz_tests = b.addRunArtifact(serialization_fuzz_tests);
+
     // Code generation tests
     const codegen_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -536,6 +550,20 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_cap_table_tests = b.addRunArtifact(rpc_cap_table_tests);
 
+    // RPC release and failure injection tests (level 0)
+    const rpc_release_and_failure_level0_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/level0/rpc_release_and_failure_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_release_and_failure_level0_tests = b.addRunArtifact(rpc_release_and_failure_level0_tests);
+
     // RPC promised answer transform tests
     const rpc_promised_answer_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -703,6 +731,20 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_peer_control_from_peer_control_zig_tests = b.addRunArtifact(rpc_peer_control_from_peer_control_zig_tests);
 
+    // RPC release and failure injection tests (level 3)
+    const rpc_release_and_failure_level3_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/level3/rpc_release_and_failure_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_release_and_failure_level3_tests = b.addRunArtifact(rpc_release_and_failure_level3_tests);
+
     // RPC worker pool tests
     const rpc_worker_pool_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -755,6 +797,7 @@ pub fn build(b: *std.Build) void {
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
     test_message_step.dependOn(&run_message_tests.step);
+    test_message_step.dependOn(&run_serialization_fuzz_tests.step);
 
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");
     test_codegen_step.dependOn(&run_codegen_tests.step);
@@ -794,6 +837,7 @@ pub fn build(b: *std.Build) void {
     test_serialization_step.dependOn(&run_main_tests.step);
     test_serialization_step.dependOn(&run_lib_tests.step);
     test_serialization_step.dependOn(&run_message_tests.step);
+    test_serialization_step.dependOn(&run_serialization_fuzz_tests.step);
     test_serialization_step.dependOn(&run_codegen_tests.step);
     test_serialization_step.dependOn(&run_codegen_defaults_tests.step);
     test_serialization_step.dependOn(&run_codegen_annotations_tests.step);
@@ -822,6 +866,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level0_step.dependOn(&run_rpc_framing_tests.step);
     test_rpc_level0_step.dependOn(&run_rpc_protocol_tests.step);
     test_rpc_level0_step.dependOn(&run_rpc_cap_table_tests.step);
+    test_rpc_level0_step.dependOn(&run_rpc_release_and_failure_level0_tests.step);
 
     const test_rpc_level1_step = b.step("test-rpc-level1", "Run RPC level 1 tests (promises/pipelining)");
     test_rpc_level1_step.dependOn(test_rpc_level0_step);
@@ -841,6 +886,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level3_step.dependOn(&run_rpc_peer_tests.step);
     test_rpc_level3_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_rpc_level3_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
+    test_rpc_level3_step.dependOn(&run_rpc_release_and_failure_level3_tests.step);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_level3_step);
@@ -857,16 +903,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_rpc_step);
     test_step.dependOn(test_wasm_host_step);
 
-    // Check step (compile without linking)
-    const check = b.addExecutable(.{
-        .name = "capnpc-zig",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-
+    // Check step (compile without linking) — reuse the main exe
     const check_step = b.step("check", "Check for compilation errors");
-    check_step.dependOn(&check.step);
+    check_step.dependOn(&exe.step);
 }

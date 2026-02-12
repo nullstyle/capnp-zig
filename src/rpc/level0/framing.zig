@@ -31,6 +31,14 @@ pub const Framer = struct {
         return self.buffer.items.len;
     }
 
+    /// Discard all buffered data and reset framing state.
+    /// Called after an unrecoverable framing error to prevent the framer
+    /// from repeatedly failing on the same corrupt bytes.
+    pub fn reset(self: *Framer) void {
+        self.buffer.items.len = 0;
+        self.expected_total = null;
+    }
+
     pub fn popFrame(self: *Framer) !?[]u8 {
         try self.updateExpected();
         const total = self.expected_total orelse return null;

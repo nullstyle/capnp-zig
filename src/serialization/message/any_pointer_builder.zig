@@ -1,9 +1,10 @@
 const std = @import("std");
+const bounds = @import("bounds.zig");
 
 pub fn setNull(builder: anytype, segment_id: u32, pointer_pos: usize) !void {
     if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
     const segment = &builder.segments.items[segment_id];
-    if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+    try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
     std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
 }
 
@@ -34,7 +35,7 @@ pub fn setCapability(
 ) !void {
     if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
     const segment = &builder.segments.items[segment_id];
-    if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+    try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
     const pointer_word = try make_capability_pointer(cap.id);
     std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
 }

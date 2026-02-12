@@ -90,10 +90,12 @@ pub const HostPeer = struct {
     }
 
     pub fn pendingOutgoingCount(self: *const HostPeer) usize {
+        self.peer.assertThreadAffinity();
         return self.outgoing.items.len;
     }
 
     pub fn pendingOutgoingBytes(self: *const HostPeer) usize {
+        self.peer.assertThreadAffinity();
         return self.outgoing_bytes;
     }
 
@@ -103,6 +105,7 @@ pub const HostPeer = struct {
     }
 
     pub fn getLimits(self: *const HostPeer) Limits {
+        self.peer.assertThreadAffinity();
         return self.limits;
     }
 
@@ -118,6 +121,7 @@ pub const HostPeer = struct {
     }
 
     pub fn pendingHostCallCount(self: *const HostPeer) usize {
+        self.peer.assertThreadAffinity();
         return self.host_calls.items.len;
     }
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const bounds = @import("bounds.zig");
 
 pub fn define(
     comptime MessageBuilderType: type,
@@ -37,7 +38,7 @@ pub fn define(
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const pointer_pos = self.elements_offset + @as(usize, index) * 8;
                 const segment = &self.builder.segments.items[self.segment_id];
-                if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
                 std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
             }
 
@@ -45,7 +46,7 @@ pub fn define(
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const pointer_pos = self.elements_offset + @as(usize, index) * 8;
                 const segment = &self.builder.segments.items[self.segment_id];
-                if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
                 const pointer_word = try make_capability_pointer(cap.id);
                 std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
             }
@@ -363,7 +364,7 @@ pub fn define(
             /// outside the data section.
             pub fn writeU64Strict(self: @This(), byte_offset: usize, value: u64) error{OutOfBounds}!void {
                 const data = self.getDataSection();
-                if (byte_offset + 8 > data.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(data, byte_offset, 8);
                 std.mem.writeInt(u64, data[byte_offset..][0..8], value, .little);
             }
 
@@ -386,7 +387,7 @@ pub fn define(
             /// outside the data section.
             pub fn writeU32Strict(self: @This(), byte_offset: usize, value: u32) error{OutOfBounds}!void {
                 const data = self.getDataSection();
-                if (byte_offset + 4 > data.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(data, byte_offset, 4);
                 std.mem.writeInt(u32, data[byte_offset..][0..4], value, .little);
             }
 
@@ -409,7 +410,7 @@ pub fn define(
             /// outside the data section.
             pub fn writeU16Strict(self: @This(), byte_offset: usize, value: u16) error{OutOfBounds}!void {
                 const data = self.getDataSection();
-                if (byte_offset + 2 > data.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(data, byte_offset, 2);
                 std.mem.writeInt(u16, data[byte_offset..][0..2], value, .little);
             }
 
@@ -432,7 +433,7 @@ pub fn define(
             /// outside the data section.
             pub fn writeU8Strict(self: @This(), byte_offset: usize, value: u8) error{OutOfBounds}!void {
                 const data = self.getDataSection();
-                if (byte_offset >= data.len) return error.OutOfBounds;
+                try bounds.checkOffsetMut(data, byte_offset);
                 data[byte_offset] = value;
             }
 
@@ -461,7 +462,7 @@ pub fn define(
             /// outside the data section.
             pub fn writeBoolStrict(self: @This(), byte_offset: usize, bit_offset: u3, value: bool) error{OutOfBounds}!void {
                 const data = self.getDataSection();
-                if (byte_offset >= data.len) return error.OutOfBounds;
+                try bounds.checkOffsetMut(data, byte_offset);
                 const mask = @as(u8, 1) << bit_offset;
                 if (value) {
                     data[byte_offset] |= mask;
@@ -511,7 +512,7 @@ pub fn define(
 
                 const source_segment = &self.builder.segments.items[self.segment_id];
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-                if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
                 return self.builder.writeStructPointer(self.segment_id, pointer_pos, data_words, pointer_words, target_segment_id);
             }
@@ -521,7 +522,7 @@ pub fn define(
 
                 const segment = &self.builder.segments.items[self.segment_id];
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-                if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
 
                 return .{
                     .builder = self.builder,
@@ -545,7 +546,7 @@ pub fn define(
 
                 const source_segment = &self.builder.segments.items[self.segment_id];
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-                if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
                 const offset = try self.builder.writeListPointer(self.segment_id, pointer_pos, element_size, element_count, target_segment_id);
                 return .{ .segment_id = target_segment_id, .offset = offset };
@@ -586,7 +587,7 @@ pub fn define(
 
                 const source_segment = &self.builder.segments.items[self.segment_id];
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-                if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
                 _ = try self.builder.writeListPointer(self.segment_id, pointer_pos, 0, element_count, target_segment_id);
                 return .{ .element_count = element_count };
@@ -874,7 +875,7 @@ pub fn define(
 
                 const source_segment = &self.builder.segments.items[self.segment_id];
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-                if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
                 if (landing_segment_id == content_segment_id) {
                     const target_segment = &self.builder.segments.items[landing_segment_id];
@@ -953,7 +954,7 @@ pub fn define(
 
                 const source_segment = &self.builder.segments.items[self.segment_id];
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
-                if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+                try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
                 const target_segment = &self.builder.segments.items[target_segment_id];
                 const landing_pad_pos = if (self.segment_id == target_segment_id) null else target_segment.items.len;

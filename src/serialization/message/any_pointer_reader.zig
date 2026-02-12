@@ -1,4 +1,5 @@
 const std = @import("std");
+const bounds = @import("bounds.zig");
 
 pub fn define(
     comptime MessageType: type,
@@ -65,10 +66,9 @@ pub fn define(
                 const list = try self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
                 if (list.element_size != 2) return error.InvalidTextPointer;
 
-                const segment = self.message.segments[list.segment_id];
-                if (list.content_offset + list.element_count > segment.len) return error.OutOfBounds;
+                try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
 
-                const text_data = segment[list.content_offset .. list.content_offset + list.element_count];
+                const text_data = self.message.segments[list.segment_id][list.content_offset .. list.content_offset + list.element_count];
                 if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
                     return text_data[0 .. text_data.len - 1];
                 }
@@ -90,9 +90,8 @@ pub fn define(
                 const list = try self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
                 if (list.element_size != 2) return error.InvalidPointer;
                 const total_bytes = try list_content_bytes(list.element_size, list.element_count);
-                const segment = self.message.segments[list.segment_id];
-                if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
-                return segment[list.content_offset .. list.content_offset + total_bytes];
+                try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
+                return self.message.segments[list.segment_id][list.content_offset .. list.content_offset + total_bytes];
             }
 
             pub fn getPointerList(self: AnyPointerReader) !PointerListReaderType {

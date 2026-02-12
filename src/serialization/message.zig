@@ -1,10 +1,12 @@
 const std = @import("std");
+const bounds = @import("message/bounds.zig");
 const list_reader_module = @import("message/list_readers.zig");
 const list_builder_module = @import("message/list_builders.zig");
 const any_pointer_reader_module = @import("message/any_pointer_reader.zig");
 const any_pointer_builder_module = @import("message/any_pointer_builder.zig");
 const struct_builder_module = @import("message/struct_builder.zig");
 const clone_any_pointer_module = @import("message/clone_any_pointer.zig");
+const typed_list_helpers_module = @import("message/typed_list_helpers.zig");
 
 fn decodeOffsetWords(pointer_word: u64) i32 {
     // Cap'n Proto stores a 30-bit signed offset in words (two's complement).
@@ -185,6 +187,13 @@ fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
     return total;
 }
 
+/// Returns true if any byte in the u64 value is zero.
+/// Uses the SWAR (SIMD Within A Register) bit trick to test all 8 bytes
+/// in parallel with a constant number of operations, regardless of endianness.
+inline fn wordHasZeroByte(v: u64) bool {
+    return (v -% @as(u64, 0x0101010101010101)) & ~v & @as(u64, 0x8080808080808080) != 0;
+}
+
 fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     if (bytes.len % 8 != 0) return error.InvalidMessageSize;
 
@@ -212,32 +221,19 @@ fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
             continue;
         }
 
-        // Build tag byte and collect nonzero bytes.
-        var tag: u8 = 0;
-        var nonzero: [8]u8 = undefined;
-        var nonzero_len: usize = 0;
-        for (word, 0..) |byte, i| {
-            if (byte != 0) {
-                tag |= @as(u8, 1) << @as(u3, @intCast(i));
-                nonzero[nonzero_len] = byte;
-                nonzero_len += 1;
-            }
-        }
-
-        if (tag == 0xFF) {
-            // Collapse consecutive all-nonzero words into a literal run record.
+        // Fast path: if no byte in the word is zero, all 8 bytes are nonzero
+        // so the tag must be 0xFF. Read the raw u64 value (endianness does not
+        // matter — wordHasZeroByte operates on individual byte lanes) and use
+        // the SWAR zero-byte test to skip per-byte iteration.
+        const native_val: u64 = @bitCast(word[0..8].*);
+        if (!wordHasZeroByte(native_val)) {
+            // All bytes nonzero — collapse consecutive all-nonzero words
+            // into a literal run record.
             var run: usize = 1;
             var scan = index + 8;
             while (run < 256 and scan + 8 <= bytes.len) : (scan += 8) {
-                const next_word = bytes[scan .. scan + 8];
-                var has_zero = false;
-                for (next_word) |b| {
-                    if (b == 0) {
-                        has_zero = true;
-                        break;
-                    }
-                }
-                if (has_zero) break;
+                const next_native: u64 = @bitCast(bytes[scan..][0..8].*);
+                if (wordHasZeroByte(next_native)) break;
                 run += 1;
             }
 
@@ -249,6 +245,18 @@ fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
             }
             index += run * 8;
             continue;
+        }
+
+        // Build tag byte and collect nonzero bytes for mixed words.
+        var tag: u8 = 0;
+        var nonzero: [8]u8 = undefined;
+        var nonzero_len: usize = 0;
+        for (word, 0..) |byte, i| {
+            if (byte != 0) {
+                tag |= @as(u8, 1) << @as(u3, @intCast(i));
+                nonzero[nonzero_len] = byte;
+                nonzero_len += 1;
+            }
         }
 
         try out.append(allocator, tag);
@@ -409,8 +417,32 @@ pub const Message = struct {
     fn readWord(self: *const Message, segment_id: u32, byte_offset: usize) !u64 {
         if (segment_id >= self.segments.len) return error.InvalidSegmentId;
         const segment = self.segments[segment_id];
-        if (byte_offset + 8 > segment.len) return error.OutOfBounds;
+        try bounds.checkBounds(segment, byte_offset, 8);
         return std.mem.readInt(u64, segment[byte_offset..][0..8], .little);
+    }
+
+    /// Resolve a far pointer's landing pad: validate the segment ID, compute
+    /// the landing position, and bounds-check the landing pad (single or double).
+    /// Returns the landing segment data and landing byte offset.
+    fn resolveFarLandingPad(self: *const Message, far: FarPointer) !struct { segment: []const u8, landing_pos: usize } {
+        if (far.segment_id >= self.segments.len) return error.InvalidSegmentId;
+        const landing_pos = @as(usize, far.landing_pad_offset_words) * 8;
+        const landing_segment = self.segments[far.segment_id];
+        const pad_size: usize = if (far.landing_pad_is_double) 16 else 8;
+        try bounds.checkBounds(landing_segment, landing_pos, pad_size);
+        return .{ .segment = landing_segment, .landing_pos = landing_pos };
+    }
+
+    /// Compute the content byte offset from a resolved pointer, using either
+    /// the content_override (for double-far pointers) or the standard offset
+    /// calculation from the pointer position.
+    fn computeContentOffset(pointer_pos: usize, offset_words: i32, content_override: ?usize) !usize {
+        if (content_override) |override| {
+            return override;
+        }
+        const signed = @as(isize, @intCast(pointer_pos)) + 8 + @as(isize, offset_words) * 8;
+        if (signed < 0) return error.OutOfBounds;
+        return @as(usize, @intCast(signed));
     }
 
     pub fn resolvePointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64, depth: u8) !ResolvedPointer {
@@ -427,22 +459,17 @@ pub const Message = struct {
         }
 
         const far = decodeFarPointer(pointer_word);
-        if (far.segment_id >= self.segments.len) return error.InvalidSegmentId;
-        const landing_pos = @as(usize, far.landing_pad_offset_words) * 8;
-        const landing_segment = self.segments[far.segment_id];
-        if (landing_pos + 8 > landing_segment.len) return error.OutOfBounds;
+        const pad = try self.resolveFarLandingPad(far);
 
         if (!far.landing_pad_is_double) {
             // Single-far: landing pad directly stores the pointed-to pointer word.
-            const landing_word = try self.readWord(far.segment_id, landing_pos);
-            return try self.resolvePointer(far.segment_id, landing_pos, landing_word, depth - 1);
+            const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
+            return try self.resolvePointer(far.segment_id, pad.landing_pos, landing_word, depth - 1);
         }
 
         // Double-far: landing pad has [far-to-content, tag-word].
-        if (landing_pos + 16 > landing_segment.len) return error.OutOfBounds;
-
-        const landing_word = try self.readWord(far.segment_id, landing_pos);
-        const tag_word = try self.readWord(far.segment_id, landing_pos + 8);
+        const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
+        const tag_word = try self.readWord(far.segment_id, pad.landing_pos + 8);
 
         const landing_type = @as(u2, @truncate(landing_word & 0x3));
         if (landing_type != 2) return error.InvalidFarPointer;
@@ -503,14 +530,7 @@ pub const Message = struct {
         const element_size = @as(u3, @truncate((resolved.pointer_word >> 32) & 0x7));
         const element_count = @as(u32, @truncate((resolved.pointer_word >> 35)));
 
-        var content_offset: usize = undefined;
-        if (resolved.content_override) |override| {
-            content_offset = override;
-        } else {
-            const content_offset_signed = @as(isize, @intCast(resolved.pointer_pos)) + 8 + @as(isize, offset) * 8;
-            if (content_offset_signed < 0) return error.OutOfBounds;
-            content_offset = @as(usize, @intCast(content_offset_signed));
-        }
+        const content_offset = try computeContentOffset(resolved.pointer_pos, offset, resolved.content_override);
 
         return .{
             .segment_id = resolved.segment_id,
@@ -556,9 +576,8 @@ pub const Message = struct {
             if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
             const elements_offset = tag_pos + 8;
-            const segment = self.segments[segment_id];
             const total_bytes = @as(usize, word_count) * 8;
-            if (elements_offset + total_bytes > segment.len) return error.OutOfBounds;
+            try bounds.checkBounds(self.segments[segment_id], elements_offset, total_bytes);
 
             return .{
                 .segment_id = segment_id,
@@ -572,22 +591,17 @@ pub const Message = struct {
         if (pointer_type != 2) return error.InvalidPointer;
 
         const far = decodeFarPointer(pointer_word);
-        if (far.segment_id >= self.segments.len) return error.InvalidSegmentId;
-        const landing_pos = @as(usize, far.landing_pad_offset_words) * 8;
-        const landing_segment = self.segments[far.segment_id];
-        if (landing_pos + 8 > landing_segment.len) return error.OutOfBounds;
+        const pad = try self.resolveFarLandingPad(far);
 
         if (!far.landing_pad_is_double) {
-            const landing_word = try self.readWord(far.segment_id, landing_pos);
+            const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
             const landing_type = @as(u2, @truncate(landing_word & 0x3));
             if (landing_type != 1) return error.InvalidPointer;
-            return try self.resolveInlineCompositeList(far.segment_id, landing_pos, landing_word);
+            return try self.resolveInlineCompositeList(far.segment_id, pad.landing_pos, landing_word);
         }
 
-        if (landing_pos + 16 > landing_segment.len) return error.OutOfBounds;
-
-        const landing_word = try self.readWord(far.segment_id, landing_pos);
-        const second_word = try self.readWord(far.segment_id, landing_pos + 8);
+        const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
+        const second_word = try self.readWord(far.segment_id, pad.landing_pos + 8);
 
         const landing_type = @as(u2, @truncate(landing_word & 0x3));
         if (landing_type != 2) return error.InvalidFarPointer;
@@ -611,9 +625,8 @@ pub const Message = struct {
             if (total_words_u64 > std.math.maxInt(usize) / 8) return error.OutOfBounds;
             const total_words = @as(usize, @intCast(total_words_u64));
             const elements_offset = @as(usize, landing_far.landing_pad_offset_words) * 8;
-            const content_segment = self.segments[landing_far.segment_id];
             const total_bytes = total_words * 8;
-            if (elements_offset + total_bytes > content_segment.len) return error.OutOfBounds;
+            try bounds.checkBounds(self.segments[landing_far.segment_id], elements_offset, total_bytes);
 
             return .{
                 .segment_id = landing_far.segment_id,
@@ -647,9 +660,8 @@ pub const Message = struct {
             if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
             const elements_offset = tag_pos + 8;
-            const content_segment = self.segments[landing_far.segment_id];
             const total_bytes = @as(usize, word_count) * 8;
-            if (elements_offset + total_bytes > content_segment.len) return error.OutOfBounds;
+            try bounds.checkBounds(self.segments[landing_far.segment_id], elements_offset, total_bytes);
 
             return .{
                 .segment_id = landing_far.segment_id,
@@ -712,20 +724,15 @@ pub const Message = struct {
         _ = segment_id;
         _ = pointer_pos;
         const far = decodeFarPointer(pointer_word);
-        if (far.segment_id >= self.segments.len) return error.InvalidSegmentId;
-        const landing_pos = @as(usize, far.landing_pad_offset_words) * 8;
-        const landing_segment = self.segments[far.segment_id];
-        if (landing_pos + 8 > landing_segment.len) return error.OutOfBounds;
+        const pad = try self.resolveFarLandingPad(far);
 
         if (!far.landing_pad_is_double) {
-            const landing_word = try self.readWord(far.segment_id, landing_pos);
-            return self.validatePointer(far.segment_id, landing_pos, landing_word, remaining, nesting);
+            const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
+            return self.validatePointer(far.segment_id, pad.landing_pos, landing_word, remaining, nesting);
         }
 
-        if (landing_pos + 16 > landing_segment.len) return error.OutOfBounds;
-
-        const landing_word = try self.readWord(far.segment_id, landing_pos);
-        const tag_word = try self.readWord(far.segment_id, landing_pos + 8);
+        const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
+        const tag_word = try self.readWord(far.segment_id, pad.landing_pos + 8);
 
         const landing_type = @as(u2, @truncate(landing_word & 0x3));
         if (landing_type != 2) return error.InvalidFarPointer;
@@ -992,7 +999,7 @@ pub const StructReader = struct {
     /// Intended for protocol-internal parsing where the field is required.
     pub fn readU64Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u64 {
         const data = self.getDataSection();
-        if (byte_offset + 8 > data.len) return error.OutOfBounds;
+        try bounds.checkBounds(data, byte_offset, 8);
         return std.mem.readInt(u64, data[byte_offset..][0..8], .little);
     }
 
@@ -1015,7 +1022,7 @@ pub const StructReader = struct {
     /// Intended for protocol-internal parsing where the field is required.
     pub fn readU32Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u32 {
         const data = self.getDataSection();
-        if (byte_offset + 4 > data.len) return error.OutOfBounds;
+        try bounds.checkBounds(data, byte_offset, 4);
         return std.mem.readInt(u32, data[byte_offset..][0..4], .little);
     }
 
@@ -1038,7 +1045,7 @@ pub const StructReader = struct {
     /// Intended for protocol-internal parsing where the field is required.
     pub fn readU16Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u16 {
         const data = self.getDataSection();
-        if (byte_offset + 2 > data.len) return error.OutOfBounds;
+        try bounds.checkBounds(data, byte_offset, 2);
         return std.mem.readInt(u16, data[byte_offset..][0..2], .little);
     }
 
@@ -1061,7 +1068,7 @@ pub const StructReader = struct {
     /// Intended for protocol-internal parsing where the field is required.
     pub fn readU8Strict(self: StructReader, byte_offset: usize) error{OutOfBounds}!u8 {
         const data = self.getDataSection();
-        if (byte_offset >= data.len) return error.OutOfBounds;
+        try bounds.checkOffset(data, byte_offset);
         return data[byte_offset];
     }
 
@@ -1085,7 +1092,7 @@ pub const StructReader = struct {
     /// Intended for protocol-internal parsing where the field is required.
     pub fn readBoolStrict(self: StructReader, byte_offset: usize, bit_offset: u3) error{OutOfBounds}!bool {
         const data = self.getDataSection();
-        if (byte_offset >= data.len) return error.OutOfBounds;
+        try bounds.checkOffset(data, byte_offset);
         const byte = data[byte_offset];
         return (byte & (@as(u8, 1) << bit_offset)) != 0;
     }
@@ -1098,7 +1105,7 @@ pub const StructReader = struct {
     pub fn readStructList(self: StructReader, pointer_index: usize) !StructListReader {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
-        if (pointer_offset + 8 > pointers.len) return error.OutOfBounds;
+        try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
@@ -1120,7 +1127,7 @@ pub const StructReader = struct {
     fn resolveListPointerAt(self: StructReader, pointer_index: usize) !Message.ResolvedListPointer {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
-        if (pointer_offset + 8 > pointers.len) return error.OutOfBounds;
+        try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
@@ -1157,7 +1164,7 @@ pub const StructReader = struct {
     pub fn readStruct(self: StructReader, pointer_index: usize) !StructReader {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
-        if (pointer_offset + 8 > pointers.len) return error.OutOfBounds;
+        try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
@@ -1170,7 +1177,7 @@ pub const StructReader = struct {
     pub fn readAnyPointer(self: StructReader, pointer_index: usize) !AnyPointerReader {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
-        if (pointer_offset + 8 > pointers.len) return error.OutOfBounds;
+        try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
@@ -1194,9 +1201,9 @@ pub const StructReader = struct {
         if (list.element_size != 2) return error.InvalidPointer;
 
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
+        const segment = self.message.segments[list.segment_id];
         return segment[list.content_offset .. list.content_offset + total_bytes];
     }
 
@@ -1205,8 +1212,7 @@ pub const StructReader = struct {
         if (list.element_size != 2) return error.InvalidPointer;
 
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         return .{
             .message = self.message,
@@ -1231,8 +1237,7 @@ pub const StructReader = struct {
         if (list.element_size != 3) return error.InvalidPointer;
 
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         return .{
             .message = self.message,
@@ -1257,8 +1262,7 @@ pub const StructReader = struct {
         if (list.element_size != 4) return error.InvalidPointer;
 
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         return .{
             .message = self.message,
@@ -1293,8 +1297,7 @@ pub const StructReader = struct {
         if (list.element_size != 5) return error.InvalidPointer;
 
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         return .{
             .message = self.message,
@@ -1329,8 +1332,7 @@ pub const StructReader = struct {
         if (list.element_size != 1) return error.InvalidPointer;
 
         const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + total_bytes > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         return .{
             .message = self.message,
@@ -1369,10 +1371,10 @@ pub const StructReader = struct {
         // Text should be byte-sized elements
         if (list.element_size != 2) return error.InvalidTextPointer;
 
-        const segment = self.message.segments[list.segment_id];
-        if (list.content_offset + list.element_count > segment.len) return error.OutOfBounds;
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
 
         // Text includes null terminator, so return without it
+        const segment = self.message.segments[list.segment_id];
         const text_data = segment[list.content_offset .. list.content_offset + list.element_count];
         if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
             return text_data[0 .. text_data.len - 1];
@@ -1726,7 +1728,7 @@ pub const MessageBuilder = struct {
         if (target_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
 
         const pointer_segment = &self.segments.items[pointer_segment_id];
-        if (pointer_pos + 8 > pointer_segment.items.len) return error.OutOfBounds;
+        try bounds.checkBoundsMut(pointer_segment.items, pointer_pos, 8);
 
         if (text.len >= std.math.maxInt(u32)) return error.TextTooLong;
 
@@ -1780,7 +1782,7 @@ pub const MessageBuilder = struct {
         if (pointer_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
 
         const pointer_segment = &self.segments.items[pointer_segment_id];
-        if (pointer_pos + 8 > pointer_segment.items.len) return error.OutOfBounds;
+        try bounds.checkBoundsMut(pointer_segment.items, pointer_pos, 8);
 
         // Empty structs (0 data words, 0 pointers) are canonically represented
         // as NULL pointers per the Cap'n Proto spec. Writing a non-zero struct
@@ -1856,7 +1858,7 @@ pub const MessageBuilder = struct {
         if (target_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
 
         const pointer_segment = &self.segments.items[pointer_segment_id];
-        if (pointer_pos + 8 > pointer_segment.items.len) return error.OutOfBounds;
+        try bounds.checkBoundsMut(pointer_segment.items, pointer_pos, 8);
 
         const target_segment = &self.segments.items[target_segment_id];
         const landing_pad_pos = if (pointer_segment_id == target_segment_id) null else target_segment.items.len;
@@ -1924,7 +1926,7 @@ pub const MessageBuilder = struct {
 
         if (pointer_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
         const source_segment = &self.segments.items[pointer_segment_id];
-        if (pointer_pos + 8 > source_segment.items.len) return error.OutOfBounds;
+        try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
         if (landing_segment_id == content_segment_id) {
             const target_segment = &self.segments.items[landing_segment_id];
@@ -2240,3 +2242,8 @@ pub const cloneAnyPointerToBytes = clone_defs.cloneAnyPointerToBytes;
 
 /// Deep-copy a type-erased pointer from a reader into a builder position.
 pub const cloneAnyPointer = clone_defs.cloneAnyPointer;
+
+/// Typed list helpers for generated code: EnumListReader/Builder,
+/// StructListReader/Builder (typed wrappers), DataListReader/Builder,
+/// CapabilityListReader/Builder.
+pub const typed_list_helpers = typed_list_helpers_module.define(@This());
