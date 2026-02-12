@@ -53,14 +53,14 @@ pub fn releaseImportRefForPeerFn(comptime PeerType: type) *const fn (*PeerType, 
     }.call;
 }
 
-pub fn clearExportPromiseForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) void {
-    peer.caps.clearExportPromise(export_id);
+pub fn clearExportForPeer(comptime PeerType: type, peer: *PeerType, export_id: u32) void {
+    peer.caps.clearExport(export_id);
 }
 
-pub fn clearExportPromiseForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) void {
+pub fn clearExportForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) void {
     return struct {
         fn call(peer: *PeerType, export_id: u32) void {
-            clearExportPromiseForPeer(PeerType, peer, export_id);
+            clearExportForPeer(PeerType, peer, export_id);
         }
     }.call;
 }
@@ -85,7 +85,7 @@ pub fn releaseExport(
     bootstrap_export_id: ?u32,
     id: u32,
     count: u32,
-    clear_export_promise: *const fn (*PeerType, u32) void,
+    clear_export: *const fn (*PeerType, u32) void,
     deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
 ) void {
     if (count == 0) return;
@@ -107,7 +107,7 @@ pub fn releaseExport(
 
     if (entry.value_ptr.ref_count <= count) {
         _ = exports.remove(id);
-        clear_export_promise(peer, id);
+        clear_export(peer, id);
         if (pending_export_promises.fetchRemove(id)) |removed| {
             var pending = removed.value;
             for (pending.items) |*pending_call| {
@@ -316,12 +316,12 @@ test "peer_cap_lifecycle releaseImportRefForPeerFn delegates to peer cap table" 
     try std.testing.expectEqual(@as(u32, 42), peer.caps.last_import_id);
 }
 
-test "peer_cap_lifecycle clearExportPromiseForPeerFn delegates to peer cap table" {
+test "peer_cap_lifecycle clearExportForPeerFn delegates to peer cap table" {
     const Caps = struct {
         calls: usize = 0,
         last_export_id: u32 = 0,
 
-        fn clearExportPromise(self: *@This(), export_id: u32) void {
+        fn clearExport(self: *@This(), export_id: u32) void {
             self.calls += 1;
             self.last_export_id = export_id;
         }
@@ -331,7 +331,7 @@ test "peer_cap_lifecycle clearExportPromiseForPeerFn delegates to peer cap table
     };
 
     var peer = Peer{ .caps = .{} };
-    const clear_export = clearExportPromiseForPeerFn(Peer);
+    const clear_export = clearExportForPeerFn(Peer);
     clear_export(&peer, 71);
     try std.testing.expectEqual(@as(usize, 1), peer.caps.calls);
     try std.testing.expectEqual(@as(u32, 71), peer.caps.last_export_id);

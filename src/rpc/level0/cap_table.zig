@@ -36,6 +36,7 @@ pub const max_table_size: u32 = 10_000;
 
 pub const CapTable = struct {
     allocator: std.mem.Allocator,
+    exports: std.AutoHashMap(u32, void),
     imports: std.AutoHashMap(u32, ImportEntry),
     promised_exports: std.AutoHashMap(u32, void),
     receiver_answers: std.AutoHashMap(u32, OwnedPromisedAnswer),
@@ -44,6 +45,7 @@ pub const CapTable = struct {
     pub fn init(allocator: std.mem.Allocator) CapTable {
         return .{
             .allocator = allocator,
+            .exports = std.AutoHashMap(u32, void).init(allocator),
             .imports = std.AutoHashMap(u32, ImportEntry).init(allocator),
             .promised_exports = std.AutoHashMap(u32, void).init(allocator),
             .receiver_answers = std.AutoHashMap(u32, OwnedPromisedAnswer).init(allocator),
@@ -51,6 +53,7 @@ pub const CapTable = struct {
     }
 
     pub fn deinit(self: *CapTable) void {
+        self.exports.deinit();
         self.imports.deinit();
         self.promised_exports.deinit();
         var answer_it = self.receiver_answers.valueIterator();
@@ -61,18 +64,34 @@ pub const CapTable = struct {
     }
 
     pub fn totalEntries(self: *const CapTable) u32 {
-        return @as(u32, @intCast(self.imports.count())) +
-            @as(u32, @intCast(self.promised_exports.count())) +
+        return @as(u32, @intCast(self.exports.count())) +
+            @as(u32, @intCast(self.imports.count())) +
             @as(u32, @intCast(self.receiver_answers.count()));
     }
 
     /// Allocate a unique export ID that does not collide with any existing
-    /// import, promise-export, or receiver-answer entry.
+    /// import, export, or receiver-answer entry.
     pub fn allocExportId(self: *CapTable) error{CapTableFull}!u32 {
         return self.allocLocalCapId();
     }
 
+    pub fn noteExport(self: *CapTable, export_id: u32) !void {
+        try self.exports.put(export_id, {});
+    }
+
+    pub fn clearExport(self: *CapTable, export_id: u32) void {
+        _ = self.exports.remove(export_id);
+        _ = self.promised_exports.remove(export_id);
+    }
+
+    pub fn hasExport(self: *const CapTable, export_id: u32) bool {
+        return self.exports.contains(export_id);
+    }
+
     pub fn markExportPromise(self: *CapTable, export_id: u32) !void {
+        // Keep promise IDs in the same local export identity set used for
+        // outbound descriptor classification.
+        try self.exports.put(export_id, {});
         try self.promised_exports.put(export_id, {});
     }
 
@@ -144,8 +163,8 @@ pub const CapTable = struct {
         while (iterations < max_table_size + 1) : (iterations += 1) {
             const id = self.next_export_id;
             self.next_export_id +%= 1;
+            if (self.exports.contains(id)) continue;
             if (self.imports.contains(id)) continue;
-            if (self.promised_exports.contains(id)) continue;
             if (self.receiver_answers.contains(id)) continue;
             return id;
         }
@@ -428,8 +447,9 @@ fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_p
 
 fn classifyCap(table: *CapTable, cap_id: u32) protocol.CapDescriptorTag {
     if (table.receiver_answers.contains(cap_id)) return .receiverAnswer;
-    if (table.imports.contains(cap_id)) return .receiverHosted;
     if (table.promised_exports.contains(cap_id)) return .senderPromise;
+    if (table.exports.contains(cap_id)) return .senderHosted;
+    if (table.imports.contains(cap_id)) return .receiverHosted;
     return .senderHosted;
 }
 

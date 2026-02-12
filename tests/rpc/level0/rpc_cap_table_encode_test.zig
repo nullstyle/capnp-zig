@@ -39,6 +39,73 @@ test "encode outbound cap table rewrites capability pointers" {
     try std.testing.expectEqual(@as(u32, 42), desc.id.?);
 }
 
+test "encode outbound cap table prefers local export classification over import id collisions" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    try caps.noteImport(42);
+    try caps.noteExport(42);
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(11, 0x1234, 0);
+    try call.setTargetImportedCap(1);
+    var payload = try call.payloadTyped();
+    const any = try payload.initContent();
+    try any.setCapability(.{ .id = 42 });
+
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const decoded_call = try decoded.asCall();
+    const decoded_payload = decoded_call.params;
+    const cap_list = decoded_payload.cap_table orelse return error.MissingCapTable;
+    const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, desc.tag);
+    try std.testing.expectEqual(@as(u32, 42), desc.id.?);
+}
+
+test "encode outbound cap table prefers local promised export over import id collisions" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    try caps.noteImport(77);
+    try caps.noteExport(77);
+    try caps.markExportPromise(77);
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(12, 0x1234, 0);
+    try call.setTargetImportedCap(1);
+    var payload = try call.payloadTyped();
+    const any = try payload.initContent();
+    try any.setCapability(.{ .id = 77 });
+
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const decoded_call = try decoded.asCall();
+    const decoded_payload = decoded_call.params;
+    const cap_list = decoded_payload.cap_table orelse return error.MissingCapTable;
+    const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderPromise, desc.tag);
+    try std.testing.expectEqual(@as(u32, 77), desc.id.?);
+}
+
 test "encode outbound cap table rewrites capability pointer lists in struct payloads" {
     const allocator = std.testing.allocator;
 

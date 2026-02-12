@@ -196,9 +196,14 @@ pub const Listener = struct {
         const listener = self.?;
         const socket = res catch |err| {
             log.debug("accept failed: {}", .{err});
-            listener.queueAccept();
+            if (!listener.close_requested) listener.queueAccept();
             return .disarm;
         };
+
+        if (listener.close_requested) {
+            std.posix.close(socketFd(socket));
+            return .disarm;
+        }
 
         // Disable Nagle on accepted RPC sockets to avoid delayed-ACK/Nagle
         // interaction adding ~40ms request/response stalls for some clients.
@@ -207,12 +212,12 @@ pub const Listener = struct {
         const conn_ptr = listener.createConnection(socket) catch |err| {
             log.debug("connection setup failed: {}", .{err});
             std.posix.close(socketFd(socket));
-            listener.queueAccept();
+            if (!listener.close_requested) listener.queueAccept();
             return .disarm;
         };
 
         listener.on_accept(listener, conn_ptr);
-        listener.queueAccept();
+        if (!listener.close_requested) listener.queueAccept();
         return .disarm;
     }
 
@@ -314,4 +319,24 @@ test "createConnection errdefer frees Connection when Transport.init fails" {
     // createConnection should propagate OutOfMemory. The errdefer ensures
     // the already-allocated Connection is freed — no leak.
     try std.testing.expectError(error.OutOfMemory, listener.createConnection(undefined));
+}
+
+test "listener onAccept does not re-arm when close was requested" {
+    const DummyAccept = struct {
+        fn onAccept(_: *Listener, _: *Connection) void {}
+    };
+
+    var listener = Listener{
+        .allocator = std.testing.allocator,
+        .loop = undefined,
+        .socket = undefined,
+        .close_requested = true,
+        .on_accept = DummyAccept.onAccept,
+        .conn_options = .{},
+    };
+
+    // If onAccept attempted to re-arm here, it would touch the undefined
+    // socket and fail this test.
+    const action = Listener.onAccept(&listener, undefined, undefined, error.ConnectionResetByPeer);
+    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
 }

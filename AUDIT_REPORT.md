@@ -1,95 +1,124 @@
-# capnpc-zig Security & Correctness Audit Report (Round 4 - Remediation Update)
+# capnpc-zig Security & Correctness Audit Report (Round 5 - Remediation Update)
 
 **Date:** 2026-02-12  
-**Scope:** Full codebase — serialization, codegen, RPC (levels 0-3), WASM ABI  
-**Status:** Round 4 findings remediated and validated.
+**Scope:** Remediation of Round 5 deep-audit findings across RPC capability classification, queued-call duplicate detection, and level2 lifecycle/shutdown behavior.  
+**Status:** All Round 5 findings addressed with regression coverage.
 
 ---
 
 ## Summary
 
-| Severity | Open Count |
-|----------|------------|
-| Critical | 0 |
-| High | 0 |
-| Medium | 0 |
-| Low | 0 |
-| Test Gaps | 0 |
-
-All previously reported Round 4 findings have been fixed and covered by tests.
+| Severity | Open Count | Fixed This Round |
+|----------|------------|------------------|
+| Critical | 0 | 0 |
+| High | 0 | 1 |
+| Medium | 0 | 3 |
+| Low | 0 | 1 |
+| Test Gaps | 0 | 3 |
 
 ---
 
-## Remediated Findings
+## Remediations
 
-### M1 (Resolved): Outbound capability side effects committed before send success
+### H1 (Fixed): Export/import ID collision could misclassify outbound capabilities
 
-**Implemented changes:**
-- Added staged outbound side-effect tracking in `src/rpc/level0/cap_table.zig` via `OutboundCapEffects`.
-- Added transactional encode APIs:
-  - `encodeCallPayloadCapsWithEffects`
-  - `encodeReturnPayloadCapsWithEffects`
-  - `commitOutboundCapEffects`
-- Updated call-send paths in `src/rpc/level3/peer/call/peer_call_sender.zig` to:
-  - stage side effects during encode,
-  - rollback on encode/send error,
-  - commit only after successful send.
-- Updated return-send path in `src/rpc/level3/peer.zig` (`sendReturnResults`) to use the same transactional commit model.
-- Added rollback path for prebuilt return frames:
-  - `rollbackOutboundReturnCapRefsForPeer` in `src/rpc/level1/peer_return_send_helpers.zig`
-  - used by `sendPrebuiltReturnFrame` in `src/rpc/level3/peer.zig`.
+**Files:**
+- `src/rpc/level0/cap_table.zig`
+- `src/rpc/level3/peer.zig`
+- `src/rpc/level3/peer/peer_cap_lifecycle.zig`
+- `tests/rpc/level0/rpc_cap_table_encode_test.zig`
 
-### M2 (Resolved): `Finish.requireEarlyCancellationWorkaround` parsed but not enforced
+**Fix:**
+- Added explicit export identity tracking in `CapTable` (`exports` map).
+- Updated outbound classification precedence to prefer local export identity (`senderHosted` / `senderPromise`) before import-hosted classification.
+- Wired peer export lifecycle to register and clear export IDs in `CapTable` (`noteExport` on add, `clearExport` on final release).
 
-**Implemented changes:**
-- Wired `require_early_cancellation` into finish handling in `src/rpc/level3/peer.zig`.
-- Added early-cancel behavior for queued promised-target calls when workaround is disabled:
-  - `cancelQueuedPendingQuestion`
-  - `cancelQueuedPendingQuestionInMap`
-- Behavior now diverges as intended:
-  - workaround `false`: queued undelivered promised call is canceled on Finish.
-  - workaround `true`: queued call is preserved (deferred-cancel behavior).
-- Updated protocol field comment in `src/rpc/level0/protocol.zig` to reflect implemented semantics.
+**Regression tests added:**
+- `encode outbound cap table prefers local export classification over import id collisions`
+- `encode outbound cap table prefers local promised export over import id collisions`
 
-### L1 (Resolved): `waitStreaming()` callback overwrite in release builds
+---
 
-**Implemented changes:**
-- Replaced debug-assert-only guard in `src/rpc/level2/stream_state.zig` with runtime behavior.
-- Second waiter now receives explicit error `error.StreamDrainAlreadyPending` and does not replace the first waiter.
+### M1 (Fixed): Duplicate inbound question detection checked wrong key space for promised queues
+
+**Files:**
+- `src/rpc/level3/peer.zig`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`
+
+**Fix:**
+- Reworked duplicate-question detection to scan queued pending-call frames for actual queued call `question_id` values.
+- Removed dependency on `pending_promises.contains(question_id)` for duplicate inbound question detection.
+
+**Regression test added:**
+- `queued promised target key does not trigger duplicate question id for a distinct queued call id`
+
+---
+
+### M2 (Fixed): Listener accept loop re-armed after close request
+
+**Files:**
+- `src/rpc/level2/runtime.zig`
+
+**Fix:**
+- `Listener.onAccept()` now gates all `queueAccept()` re-arm calls behind `!close_requested`.
+- Added close-request handling for accepted sockets so shutdown does not leak accepted fds while draining in-flight accepts.
+
+**Regression test added:**
+- `listener onAccept does not re-arm when close was requested`
+
+---
+
+### M3 (Fixed): `onTransportClose` callback order lifetime hazard
+
+**Files:**
+- `src/rpc/level2/connection.zig`
+
+**Fix:**
+- Preserved `on_error` then `on_close` ordering for compatibility/cleanup behavior.
+- Added explicit safety contract and debug enforcement: `deinit()` is forbidden during `on_error` callback execution.
+- Centralized error-callback invocation through guarded helpers to enforce the contract consistently.
+
+**Validation tests updated/added:**
+- `connection onTransportClose reports error then close` (retained expected behavior)
+- `connection onTransportClose invokes close callback on clean close`
+
+---
+
+### L1 (Fixed): Early-cancel queue cleanup left empty pending buckets
+
+**Files:**
+- `src/rpc/level3/peer.zig`
+- `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`
+
+**Fix:**
+- `cancelQueuedPendingQuestionInMap()` now removes empty pending buckets and deinitializes list storage when queues drain to zero.
+
+**Regression behavior assertion updated:**
+- `handleFinish cancels queued promised call when early-cancel workaround is disabled` now asserts bucket removal (`!pending_promises.contains(...)`).
 
 ---
 
 ## Test Gap Closure
 
-### T1 (Resolved): send-failure rollback coverage for outbound cap side effects
+### T1 (Closed)
+Covered by collision regression tests in `tests/rpc/level0/rpc_cap_table_encode_test.zig`.
 
-Added regression tests in `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`:
-- `sendCall rolls back outbound cap effects when send fails`
-- `sendReturnResults rolls back outbound cap effects when send fails`
-- `sendPrebuiltReturnFrame rolls back outbound refs when send fails`
+### T2 (Closed)
+Covered by duplicate-question promised-queue regression in `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`.
 
-### T2 (Resolved): behavioral coverage for `requireEarlyCancellationWorkaround`
-
-Added regression tests in `tests/rpc/level3/rpc_peer_from_peer_zig_test.zig`:
-- `handleFinish cancels queued promised call when early-cancel workaround is disabled`
-- `handleFinish keeps queued promised call when early-cancel workaround is enabled`
-
-### Additional hardening coverage
-
-Added test in `src/rpc/level2/stream_state.zig`:
-- `StreamState: second waiter gets explicit error without replacing first waiter`
+### T3 (Closed)
+Covered by listener close/re-arm regression in `src/rpc/level2/runtime.zig` test block.
 
 ---
 
 ## Validation
 
-Commands run after remediation:
-
-- `just check`
+Commands run during remediation:
+- `zig build test-rpc-level0 --summary all`
+- `zig build test-rpc-level2 --summary all`
+- `zig build test-rpc-level3 --summary all`
 - `just test`
 
-Result:
-
-- Build/test pipeline passed.
-- `654/654` tests passing.
-
+Results:
+- All targeted suites passed.
+- Full suite passed: `658/658`.

@@ -35,9 +35,13 @@ pub const Connection = struct {
     /// Called on transport or framing errors. The connection may be
     /// in a degraded state after an error callback.
     on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
-    /// Called exactly once when the transport closes (after any error
-    /// callback, if applicable).
+    /// Called exactly once when the transport closes.
+    ///
+    /// If close includes an error, `on_error` is dispatched first and then
+    /// `on_close`. `on_error` callbacks must not call `deinit`/destroy the
+    /// connection; cleanup belongs in `on_close`.
     on_close: ?*const fn (conn: *Connection) void = null,
+    in_error_callback: bool = false,
 
     // -- Thread-affinity check (debug only) ---------------------------------
 
@@ -94,6 +98,9 @@ pub const Connection = struct {
     /// `deinit()` is needed.
     pub fn deinit(self: *Connection) void {
         self.assertThreadAffinity();
+        if (builtin.mode == .Debug and self.in_error_callback) {
+            @panic("Connection.deinit() must not be called from on_error callback; defer cleanup to on_close");
+        }
         self.ctx = null;
         self.on_message = null;
         self.on_error = null;
@@ -150,9 +157,11 @@ pub const Connection = struct {
             log.debug("framer push failed: {}", .{err});
             self.framer.reset();
             self.on_message = null;
-            const cb = self.on_error.?;
+            const on_error = self.on_error;
             self.on_error = null;
-            cb(self, err);
+            if (on_error) |cb| {
+                self.invokeErrorCallback(cb, err);
+            }
             return;
         }
 
@@ -166,9 +175,11 @@ pub const Connection = struct {
                 log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.framer.reset();
                 self.on_message = null;
-                const cb = self.on_error.?;
+                const on_error = self.on_error;
                 self.on_error = null;
-                cb(self, err);
+                if (on_error) |cb| {
+                    self.invokeErrorCallback(cb, err);
+                }
                 return;
             };
             if (frame == null) break;
@@ -184,23 +195,41 @@ pub const Connection = struct {
             // framer or null the callbacks, so the connection can continue
             // receiving future reads normally.
             self.on_message.?(self, bytes) catch |err| {
-                if (self.on_error) |cb| cb(self, err);
+                self.invokeOnError(err);
                 return;
             };
         }
     }
 
+    fn invokeOnError(self: *Connection, err: anyerror) void {
+        const cb = self.on_error orelse return;
+        self.invokeErrorCallback(cb, err);
+    }
+
+    fn invokeErrorCallback(
+        self: *Connection,
+        cb: *const fn (conn: *Connection, callback_err: anyerror) void,
+        err: anyerror,
+    ) void {
+        if (builtin.mode == .Debug) {
+            self.in_error_callback = true;
+            defer self.in_error_callback = false;
+        }
+        cb(self, err);
+    }
+
     fn onTransportClose(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
         const conn: *Connection = @ptrCast(@alignCast(ctx));
-        const on_close = conn.on_close;
         if (err) |e| {
             log.debug("transport closed with error: {}", .{e});
-            const on_error = conn.on_error;
-            if (on_error) |cb| cb(conn, e);
+            conn.invokeOnError(e);
         } else {
             log.debug("transport closed cleanly", .{});
         }
-        if (on_close) |cb| cb(conn);
+        const on_close = conn.on_close;
+        if (on_close) |cb| {
+            cb(conn);
+        }
     }
 
     fn onWriteDone(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
@@ -511,6 +540,45 @@ test "connection onTransportClose reports error then close" {
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(usize, 1), state.close_count);
     try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), state.last_error);
+}
+
+test "connection onTransportClose invokes close callback on clean close" {
+    const allocator = std.testing.allocator;
+
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            close_count: usize = 0,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, _: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+        }
+
+        fn onClose(conn: *Connection) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.close_count += 1;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = Connection{
+        .allocator = allocator,
+        .transport = undefined,
+        .framer = framing.Framer.init(allocator),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+        .on_close = Harness.onClose,
+    };
+    defer conn.framer.deinit();
+
+    Connection.onTransportClose(&conn, null);
+    try std.testing.expectEqual(@as(usize, 0), state.error_count);
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
 }
 
 test "connection onWriteDone forwards write errors to on_error" {

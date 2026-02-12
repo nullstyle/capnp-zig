@@ -1983,10 +1983,58 @@ test "handleFinish cancels queued promised call when early-cancel workaround is 
         .require_early_cancellation = false,
     });
 
-    const pending_after = peer.pending_promises.getPtr(77);
-    if (pending_after) |list| {
-        try std.testing.expectEqual(@as(usize, 0), list.items.len);
-    }
+    try std.testing.expect(!peer.pending_promises.contains(77));
+}
+
+test "queued promised target key does not trigger duplicate question id for a distinct queued call id" {
+    const allocator = std.testing.allocator;
+
+    const NoopHandler = struct {
+        fn onCall(
+            _: *anyopaque,
+            _: *Peer,
+            _: protocol.Call,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var queued_builder = protocol.MessageBuilder.init(allocator);
+    defer queued_builder.deinit();
+    var queued_call = try queued_builder.beginCall(100, 0xAA55, 1);
+    try queued_call.setTargetPromisedAnswer(77);
+    _ = try queued_call.initCapTableTyped(0);
+
+    const queued_frame = try queued_builder.finish();
+    defer allocator.free(queued_frame);
+
+    var queued_decoded = try protocol.DecodedMessage.init(allocator, queued_frame);
+    defer queued_decoded.deinit();
+    try peer_test_hooks.handleCall(&peer, queued_frame, try queued_decoded.asCall());
+    try std.testing.expect(peer.pending_promises.contains(77));
+
+    // Question ID 77 collides with the promised-target key above, but this is
+    // a distinct queued call ID and must not be rejected as duplicate.
+    var inbound_builder = protocol.MessageBuilder.init(allocator);
+    defer inbound_builder.deinit();
+    var inbound_call = try inbound_builder.beginCall(77, 0xAA55, 2);
+    try inbound_call.setTargetImportedCap(export_id);
+    _ = try inbound_call.initCapTableTyped(0);
+
+    const inbound_frame = try inbound_builder.finish();
+    defer allocator.free(inbound_frame);
+
+    var inbound_decoded = try protocol.DecodedMessage.init(allocator, inbound_frame);
+    defer inbound_decoded.deinit();
+    try peer_test_hooks.handleCall(&peer, inbound_frame, try inbound_decoded.asCall());
 }
 
 test "handleFinish keeps queued promised call when early-cancel workaround is enabled" {

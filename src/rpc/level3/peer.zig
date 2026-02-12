@@ -670,6 +670,7 @@ pub const Peer = struct {
     pub fn addExport(self: *Peer, exported: Export) !u32 {
         self.assertThreadAffinity();
         const id = try self.caps.allocExportId();
+        try self.caps.noteExport(id);
         try self.exports.put(id, .{
             .handler = exported,
             .ref_count = 0,
@@ -685,6 +686,7 @@ pub const Peer = struct {
     pub fn addPromiseExport(self: *Peer) !u32 {
         self.assertThreadAffinity();
         const id = try self.caps.allocExportId();
+        try self.caps.noteExport(id);
         try self.exports.put(id, .{
             .handler = null,
             .ref_count = 0,
@@ -1501,7 +1503,7 @@ pub const Peer = struct {
             self.bootstrap_export_id,
             id,
             count,
-            peer_cap_lifecycle.clearExportPromiseForPeerFn(Peer),
+            peer_cap_lifecycle.clearExportForPeerFn(Peer),
             peer_promises.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
     }
@@ -1764,8 +1766,12 @@ pub const Peer = struct {
         question_id: u32,
     ) !bool {
         var canceled = false;
-        var pending_it = pending_map.valueIterator();
-        while (pending_it.next()) |pending_list| {
+        var empty_keys = std.ArrayList(u32){};
+        defer empty_keys.deinit(self.allocator);
+
+        var pending_it = pending_map.iterator();
+        while (pending_it.next()) |entry| {
+            const pending_list = entry.value_ptr;
             var idx: usize = 0;
             while (idx < pending_list.items.len) {
                 var decoded = try protocol.DecodedMessage.init(self.allocator, pending_list.items[idx].frame);
@@ -1788,6 +1794,17 @@ pub const Peer = struct {
                 }
                 try self.releaseInboundCaps(&pending_call.caps);
                 canceled = true;
+            }
+
+            if (pending_list.items.len == 0) {
+                try empty_keys.append(self.allocator, entry.key_ptr.*);
+            }
+        }
+
+        for (empty_keys.items) |key| {
+            if (pending_map.fetchRemove(key)) |removed| {
+                var pending_list = removed.value;
+                pending_list.deinit(self.allocator);
             }
         }
         return canceled;
@@ -1966,11 +1983,13 @@ pub const Peer = struct {
         );
     }
 
-    fn hasQueuedPendingQuestionId(self: *Peer, question_id: u32) !bool {
-        if (self.pending_promises.contains(question_id)) return true;
-
-        var pending_export_it = self.pending_export_promises.valueIterator();
-        while (pending_export_it.next()) |pending_list| {
+    fn pendingMapHasQueuedQuestionId(
+        self: *Peer,
+        pending_map: *std.AutoHashMap(u32, std.ArrayList(PendingCall)),
+        question_id: u32,
+    ) !bool {
+        var pending_it = pending_map.valueIterator();
+        while (pending_it.next()) |pending_list| {
             for (pending_list.items) |pending_call| {
                 var decoded = try protocol.DecodedMessage.init(self.allocator, pending_call.frame);
                 defer decoded.deinit();
@@ -1979,6 +1998,12 @@ pub const Peer = struct {
                 if (queued_call.question_id == question_id) return true;
             }
         }
+        return false;
+    }
+
+    fn hasQueuedPendingQuestionId(self: *Peer, question_id: u32) !bool {
+        if (try self.pendingMapHasQueuedQuestionId(&self.pending_promises, question_id)) return true;
+        if (try self.pendingMapHasQueuedQuestionId(&self.pending_export_promises, question_id)) return true;
         return false;
     }
 
