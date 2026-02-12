@@ -35,8 +35,14 @@ pub fn sendCallToImport(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
+    var effects = cap_table.OutboundCapEffects.init(allocator, outbound_ctx, on_outbound_cap_rollback);
+    defer effects.deinit();
+    var effects_committed = false;
+    errdefer if (!effects_committed) effects.rollback();
+    try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     try send_builder(peer, &builder);
+    cap_table.commitOutboundCapEffects(caps, &effects);
+    effects_committed = true;
     return question_id;
 }
 
@@ -81,10 +87,16 @@ pub fn sendCallToExport(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
+    var effects = cap_table.OutboundCapEffects.init(allocator, outbound_ctx, on_outbound_cap_rollback);
+    defer effects.deinit();
+    var effects_committed = false;
+    errdefer if (!effects_committed) effects.rollback();
+    try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     const bytes = try builder.finish();
     defer allocator.free(bytes);
     try handle_frame(peer, bytes);
+    cap_table.commitOutboundCapEffects(caps, &effects);
+    effects_committed = true;
     return question_id;
 }
 
@@ -121,8 +133,14 @@ pub fn sendCallPromised(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
+    var effects = cap_table.OutboundCapEffects.init(allocator, outbound_ctx, on_outbound_cap_rollback);
+    defer effects.deinit();
+    var effects_committed = false;
+    errdefer if (!effects_committed) effects.rollback();
+    try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     try send_builder(peer, &builder);
+    cap_table.commitOutboundCapEffects(caps, &effects);
+    effects_committed = true;
     return question_id;
 }
 
@@ -163,8 +181,14 @@ pub fn sendCallPromisedWithOps(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
+    var effects = cap_table.OutboundCapEffects.init(allocator, outbound_ctx, on_outbound_cap_rollback);
+    defer effects.deinit();
+    var effects_committed = false;
+    errdefer if (!effects_committed) effects.rollback();
+    try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
     try send_builder(peer, &builder);
+    cap_table.commitOutboundCapEffects(caps, &effects);
+    effects_committed = true;
     return new_question_id;
 }
 

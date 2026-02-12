@@ -1148,15 +1148,21 @@ pub const Peer = struct {
 
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
+        var effects = cap_table.OutboundCapEffects.init(self.allocator, self, rollbackOutboundCap);
+        defer effects.deinit();
+        var effects_committed = false;
+        errdefer if (!effects_committed) effects.rollback();
 
         var ret = try builder.beginReturn(answer_id, .results);
         try build(ctx, &ret);
-        _ = try cap_table.encodeReturnPayloadCaps(&self.caps, &ret, self, onOutboundCap, rollbackOutboundCap);
+        _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, onOutboundCap, &effects);
 
         const bytes = try builder.finish();
         defer self.allocator.free(bytes);
 
         try self.sendReturnFrameWithLoopback(answer_id, bytes);
+        cap_table.commitOutboundCapEffects(&self.caps, &effects);
+        effects_committed = true;
 
         const copy = try self.allocator.alloc(u8, bytes.len);
         errdefer self.allocator.free(copy);
@@ -1166,9 +1172,16 @@ pub const Peer = struct {
 
     pub fn sendPrebuiltReturnFrame(self: *Peer, ret: protocol.Return, frame: []const u8) !void {
         self.assertThreadAffinity();
+        var rollback_outbound_refs = true;
+        errdefer if (rollback_outbound_refs) {
+            self.rollbackOutboundReturnCapRefs(ret) catch |err| {
+                log.debug("failed to roll back outbound prebuilt return refs: {}", .{err});
+            };
+        };
         try self.noteOutboundReturnCapRefs(ret);
         self.clearSendResultsRouting(ret.answer_id);
         try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
+        rollback_outbound_refs = false;
 
         if (ret.tag == .results) {
             const copy = try self.allocator.alloc(u8, frame.len);
@@ -1294,6 +1307,15 @@ pub const Peer = struct {
             self,
             ret,
             noteExportRef,
+        );
+    }
+
+    fn rollbackOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
+        try peer_return_send_helpers.rollbackOutboundReturnCapRefsForPeer(
+            Peer,
+            self,
+            ret,
+            rollbackExportRef,
         );
     }
 
@@ -1695,6 +1717,11 @@ pub const Peer = struct {
     }
 
     fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
+        if (!finish.require_early_cancellation) {
+            // Default behavior: if Finish arrives before a promised-target call is
+            // deliverable, cancel the queued call immediately.
+            _ = try self.cancelQueuedPendingQuestion(finish.question_id);
+        }
         const ops = peer_control.FinishOps(Peer){
             .remove_send_results_to_yourself = peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
             .clear_send_results_to_third_party = clearSendResultsToThirdParty,
@@ -1729,6 +1756,47 @@ pub const Peer = struct {
             finish.release_result_caps,
             ops,
         );
+    }
+
+    fn cancelQueuedPendingQuestionInMap(
+        self: *Peer,
+        pending_map: *std.AutoHashMap(u32, std.ArrayList(PendingCall)),
+        question_id: u32,
+    ) !bool {
+        var canceled = false;
+        var pending_it = pending_map.valueIterator();
+        while (pending_it.next()) |pending_list| {
+            var idx: usize = 0;
+            while (idx < pending_list.items.len) {
+                var decoded = try protocol.DecodedMessage.init(self.allocator, pending_list.items[idx].frame);
+                defer decoded.deinit();
+                if (decoded.tag != .call) {
+                    idx += 1;
+                    continue;
+                }
+
+                const queued_call = try decoded.asCall();
+                if (queued_call.question_id != question_id) {
+                    idx += 1;
+                    continue;
+                }
+
+                var pending_call = pending_list.swapRemove(idx);
+                defer {
+                    pending_call.caps.deinit();
+                    self.allocator.free(pending_call.frame);
+                }
+                try self.releaseInboundCaps(&pending_call.caps);
+                canceled = true;
+            }
+        }
+        return canceled;
+    }
+
+    fn cancelQueuedPendingQuestion(self: *Peer, question_id: u32) !bool {
+        const canceled_promised = try self.cancelQueuedPendingQuestionInMap(&self.pending_promises, question_id);
+        const canceled_export = try self.cancelQueuedPendingQuestionInMap(&self.pending_export_promises, question_id);
+        return canceled_promised or canceled_export;
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {

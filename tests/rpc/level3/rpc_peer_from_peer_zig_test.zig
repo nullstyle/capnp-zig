@@ -214,6 +214,169 @@ test "release batching aggregates per import id" {
     try std.testing.expect(peer.caps.imports.contains(9));
 }
 
+test "sendCall rolls back outbound cap effects when send fails" {
+    const allocator = std.testing.allocator;
+
+    const NoopHandler = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Ctx = struct {
+        export_id: u32,
+        receiver_answer_id: u32,
+    };
+    const Hooks = struct {
+        fn build(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            const ctx: *Ctx = castCtx(*Ctx, ctx_ptr);
+            var payload = try call.payloadTyped();
+            const any = try payload.initContent();
+            var caps = try any.initPointerList(2);
+            try caps.setCapability(0, .{ .id = ctx.export_id });
+            try caps.setCapability(1, .{ .id = ctx.receiver_answer_id });
+        }
+
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+
+        fn failSend(_: *anyopaque, _: []const u8) anyerror!void {
+            return error.TestSendFailed;
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    const empty_ops = [_]protocol.PromisedAnswerOp{};
+    const receiver_answer_id = try peer.caps.noteReceiverAnswerOps(77, empty_ops[0..]);
+    try std.testing.expect(peer.caps.receiver_answers.contains(receiver_answer_id));
+
+    var send_ctx: u8 = 0;
+    peer.setSendFrameOverride(&send_ctx, Hooks.failSend);
+
+    var build_ctx = Ctx{
+        .export_id = export_id,
+        .receiver_answer_id = receiver_answer_id,
+    };
+    try std.testing.expectError(
+        error.TestSendFailed,
+        peer.sendCall(1, 0xAAAABBBB, 3, &build_ctx, Hooks.build, Hooks.onReturn),
+    );
+
+    const export_entry = peer.exports.getEntry(export_id) orelse return error.UnknownExport;
+    try std.testing.expectEqual(@as(u32, 0), export_entry.value_ptr.ref_count);
+    try std.testing.expect(peer.caps.receiver_answers.contains(receiver_answer_id));
+    try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+}
+
+test "sendReturnResults rolls back outbound cap effects when send fails" {
+    const allocator = std.testing.allocator;
+
+    const NoopHandler = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Ctx = struct {
+        export_id: u32,
+        receiver_answer_id: u32,
+    };
+    const Hooks = struct {
+        fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            const ctx: *Ctx = castCtx(*Ctx, ctx_ptr);
+            var payload = try ret.payloadTyped();
+            const any = try payload.initContent();
+            var caps = try any.initPointerList(2);
+            try caps.setCapability(0, .{ .id = ctx.export_id });
+            try caps.setCapability(1, .{ .id = ctx.receiver_answer_id });
+        }
+
+        fn failSend(_: *anyopaque, _: []const u8) anyerror!void {
+            return error.TestSendFailed;
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    const empty_ops = [_]protocol.PromisedAnswerOp{};
+    const receiver_answer_id = try peer.caps.noteReceiverAnswerOps(88, empty_ops[0..]);
+    try std.testing.expect(peer.caps.receiver_answers.contains(receiver_answer_id));
+
+    var send_ctx: u8 = 0;
+    peer.setSendFrameOverride(&send_ctx, Hooks.failSend);
+
+    var build_ctx = Ctx{
+        .export_id = export_id,
+        .receiver_answer_id = receiver_answer_id,
+    };
+    try std.testing.expectError(
+        error.TestSendFailed,
+        peer.sendReturnResults(1234, &build_ctx, Hooks.build),
+    );
+
+    const export_entry = peer.exports.getEntry(export_id) orelse return error.UnknownExport;
+    try std.testing.expectEqual(@as(u32, 0), export_entry.value_ptr.ref_count);
+    try std.testing.expect(peer.caps.receiver_answers.contains(receiver_answer_id));
+    try std.testing.expect(!peer.resolved_answers.contains(1234));
+}
+
+test "sendPrebuiltReturnFrame rolls back outbound refs when send fails" {
+    const allocator = std.testing.allocator;
+
+    const NoopHandler = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Hooks = struct {
+        fn failSend(_: *anyopaque, _: []const u8) anyerror!void {
+            return error.TestSendFailed;
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var ret_builder = protocol.MessageBuilder.init(allocator);
+    defer ret_builder.deinit();
+    var ret = try ret_builder.beginReturn(333, .results);
+    var payload = try ret.payloadTyped();
+    const any = try payload.initContent();
+    try any.setCapability(.{ .id = 0 });
+    var cap_list = try ret.initCapTableTyped(1);
+    var cap_entry = try cap_list.get(0);
+    try cap_entry.setSenderHosted(export_id);
+
+    const frame = try ret_builder.finish();
+    defer allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    const parsed_ret = try decoded.asReturn();
+
+    var send_ctx: u8 = 0;
+    peer.setSendFrameOverride(&send_ctx, Hooks.failSend);
+
+    try std.testing.expectError(
+        error.TestSendFailed,
+        peer.sendPrebuiltReturnFrame(parsed_ret, frame),
+    );
+
+    const export_entry = peer.exports.getEntry(export_id) orelse return error.UnknownExport;
+    try std.testing.expectEqual(@as(u32, 0), export_entry.value_ptr.ref_count);
+}
+
 test "sendCallResolved routes exported target through local loopback" {
     const allocator = std.testing.allocator;
 
@@ -1790,6 +1953,72 @@ test "handleFinish without tail mapping does not send finish" {
     });
 
     try std.testing.expectEqual(@as(usize, 0), capture.count);
+}
+
+test "handleFinish cancels queued promised call when early-cancel workaround is disabled" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(100, 0xAA55, 1);
+    try call.setTargetPromisedAnswer(77);
+    _ = try call.initCapTableTyped(0);
+
+    const frame = try call_builder.finish();
+    defer allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    const parsed = try decoded.asCall();
+
+    try peer_test_hooks.handleCall(&peer, frame, parsed);
+    const pending_before = peer.pending_promises.getPtr(77) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), pending_before.items.len);
+
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 100,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+
+    const pending_after = peer.pending_promises.getPtr(77);
+    if (pending_after) |list| {
+        try std.testing.expectEqual(@as(usize, 0), list.items.len);
+    }
+}
+
+test "handleFinish keeps queued promised call when early-cancel workaround is enabled" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var call_builder = protocol.MessageBuilder.init(allocator);
+    defer call_builder.deinit();
+    var call = try call_builder.beginCall(101, 0xAA55, 1);
+    try call.setTargetPromisedAnswer(77);
+    _ = try call.initCapTableTyped(0);
+
+    const frame = try call_builder.finish();
+    defer allocator.free(frame);
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    const parsed = try decoded.asCall();
+
+    try peer_test_hooks.handleCall(&peer, frame, parsed);
+    const pending_before = peer.pending_promises.getPtr(77) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), pending_before.items.len);
+
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 101,
+        .release_result_caps = false,
+        .require_early_cancellation = true,
+    });
+
+    const pending_after = peer.pending_promises.getPtr(77) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), pending_after.items.len);
 }
 
 test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and propagated finish" {

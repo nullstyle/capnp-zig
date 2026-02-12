@@ -40,7 +40,10 @@ pub const StreamState = struct {
         if (self.in_flight == 0) {
             callback(ctx, self.stream_error);
         } else {
-            std.debug.assert(self.on_drain == null);
+            if (self.on_drain != null) {
+                callback(ctx, error.StreamDrainAlreadyPending);
+                return;
+            }
             self.on_drain = callback;
             self.on_drain_ctx = ctx;
         }
@@ -161,4 +164,39 @@ test "StreamState: drain callback reports cached error" {
 
     try std.testing.expect(ctx.called);
     try std.testing.expectEqual(error.StreamingCallFailed, ctx.err.?);
+}
+
+test "StreamState: second waiter gets explicit error without replacing first waiter" {
+    var state = StreamState{};
+
+    const Ctx = struct {
+        called: bool = false,
+        err: ?anyerror = null,
+    };
+    var first = Ctx{};
+    var second = Ctx{};
+
+    state.noteCallSent();
+    state.waitStreaming(@ptrCast(&first), struct {
+        fn cb(ptr: *anyopaque, err: ?anyerror) void {
+            const c: *Ctx = @ptrCast(@alignCast(ptr));
+            c.called = true;
+            c.err = err;
+        }
+    }.cb);
+    state.waitStreaming(@ptrCast(&second), struct {
+        fn cb(ptr: *anyopaque, err: ?anyerror) void {
+            const c: *Ctx = @ptrCast(@alignCast(ptr));
+            c.called = true;
+            c.err = err;
+        }
+    }.cb);
+
+    try std.testing.expect(second.called);
+    try std.testing.expectEqual(error.StreamDrainAlreadyPending, second.err.?);
+    try std.testing.expect(!first.called);
+
+    state.handleReturn(false);
+    try std.testing.expect(first.called);
+    try std.testing.expectEqual(@as(?anyerror, null), first.err);
 }

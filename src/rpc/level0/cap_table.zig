@@ -301,6 +301,60 @@ const OutboundEntry = struct {
 pub const CapEntryCallback = *const fn (ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void;
 pub const CapEntryRollbackCallback = *const fn (ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) void;
 
+/// Staged side effects produced while encoding outbound payload cap tables.
+///
+/// Effects are intentionally separated from encode-time structure rewriting so
+/// callers can commit only after the encoded frame is successfully sent.
+pub const OutboundCapEffects = struct {
+    allocator: std.mem.Allocator,
+    ctx: ?*anyopaque,
+    on_entry_rollback: ?CapEntryRollbackCallback,
+    callback_applied: std.ArrayList(OutboundEntry),
+    consumed_receiver_answer_ids: std.ArrayList(u32),
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        ctx: ?*anyopaque,
+        on_entry_rollback: ?CapEntryRollbackCallback,
+    ) OutboundCapEffects {
+        return .{
+            .allocator = allocator,
+            .ctx = ctx,
+            .on_entry_rollback = on_entry_rollback,
+            .callback_applied = std.ArrayList(OutboundEntry){},
+            .consumed_receiver_answer_ids = std.ArrayList(u32){},
+        };
+    }
+
+    pub fn deinit(self: *OutboundCapEffects) void {
+        self.callback_applied.deinit(self.allocator);
+        self.consumed_receiver_answer_ids.deinit(self.allocator);
+    }
+
+    pub fn rollback(self: *const OutboundCapEffects) void {
+        const rollback_cb = self.on_entry_rollback orelse return;
+        const context = self.ctx orelse return;
+        var idx = self.callback_applied.items.len;
+        while (idx > 0) {
+            idx -= 1;
+            const entry = self.callback_applied.items[idx];
+            rollback_cb(context, entry.tag, entry.id);
+        }
+    }
+
+    fn noteCallbackApplied(self: *OutboundCapEffects, entry: OutboundEntry) !void {
+        try self.callback_applied.append(self.allocator, entry);
+    }
+
+    fn popCallbackApplied(self: *OutboundCapEffects) void {
+        _ = self.callback_applied.pop();
+    }
+
+    fn noteConsumedReceiverAnswer(self: *OutboundCapEffects, id: u32) !void {
+        try self.consumed_receiver_answer_ids.append(self.allocator, id);
+    }
+};
+
 const OutboundCapTable = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayList(OutboundEntry),
@@ -463,34 +517,15 @@ fn collectCapsFromPointer(
 
 /// Encode capability descriptors into the outbound payload's cap table.
 ///
-/// **Known limitation:** Receiver-answer entries referenced by the payload
-/// are permanently removed from the `CapTable` after encoding. If the
-/// caller encounters an error after this function returns but before the
-/// encoded message is sent on the wire, those receiver-answer entries will
-/// be lost and cannot be recovered. Callers must ensure the encoded message
-/// is sent or accept that the receiver-answer state may be irrecoverable.
 fn encodePayloadCaps(
     table: *CapTable,
     payload: protocol.PayloadBuilder,
-    ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
-    on_entry_rollback: ?CapEntryRollbackCallback,
+    effects: *OutboundCapEffects,
 ) !?ResolvedCap {
     var payload_builder = payload;
     var outbound = OutboundCapTable.init(table.allocator);
     defer outbound.deinit();
-    var callback_applied = std.ArrayList(OutboundEntry){};
-    defer callback_applied.deinit(table.allocator);
-    errdefer if (on_entry_rollback) |rollback_cb| {
-        if (ctx) |context| {
-            var idx = callback_applied.items.len;
-            while (idx > 0) {
-                idx -= 1;
-                const entry = callback_applied.items[idx];
-                rollback_cb(context, entry.tag, entry.id);
-            }
-        }
-    };
 
     const builder = payload_builder._builder.builder;
     const view = try buildMessageView(table.allocator, builder);
@@ -526,28 +561,39 @@ fn encodePayloadCaps(
             .receiverAnswer => {
                 const promised = table.getReceiverAnswer(entry.id) orelse return error.UnknownReceiverAnswerCap;
                 try protocol.CapDescriptor.writeReceiverAnswer(elem._builder, promised.question_id, promised.ops);
+                try effects.noteConsumedReceiverAnswer(entry.id);
             },
             else => {},
         }
         if (on_entry) |cb| {
-            const context = ctx orelse return error.MissingCallbackContext;
-            try callback_applied.append(table.allocator, entry);
+            const context = effects.ctx orelse return error.MissingCallbackContext;
+            try effects.noteCallbackApplied(entry);
             cb(context, entry.tag, entry.id) catch |err| {
-                _ = callback_applied.pop();
+                effects.popCallbackApplied();
                 return err;
             };
         }
     }
 
-    for (outbound.entries.items) |entry| {
-        if (entry.tag == .receiverAnswer) {
-            if (table.receiver_answers.fetchRemove(entry.id)) |removed| {
-                removed.value.deinit(table.allocator);
-            }
+    return root_cap;
+}
+
+pub fn commitOutboundCapEffects(table: *CapTable, effects: *const OutboundCapEffects) void {
+    for (effects.consumed_receiver_answer_ids.items) |id| {
+        if (table.receiver_answers.fetchRemove(id)) |removed| {
+            removed.value.deinit(table.allocator);
         }
     }
+}
 
-    return root_cap;
+pub fn encodeCallPayloadCapsWithEffects(
+    table: *CapTable,
+    call: *protocol.CallBuilder,
+    on_entry: ?CapEntryCallback,
+    effects: *OutboundCapEffects,
+) !void {
+    const payload = try call.payloadTyped();
+    _ = try encodePayloadCaps(table, payload, on_entry, effects);
 }
 
 pub fn encodeCallPayloadCaps(
@@ -557,8 +603,21 @@ pub fn encodeCallPayloadCaps(
     on_entry: ?CapEntryCallback,
     on_entry_rollback: ?CapEntryRollbackCallback,
 ) !void {
-    const payload = try call.payloadTyped();
-    _ = try encodePayloadCaps(table, payload, ctx, on_entry, on_entry_rollback);
+    var effects = OutboundCapEffects.init(table.allocator, ctx, on_entry_rollback);
+    defer effects.deinit();
+    errdefer effects.rollback();
+    try encodeCallPayloadCapsWithEffects(table, call, on_entry, &effects);
+    commitOutboundCapEffects(table, &effects);
+}
+
+pub fn encodeReturnPayloadCapsWithEffects(
+    table: *CapTable,
+    ret: *protocol.ReturnBuilder,
+    on_entry: ?CapEntryCallback,
+    effects: *OutboundCapEffects,
+) !?ResolvedCap {
+    const payload = try ret.payloadTyped();
+    return encodePayloadCaps(table, payload, on_entry, effects);
 }
 
 pub fn encodeReturnPayloadCaps(
@@ -568,8 +627,12 @@ pub fn encodeReturnPayloadCaps(
     on_entry: ?CapEntryCallback,
     on_entry_rollback: ?CapEntryRollbackCallback,
 ) !?ResolvedCap {
-    const payload = try ret.payloadTyped();
-    return encodePayloadCaps(table, payload, ctx, on_entry, on_entry_rollback);
+    var effects = OutboundCapEffects.init(table.allocator, ctx, on_entry_rollback);
+    defer effects.deinit();
+    errdefer effects.rollback();
+    const root_cap = try encodeReturnPayloadCapsWithEffects(table, ret, on_entry, &effects);
+    commitOutboundCapEffects(table, &effects);
+    return root_cap;
 }
 
 /// Walk a promised-answer transform path through a results payload to find

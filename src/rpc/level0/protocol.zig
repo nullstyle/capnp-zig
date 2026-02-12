@@ -572,11 +572,9 @@ pub const Return = struct {
 pub const Finish = struct {
     question_id: u32,
     release_result_caps: bool,
-    // TODO: implement requireEarlyCancellationWorkaround behavior — when true and
-    // the Finish arrives before the call is delivered, defer cancellation until
-    // after delivery so the callee can opt out (see rpc.capnp Finish.requireEarlyCancellationWorkaround).
-    // Currently this field is parsed and forwarded but the deferred-cancellation
-    // logic is not yet implemented.
+    // When true, a peer should defer early cancellation if the Finish arrives
+    // before the corresponding call is deliverable. See rpc.capnp
+    // Finish.requireEarlyCancellationWorkaround.
     require_early_cancellation: bool,
 
     fn fromReader(reader: message.StructReader) !Finish {

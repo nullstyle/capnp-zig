@@ -61,6 +61,30 @@ pub fn noteOutboundReturnCapRefsForPeer(
     }
 }
 
+pub fn rollbackOutboundReturnCapRefsForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    ret: protocol.Return,
+    rollback_export_ref: *const fn (*PeerType, u32) void,
+) !void {
+    if (ret.tag != .results) return;
+    const payload = ret.results orelse return error.InvalidReturnSemantics;
+    const cap_table_list = payload.cap_table orelse return;
+
+    var idx: u32 = 0;
+    while (idx < cap_table_list.len()) : (idx += 1) {
+        const reader = try cap_table_list.get(idx);
+        const descriptor = try protocol.CapDescriptor.fromReader(reader);
+        switch (descriptor.tag) {
+            .senderHosted, .senderPromise => {
+                const id = descriptor.id orelse return error.MissingCapDescriptorId;
+                rollback_export_ref(peer, id);
+            },
+            else => {},
+        }
+    }
+}
+
 pub fn noteSendResultsToYourselfForPeer(
     comptime PeerType: type,
     peer: *PeerType,
