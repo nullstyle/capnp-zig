@@ -1116,3 +1116,43 @@ test "schema manifest export validates output pointers" {
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_schema_manifest_json(toAbiPtr(&out_ptr), 0));
     try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
 }
+
+test "wasm host ABI supports peer reinit after free" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const first = abi.capnp_peer_new();
+    try std.testing.expect(first != 0);
+    abi.capnp_peer_free(first);
+    // Double-free should be a harmless no-op.
+    abi.capnp_peer_free(first);
+
+    const second = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(second);
+    try std.testing.expect(second != 0);
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_last_error_code());
+}
+
+test "capnp_peer_free_host_call_frame rejects double free" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const server = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(server);
+    try std.testing.expect(server != 0);
+
+    const pending = try queuePendingHostCall(std.testing.allocator, server, 700, 0xCAFE, 1);
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_free_host_call_frame(
+        server,
+        pending.frame_ptr,
+        pending.frame_len,
+    ));
+
+    abi.capnp_clear_error();
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_free_host_call_frame(
+        server,
+        pending.frame_ptr,
+        pending.frame_len,
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+}

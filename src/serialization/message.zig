@@ -182,7 +182,9 @@ fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
 
         // Regular tag: each set bit means one non-zero byte follows.
         total = std.math.add(usize, total, 8) catch return error.Overflow;
-        index += @popCount(tag);
+        const nonzero_bytes = @popCount(tag);
+        if (index + nonzero_bytes > packed_bytes.len) return error.UnexpectedEof;
+        index += nonzero_bytes;
     }
 
     return total;
@@ -532,6 +534,23 @@ pub const Message = struct {
         const element_count = @as(u32, @truncate((resolved.pointer_word >> 35)));
 
         const content_offset = try computeContentOffset(resolved.pointer_pos, offset, resolved.content_override);
+        const content_bytes = switch (element_size) {
+            0 => @as(usize, 0),
+            1 => blk: {
+                const padded = std.math.add(usize, @as(usize, element_count), 7) catch return error.OutOfBounds;
+                break :blk padded / 8;
+            },
+            2 => @as(usize, element_count),
+            3 => std.math.mul(usize, @as(usize, element_count), 2) catch return error.OutOfBounds,
+            4 => std.math.mul(usize, @as(usize, element_count), 4) catch return error.OutOfBounds,
+            5, 6 => std.math.mul(usize, @as(usize, element_count), 8) catch return error.OutOfBounds,
+            7 => blk: {
+                const words_with_tag = std.math.add(u64, @as(u64, element_count), 1) catch return error.OutOfBounds;
+                if (words_with_tag > std.math.maxInt(usize) / 8) return error.OutOfBounds;
+                break :blk @as(usize, @intCast(words_with_tag)) * 8;
+            },
+        };
+        try bounds.checkBounds(self.segments[resolved.segment_id], content_offset, content_bytes);
 
         return .{
             .segment_id = resolved.segment_id,
@@ -1643,6 +1662,7 @@ pub const MessageBuilder = struct {
     }
 
     fn createSegmentWithCapacity(self: *MessageBuilder, min_capacity: usize) !u32 {
+        if (self.segments.items.len > std.math.maxInt(u32)) return error.TooManySegments;
         const id: u32 = @intCast(self.segments.items.len);
         try self.segments.append(self.allocator, std.ArrayList(u8){});
         if (min_capacity > 0) {
@@ -2110,6 +2130,7 @@ pub const MessageBuilder = struct {
         }
 
         const segment_count_usize = self.segments.items.len;
+        if (segment_count_usize > std.math.maxInt(u32)) return error.InvalidMessageSize;
         const segment_count = @as(u32, @intCast(segment_count_usize));
         const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
         const header_words = 1 + segment_count_usize + padding_words;
@@ -2130,7 +2151,7 @@ pub const MessageBuilder = struct {
 
         // Write segment sizes
         for (self.segments.items) |segment| {
-            const size_words = @as(u32, @intCast(segment.items.len / 8));
+            const size_words = std.math.cast(u32, segment.items.len / 8) orelse return error.InvalidMessageSize;
             std.mem.writeInt(u32, word_buf[0..4], size_words, .little);
             result.appendSliceAssumeCapacity(&word_buf);
         }
@@ -2163,13 +2184,15 @@ pub const MessageBuilder = struct {
             try self.segments.append(self.allocator, std.ArrayList(u8){});
         }
 
-        const segment_count = @as(u32, @intCast(self.segments.items.len));
+        const segment_count_usize = self.segments.items.len;
+        if (segment_count_usize > std.math.maxInt(u32)) return error.InvalidMessageSize;
+        const segment_count = @as(u32, @intCast(segment_count_usize));
         var word_buf: [4]u8 = undefined;
         std.mem.writeInt(u32, word_buf[0..4], segment_count - 1, .little);
         try writer.writeAll(&word_buf);
 
         for (self.segments.items) |segment| {
-            const size_words = @as(u32, @intCast(segment.items.len / 8));
+            const size_words = std.math.cast(u32, segment.items.len / 8) orelse return error.InvalidMessageSize;
             std.mem.writeInt(u32, word_buf[0..4], size_words, .little);
             try writer.writeAll(&word_buf);
         }
@@ -2290,4 +2313,207 @@ pub const typed_list_helpers = typed_list_helpers_module.define(@This());
 
 test {
     _ = bounds;
+}
+
+test "packed decoder handles zero and literal runs" {
+    const packed_bytes = [_]u8{
+        0x00, 0x01, // two zero words
+        0xFF, // literal word
+        1, 2, 3, 4, 5, 6, 7, 8,
+        0x00, // no extra literal words
+    };
+
+    try std.testing.expectEqual(@as(usize, 24), try estimateUnpackedSize(&packed_bytes));
+    const unpacked = try unpackPacked(std.testing.allocator, &packed_bytes);
+    defer std.testing.allocator.free(unpacked);
+
+    try std.testing.expectEqual(@as(usize, 24), unpacked.len);
+    try std.testing.expect(std.mem.allEqual(u8, unpacked[0..16], 0));
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }, unpacked[16..24]);
+}
+
+test "packed decoder rejects truncated regular tag payload" {
+    const packed_bytes = [_]u8{
+        0x03, // expects two literal bytes
+        0xAA, // only one provided
+    };
+    try std.testing.expectError(error.UnexpectedEof, estimateUnpackedSize(&packed_bytes));
+    try std.testing.expectError(error.UnexpectedEof, unpackPacked(std.testing.allocator, &packed_bytes));
+}
+
+test "cloneAnyPointer handles null pointers" {
+    var src_builder = MessageBuilder.init(std.testing.allocator);
+    defer src_builder.deinit();
+    _ = try src_builder.initRootAnyPointer();
+
+    const src_bytes = try src_builder.toBytes();
+    defer std.testing.allocator.free(src_bytes);
+
+    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    defer src_msg.deinit();
+    const src_any = try src_msg.getRootAnyPointer();
+
+    var dest_builder = MessageBuilder.init(std.testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try cloneAnyPointer(src_any, dest_root);
+
+    const dest_bytes = try dest_builder.toBytes();
+    defer std.testing.allocator.free(dest_bytes);
+
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    defer dest_msg.deinit();
+    const dest_any = try dest_msg.getRootAnyPointer();
+    try std.testing.expect(dest_any.isNull());
+}
+
+test "cloneAnyPointer clones capability pointers" {
+    var src_builder = MessageBuilder.init(std.testing.allocator);
+    defer src_builder.deinit();
+    const src_root = try src_builder.initRootAnyPointer();
+    try src_root.setCapability(.{ .id = 123 });
+
+    const src_bytes = try src_builder.toBytes();
+    defer std.testing.allocator.free(src_bytes);
+
+    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    defer src_msg.deinit();
+    const src_any = try src_msg.getRootAnyPointer();
+
+    var dest_builder = MessageBuilder.init(std.testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try cloneAnyPointer(src_any, dest_root);
+
+    const dest_bytes = try dest_builder.toBytes();
+    defer std.testing.allocator.free(dest_bytes);
+
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    defer dest_msg.deinit();
+    const dest_any = try dest_msg.getRootAnyPointer();
+    const cap = try dest_any.getCapability();
+    try std.testing.expectEqual(@as(u32, 123), cap.id);
+}
+
+test "cloneAnyPointer clones inline-composite struct lists" {
+    var src_builder = MessageBuilder.init(std.testing.allocator);
+    defer src_builder.deinit();
+    var root = try src_builder.allocateStruct(0, 1);
+    var list = try root.writeStructList(0, 2, 1, 0);
+    (try list.get(0)).writeU32(0, 11);
+    (try list.get(1)).writeU32(0, 22);
+
+    const src_bytes = try src_builder.toBytes();
+    defer std.testing.allocator.free(src_bytes);
+
+    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    defer src_msg.deinit();
+    const src_any = try src_msg.getRootAnyPointer();
+
+    var dest_builder = MessageBuilder.init(std.testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try cloneAnyPointer(src_any, dest_root);
+
+    const dest_bytes = try dest_builder.toBytes();
+    defer std.testing.allocator.free(dest_bytes);
+
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    defer dest_msg.deinit();
+    const dest_root_struct = try dest_msg.getRootStruct();
+    const dest_list = try dest_root_struct.readStructList(0);
+    try std.testing.expectEqual(@as(u32, 2), dest_list.len());
+    try std.testing.expectEqual(@as(u32, 11), (try dest_list.get(0)).readU32(0));
+    try std.testing.expectEqual(@as(u32, 22), (try dest_list.get(1)).readU32(0));
+}
+
+test "cloneAnyPointer clones pointer lists" {
+    var src_builder = MessageBuilder.init(std.testing.allocator);
+    defer src_builder.deinit();
+    const src_root = try src_builder.initRootAnyPointer();
+    var src_list = try src_root.initPointerList(2);
+    try src_list.setText(0, "north");
+    try src_list.setNull(1);
+
+    const src_bytes = try src_builder.toBytes();
+    defer std.testing.allocator.free(src_bytes);
+
+    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    defer src_msg.deinit();
+    const src_any = try src_msg.getRootAnyPointer();
+
+    var dest_builder = MessageBuilder.init(std.testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try cloneAnyPointer(src_any, dest_root);
+
+    const dest_bytes = try dest_builder.toBytes();
+    defer std.testing.allocator.free(dest_bytes);
+
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    defer dest_msg.deinit();
+    const dest_any = try dest_msg.getRootAnyPointer();
+    const dest_list = try dest_any.getPointerList();
+    try std.testing.expectEqual(@as(u32, 2), dest_list.len());
+    try std.testing.expectEqualStrings("north", try dest_list.getText(0));
+    try std.testing.expectEqualStrings("", try dest_list.getText(1));
+    try std.testing.expectError(error.InvalidPointer, dest_list.getData(1));
+}
+
+test "cloneAnyPointer enforces recursion limit" {
+    var src_builder = MessageBuilder.init(std.testing.allocator);
+    defer src_builder.deinit();
+
+    var current = try src_builder.initRootAnyPointer();
+    var depth: usize = 0;
+    while (depth < 70) : (depth += 1) {
+        var node = try current.initStruct(0, 1);
+        current = try node.getAnyPointer(0);
+    }
+    try current.setNull();
+
+    const src_bytes = try src_builder.toBytes();
+    defer std.testing.allocator.free(src_bytes);
+
+    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    defer src_msg.deinit();
+    const src_any = try src_msg.getRootAnyPointer();
+
+    var dest_builder = MessageBuilder.init(std.testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try std.testing.expectError(error.RecursionLimitExceeded, cloneAnyPointer(src_any, dest_root));
+}
+
+test "cloneAnyPointer rejects invalid far-pointer cycles" {
+    const frame = [_]u8{
+        0x00, 0x00, 0x00, 0x00, // one segment
+        0x01, 0x00, 0x00, 0x00, // one word
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // far pointer to itself
+    };
+
+    var src_msg = try Message.init(std.testing.allocator, &frame);
+    defer src_msg.deinit();
+    const src_any = try src_msg.getRootAnyPointer();
+
+    var dest_builder = MessageBuilder.init(std.testing.allocator);
+    defer dest_builder.deinit();
+    const dest_root = try dest_builder.initRootAnyPointer();
+    try std.testing.expectError(error.PointerDepthLimit, cloneAnyPointer(src_any, dest_root));
+}
+
+test "StructReader.readBoolStrict enforces bounds" {
+    var builder = MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(1, 0);
+    root.writeBool(0, 0, true);
+
+    const bytes = try builder.toBytes();
+    defer std.testing.allocator.free(bytes);
+
+    var msg = try Message.init(std.testing.allocator, bytes);
+    defer msg.deinit();
+    const reader = try msg.getRootStruct();
+    try std.testing.expect(try reader.readBoolStrict(0, 0));
+    try std.testing.expectError(error.OutOfBounds, reader.readBoolStrict(8, 0));
 }

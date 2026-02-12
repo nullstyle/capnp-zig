@@ -744,14 +744,15 @@ pub const Peer = struct {
 
     fn completeShutdown(self: *Peer) void {
         self.assertThreadAffinity();
+        const transport_ctx = self.transport_ctx orelse return;
         // Close transport if attached and not already closing.
         if (self.transport_close) |close_fn| {
             if (self.transport_is_closing) |is_closing_fn| {
-                if (!is_closing_fn(self.transport_ctx.?)) {
-                    close_fn(self.transport_ctx.?);
+                if (!is_closing_fn(transport_ctx)) {
+                    close_fn(transport_ctx);
                 }
             } else {
-                close_fn(self.transport_ctx.?);
+                close_fn(transport_ctx);
             }
         }
         if (self.shutdown_callback) |cb| cb(self);
@@ -829,6 +830,7 @@ pub const Peer = struct {
             &self.caps,
             self,
             onOutboundCap,
+            rollbackOutboundCap,
             self,
             target_id,
             interface_id,
@@ -862,6 +864,7 @@ pub const Peer = struct {
                 &self.caps,
                 self,
                 onOutboundCap,
+                rollbackOutboundCap,
                 self,
                 cap.id,
                 interface_id,
@@ -883,6 +886,7 @@ pub const Peer = struct {
                 &self.caps,
                 self,
                 onOutboundCap,
+                rollbackOutboundCap,
                 self,
                 &self.questions,
                 &self.loopback_questions,
@@ -918,6 +922,7 @@ pub const Peer = struct {
             &self.caps,
             self,
             onOutboundCap,
+            rollbackOutboundCap,
             self,
             promised,
             interface_id,
@@ -954,6 +959,7 @@ pub const Peer = struct {
             &self.caps,
             self,
             onOutboundCap,
+            rollbackOutboundCap,
             self,
             question_id_target,
             ops,
@@ -1145,7 +1151,7 @@ pub const Peer = struct {
 
         var ret = try builder.beginReturn(answer_id, .results);
         try build(ctx, &ret);
-        _ = try cap_table.encodeReturnPayloadCaps(&self.caps, &ret, self, onOutboundCap);
+        _ = try cap_table.encodeReturnPayloadCaps(&self.caps, &ret, self, onOutboundCap, rollbackOutboundCap);
 
         const bytes = try builder.finish();
         defer self.allocator.free(bytes);
@@ -1370,6 +1376,7 @@ pub const Peer = struct {
             self,
             import_id,
             count,
+            peer_cap_lifecycle.importRefCountForPeerFn(Peer),
             peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
             Peer.releaseResolvedImport,
             peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrame),
@@ -1438,12 +1445,26 @@ pub const Peer = struct {
         }
     }
 
+    fn rollbackOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) void {
+        const peer: *Peer = castCtx(*Peer, ctx);
+        switch (tag) {
+            .senderHosted, .senderPromise => peer.rollbackExportRef(id),
+            else => {},
+        }
+    }
+
     fn noteExportRef(self: *Peer, id: u32) !void {
         try peer_cap_lifecycle.noteExportRef(
             ExportEntry,
             &self.exports,
             id,
         );
+    }
+
+    fn rollbackExportRef(self: *Peer, id: u32) void {
+        var entry = self.exports.getEntry(id) orelse return;
+        if (entry.value_ptr.ref_count == 0) return;
+        entry.value_ptr.ref_count -= 1;
     }
 
     fn releaseExport(self: *Peer, id: u32, count: u32) void {
@@ -1727,8 +1748,25 @@ pub const Peer = struct {
         try peer_control.handleResolveWithOps(Peer, self, resolve, ops);
     }
 
+    fn hasKnownDisembargoTarget(self: *Peer, target: protocol.MessageTarget) bool {
+        return switch (target.tag) {
+            .importedCap => blk: {
+                const import_id = target.imported_cap orelse break :blk false;
+                break :blk self.caps.imports.contains(import_id);
+            },
+            .promisedAnswer => blk: {
+                const promised = target.promised_answer orelse break :blk false;
+                break :blk self.resolved_answers.contains(promised.question_id) or
+                    self.pending_promises.contains(promised.question_id) or
+                    self.send_results_to_yourself.contains(promised.question_id) or
+                    self.send_results_to_third_party.contains(promised.question_id);
+            },
+        };
+    }
+
     fn handleDisembargo(self: *Peer, disembargo: protocol.Disembargo) !void {
         const ops = peer_control.DisembargoOps(Peer){
+            .has_known_disembargo_target = Peer.hasKnownDisembargoTarget,
             .send_disembargo_receiver_loopback = peer_outbound_control.sendDisembargoReceiverLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             .take_pending_embargo_promise = peer_control.takePendingEmbargoPromiseForPeerFn(Peer),
             .clear_resolved_import_embargo = peer_control.clearResolvedImportEmbargoForPeerFn(Peer),
@@ -1860,11 +1898,28 @@ pub const Peer = struct {
         );
     }
 
+    fn hasQueuedPendingQuestionId(self: *Peer, question_id: u32) !bool {
+        if (self.pending_promises.contains(question_id)) return true;
+
+        var pending_export_it = self.pending_export_promises.valueIterator();
+        while (pending_export_it.next()) |pending_list| {
+            for (pending_list.items) |pending_call| {
+                var decoded = try protocol.DecodedMessage.init(self.allocator, pending_call.frame);
+                defer decoded.deinit();
+                if (decoded.tag != .call) continue;
+                const queued_call = try decoded.asCall();
+                if (queued_call.question_id == question_id) return true;
+            }
+        }
+        return false;
+    }
+
     fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
         // Reject duplicate question IDs from the remote peer (spec violation).
         if (self.resolved_answers.contains(call.question_id) or
             self.send_results_to_yourself.contains(call.question_id) or
-            self.send_results_to_third_party.contains(call.question_id))
+            self.send_results_to_third_party.contains(call.question_id) or
+            try self.hasQueuedPendingQuestionId(call.question_id))
         {
             return error.DuplicateQuestionId;
         }
@@ -2069,6 +2124,18 @@ pub const Peer = struct {
 
         pub fn sendFrame(self: *Peer, frame: []const u8) !void {
             return Peer.sendFrame(self, frame);
+        }
+
+        pub fn removeQuestion(self: *Peer, question_id: u32) void {
+            Peer.removeQuestion(self, question_id);
+        }
+
+        pub fn onConnectionError(self: *Peer, err: anyerror) void {
+            Peer.onConnectionError(self, err);
+        }
+
+        pub fn onConnectionClose(self: *Peer) void {
+            Peer.onConnectionClose(self);
         }
 
         pub fn collectReleaseCounts(

@@ -106,11 +106,11 @@ pub fn handleBootstrap(
         return;
     };
 
-    try note_export_ref(peer, export_id);
     const bytes = try buildBootstrapReturnFrame(allocator, bootstrap.question_id, export_id);
     defer allocator.free(bytes);
 
     try send_frame(peer, bytes);
+    try note_export_ref(peer, export_id);
 
     const copy = try allocator.alloc(u8, bytes.len);
     errdefer allocator.free(copy);
@@ -355,6 +355,7 @@ pub fn handleResolveWithOps(
 /// Bundles the 4 callback parameters of handleDisembargo into a single operations struct.
 pub fn DisembargoOps(comptime PeerType: type) type {
     return struct {
+        has_known_disembargo_target: *const fn (*PeerType, protocol.MessageTarget) bool,
         send_disembargo_receiver_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
         take_pending_embargo_promise: *const fn (*PeerType, u32) ?u32,
         clear_resolved_import_embargo: *const fn (*PeerType, u32) void,
@@ -366,12 +367,14 @@ pub fn handleDisembargo(
     comptime PeerType: type,
     peer: *PeerType,
     disembargo: protocol.Disembargo,
+    has_known_disembargo_target: *const fn (*PeerType, protocol.MessageTarget) bool,
     send_disembargo_receiver_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
     take_pending_embargo_promise: *const fn (*PeerType, u32) ?u32,
     clear_resolved_import_embargo: *const fn (*PeerType, u32) void,
     release_embargoed_accepts: *const fn (*PeerType, []const u8) anyerror!void,
 ) !void {
     const ops = DisembargoOps(PeerType){
+        .has_known_disembargo_target = has_known_disembargo_target,
         .send_disembargo_receiver_loopback = send_disembargo_receiver_loopback,
         .take_pending_embargo_promise = take_pending_embargo_promise,
         .clear_resolved_import_embargo = clear_resolved_import_embargo,
@@ -398,6 +401,9 @@ pub fn handleDisembargoWithOps(
                 .promisedAnswer => {
                     _ = disembargo.target.promised_answer orelse return error.MissingPromisedAnswer;
                 },
+            }
+            if (!ops.has_known_disembargo_target(peer, disembargo.target)) {
+                return error.UnknownDisembargoTarget;
             }
             try ops.send_disembargo_receiver_loopback(peer, disembargo.target, embargo_id);
         },

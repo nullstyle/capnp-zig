@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_cap_table);
 const message = @import("../../serialization/message.zig");
+const bounds = @import("../../serialization/message/bounds.zig");
 const protocol = @import("protocol.zig");
 const promise_pipeline = @import("../common/promise_pipeline.zig");
 
@@ -245,6 +246,11 @@ pub const InboundCapTable = struct {
     }
 
     /// Create an independent deep copy that owns its own slices.
+    ///
+    /// This clone only duplicates the local slices; it does not increment
+    /// import reference counts in any `CapTable`. Callers must not pass the
+    /// clone to `releaseInboundCaps` unless they have separately balanced
+    /// import ownership.
     pub fn clone(self: *const InboundCapTable) !InboundCapTable {
         const entries = try self.allocator.dupe(ResolvedCap, self.entries);
         errdefer self.allocator.free(entries);
@@ -293,6 +299,7 @@ const OutboundEntry = struct {
 };
 
 pub const CapEntryCallback = *const fn (ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void;
+pub const CapEntryRollbackCallback = *const fn (ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) void;
 
 const OutboundCapTable = struct {
     allocator: std.mem.Allocator,
@@ -329,7 +336,7 @@ const OutboundCapTable = struct {
     }
 };
 
-fn makeCapabilityPointer(cap_id: u32) !u64 {
+fn makeCapabilityPointer(cap_id: u32) u64 {
     return 3 | (@as(u64, cap_id) << 32);
 }
 
@@ -410,6 +417,7 @@ fn collectCapsFromPointer(
             var idx: usize = 0;
             while (idx < struct_reader.pointer_count) : (idx += 1) {
                 const pos = pointer_base + idx * 8;
+                try bounds.checkBounds(msg.segments[struct_reader.segment_id], pos, 8);
                 const word = std.mem.readInt(u64, msg.segments[struct_reader.segment_id][pos..][0..8], .little);
                 try collectCapsFromPointer(outbound, table, msg, builder, struct_reader.segment_id, pos, word, depth - 1);
             }
@@ -435,6 +443,7 @@ fn collectCapsFromPointer(
                     var pidx: usize = 0;
                     while (pidx < inline_list.pointer_words) : (pidx += 1) {
                         const pos = pointer_base + pidx * 8;
+                        try bounds.checkBounds(msg.segments[inline_list.segment_id], pos, 8);
                         const word = std.mem.readInt(u64, msg.segments[inline_list.segment_id][pos..][0..8], .little);
                         try collectCapsFromPointer(outbound, table, msg, builder, inline_list.segment_id, pos, word, depth - 1);
                     }
@@ -445,7 +454,7 @@ fn collectCapsFromPointer(
             const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
             const tag = classifyCap(table, cap_id);
             const index = try outbound.indexFor(tag, cap_id);
-            const new_word = try makeCapabilityPointer(index);
+            const new_word = makeCapabilityPointer(index);
             try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, new_word);
         },
         else => return error.InvalidPointer,
@@ -465,10 +474,23 @@ fn encodePayloadCaps(
     payload: protocol.PayloadBuilder,
     ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
+    on_entry_rollback: ?CapEntryRollbackCallback,
 ) !?ResolvedCap {
     var payload_builder = payload;
     var outbound = OutboundCapTable.init(table.allocator);
     defer outbound.deinit();
+    var callback_applied = std.ArrayList(OutboundEntry){};
+    defer callback_applied.deinit(table.allocator);
+    errdefer if (on_entry_rollback) |rollback_cb| {
+        if (ctx) |context| {
+            var idx = callback_applied.items.len;
+            while (idx > 0) {
+                idx -= 1;
+                const entry = callback_applied.items[idx];
+                rollback_cb(context, entry.tag, entry.id);
+            }
+        }
+    };
 
     const builder = payload_builder._builder.builder;
     const view = try buildMessageView(table.allocator, builder);
@@ -509,7 +531,11 @@ fn encodePayloadCaps(
         }
         if (on_entry) |cb| {
             const context = ctx orelse return error.MissingCallbackContext;
-            try cb(context, entry.tag, entry.id);
+            try callback_applied.append(table.allocator, entry);
+            cb(context, entry.tag, entry.id) catch |err| {
+                _ = callback_applied.pop();
+                return err;
+            };
         }
     }
 
@@ -529,9 +555,10 @@ pub fn encodeCallPayloadCaps(
     call: *protocol.CallBuilder,
     ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
+    on_entry_rollback: ?CapEntryRollbackCallback,
 ) !void {
     const payload = try call.payloadTyped();
-    _ = try encodePayloadCaps(table, payload, ctx, on_entry);
+    _ = try encodePayloadCaps(table, payload, ctx, on_entry, on_entry_rollback);
 }
 
 pub fn encodeReturnPayloadCaps(
@@ -539,9 +566,10 @@ pub fn encodeReturnPayloadCaps(
     ret: *protocol.ReturnBuilder,
     ctx: ?*anyopaque,
     on_entry: ?CapEntryCallback,
+    on_entry_rollback: ?CapEntryRollbackCallback,
 ) !?ResolvedCap {
     const payload = try ret.payloadTyped();
-    return encodePayloadCaps(table, payload, ctx, on_entry);
+    return encodePayloadCaps(table, payload, ctx, on_entry, on_entry_rollback);
 }
 
 /// Walk a promised-answer transform path through a results payload to find

@@ -19,9 +19,13 @@ pub fn queuePendingCall(
     std.mem.copyForwards(u8, copy, frame);
 
     var entry = try pending_calls.getOrPut(key);
+    const inserted = !entry.found_existing;
     if (!entry.found_existing) {
         entry.value_ptr.* = std.ArrayList(PendingCallType){};
     }
+    errdefer if (inserted and entry.value_ptr.items.len == 0) {
+        _ = pending_calls.remove(key);
+    };
     try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps_owned });
 }
 
@@ -59,10 +63,11 @@ pub fn recordResolvedAnswer(
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
 ) !void {
-    if (resolved_answers.fetchRemove(question_id)) |existing| {
-        allocator.free(existing.value.frame);
+    const resolved_entry = try resolved_answers.getOrPut(question_id);
+    if (resolved_entry.found_existing) {
+        allocator.free(resolved_entry.value_ptr.frame);
     }
-    _ = try resolved_answers.put(question_id, .{ .frame = frame });
+    resolved_entry.value_ptr.* = .{ .frame = frame };
 
     var pending = pending_promises.fetchRemove(question_id) orelse return;
     defer pending.value.deinit(allocator);

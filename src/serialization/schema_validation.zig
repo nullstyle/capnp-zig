@@ -1037,3 +1037,57 @@ fn findNodeById(nodes: []schema.Node, id: schema.Id) ?*const schema.Node {
     }
     return null;
 }
+
+fn testNode(id: schema.Id) schema.Node {
+    return .{
+        .id = id,
+        .display_name = "TestNode",
+        .display_name_prefix_length = 0,
+        .scope_id = id,
+        .nested_nodes = &.{},
+        .annotations = &.{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 0,
+            .pointer_count = 0,
+            .preferred_list_encoding = .empty,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &.{},
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+}
+
+test "RecursionGuard detects group cycles and resets on pointer traversal" {
+    var nodes = [_]schema.Node{
+        testNode(1),
+        testNode(2),
+    };
+
+    const base = RecursionGuard{};
+    const first = try base.enterGroup(&nodes, &nodes[0]);
+    const second = try first.enterGroup(&nodes, &nodes[1]);
+    try std.testing.expectError(error.SchemaCycleDetected, second.enterGroup(&nodes, &nodes[0]));
+
+    const via_pointer = try second.enterViaPointer(&nodes, &nodes[0]);
+    try std.testing.expectEqual(@as(usize, second.depth + 1), via_pointer.depth);
+    try std.testing.expectEqual(@as(usize, 1), via_pointer.visited_count);
+    _ = try via_pointer.enterGroup(&nodes, &nodes[1]);
+}
+
+test "RecursionGuard enforces depth limit" {
+    var nodes = [_]schema.Node{testNode(1)};
+    const guard = RecursionGuard{
+        .depth = max_schema_depth,
+        .visited_count = 0,
+        .visited = undefined,
+    };
+    try std.testing.expectError(error.SchemaRecursionLimitExceeded, guard.descend());
+    try std.testing.expectError(error.SchemaRecursionLimitExceeded, guard.enterGroup(&nodes, &nodes[0]));
+    try std.testing.expectError(error.SchemaRecursionLimitExceeded, guard.enterViaPointer(&nodes, &nodes[0]));
+}

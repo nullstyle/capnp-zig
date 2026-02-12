@@ -104,11 +104,15 @@ const PeerState = struct {
     outgoing_fba: std.heap.FixedBufferAllocator = undefined,
     host: HostPeer = undefined,
     last_popped: ?[]u8 = null,
+    outstanding_host_call_frames: std.AutoHashMap(usize, u32) = undefined,
     bootstrap_stub_export_id: ?u32 = null,
 
     fn init(self: *PeerState) !void {
+        self.outstanding_host_call_frames = std.AutoHashMap(usize, u32).init(allocator);
         self.outgoing_fba = std.heap.FixedBufferAllocator.init(&self.outgoing_storage);
         self.host = HostPeer.initWithOutgoingAllocator(allocator, self.outgoing_fba.allocator());
+        errdefer self.host.deinit();
+        errdefer self.outstanding_host_call_frames.deinit();
         // The WASM ABI's global mutex serializes all access, so thread
         // affinity checking is redundant. Disable it so that peers created
         // on one thread can be used from another without a debug panic.
@@ -124,6 +128,12 @@ const PeerState = struct {
             self.host.freeFrame(frame);
             self.last_popped = null;
         }
+        var outstanding_it = self.outstanding_host_call_frames.iterator();
+        while (outstanding_it.next()) |entry| {
+            const frame_ptr: [*]u8 = @ptrFromInt(entry.key_ptr.*);
+            self.host.freeHostCallFrame(frame_ptr[0..entry.value_ptr.*]);
+        }
+        self.outstanding_host_call_frames.deinit();
         self.host.deinit();
     }
 
@@ -194,8 +204,12 @@ fn ptrToAbi(ptr: usize) !AbiPtr {
 fn asSlice(ptr: AbiPtr, len: u32) ![]const u8 {
     if (len == 0) return &.{};
     if (ptr == 0) return error.NullPointer;
-    const p: [*]const u8 = @ptrFromInt(@as(usize, @intCast(ptr)));
-    return p[0..@as(usize, len)];
+    const start: usize = @intCast(ptr);
+    const len_usize: usize = @intCast(len);
+    const end = std.math.add(usize, start, len_usize) catch return error.LengthOverflow;
+    if (end < start) return error.LengthOverflow;
+    const p: [*]const u8 = @ptrFromInt(start);
+    return p[0..len_usize];
 }
 
 fn writeU32(ptr: AbiPtr, value: u32) !void {
@@ -795,28 +809,57 @@ pub export fn capnp_peer_pop_host_call(
         return 0;
     }
     const frame_len: u32 = @intCast(call.frame.len);
+    if (frame_len != 0) {
+        const frame_addr = @intFromPtr(call.frame.ptr);
+        const slot = state.outstanding_host_call_frames.getOrPut(frame_addr) catch {
+            state.host.freeHostCallFrame(call.frame);
+            setError(ERROR_HOST_CALL, "host call frame tracking failed");
+            return 0;
+        };
+        if (slot.found_existing) {
+            state.host.freeHostCallFrame(call.frame);
+            setError(ERROR_HOST_CALL, "host call frame tracking collision");
+            return 0;
+        }
+        slot.value_ptr.* = frame_len;
+    }
 
     writeU32(out_question_id_ptr, call.question_id) catch {
+        if (frame_len != 0) {
+            _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
+        }
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_question_id_ptr");
         return 0;
     };
     writeU64(out_interface_id_ptr, call.interface_id) catch {
+        if (frame_len != 0) {
+            _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
+        }
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_interface_id_ptr");
         return 0;
     };
     writeU16(out_method_id_ptr, call.method_id) catch {
+        if (frame_len != 0) {
+            _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
+        }
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_method_id_ptr");
         return 0;
     };
     writeAbiPtr(out_frame_ptr_ptr, frame_ptr) catch {
+        if (frame_len != 0) {
+            _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
+        }
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_frame_ptr_ptr");
         return 0;
     };
     writeU32(out_frame_len_ptr, frame_len) catch {
+        if (frame_len != 0) {
+            _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
+        }
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_frame_len_ptr");
         return 0;
@@ -845,6 +888,17 @@ pub export fn capnp_peer_free_host_call_frame(
     if (frame_len == 0) return 1;
     if (frame_ptr == 0) {
         setError(ERROR_INVALID_ARG, "invalid host call frame pointer");
+        return 0;
+    }
+
+    const frame_addr: usize = @intCast(frame_ptr);
+    const tracked = state.outstanding_host_call_frames.fetchRemove(frame_addr) orelse {
+        setError(ERROR_INVALID_ARG, "unknown host call frame");
+        return 0;
+    };
+    if (tracked.value != frame_len) {
+        state.outstanding_host_call_frames.put(frame_addr, tracked.value) catch {};
+        setError(ERROR_INVALID_ARG, "host call frame length mismatch");
         return 0;
     }
 

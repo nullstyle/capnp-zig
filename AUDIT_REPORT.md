@@ -1,8 +1,9 @@
-# capnpc-zig Security & Correctness Audit Report
+# capnpc-zig Security & Correctness Audit Report (Round 3)
 
 **Date:** 2026-02-11
-**Scope:** Full codebase — serialization, codegen, RPC (levels 0–3), WASM ABI
-**Method:** 9 parallel assessment tracks covering security, correctness, error handling, memory lifecycle, and test coverage
+**Scope:** Full codebase — serialization, codegen, RPC (levels 0-3), WASM ABI
+**Method:** 8 parallel assessment tracks covering serialization, RPC L0-1, RPC L2, RPC L3 peer, codegen, WASM ABI, error handling, test quality, and memory lifecycle
+**Prior rounds:** Round 1 fixed 23 findings (3 Critical, 8 High, 12 Medium). Round 2 fixed 45 findings (2 High, 14 Medium, 22 Low, 7 Test Gaps). All 619 tests pass.
 
 ---
 
@@ -10,535 +11,305 @@
 
 | Severity | Count |
 |----------|-------|
-| High | 2 |
-| Medium | 14 |
-| Low | 22 |
-| Test Coverage Gaps | 7 |
-| **Total** | **45** |
+| Critical | 0 |
+| High | 1 |
+| Medium | 10 |
+| Low | 24 |
+| Test Gaps | 9 |
 
 ---
 
-## High Severity (2)
+## High Severity (1)
 
-### H1: Import path injection in generated code
+### H1: Use-after-free in `Connection.handleRead` after `on_error` callback
 
-**File:** `src/capnpc-zig/generator.zig:131`
+**File:** `src/rpc/level2/connection.zig`, lines 150-156 and 165-171
 
-**Description:** The import path derived from the schema's `.capnp` filename is inserted into generated `@import("...")` statements using `{s}` format without escaping. Zig's `{s}` format inserts bytes verbatim. A malicious schema with an import name containing `"`, `\`, or newline characters could inject arbitrary Zig code into the generated output.
+**Description:** When `framer.push()` or `framer.popFrame()` fails, the code calls `self.on_error.?(self, err)` and then accesses `self.framer.reset()`, `self.on_message = null`, and `self.on_error = null`. The `on_error` callback receives the `*Connection` and may call `conn.deinit()` or `allocator.destroy(conn)`, making subsequent `self` dereferences use-after-free. The message-handler error path (line 185-188) correctly captures the callback into a local before calling it, but the framing error paths were not given the same treatment.
+
+A related variant exists in `onTransportClose` (lines 192-201) where `on_close` is checked after `on_error` may have destroyed the connection.
+
+**Fix:** Capture `self.framer`, `self.on_message`, `self.on_error` into locals before the callback, operate on locals afterward. Or restructure so `framer.reset()` and nulling happen before the error callback:
 
 ```zig
-try writer.print("const {s} = @import(\"{s}\");\n", .{ mod_name, import_path });
-```
-
-The `import_path` comes from `importPathFromCapnpName(imp.name)`, which strips a leading `/` and replaces `.capnp` with `.zig`, but performs no character validation or escaping.
-
-**Trigger:** A crafted `CodeGeneratorRequest` with an import name like `foo\");\nconst evil = @import("evil.zig`.
-
-**Fix:** Use Zig string escaping for the import path, e.g. `std.zig.fmtString(import_path)`.
-
----
-
-### H2: Thread affinity panic on native multi-threaded WASM ABI usage
-
-**File:** `src/wasm/capnp_host_abi.zig` (contract at lines 27–41), `src/rpc/level3/peer.zig:345-354` (assertion)
-
-**Description:** The ABI documentation states: "Callers on native targets may therefore invoke any exported `capnp_*` function from any thread." However, the underlying `Peer` records its creating thread ID in `initDetached()` and every method calls `assertThreadAffinity()`, which panics in Debug builds if the calling thread differs from the creating thread. The global mutex serializes access but does not change the thread affinity expectation.
-
-**Trigger:** On native (non-WASM) targets in Debug builds: Thread A calls `capnp_peer_new()`, Thread B later calls `capnp_peer_push_frame()` on the same peer. The mutex is acquired, but `assertThreadAffinity()` panics.
-
-**Fix:** After creating the `Peer` in `PeerState.init`, set the peer's `owner_thread_id` to `null` so `assertThreadAffinity` is a no-op (the mutex provides synchronization). Or change documentation to require single-thread usage.
-
----
-
-## Medium Severity (14)
-
-### M1: Signed integer overflow in offset-to-byte calculations on 32-bit targets
-
-**File:** `src/serialization/message.zig` — lines 443, 504, 559, 771, 817
-
-**Description:** The expression `@as(isize, offset_words) * 8` can overflow on 32-bit targets. `decodeOffsetWords` returns `i32` in range `[-2^29, 2^29 - 1]`. Maximum positive value `536870911 * 8 = 4294967288` overflows `i32` (max `2147483647`). In debug/safe builds this panics; in release-fast it's undefined behavior.
-
-**Trigger:** A crafted Cap'n Proto message with a struct/list pointer whose 30-bit offset >= `2^28`, parsed on a 32-bit target (WASM32, ARM32).
-
-**Fix:** Widen to `i64` before multiplying:
-```zig
-const signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset_words) * 8;
-if (signed < 0 or signed > std.math.maxInt(usize)) return error.OutOfBounds;
-```
-
----
-
-### M2: Validation rejects valid double-far inline-composite lists (Layout B)
-
-**File:** `src/serialization/message.zig:807-808`
-
-**Description:** `validateListPointer` rejects inline-composite lists (element_size == 7) when `content_override != null`:
-```zig
-if (element_size == 7 and content_override != null) {
-    return error.InvalidInlineCompositePointer;
-}
-```
-This path is reached for double-far pointer tag words with element_size 7 — the standard "Layout B" used by the reference C++ implementation. `resolveInlineCompositeList` correctly handles this case (lines 640–672), so `Message.validate()` rejects messages that readers can successfully parse.
-
-**Trigger:** A multi-segment message with an inline-composite list whose pointer uses a double-far pointer with Layout B encoding.
-
-**Fix:** Handle `element_size == 7 and content_override != null` by parsing the tag word at the content offset and validating, mirroring the Layout B path in `resolveInlineCompositeList`.
-
----
-
-### M3: Silent OOM in `structTypeName`, `enumTypeName`, `interfaceTypeName`
-
-**File:** `src/capnpc-zig/struct_gen.zig:1296-1312`
-
-**Description:** Three type name resolution functions use `catch null` on `qualifiedTypeName`, which can return `std.mem.Allocator.Error` (OOM). OOM silently degrades generated code (falls back to generic types like `message.StructReader` instead of specific types).
-
-```zig
-fn structTypeName(self: *StructGenerator, id: schema.Id) ?[]const u8 {
-    const node = self.getNode(id) orelse return null;
-    if (node.kind != .@"struct") return null;
-    return self.qualifiedTypeName(node, id) catch null;  // OOM swallowed
+if (push_result) |_| {} else |err| {
+    log.debug("framer push failed: {}", .{err});
+    self.framer.reset();
+    const cb = self.on_error.?;
+    self.on_message = null;
+    self.on_error = null;
+    cb(self, err);
+    return;
 }
 ```
 
-**Fix:** Change return to `!?[]const u8` and propagate the error with `try`.
+Same pattern for lines 165-171. For `onTransportClose`, capture the close callback into a local before calling the error callback.
 
 ---
 
-### M4: Silent OOM in `Generator.structTypeName`
+## Medium Severity (10)
 
-**File:** `src/capnpc-zig/generator.zig:1737`
+### M1: `debug.assert` bounds check in `U8ListBuilder.setAll` compiled out in release
 
-**Description:** Same pattern as M3 in the `Generator` struct's own `structTypeName`:
+**File:** `src/serialization/message/list_builders.zig`, line 62
+
+**Description:** Uses `std.debug.assert(self.elements_offset + data.len <= segment.items.len)` which is compiled out in `ReleaseFast`/`ReleaseSmall`, allowing OOB write. The function already returns `!void`.
+
+**Fix:** Replace with `try bounds.checkBoundsMut(segment.items, self.elements_offset, data.len)`. The `bounds` module is already imported.
+
+### M2: `recordResolvedAnswer` destroys old entry before fallible `put`
+
+**File:** `src/rpc/level1/peer_promises.zig`, lines 62-65
+
+**Description:** Unconditionally removes and frees the existing resolved answer, then attempts `put` which can fail with OOM. On failure, old entry is destroyed and new entry is never stored — question_id permanently loses its resolved answer.
+
+**Fix:** Use `getOrPut` (single allocation):
 ```zig
-return self.allocTypeDeclName(node) catch null;
+const entry = try resolved_answers.getOrPut(question_id);
+if (entry.found_existing) allocator.free(entry.value_ptr.frame);
+entry.value_ptr.* = .{ .frame = frame };
 ```
 
-**Fix:** Change return to `!?[]const u8` and propagate the error.
+### M3: `InboundCapTable.clone()` doesn't track cloned imports in CapTable
 
----
+**File:** `src/rpc/level0/cap_table.zig`, lines 248-257
 
-### M5: Missing errdefer for `copy` in `sendReturnResults`
+**Description:** `clone()` duplicates the entries array including `.imported` entries but does not call `table.noteImport()`. Safe today (only caller's deinit doesn't release), but API is a trap for future callers.
 
-**File:** `src/rpc/level3/peer.zig:1137-1139`
+**Fix:** Document the invariant on `clone()` that the clone must NOT be passed to `releaseInboundCaps`, or accept a `*CapTable` parameter and call `noteImport` for each cloned import.
 
-**Description:** A copy of the return frame is allocated, then passed to `recordResolvedAnswer`. If `recordResolvedAnswer` fails (OOM during `resolved_answers.put`), the `copy` is leaked.
+### M4: `Listener.close()` lacks idempotency guard
 
+**File:** `src/rpc/level2/runtime.zig`, lines 179-181
+
+**Description:** Unlike `Transport.close()` which has `if (self.close_requested) return;`, `Listener.close()` unconditionally submits an async close. Double-call causes double-close on the socket fd.
+
+**Fix:** Add `close_requested: bool = false` field and guard:
 ```zig
-const copy = try self.allocator.alloc(u8, bytes.len);
-std.mem.copyForwards(u8, copy, bytes);
-try self.recordResolvedAnswer(answer_id, copy);  // if fails, copy leaks
+pub fn close(self: *Listener) void {
+    if (self.close_requested) return;
+    self.close_requested = true;
+    self.socket.close(...);
+}
 ```
 
-**Fix:** Add `errdefer self.allocator.free(copy);` between the alloc and `recordResolvedAnswer`.
+### M5: `StreamState.handleReturn` underflows `in_flight` u32
 
----
+**File:** `src/rpc/level2/stream_state.zig`, line 25
 
-### M6: Missing errdefer for `copy` in `sendPrebuiltReturnFrame`
+**Description:** `self.in_flight -= 1` without checking if already 0. Debug-mode panic or silent wrap to `0xFFFF_FFFF` in release.
 
-**File:** `src/rpc/level3/peer.zig:1149-1151`
+**Fix:** Add `std.debug.assert(self.in_flight > 0)` or `if (self.in_flight == 0) @panic(...)` before the decrement.
 
-**Description:** Same pattern as M5:
+### M6: Duplicate question ID check misses pending promises
+
+**File:** `src/rpc/level3/peer.zig`, lines 1863-1870
+
+**Description:** Inbound call duplicate question ID check verifies `resolved_answers`, `send_results_to_yourself`, and `send_results_to_third_party`, but not `pending_promises` or `pending_export_promises`. A call targeting a still-pending promised answer could pass the duplicate check.
+
+**Fix:** Add checks for `pending_promises` and `pending_export_promises`, or maintain a `pending_answers` set keyed by inbound question_id.
+
+### M7: Inbound caps leaked if `queue_promise_export_call` / `queue_promised_call` fails
+
+**File:** `src/rpc/level3/peer/call/peer_call_orchestration.zig`, lines 168-224 and 256-305
+
+**Description:** `inbound_caps` is initialized, then passed to `queue_promise_export_call` via `try`. If it fails, `inbound_caps` is never deinited because the `defer inbound_caps.deinit()` on line 205 has not been reached. Same for `queue_promised_call` and `queue_export_promise` paths.
+
+**Fix:** Use ownership tracking:
 ```zig
-const copy = try self.allocator.alloc(u8, frame.len);
-std.mem.copyForwards(u8, copy, frame);
-try self.recordResolvedAnswer(ret.answer_id, copy);  // if fails, copy leaks
+var inbound_caps = try InboundCapsType.init(...);
+var inbound_caps_owned = true;
+defer if (inbound_caps_owned) inbound_caps.deinit();
+// ... in queue path:
+try queue_promise_export_call(peer, export_id, frame, inbound_caps);
+inbound_caps_owned = false;
+return;
 ```
 
-**Fix:** Add `errdefer self.allocator.free(copy);` between the alloc and `recordResolvedAnswer`.
+### M8: `_deferred` suffix on keyword-escaped VTable field names produces invalid Zig
 
----
+**File:** `src/capnpc-zig/generator.zig`, lines 727-728, 928, 961, 968
 
-### M7: Missing errdefer in `queueEmbargoedAccept` existing-key branch
+**Description:** When a method name is a Zig keyword (e.g., `type`), `escapeZigKeyword` produces `@"type"`, then `{s}_deferred` produces `@"type"_deferred` which is invalid Zig syntax.
 
-**File:** `src/rpc/level3/peer/peer_embargo_accepts.zig:20-28`
-
-**Description:** In the existing-key branch, `append` to the pending list succeeds but the subsequent `put` into `pending_accept_embargo_by_question` can fail with OOM. The appended entry is orphaned — `Finish` for the question won't find it, and it lingers until embargo release.
-
-**Fix:** Add errdefer to pop the last list element if `put` fails:
+**Fix:** Apply `_deferred` suffix BEFORE keyword escaping:
 ```zig
-try entry.value_ptr.append(allocator, .{...});
-errdefer _ = entry.value_ptr.pop();
-try pending_accept_embargo_by_question.put(answer_id, @constCast(entry.key_ptr.*));
+const deferred_field = try std.fmt.allocPrint(allocator, "{s}_deferred", .{method_field});
+const escaped_deferred = types.escapeZigKeyword(deferred_field);
 ```
 
----
+### M9: `PeerState.init` error path leaks Peer hash maps
 
-### M8: Socket fd leak in `Listener.init` on bind/listen failure
+**File:** `src/wasm/capnp_host_abi.zig`, lines 109-120 and 409-412
 
-**File:** `src/rpc/level2/runtime.zig:116-118`
+**Description:** If `enableHostCallBridge()` fails (OOM), control returns to `capnp_peer_new` which calls `allocator.destroy(state)` — freeing the raw memory but NOT calling `state.host.deinit()` or `state.host.peer.deinit()`, leaking ~20 hash maps.
 
-**Description:** `Listener.init` calls `xev.TCP.init(addr)` which creates a socket fd. If the subsequent `socket.bind(addr)` or `socket.listen(128)` fails, the socket fd is never closed.
-
-**Fix:** Add `errdefer std.posix.close(socketFd(socket));` after `TCP.init`.
-
----
-
-### M9: Import ref count leak on partial `InboundCapTable.init` failure
-
-**File:** `src/rpc/level0/cap_table.zig:193-198`
-
-**Description:** When `InboundCapTable.init` processes cap descriptors in a loop, `resolveDescriptor` calls `table.noteImport(id)` for each. If processing fails on entry N, the `noteImport` calls for entries 0..N-1 are NOT rolled back. The CapTable has permanently inflated import ref counts — subsequent `Release` messages won't fully release them.
-
-**Trigger:** A remote peer sends a message with a cap table where some descriptors are valid but a later one is malformed.
-
-**Fix:** Add an errdefer before the loop that iterates already-processed entries and calls `table.releaseImport` for any resolved as `.imported`.
-
----
-
-### M10: Unchecked `@intCast` of frame.len to u32 in WASM ABI
-
-**File:** `src/wasm/capnp_host_abi.zig:504, 772`
-
-**Description:** `const frame_len_u32: u32 = @intCast(frame.len)` with no prior bounds check. On wasm32, `usize` is `u32` so it's safe. On 64-bit native targets (test harness), frames exceeding 4GB would cause a runtime trap.
-
-**Fix:** Add `if (frame.len > std.math.maxInt(u32)) { setError(...); return 0; }` before the cast.
-
----
-
-### M11: Unaligned pointer access in WASM ABI write helpers
-
-**File:** `src/wasm/capnp_host_abi.zig:195-217`
-
-**Description:** `writeU32`, `writeU16`, `writeU64`, `writeAbiPtr` use `@ptrFromInt` to create typed pointers (`*u32`, `*u16`, etc.) from arbitrary `AbiPtr` values. If the host passes a misaligned address, dereferencing is undefined behavior.
-
-**Fix:** Use `*align(1) u32` etc:
+**Fix:** Add errdefer inside `PeerState.init`:
 ```zig
-const out: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(ptr)));
+fn init(self: *PeerState) !void {
+    self.outgoing_fba = std.heap.FixedBufferAllocator.init(&self.outgoing_storage);
+    self.host = HostPeer.initWithOutgoingAllocator(allocator, self.outgoing_fba.allocator());
+    errdefer self.host.deinit();
+    self.host.peer.disableThreadAffinity();
+    self.host.start(null, null);
+    try self.host.enableHostCallBridge();
+    // ...
+}
 ```
 
----
+### M10: `respondHostCallResults`/`respondHostCallException` don't validate question_id
 
-### M12: Auto-free of previous frame in `capnp_peer_pop_out_frame` creates dangling pointer
+**File:** `src/rpc/integration/host_peer.zig`, lines 147-174
 
-**File:** `src/wasm/capnp_host_abi.zig:480-484`
+**Description:** `respondHostCallReturnFrame` validates `pending_host_call_questions.contains(answer_id)` before sending, but `respondHostCallResults` and `respondHostCallException` do not. Allows responding to unknown question IDs (protocol violation) or double-responding.
 
-**Description:** When `capnp_peer_pop_out_frame` is called, `last_popped` from a previous call is immediately freed before popping the next frame. The host may still hold a pointer to that memory. The doc comment says the frame must be committed first, but there's no enforcement.
-
-**Fix:** Return an error if `last_popped` is non-null instead of silently freeing.
+**Fix:** Add `if (!self.pending_host_call_questions.contains(question_id)) return error.UnknownQuestion;` to both functions.
 
 ---
 
-### M13: Dead errdefer in `capnp_schema_manifest_json`
+## Low Severity (24)
 
-**File:** `src/wasm/capnp_host_abi.zig:995`
+### L1: Memory leak in `parseInterfaceNode` error path
+**File:** `src/serialization/request_reader.zig:268-271`
+Sequential allocs without errdefer in `error.InvalidPointer` handler.
 
-**Description:** `errdefer allocator.free(copy)` in a function returning `u32` (not `!u32`). The errdefer never fires. No actual leak because the catch block manually frees, but the dead code is misleading.
+### L2: No errdefer for kind-specific nodes in `parseNode`
+**File:** `src/serialization/request_reader.zig:156-163`
+Currently unexploitable (no failable code after switch), but fragile.
 
-**Fix:** Remove the dead errdefer.
+### L3: `resolveListPointer` does not bounds-check list content
+**File:** `src/serialization/message.zig:523-542`
+All current callers check, but function is unsafe-by-default for future callers.
 
----
+### L4: `createSegmentWithCapacity` panics on segment count overflow
+**File:** `src/serialization/message.zig:1646`
+`@intCast` panic if segments > u32 max (practically unreachable).
 
-### M14: Unchecked `@intCast` to u16 in schema validation
+### L5: `@intCast` panics in `toBytes`/`writeTo` on large segments
+**File:** `src/serialization/message.zig:2113,2133,2166,2172`
+Multiple unchecked casts to u32 for segment count and size.
 
-**File:** `src/serialization/schema_validation.zig:262-263`
+### L6: `estimateUnpackedSize` silently accepts truncated regular tags
+**File:** `src/serialization/message.zig:183-185`
+Overestimates size but `unpackPacked` correctly returns error. Wasted allocation only.
 
-**Description:** `@as(u16, @intCast(max_data_word + 1))` — `max_data_word` is computed from `byte_offset / 8` where `byte_offset` comes from field offset in the schema. A malformed schema with very large field offsets would overflow u16.
+### L7: `encodePayloadCaps` partial encoding failure leaves cap table inconsistent
+**File:** `src/rpc/level0/cap_table.zig:498-522`
+Documented as known limitation. Receiver-answer entries preserved on mid-loop error.
 
-**Fix:** Add validation that the computed word index fits in u16, returning `error.InvalidSchema` otherwise.
+### L8: Empty ArrayList left in map on `queuePendingCall` append failure
+**File:** `src/rpc/level1/peer_promises.zig:21-25`
+Harmless (cleaned up on map deinit) but could confuse `contains` checks.
 
----
+### L9: Missing bounds checks on struct/inline-composite pointer reads in `collectCapsFromPointer`
+**File:** `src/rpc/level0/cap_table.zig:407-415,438`
+List branch checks bounds but struct and inline-composite branches do not.
 
-## Low Severity (22)
+### L10: `makeCapabilityPointer` has unnecessary error union return type
+**File:** `src/rpc/level0/cap_table.zig:332-334`
+Function body cannot fail; all callers use `try` unnecessarily.
 
-### L1: Missing `assertThreadAffinity` on `Connection.deinit`
+### L11: `waitStreaming` silently overwrites prior drain callback
+**File:** `src/rpc/level2/stream_state.zig:38-45`
+Second caller's callback never fires. Add `debug.assert(self.on_drain == null)`.
 
-**File:** `src/rpc/level2/connection.zig:80`
+### L12: `queueWrite` allows writes to a closing transport
+**File:** `src/rpc/level2/transport_xev.zig:180`
+Wasted allocation + error churn. Check `close_requested` before allocating WriteOp.
 
-Modifies state (nulls callbacks, clears transport handlers) without asserting thread affinity. Inconsistent with `Peer.deinit` and `Runtime.deinit`.
+### L13: `Connection.deinit` bypasses transport socket close
+**File:** `src/rpc/level2/connection.zig:101-103`
+`abandonPendingWrites` zeros pending before `deinit` calls `drainPendingWrites`, so socket never closes through normal path if `close()` wasn't called first.
 
-**Fix:** Add `self.assertThreadAffinity();` as the first line.
+### L14: `onTransportClose` accesses `conn.on_close` after `on_error` may have destroyed connection
+**File:** `src/rpc/level2/connection.zig:192-201`
+Variant of H1. Capture close callback into local before calling error callback.
 
----
+### L15: `completeShutdown` could panic if `transport_ctx` is null
+**File:** `src/rpc/level3/peer.zig:745-758`
+`.?` unwrap on `transport_ctx` when `transport_close` is set. Use `orelse return`.
 
-### L2: Missing `assertThreadAffinity` on `Connection.start`
+### L16: Bootstrap export ref count not decremented on send failure
+**File:** `src/rpc/level3/peer/peer_control.zig:93-119`
+`note_export_ref` incremented before `send_frame`; no errdefer to decrement on failure.
 
-**File:** `src/rpc/level2/connection.zig:91`
+### L17: Release message sends original count rather than actual refs decremented
+**File:** `src/rpc/level3/peer/peer_cap_lifecycle.zig:5-24`
+If import had fewer refs than requested count, Release message over-counts.
 
-Sets callbacks and initiates transport I/O without asserting thread affinity.
+### L18: senderLoopback disembargo echo does not validate target existence
+**File:** `src/rpc/level3/peer/peer_control.zig:384-418`
+Validates payload non-null but discards values; doesn't check target is known.
 
-**Fix:** Add `self.assertThreadAffinity();` as the first line.
+### L19: `dataByteOffset` unchecked multiplication can panic on malicious schemas
+**File:** `src/capnpc-zig/struct_gen.zig:1472-1482`
+Inconsistent with `discriminantByteOffset` which uses `std.math.mul`. Use checked arithmetic.
 
----
+### L20: Memory leak of `literal` in `generateConst` on writer error
+**File:** `src/capnpc-zig/generator.zig:1180-1182`
+If `writer.print` fails, `literal` is never freed. Use `defer` instead of manual free.
 
-### L3: No null re-check on callbacks between `handleRead` loop iterations
+### L21: Pipeline type name uses unescaped identifier
+**File:** `src/capnpc-zig/generator.zig:1118`
+Theoretical only (PascalCase never matches Zig keywords currently).
 
-**File:** `src/rpc/level2/connection.zig:141-158`
+### L22: `_` (discard identifier) not handled in keyword escaping
+**File:** `src/capnpc-zig/types.zig:5-24`
+All-separator input produces `_` which is invalid as a binding name.
 
-`on_message` / `on_error` are checked at the top, but inside the `while(true)` loop, a successful `on_message` callback could set them to null. Next iteration's `.?` unwrap would panic.
+### L23: WASM `asSlice` no `ptr + len` overflow check on wasm32
+**File:** `src/wasm/capnp_host_abi.zig:194-199`
+WASM runtime traps instead of graceful error on address-space wrap.
 
-**Fix:** Re-check for null at the top of the while loop.
-
----
-
-### L4: Asymmetric error handling in `handleRead`
-
-**File:** `src/rpc/level2/connection.zig:154-157`
-
-Framing errors reset the framer and null callbacks; message handler errors do not. If the handler error is caused by corrupt data, subsequent buffered frames from the same read will still be delivered.
-
-**Fix:** Design decision — document current behavior or add framer reset on message error.
-
----
-
-### L5: Missing `assertThreadAffinity` on `Connection.isClosing`
-
-**File:** `src/rpc/level2/connection.zig:119`
-
-Reads transport state without asserting thread affinity. The flags are set without synchronization, so reading from a non-owner thread is a data race.
-
-**Fix:** Add `self.assertThreadAffinity();`.
-
----
-
-### L6: No `deinit`/synchronous cleanup path for `Listener`
-
-**File:** `src/rpc/level2/runtime.zig` — `Listener` struct
-
-`Listener` has `close()` (async) but no `deinit` for synchronous cleanup. If the event loop exits before close completion fires, the socket fd leaks.
-
-**Fix:** Add a `deinit` method that synchronously closes the socket fd, or document the requirement.
-
----
-
-### L7: `Connection.deinit` does not destroy the heap-allocated Connection itself
-
-**File:** `src/rpc/level2/connection.zig:80-89`
-
-`deinit` cleans up internal state but doesn't free the `Connection` object. Callers must remember both `deinit()` and `allocator.destroy(conn)`.
-
-**Fix:** Document the two-step cleanup requirement, or provide a `destroy` method.
-
----
-
-### L8: Missing bounds check in `U8ListBuilder.setAll`
-
-**File:** `src/serialization/message/list_builders.zig:59-64`
-
-Checks `data.len == self.element_count` but does not validate `elements_offset + data.len` is within segment bounds before slicing. Under normal builder operation this is always consistent, but a builder bug could cause OOB access.
-
-**Fix:** Add explicit bounds check before slicing.
+### L24: `capnp_peer_free_host_call_frame` has no double-free protection
+**File:** `src/wasm/capnp_host_abi.zig:830-854`
+No tracking of outstanding host-call frames (unlike outgoing frame `last_popped` guard).
 
 ---
 
-### L9: `encodeOffsetWords` does not validate offset fits in 30 bits
+## Test Coverage Gaps (9)
 
-**File:** `src/serialization/message.zig:20-26`
+### T1 (High): Peer shutdown callback/drain lifecycle
+**Area:** `src/rpc/level3/peer.zig:734-758`
+No tests verify: callback fires when questions drain, transport close on completion, idempotency, immediate callback with zero outstanding questions.
 
-Accepts any `i32` but Cap'n Proto pointer offsets are 30-bit signed. Values outside range produce corrupt pointers when shifted by `makeStructPointer`/`makeListPointer`.
+### T2 (High): `clone_any_pointer` recursion limit and list cloning
+**Area:** `src/serialization/message/clone_any_pointer.zig`
+No tests for: `RecursionLimitExceeded` error, inline composite list cloning, pointer list cloning, capability pointer cloning, null pointer, invalid pointer type.
 
-**Fix:** Add range check: `if (offset_words < -(1 << 29) or offset_words >= (1 << 29)) return error.OffsetOutOfRange;`
+### T3 (Medium): `discriminantByteOffset` overflow edge cases
+**Area:** `src/capnpc-zig/struct_gen.zig:51-53`
+No tests exercise the `std.math.mul` overflow check.
 
----
+### T4 (Medium): Direct `unpackPacked`/`estimateUnpackedSize` unit tests
+**Area:** `src/serialization/message.zig`
+Zero-tag runs, literal-tag runs, truncated input, estimation accuracy not directly tested.
 
-### L10: `discriminant_offset * 2` can overflow u32 with malicious schema
+### T5 (Medium): Schema validation RecursionGuard
+**Area:** `src/serialization/schema_validation.zig`
+No tests for cycle detection, depth limit, `enterViaPointer` reset, validation options.
 
-**File:** `src/capnpc-zig/struct_gen.zig:117, 175, 518, 1533`
+### T6 (Medium): `importPathFromCapnpName` edge cases
+**Area:** `src/capnpc-zig/generator.zig:1323-1330`
+No tests for: name without leading slash, name without `.capnp` extension, empty/minimal names.
 
-`discriminant_offset` is u32 from wire format. `* 2` overflow panics in safe mode. Valid schemas are bounded by `data_word_count * 4` (u16*4), but codegen doesn't validate.
+### T7 (Low): Peer `on_error` callback integration
+**Area:** `src/rpc/level3/peer.zig:316`
+No peer-level tests verify `on_error` fires on transport error or that null `on_error` is safe.
 
-**Fix:** Use overflow-checked arithmetic or validate constraint.
+### T8 (Low): WASM ABI double-init/reinit safety
+**Area:** `src/wasm/capnp_host_abi.zig`
+No tests for double-init or deinit-then-reinit lifecycle.
 
----
-
-### L11: Empty identifier from all-separator names produces invalid Zig
-
-**File:** `src/capnpc-zig/types.zig:34-53`
-
-`normalizeIdentifier` on input like `"___"` produces empty string, leading to invalid generated code.
-
-**Fix:** Return error on empty result.
-
----
-
-### L12: `@constCast` in `lookupTypePrefix` is sound but fragile
-
-**File:** `src/capnpc-zig/generator.zig:1410-1414`
-
-The callback casts `*const anyopaque` to `*Generator` via `@constCast`. Currently sound but fragile.
-
-**Fix:** Change callback signature to `?*anyopaque` (mutable).
-
----
-
-### L13: `catch continue` silently skips interface fields on OOM
-
-**File:** `src/capnpc-zig/generator.zig:1272`
-
-```zig
-const iface_name = self.qualifiedTypeName(iface_id) catch continue;
-```
-
-Silently skips interface fields if OOM occurs, omitting pipeline types from generated code.
-
-**Fix:** Propagate error with `try`.
+### T9 (Low): `readBoolStrict` not tested
+**Area:** `src/serialization/message.zig:1134`
+Safety-critical strict variant used by protocol layer has no direct tests.
 
 ---
 
-### L14: Recursive `parseType` without depth limit
-
-**File:** `src/serialization/request_reader.zig:545-577`
-
-Deeply nested `List(List(List(...)))` types could cause stack overflow. No recursion depth limit.
-
-**Fix:** Add depth counter parameter, return error at depth > 64.
-
----
-
-### L15: `queuePendingCall` leaks `InboundCapTable` on OOM
-
-**File:** `src/rpc/level1/peer_promises.zig:5-23`
-
-`inbound_caps` is passed by value. If frame copy or list append fails, the passed-in cap table's backing arrays leak.
-
-**Fix:** Add `errdefer inbound_caps.deinit();` at the top of `queuePendingCall`.
-
----
-
-### L16: `releaseAllImports` may access freed transport context
-
-**File:** `src/rpc/level3/peer.zig:595-617`
-
-In `peer.deinit()`, `releaseAllImports()` calls `sendFrame` which may access `transport_ctx`. If the connection was destroyed before peer deinit, this is use-after-free. Errors are caught and logged.
-
-**Fix:** Check `transport_send != null` before iterating imports, or document that `detachTransport` must be called first.
-
----
-
-### L17: Missing bounds validation in `collectCapsFromPointer` for pointer lists
-
-**File:** `src/rpc/level0/cap_table.zig:410-417`
-
-Reads raw bytes from segments at computed offsets without bounds checking. Operates on locally-built messages, so practical risk is low.
-
-**Fix:** Add bounds check: `if (pos + 8 > segment.len) return error.OutOfBounds;`
-
----
-
-### L18: `encodePayloadCaps` removes receiver_answers before caller confirms send
-
-**File:** `src/rpc/level0/cap_table.zig:498-504`
-
-Receiver-answer entries are permanently removed after encoding. If the caller encounters an error after encoding but before sending, the entries are lost.
-
-**Fix:** Defer cleanup to caller after send confirmation, or document as known limitation.
-
----
-
-### L19: Transport `deinit` does not cancel pending read completions
-
-**File:** `src/rpc/level2/transport_xev.zig:105-113`
-
-After `deinit`, a pending xev read completion may fire with a dangling pointer to the transport.
-
-**Fix:** Close the socket before freeing the transport, or document that the event loop must be drained before `deinit`.
-
----
-
-### L20: `capnp_error_take` partial-write can lose original error
-
-**File:** `src/wasm/capnp_host_abi.zig:370-381`
-
-Sequential writes to output locations — if first succeeds but second fails, the original error is overwritten with a pointer error.
-
-**Fix:** Validate all output pointers before performing any writes.
-
----
-
-### L21: `capnp_peer_set_bootstrap_stub` silently replaces host call bridge
-
-**File:** `src/wasm/capnp_host_abi.zig:543-564`
-
-Replaces the host call bridge bootstrap without notification. The old export entry leaks and `host_bridge_enabled` remains true.
-
-**Fix:** Document behavior, or error/warn when replacing active host call bridge.
-
----
-
-### L22: Inconsistent keyword escaping for generated method names
-
-**File:** `src/capnpc-zig/generator.zig:772`
-
-Method names converted to PascalCase via `identToZigTypeName` don't apply keyword escaping. Currently safe because all Zig keywords are lowercase, but inconsistent with enum variant escaping.
-
-**Fix:** Apply `escapeZigKeyword` for consistency and future-proofing.
-
----
-
-## Low Severity — Investigation Items (5)
-
-These are `@intCast` casts that are practically safe due to domain constraints but lack explicit guards:
-
-| # | File | Line | Description |
-|---|------|------|-------------|
-| I1 | `cap_table.zig` | 63-65 | `totalEntries()` casts 3 HashMap counts to u32 and adds; bounded by u32 ID space |
-| I2 | `protocol.zig` | 684, 686 | `@intCast(ops.len)` for PromisedAnswerOps; practically always tiny |
-| I3 | `message.zig` | 1605 | `@intCast(segments.items.len)` to u32; segments rarely exceed handful |
-| I4 | `message.zig` | 2092, 2131 | `@intCast(segment.items.len / 8)` to u32; would need 32 GiB segment |
-| I5 | `schema_validation.zig` | 262-263 | `@intCast(max_data_word + 1)` to u16; valid schemas can't exceed |
-
----
-
-## Test Coverage Gaps (7)
-
-### T1: `InboundCapTable.clone()` has zero test coverage (Critical)
-
-No test calls `.clone()` on an `InboundCapTable`. The method has an errdefer pattern and creates deep copies — both aspects need direct testing. A subtle bug (shallow copy, wrong errdefer) would cause use-after-free in the RPC layer.
-
----
-
-### T2: No adversarial/malformed packed format fuzzing (Critical)
-
-The fuzz test at `message_test.zig:1057` feeds random bytes to `Message.init()` (raw format) only. No equivalent test for `Message.initPacked()`. The packed decoder's tag-byte processing could have edge cases that only surface with adversarial input.
-
----
-
-### T3: `bounds.zig` overflow-safe functions have no direct unit tests (High)
-
-`checkBounds`, `checkBoundsMut`, `checkOffset`, `checkOffsetMut`, `checkListContentBounds` are only tested indirectly. Boundary values (`maxInt(u32)`, zero-length segments) are never exercised.
-
----
-
-### T4: `resolveInlineCompositeList` far/double-far pointer paths untested (High)
-
-Multi-segment messages with struct lists spanning segments require far pointer resolution. The double-far Layout B path in `resolveInlineCompositeList` has no test coverage.
-
----
-
-### T5: Double-attach panic guards untested (Medium)
-
-`attachConnection` and `attachTransport` panic guards (added in previous round) have no test verifying the panic fires on double-attach.
-
----
-
-### T6: `TextListReader.getStrict()` and `PointerListReader.getTextStrict()` untested (Medium)
-
-UTF-8 validation on individual list elements is never tested. Distinct code path from `readTextStrict` on struct fields.
-
----
-
-### T7: `createConnection` errdefer path untested (Low)
-
-The errdefer in `Listener.createConnection` (added in previous round) is never exercised. A FailingAllocator test would verify no leak on `Connection.init()` failure.
-
----
-
-## Previously Fixed (Round 1)
-
-The following issues were identified and fixed in the previous assessment round. All 511 tests pass:
-
-| ID | Severity | Fix |
-|---|---|---|
-| C1 | Critical | ForwardCallContext UAF — clone InboundCapTable by value |
-| C2 | Critical | WASM dead errdefer — moved cleanup to catch block |
-| C3 | Critical | WASM pointer truncation — use ptrToAbi helper |
-| H2 | High | catch unreachable confirmed correct — added comments |
-| H3 | High | Silent catch in generator — propagated errors |
-| H5 | High | errdefer gap in OutboundCapTable.indexFor — added errdefer |
-| H6 | High | Embargo key duplication — single owner, borrower pattern |
-| H7 | High | 13 DecodedMessage methods changed to `*const` |
-| H8 | High | Connection init errdefer — extracted createConnection helper |
-| M1 | Medium | Thread affinity for Connection — added assertions |
-| M2 | Medium | Double-attach panic guards added |
-| M4 | Medium | Silent catch in releaseAllImports replaced with log.debug |
-| M5 | Medium | getStructList bug — use resolveInlineCompositeList |
-| M10-12 | Medium | Dead code removal, bounds overflow protection |
+## Notes for Implementation
+
+- H1 and L14 are the same root cause (callback-may-destroy-self pattern in connection.zig). Fix H1 comprehensively to also cover L14.
+- M1 is confirmed by both the serialization and error-handling assessment agents independently.
+- M7 (inbound caps leak) was initially flagged as a false positive by the memory lifecycle agent but confirmed as real by the RPC L3 agent — the `queuePendingCall` errdefer covers the *inner* function but not the *caller's* error path before the defer on line 205 is reached.
+- Many Low findings are defense-in-depth improvements (debug asserts, documentation, practically-unreachable overflow checks). Prioritize M and H fixes.

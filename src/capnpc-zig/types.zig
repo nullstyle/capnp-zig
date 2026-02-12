@@ -51,9 +51,14 @@ fn normalizeIdentifier(allocator: std.mem.Allocator, name: []const u8, capitaliz
     }
 
     // If all characters were separators, the result is empty which would
-    // produce an invalid Zig identifier.  Fall back to "_".
+    // produce an invalid Zig identifier. Fall back to a stable non-discard
+    // identifier.
     if (result.items.len == 0) {
-        try result.append(allocator, '_');
+        if (capitalize_first) {
+            try result.appendSlice(allocator, "Unnamed");
+        } else {
+            try result.appendSlice(allocator, "_unnamed");
+        }
     }
 
     return result.toOwnedSlice(allocator);
@@ -257,28 +262,28 @@ test "identToZigValueName converts underscores to camelCase" {
     try std.testing.expectEqualStrings("alreadyCamel", result3);
 }
 
-test "identToZigValueName returns underscore for all-separator input" {
+test "identToZigValueName returns stable name for all-separator input" {
     const alloc = std.testing.allocator;
 
     const result1 = try identToZigValueName(alloc, "___");
     defer alloc.free(result1);
-    try std.testing.expectEqualStrings("_", result1);
+    try std.testing.expectEqualStrings("_unnamed", result1);
 
     const result2 = try identToZigValueName(alloc, "$");
     defer alloc.free(result2);
-    try std.testing.expectEqualStrings("_", result2);
+    try std.testing.expectEqualStrings("_unnamed", result2);
 
     const result3 = try identToZigValueName(alloc, "_$_");
     defer alloc.free(result3);
-    try std.testing.expectEqualStrings("_", result3);
+    try std.testing.expectEqualStrings("_unnamed", result3);
 }
 
-test "identToZigTypeName returns underscore for all-separator input" {
+test "identToZigTypeName returns stable name for all-separator input" {
     const alloc = std.testing.allocator;
 
     const result = try identToZigTypeName(alloc, "___");
     defer alloc.free(result);
-    try std.testing.expectEqualStrings("_", result);
+    try std.testing.expectEqualStrings("Unnamed", result);
 }
 
 test "identToZigValueName handles dollar signs" {

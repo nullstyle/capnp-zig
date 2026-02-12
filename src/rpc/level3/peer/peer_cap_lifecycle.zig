@@ -7,20 +7,38 @@ pub fn releaseImport(
     peer: *PeerType,
     import_id: u32,
     count: u32,
+    get_import_ref_count: *const fn (*PeerType, u32) u32,
     release_import_ref: *const fn (*PeerType, u32) bool,
     release_resolved_import: *const fn (*PeerType, u32) anyerror!void,
     send_release: *const fn (*PeerType, u32, u32) anyerror!void,
 ) !void {
     if (count == 0) return;
     var remaining = count;
+    var released: u32 = 0;
     var removed = false;
     while (remaining > 0) : (remaining -= 1) {
+        if (get_import_ref_count(peer, import_id) == 0) break;
+        released += 1;
         if (release_import_ref(peer, import_id)) removed = true;
     }
+    if (released == 0) return;
     if (removed) {
         try release_resolved_import(peer, import_id);
     }
-    try send_release(peer, import_id, count);
+    try send_release(peer, import_id, released);
+}
+
+pub fn importRefCountForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) u32 {
+    const import_entry = peer.caps.imports.get(import_id) orelse return 0;
+    return import_entry.ref_count;
+}
+
+pub fn importRefCountForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32) u32 {
+    return struct {
+        fn call(peer: *PeerType, import_id: u32) u32 {
+            return importRefCountForPeer(PeerType, peer, import_id);
+        }
+    }.call;
 }
 
 pub fn releaseImportRefForPeer(comptime PeerType: type, peer: *PeerType, import_id: u32) bool {
@@ -184,12 +202,19 @@ test "peer_cap_lifecycle releaseImport sends release and only releases resolved 
         send_release_calls: usize = 0,
         last_send_import: u32 = 0,
         last_send_count: u32 = 0,
-        remove_on_call: usize = 2,
+        ref_count: u32 = 3,
+
+        fn getRefCount(state: *@This(), import_id: u32) u32 {
+            _ = import_id;
+            return state.ref_count;
+        }
 
         fn releaseImportRef(state: *@This(), import_id: u32) bool {
             _ = import_id;
             state.release_import_calls += 1;
-            return state.release_import_calls == state.remove_on_call;
+            if (state.ref_count == 0) return false;
+            state.ref_count -= 1;
+            return state.ref_count == 0;
         }
 
         fn releaseResolved(state: *@This(), promise_id: u32) !void {
@@ -210,6 +235,7 @@ test "peer_cap_lifecycle releaseImport sends release and only releases resolved 
         &state,
         55,
         3,
+        State.getRefCount,
         State.releaseImportRef,
         State.releaseResolved,
         State.sendRelease,
@@ -219,6 +245,50 @@ test "peer_cap_lifecycle releaseImport sends release and only releases resolved 
     try std.testing.expectEqual(@as(usize, 1), state.send_release_calls);
     try std.testing.expectEqual(@as(u32, 55), state.last_send_import);
     try std.testing.expectEqual(@as(u32, 3), state.last_send_count);
+}
+
+test "peer_cap_lifecycle releaseImport only sends decremented ref count" {
+    const State = struct {
+        release_import_calls: usize = 0,
+        send_release_calls: usize = 0,
+        last_send_count: u32 = 0,
+        ref_count: u32 = 2,
+
+        fn getRefCount(state: *@This(), import_id: u32) u32 {
+            _ = import_id;
+            return state.ref_count;
+        }
+
+        fn releaseImportRef(state: *@This(), import_id: u32) bool {
+            _ = import_id;
+            state.release_import_calls += 1;
+            if (state.ref_count == 0) return false;
+            state.ref_count -= 1;
+            return state.ref_count == 0;
+        }
+
+        fn releaseResolved(_: *@This(), _: u32) !void {}
+
+        fn sendRelease(state: *@This(), _: u32, count: u32) !void {
+            state.send_release_calls += 1;
+            state.last_send_count = count;
+        }
+    };
+
+    var state = State{};
+    try releaseImport(
+        State,
+        &state,
+        42,
+        5,
+        State.getRefCount,
+        State.releaseImportRef,
+        State.releaseResolved,
+        State.sendRelease,
+    );
+    try std.testing.expectEqual(@as(usize, 2), state.release_import_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.send_release_calls);
+    try std.testing.expectEqual(@as(u32, 2), state.last_send_count);
 }
 
 test "peer_cap_lifecycle releaseImportRefForPeerFn delegates to peer cap table" {

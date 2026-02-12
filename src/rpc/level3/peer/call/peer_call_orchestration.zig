@@ -180,6 +180,17 @@ pub fn handleCallImportedTargetForPeer(
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+    var inbound_caps_owned = true;
+    var release_caps = false;
+    defer if (inbound_caps_owned) {
+        if (release_caps) {
+            release_inbound_caps(peer, &inbound_caps) catch |err| {
+                report_nonfatal_error(peer, err);
+            };
+        }
+        inbound_caps.deinit();
+    };
+
     const exported_entry = peer.exports.getEntry(export_id);
     const target_plan = peer_call_targets.planImportedTarget(
         exported_entry != null,
@@ -190,22 +201,20 @@ pub fn handleCallImportedTargetForPeer(
 
     switch (target_plan) {
         .unknown_capability => {
-            inbound_caps.deinit();
+            release_caps = true;
             try send_return_exception(peer, call.question_id, "unknown capability");
             return;
         },
         .queue_promise_export => {
             // Queue ownership transfers inbound caps and frame bytes to pending state.
             try queue_promise_export_call(peer, export_id, frame, inbound_caps);
+            inbound_caps_owned = false;
             return;
         },
         else => {},
     }
 
-    defer inbound_caps.deinit();
-    defer release_inbound_caps(peer, &inbound_caps) catch |err| {
-        report_nonfatal_error(peer, err);
-    };
+    release_caps = true;
 
     const handler = if (exported_entry) |entry| entry.value_ptr.handler else null;
     try dispatchImportedTargetPlan(
@@ -270,6 +279,17 @@ pub fn handleCallPromisedTargetForPeer(
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
 ) !void {
     var inbound_caps = try InboundCapsType.init(peer.allocator, call.params.cap_table, &peer.caps);
+    var inbound_caps_owned = true;
+    var release_caps = false;
+    defer if (inbound_caps_owned) {
+        if (release_caps) {
+            release_inbound_caps(peer, &inbound_caps) catch |err| {
+                report_nonfatal_error(peer, err);
+            };
+        }
+        inbound_caps.deinit();
+    };
+
     const target_plan = peer_call_targets.planPromisedTarget(
         PeerType,
         peer,
@@ -282,23 +302,22 @@ pub fn handleCallPromisedTargetForPeer(
         .queue_promised_call => {
             // Queue ownership transfers inbound caps and frame bytes to pending state.
             try queue_promised_call(peer, promised.question_id, frame, inbound_caps);
+            inbound_caps_owned = false;
             return;
         },
         .queue_export_promise => |export_id| {
             // Queue ownership transfers inbound caps and frame bytes to pending state.
             try queue_promise_export_call(peer, export_id, frame, inbound_caps);
+            inbound_caps_owned = false;
             return;
         },
         .send_exception => |err| {
-            inbound_caps.deinit();
+            release_caps = true;
             try send_return_exception(peer, call.question_id, @errorName(err));
             return;
         },
         .handle_resolved => |resolved| {
-            defer inbound_caps.deinit();
-            defer release_inbound_caps(peer, &inbound_caps) catch |err| {
-                report_nonfatal_error(peer, err);
-            };
+            release_caps = true;
             try handle_resolved_call(peer, call, &inbound_caps, resolved);
         },
     }

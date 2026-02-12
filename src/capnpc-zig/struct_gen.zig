@@ -220,7 +220,7 @@ pub const StructGenerator = struct {
                 \\
             ),
             .bool => {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
                 if (slot.default_value) |default_value| {
                     const default_bool = self.defaultBool(default_value);
@@ -245,7 +245,7 @@ pub const StructGenerator = struct {
             .float64,
             => {
                 const read_fn = self.readFnForType(slot.type);
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 if (slot.default_value) |default_value| {
                     if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                         defer self.allocator.free(literal);
@@ -264,7 +264,7 @@ pub const StructGenerator = struct {
                 }
             },
             .@"enum" => |enum_info| {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
 
@@ -555,7 +555,7 @@ pub const StructGenerator = struct {
                 \\
             ),
             .bool => {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
                 if (slot.default_value) |default_value| {
                     const default_bool = self.defaultBool(default_value);
@@ -580,7 +580,7 @@ pub const StructGenerator = struct {
             .float64,
             => {
                 const read_fn = self.readFnForType(slot.type);
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 if (slot.default_value) |default_value| {
                     if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                         defer self.allocator.free(literal);
@@ -599,7 +599,7 @@ pub const StructGenerator = struct {
                 }
             },
             .@"enum" => |enum_info| {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 if (slot.default_value) |default_value| {
@@ -803,7 +803,7 @@ pub const StructGenerator = struct {
             .int32, .uint32, .float32 => try self.writeNumericGroupSetterBody(slot, "writeU32", "u32", writer),
             .int64, .uint64, .float64 => try self.writeNumericGroupSetterBody(slot, "writeU64", "u64", writer),
             .@"enum" => |enum_info| {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
@@ -1098,7 +1098,7 @@ pub const StructGenerator = struct {
             .int32, .uint32, .float32 => try self.writeNumericSetterBody(slot, "writeU32", "u32", writer),
             .int64, .uint64, .float64 => try self.writeNumericSetterBody(slot, "writeU64", "u64", writer),
             .@"enum" => |enum_info| {
-                const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
@@ -1469,14 +1469,14 @@ pub const StructGenerator = struct {
         };
     }
 
-    fn dataByteOffset(self: *StructGenerator, typ: schema.Type, offset: u32) u32 {
+    fn dataByteOffset(self: *StructGenerator, typ: schema.Type, offset: u32) error{InvalidFieldOffset}!u32 {
         _ = self;
         return switch (typ) {
             .bool => offset / 8,
             .int8, .uint8 => offset,
-            .int16, .uint16, .@"enum" => offset * 2,
-            .int32, .uint32, .float32 => offset * 4,
-            .int64, .uint64, .float64 => offset * 8,
+            .int16, .uint16, .@"enum" => std.math.mul(u32, offset, 2) catch return error.InvalidFieldOffset,
+            .int32, .uint32, .float32 => std.math.mul(u32, offset, 4) catch return error.InvalidFieldOffset,
+            .int64, .uint64, .float64 => std.math.mul(u32, offset, 8) catch return error.InvalidFieldOffset,
             else => offset,
         };
     }
@@ -1636,7 +1636,7 @@ pub const StructGenerator = struct {
         cast_width: []const u8,
         writer: anytype,
     ) !void {
-        const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+        const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
         if (slot.default_value) |default_value| {
             if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                 defer self.allocator.free(literal);
@@ -1707,7 +1707,7 @@ pub const StructGenerator = struct {
         cast_width: []const u8,
         writer: anytype,
     ) !void {
-        const byte_offset = self.dataByteOffset(slot.type, slot.offset);
+        const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
         if (slot.default_value) |default_value| {
             if (try self.defaultLiteral(slot.type, default_value)) |literal| {
                 defer self.allocator.free(literal);
@@ -1755,25 +1755,38 @@ test "StructGenerator.dataByteOffset computes correct offsets" {
     var sg = StructGenerator.init(alloc);
 
     // bool: offset / 8
-    try std.testing.expectEqual(@as(u32, 1), sg.dataByteOffset(.bool, 8));
-    try std.testing.expectEqual(@as(u32, 0), sg.dataByteOffset(.bool, 0));
-    try std.testing.expectEqual(@as(u32, 0), sg.dataByteOffset(.bool, 7));
+    try std.testing.expectEqual(@as(u32, 1), try sg.dataByteOffset(.bool, 8));
+    try std.testing.expectEqual(@as(u32, 0), try sg.dataByteOffset(.bool, 0));
+    try std.testing.expectEqual(@as(u32, 0), try sg.dataByteOffset(.bool, 7));
 
     // u8/i8: offset * 1
-    try std.testing.expectEqual(@as(u32, 3), sg.dataByteOffset(.uint8, 3));
-    try std.testing.expectEqual(@as(u32, 0), sg.dataByteOffset(.int8, 0));
+    try std.testing.expectEqual(@as(u32, 3), try sg.dataByteOffset(.uint8, 3));
+    try std.testing.expectEqual(@as(u32, 0), try sg.dataByteOffset(.int8, 0));
 
     // u16/i16/enum: offset * 2
-    try std.testing.expectEqual(@as(u32, 4), sg.dataByteOffset(.uint16, 2));
-    try std.testing.expectEqual(@as(u32, 6), sg.dataByteOffset(.int16, 3));
+    try std.testing.expectEqual(@as(u32, 4), try sg.dataByteOffset(.uint16, 2));
+    try std.testing.expectEqual(@as(u32, 6), try sg.dataByteOffset(.int16, 3));
 
     // u32/i32/f32: offset * 4
-    try std.testing.expectEqual(@as(u32, 8), sg.dataByteOffset(.uint32, 2));
-    try std.testing.expectEqual(@as(u32, 4), sg.dataByteOffset(.float32, 1));
+    try std.testing.expectEqual(@as(u32, 8), try sg.dataByteOffset(.uint32, 2));
+    try std.testing.expectEqual(@as(u32, 4), try sg.dataByteOffset(.float32, 1));
 
     // u64/i64/f64: offset * 8
-    try std.testing.expectEqual(@as(u32, 8), sg.dataByteOffset(.uint64, 1));
-    try std.testing.expectEqual(@as(u32, 16), sg.dataByteOffset(.float64, 2));
+    try std.testing.expectEqual(@as(u32, 8), try sg.dataByteOffset(.uint64, 1));
+    try std.testing.expectEqual(@as(u32, 16), try sg.dataByteOffset(.float64, 2));
+}
+
+test "StructGenerator.discriminantByteOffset rejects overflow" {
+    try std.testing.expectError(
+        error.InvalidDiscriminantOffset,
+        StructGenerator.discriminantByteOffset(std.math.maxInt(u32)),
+    );
+}
+
+test "StructGenerator.dataByteOffset rejects overflow" {
+    const alloc = std.testing.allocator;
+    var sg = StructGenerator.init(alloc);
+    try std.testing.expectError(error.InvalidFieldOffset, sg.dataByteOffset(.float64, std.math.maxInt(u32)));
 }
 
 test "StructGenerator.readFnForType maps types to reader methods" {

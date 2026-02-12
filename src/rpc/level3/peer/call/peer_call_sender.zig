@@ -10,6 +10,7 @@ pub fn sendCallToImport(
     caps: *cap_table.CapTable,
     outbound_ctx: ?*anyopaque,
     on_outbound_cap: ?cap_table.CapEntryCallback,
+    on_outbound_cap_rollback: ?cap_table.CapEntryRollbackCallback,
     peer: *PeerType,
     target_id: u32,
     interface_id: u64,
@@ -34,7 +35,7 @@ pub fn sendCallToImport(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap);
+    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
     try send_builder(peer, &builder);
     return question_id;
 }
@@ -48,6 +49,7 @@ pub fn sendCallToExport(
     caps: *cap_table.CapTable,
     outbound_ctx: ?*anyopaque,
     on_outbound_cap: ?cap_table.CapEntryCallback,
+    on_outbound_cap_rollback: ?cap_table.CapEntryRollbackCallback,
     peer: *PeerType,
     questions: *std.AutoHashMap(u32, QuestionType),
     loopback_questions: *std.AutoHashMap(u32, void),
@@ -79,7 +81,7 @@ pub fn sendCallToExport(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap);
+    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
     const bytes = try builder.finish();
     defer allocator.free(bytes);
     try handle_frame(peer, bytes);
@@ -94,6 +96,7 @@ pub fn sendCallPromised(
     caps: *cap_table.CapTable,
     outbound_ctx: ?*anyopaque,
     on_outbound_cap: ?cap_table.CapEntryCallback,
+    on_outbound_cap_rollback: ?cap_table.CapEntryRollbackCallback,
     peer: *PeerType,
     promised: protocol.PromisedAnswer,
     interface_id: u64,
@@ -118,7 +121,7 @@ pub fn sendCallPromised(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap);
+    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
     try send_builder(peer, &builder);
     return question_id;
 }
@@ -134,6 +137,7 @@ pub fn sendCallPromisedWithOps(
     caps: *cap_table.CapTable,
     outbound_ctx: ?*anyopaque,
     on_outbound_cap: ?cap_table.CapEntryCallback,
+    on_outbound_cap_rollback: ?cap_table.CapEntryRollbackCallback,
     peer: *PeerType,
     question_id_target: u32,
     ops: []const protocol.PromisedAnswerOp,
@@ -159,7 +163,7 @@ pub fn sendCallPromisedWithOps(
         try build_fn(ctx, &call);
     }
 
-    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap);
+    try cap_table.encodeCallPayloadCaps(caps, &call, outbound_ctx, on_outbound_cap, on_outbound_cap_rollback);
     try send_builder(peer, &builder);
     return new_question_id;
 }
@@ -223,6 +227,7 @@ test "peer_call_sender sendCallToImport allocates question and encodes imported 
         QuestionCallback,
         state.allocator,
         &state.caps,
+        null,
         null,
         null,
         &state,
@@ -308,6 +313,7 @@ test "peer_call_sender sendCallToExport marks loopback question and dispatches f
         QuestionCallback,
         state.allocator,
         &state.caps,
+        null,
         null,
         null,
         &state,

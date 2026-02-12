@@ -22,6 +22,7 @@ pub const StreamState = struct {
     pub fn handleReturn(self: *StreamState, is_exception: bool) void {
         if (is_exception and self.stream_error == null)
             self.stream_error = error.StreamingCallFailed;
+        std.debug.assert(self.in_flight > 0);
         self.in_flight -= 1;
         if (self.in_flight == 0) {
             if (self.on_drain) |cb| {
@@ -39,6 +40,7 @@ pub const StreamState = struct {
         if (self.in_flight == 0) {
             callback(ctx, self.stream_error);
         } else {
+            std.debug.assert(self.on_drain == null);
             self.on_drain = callback;
             self.on_drain_ctx = ctx;
         }

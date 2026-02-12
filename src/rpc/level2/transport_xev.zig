@@ -183,6 +183,8 @@ pub const Transport = struct {
         ctx: ?*anyopaque,
         cb: ?*const fn (ctx: *anyopaque, err: ?TransportError) void,
     ) !void {
+        if (self.isClosing()) return error.TransportClosing;
+
         var op = try self.allocator.create(WriteOp);
         errdefer self.allocator.destroy(op);
 

@@ -116,6 +116,7 @@ pub const Listener = struct {
     socket: xev.TCP,
     accept_completion: xev.Completion = .{},
     close_completion: xev.Completion = .{},
+    close_requested: bool = false,
     on_accept: *const fn (listener: *Listener, conn: *Connection) void,
     conn_options: Connection.Options,
 
@@ -177,6 +178,8 @@ pub const Listener = struct {
     /// after calling this method to ensure the fd is released. See the
     /// struct-level documentation for the full cleanup protocol.
     pub fn close(self: *Listener) void {
+        if (self.close_requested) return;
+        self.close_requested = true;
         self.socket.close(self.loop, &self.close_completion, Listener, self, Listener.onClosed);
     }
 

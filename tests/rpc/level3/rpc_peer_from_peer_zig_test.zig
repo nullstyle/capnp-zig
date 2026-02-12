@@ -31,6 +31,126 @@ test "peer detached sendFrame requires override or attached transport" {
     try std.testing.expectError(error.TransportNotAttached, peer_test_hooks.sendFrame(&peer, &[_]u8{ 0x01, 0x02 }));
 }
 
+test "peer on_error callback fires and null callback is safe" {
+    const Ctx = struct {
+        called: usize = 0,
+        last_error: ?anyerror = null,
+    };
+    const Hooks = struct {
+        var ctx_ptr: ?*Ctx = null;
+
+        fn onError(_: *Peer, err: anyerror) void {
+            const ctx = ctx_ptr orelse unreachable;
+            ctx.called += 1;
+            ctx.last_error = err;
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    var ctx = Ctx{};
+    Hooks.ctx_ptr = &ctx;
+    defer Hooks.ctx_ptr = null;
+    peer.setSendFrameOverride(&ctx, struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+    }.send);
+    peer.start(Hooks.onError, null);
+
+    peer_test_hooks.onConnectionError(&peer, error.ConnectionResetByPeer);
+    try std.testing.expectEqual(@as(usize, 1), ctx.called);
+    try std.testing.expectEqual(error.ConnectionResetByPeer, ctx.last_error.?);
+
+    peer.start(null, null);
+    peer_test_hooks.onConnectionError(&peer, error.ConnectionResetByPeer);
+    try std.testing.expectEqual(@as(usize, 1), ctx.called);
+}
+
+test "peer shutdown callback and transport close fire when questions drain" {
+    const State = struct {
+        const Self = @This();
+
+        close_calls: usize = 0,
+        shutdown_calls: usize = 0,
+        transport_closing: bool = false,
+
+        fn start(_: *anyopaque, _: *Peer) void {}
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn close(ctx: *anyopaque) void {
+            const state: *Self = castCtx(*Self, ctx);
+            state.close_calls += 1;
+            state.transport_closing = true;
+        }
+        fn isClosing(ctx: *anyopaque) bool {
+            const state: *Self = castCtx(*Self, ctx);
+            return state.transport_closing;
+        }
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+        fn onShutdown(peer: *Peer) void {
+            const state: *Self = castCtx(*Self, peer.transport_ctx.?);
+            state.shutdown_calls += 1;
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    var state = State{};
+    peer.attachTransport(&state, State.start, State.send, State.close, State.isClosing);
+
+    var callback_ctx: u8 = 0;
+    const question_id = try peer.sendBootstrap(&callback_ctx, State.onReturn);
+    try std.testing.expect(peer.questions.contains(question_id));
+
+    peer.shutdown(State.onShutdown);
+    try std.testing.expectEqual(@as(usize, 0), state.shutdown_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.close_calls);
+
+    peer_test_hooks.removeQuestion(&peer, question_id);
+    try std.testing.expectEqual(@as(usize, 1), state.shutdown_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.close_calls);
+
+    peer.shutdown(State.onShutdown);
+    try std.testing.expectEqual(@as(usize, 1), state.shutdown_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.close_calls);
+}
+
+test "peer shutdown callback fires immediately with no outstanding questions" {
+    const State = struct {
+        const Self = @This();
+
+        close_calls: usize = 0,
+        shutdown_calls: usize = 0,
+        transport_closing: bool = false,
+
+        fn start(_: *anyopaque, _: *Peer) void {}
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn close(ctx: *anyopaque) void {
+            const state: *Self = castCtx(*Self, ctx);
+            state.close_calls += 1;
+            state.transport_closing = true;
+        }
+        fn isClosing(ctx: *anyopaque) bool {
+            const state: *Self = castCtx(*Self, ctx);
+            return state.transport_closing;
+        }
+        fn onShutdown(peer: *Peer) void {
+            const state: *Self = castCtx(*Self, peer.transport_ctx.?);
+            state.shutdown_calls += 1;
+        }
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+
+    var state = State{};
+    peer.attachTransport(&state, State.start, State.send, State.close, State.isClosing);
+
+    peer.shutdown(State.onShutdown);
+    try std.testing.expectEqual(@as(usize, 1), state.shutdown_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.close_calls);
+}
+
 test "peer question allocation probes past occupied ID across wrap-around" {
     const allocator = std.testing.allocator;
     const Noop = struct {
@@ -310,7 +430,7 @@ test "forwarded payload encodes promised capability descriptors as receiverAnswe
         parsed_src_call.params,
         &inbound,
     );
-    try cap_table.encodeCallPayloadCaps(&peer.caps, &dst_call, null, null);
+    try cap_table.encodeCallPayloadCaps(&peer.caps, &dst_call, null, null, null);
 
     const dst_bytes = try dst_builder.finish();
     defer allocator.free(dst_bytes);

@@ -719,13 +719,17 @@ pub const Generator = struct {
                     defer self.allocator.free(method_field);
                     const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
                     defer self.allocator.free(escaped_field);
+                    const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
+                    defer self.allocator.free(deferred_field);
+                    const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+                    defer self.allocator.free(escaped_deferred_field);
                     if (method.isStreaming()) {
                         try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDirect(server.vtable.{s}, server.ctx, peer, call, caps),\n", .{
                             ancestor.name, zig_name, ancestor.name, zig_name, escaped_field,
                         });
                     } else {
-                        try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDirect(server.vtable.{s}, server.vtable.{s}_deferred, server.ctx, peer, call, caps),\n", .{
-                            ancestor.name, zig_name, ancestor.name, zig_name, escaped_field, escaped_field,
+                        try writer.print("                {s}.{s}.ordinal => try {s}.{s}.handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps),\n", .{
+                            ancestor.name, zig_name, ancestor.name, zig_name, escaped_field, escaped_deferred_field,
                         });
                     }
                 }
@@ -925,7 +929,11 @@ pub const Generator = struct {
 
             // handleCall delegates to handleCallDirect
             try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
-            try writer.print("            try handleCallDirect(server.vtable.{s}, server.vtable.{s}_deferred, server.ctx, peer, call, caps);\n", .{ escaped_method_field, escaped_method_field });
+            const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
+            defer self.allocator.free(deferred_field);
+            const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+            defer self.allocator.free(escaped_deferred_field);
+            try writer.print("            try handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps);\n", .{ escaped_method_field, escaped_deferred_field });
             try writer.writeAll("        }\n\n");
 
             try writer.writeAll("        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {\n");
@@ -953,19 +961,23 @@ pub const Generator = struct {
         defer self.allocator.free(method_field);
         const escaped_field = try types.escapeZigKeyword(self.allocator, method_field);
         defer self.allocator.free(escaped_field);
+        const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
+        defer self.allocator.free(deferred_field);
+        const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
+        defer self.allocator.free(escaped_deferred_field);
         if (ancestor_name) |aname| {
             if (method.isStreaming()) {
                 try writer.print("        {s}: {s}.{s}.StreamHandler,\n", .{ escaped_field, aname, zig_name });
             } else {
                 try writer.print("        {s}: {s}.{s}.Handler,\n", .{ escaped_field, aname, zig_name });
-                try writer.print("        {s}_deferred: ?{s}.{s}.DeferredHandler = null,\n", .{ escaped_field, aname, zig_name });
+                try writer.print("        {s}: ?{s}.{s}.DeferredHandler = null,\n", .{ escaped_deferred_field, aname, zig_name });
             }
         } else {
             if (method.isStreaming()) {
                 try writer.print("        {s}: {s}.StreamHandler,\n", .{ escaped_field, zig_name });
             } else {
                 try writer.print("        {s}: {s}.Handler,\n", .{ escaped_field, zig_name });
-                try writer.print("        {s}_deferred: ?{s}.DeferredHandler = null,\n", .{ escaped_field, zig_name });
+                try writer.print("        {s}: ?{s}.DeferredHandler = null,\n", .{ escaped_deferred_field, zig_name });
             }
         }
     }
@@ -1110,12 +1122,14 @@ pub const Generator = struct {
 
         const zig_name = try self.toZigIdentifier(method.name);
         defer self.allocator.free(zig_name);
+        const escaped_zig_name = try types.escapeZigKeyword(self.allocator, zig_name);
+        defer self.allocator.free(escaped_zig_name);
 
         // For inherited methods, the Pipeline type is defined on the parent interface,
         // so we don't re-generate it here. The client method references the parent's Pipeline type.
         if (ancestor_name != null) return;
 
-        try writer.print("    pub const {s}Pipeline = struct {{\n", .{zig_name});
+        try writer.print("    pub const {s}Pipeline = struct {{\n", .{escaped_zig_name});
         try writer.writeAll("        peer: *rpc.peer.Peer,\n");
         try writer.writeAll("        question_id: u32,\n\n");
 
@@ -1178,8 +1192,8 @@ pub const Generator = struct {
                 defer self.allocator.free(type_name);
 
                 if (try self.constValueLiteral(const_info.type, const_info.value)) |literal| {
+                    defer self.allocator.free(literal);
                     try writer.print("pub const {s}: {s} = {s};\n\n", .{ name, type_name, literal });
-                    self.allocator.free(literal);
                 } else {
                     return error.UnsupportedConstType;
                 }
@@ -1849,6 +1863,24 @@ test "Generator.importPathFromCapnpName appends .zig for non-.capnp" {
     const r = try gen.importPathFromCapnpName("something_else");
     defer alloc.free(r);
     try std.testing.expectEqualStrings("something_else.zig", r);
+}
+
+test "Generator.importPathFromCapnpName handles empty and minimal names" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    const empty = try gen.importPathFromCapnpName("");
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings(".zig", empty);
+
+    const root = try gen.importPathFromCapnpName("/");
+    defer alloc.free(root);
+    try std.testing.expectEqualStrings(".zig", root);
+
+    const minimal = try gen.importPathFromCapnpName("x");
+    defer alloc.free(minimal);
+    try std.testing.expectEqualStrings("x.zig", minimal);
 }
 
 test "Generator.lowerFirst lowercases first character" {

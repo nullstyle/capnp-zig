@@ -152,6 +152,27 @@ fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema
     var interface_node: ?schema.InterfaceNode = null;
     var const_node: ?schema.ConstNode = null;
     var annotation_node: ?schema.AnnotationNode = null;
+    errdefer if (struct_node) |sn| freeFields(allocator, sn.fields);
+    errdefer if (enum_node) |en| {
+        for (en.enumerants) |e| {
+            allocator.free(e.name);
+            freeAnnotations(allocator, e.annotations);
+        }
+        allocator.free(en.enumerants);
+    };
+    errdefer if (interface_node) |in| {
+        for (in.methods) |m| {
+            allocator.free(m.name);
+            freeAnnotations(allocator, m.annotations);
+        }
+        allocator.free(in.methods);
+        allocator.free(in.superclasses);
+    };
+    errdefer if (const_node) |cn| {
+        freeType(allocator, cn.type);
+        freeValue(allocator, cn.value);
+    };
+    errdefer if (annotation_node) |an| freeType(allocator, an.type);
 
     switch (kind_tag) {
         .file => {},
@@ -265,9 +286,14 @@ fn parseEnumNode(allocator: std.mem.Allocator, reader: message.StructReader) !sc
 
 fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.InterfaceNode {
     const list = reader.readStructList(3) catch |err| switch (err) {
-        error.InvalidPointer => return .{
-            .methods = try allocator.alloc(schema.Method, 0),
-            .superclasses = try allocator.alloc(schema.Id, 0),
+        error.InvalidPointer => {
+            const methods = try allocator.alloc(schema.Method, 0);
+            errdefer allocator.free(methods);
+            const superclasses = try allocator.alloc(schema.Id, 0);
+            return .{
+                .methods = methods,
+                .superclasses = superclasses,
+            };
         },
         else => return err,
     };

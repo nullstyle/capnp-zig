@@ -20,7 +20,7 @@ test "encode outbound cap table rewrites capability pointers" {
 
     try any.setCapability(.{ .id = 42 });
 
-    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null);
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -58,7 +58,7 @@ test "encode outbound cap table rewrites capability pointer lists in struct payl
     try workers.setCapability(1, .{ .id = 41 });
     try workers.setCapability(2, .{ .id = 42 });
 
-    _ = try cap_table.encodeReturnPayloadCaps(&caps, &ret, null, null);
+    _ = try cap_table.encodeReturnPayloadCaps(&caps, &ret, null, null, null);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -112,7 +112,7 @@ test "encode outbound cap table rewrites large capability lists in struct payloa
         try workers.setCapability(i, .{ .id = 1000 + i });
     }
 
-    _ = try cap_table.encodeReturnPayloadCaps(&caps, &ret, null, null);
+    _ = try cap_table.encodeReturnPayloadCaps(&caps, &ret, null, null, null);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -161,7 +161,7 @@ test "encode outbound cap table marks promised export as senderPromise" {
 
     try any.setCapability(.{ .id = 42 });
 
-    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null);
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -268,11 +268,59 @@ fn encodeCallPayloadCapsOomImpl(allocator: std.mem.Allocator) !void {
 
     try any.setCapability(.{ .id = 7 });
 
-    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null);
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
     const bytes = try builder.finish();
     defer allocator.free(bytes);
 }
 
 test "encodeCallPayloadCaps propagates OOM without leaks" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, encodeCallPayloadCapsOomImpl, .{});
+}
+
+test "encodeCallPayloadCaps rolls back applied callbacks when a later callback fails" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(5, 0x1234, 0);
+    try call.setTargetImportedCap(1);
+    var payload = try call.payloadTyped();
+    const any = try payload.initContent();
+    var ptrs = try any.initPointerList(2);
+    try ptrs.setCapability(0, .{ .id = 40 });
+    try ptrs.setCapability(1, .{ .id = 41 });
+
+    const Ctx = struct {
+        calls: usize = 0,
+        rollbacks: usize = 0,
+        rolled_id: ?u32 = null,
+    };
+    const Hooks = struct {
+        fn onEntry(ctx_ptr: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
+            const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+            try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, tag);
+            ctx.calls += 1;
+            if (id == 41) return error.TestCallbackFailure;
+        }
+
+        fn rollback(ctx_ptr: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) void {
+            const ctx: *Ctx = @ptrCast(@alignCast(ctx_ptr));
+            std.debug.assert(tag == .senderHosted);
+            ctx.rollbacks += 1;
+            ctx.rolled_id = id;
+        }
+    };
+
+    var ctx = Ctx{};
+    try std.testing.expectError(
+        error.TestCallbackFailure,
+        cap_table.encodeCallPayloadCaps(&caps, &call, &ctx, Hooks.onEntry, Hooks.rollback),
+    );
+    try std.testing.expectEqual(@as(usize, 2), ctx.calls);
+    try std.testing.expectEqual(@as(usize, 1), ctx.rollbacks);
+    try std.testing.expectEqual(@as(u32, 40), ctx.rolled_id.?);
 }

@@ -99,7 +99,6 @@ pub const Connection = struct {
         self.on_error = null;
         self.on_close = null;
         self.transport.clearHandlers();
-        self.transport.abandonPendingWrites();
         self.transport.deinit();
         self.framer.deinit();
     }
@@ -149,10 +148,11 @@ pub const Connection = struct {
         const push_result = self.framer.push(data);
         if (push_result) |_| {} else |err| {
             log.debug("framer push failed: {}", .{err});
-            self.on_error.?(self, err);
             self.framer.reset();
             self.on_message = null;
+            const cb = self.on_error.?;
             self.on_error = null;
+            cb(self, err);
             return;
         }
 
@@ -164,10 +164,11 @@ pub const Connection = struct {
 
             const frame = self.framer.popFrame() catch |err| {
                 log.debug("framing error, connection unrecoverable: {}", .{err});
-                self.on_error.?(self, err);
                 self.framer.reset();
                 self.on_message = null;
+                const cb = self.on_error.?;
                 self.on_error = null;
+                cb(self, err);
                 return;
             };
             if (frame == null) break;
@@ -191,13 +192,15 @@ pub const Connection = struct {
 
     fn onTransportClose(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
         const conn: *Connection = @ptrCast(@alignCast(ctx));
+        const on_close = conn.on_close;
         if (err) |e| {
             log.debug("transport closed with error: {}", .{e});
-            if (conn.on_error) |cb| cb(conn, e);
+            const on_error = conn.on_error;
+            if (on_error) |cb| cb(conn, e);
         } else {
             log.debug("transport closed cleanly", .{});
         }
-        if (conn.on_close) |cb| cb(conn);
+        if (on_close) |cb| cb(conn);
     }
 
     fn onWriteDone(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
