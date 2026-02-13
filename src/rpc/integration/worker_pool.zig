@@ -180,6 +180,8 @@ pub const WorkerPool = struct {
         worker_index: u32,
         listener: Listener,
         timer_completion: xev.Completion,
+        shutdown_requested: bool = false,
+        shutdown_deadline_ns: i128 = 0,
     };
 
     fn onTimerCheck(
@@ -190,9 +192,19 @@ pub const WorkerPool = struct {
     ) xev.CallbackAction {
         const ctx = wctx.?;
         if (ctx.pool.should_stop.load(.acquire)) {
-            // Stop the loop immediately. This makes until_done return
-            // even though the listener's accept completion is still
-            // active. The fd is closed after the loop exits.
+            if (!ctx.shutdown_requested) {
+                ctx.shutdown_requested = true;
+                ctx.listener.close();
+                // Give close callbacks one timer interval to run so peers can
+                // release owned allocations before we force-stop the loop.
+                ctx.shutdown_deadline_ns = std.time.nanoTimestamp() + (100 * std.time.ns_per_ms);
+                return .rearm;
+            }
+
+            if (std.time.nanoTimestamp() < ctx.shutdown_deadline_ns) return .rearm;
+
+            // Bound shutdown time so workers do not hang forever on active
+            // client connections that never close.
             loop.stop();
             return .disarm;
         }
@@ -200,7 +212,7 @@ pub const WorkerPool = struct {
     }
 
     fn internalOnAccept(listener: *Listener, conn: *Connection) void {
-        const wctx: *WorkerCtx = @fieldParentPtr("listener", listener);
+        const wctx: *WorkerCtx = @alignCast(@fieldParentPtr("listener", listener));
 
         const peer_ptr = wctx.pool.allocator.create(Peer) catch {
             conn.deinit();

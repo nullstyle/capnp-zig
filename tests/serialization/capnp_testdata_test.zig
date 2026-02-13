@@ -36,7 +36,14 @@ fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorR
     const stdout_bytes = try child.stdout.?.readToEndAlloc(allocator, 32 * 1024 * 1024);
     const stderr_bytes = try child.stderr.?.readToEndAlloc(allocator, 32 * 1024 * 1024);
 
-    const term = try child.wait();
+    const term = child.wait() catch |err| {
+        allocator.free(stdout_bytes);
+        allocator.free(stderr_bytes);
+        return switch (err) {
+            error.FileNotFound => error.SkipZigTest,
+            else => err,
+        };
+    };
     switch (term) {
         .Exited => |code| {
             if (code != 0) {
