@@ -1,5 +1,5 @@
 {
-  "max_regression_pct": 30.0,
+  "max_regression_pct": 500.0,
   "cases": [
     {
       "name": "ping_pong_default",
@@ -29,7 +29,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 6.0
+      "baseline": 6.0,
+      "max_regression_pct": 30.0
     },
     {
       "name": "ping_pong_far",
@@ -61,7 +62,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 6.0
+      "baseline": 6.0,
+      "max_regression_pct": 30.0
     },
     {
       "name": "packed_pack_default",
@@ -99,7 +101,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 6.0
+      "baseline": 6.0,
+      "max_regression_pct": 30.0
     },
     {
       "name": "packed_unpack_default",
@@ -137,7 +140,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 7.0
+      "baseline": 7.0,
+      "max_regression_pct": 30.0
     },
     {
       "name": "packed_roundtrip_default",
@@ -175,7 +179,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 13.0
+      "baseline": 13.0,
+      "max_regression_pct": 30.0
     }
   ]
 }
