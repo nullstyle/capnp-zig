@@ -152,22 +152,31 @@ test "WorkerPool: single worker accepts connection then shuts down" {
             p.run() catch {};
         }
     }.call, .{&pool});
+    const addr = std.net.Address.parseIp4("127.0.0.1", port) catch unreachable;
 
-    // Give the worker thread a moment to start the event loop.
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-
-    // Connect a client.
-    const client = std.net.tcpConnectToAddress(std.net.Address.parseIp4("127.0.0.1", port) catch unreachable) catch |err| {
-        std.debug.print("client connect failed: {}\n", .{err});
-        pool.shutdown();
-        pool_thread.join();
-        return err;
-    };
-    // Close client immediately — the accept should still have fired.
-    client.close();
-
-    // Give accept callback time to fire.
-    std.Thread.sleep(100 * std.time.ns_per_ms);
+    // Poll until an accept is observed, issuing connect attempts while waiting.
+    // This avoids flaky fixed-sleep timing on slower CI machines.
+    const deadline_ns = std.time.nanoTimestamp() + (2 * std.time.ns_per_s);
+    while (counter.count.load(.acquire) == 0 and std.time.nanoTimestamp() < deadline_ns) {
+        const client = std.net.tcpConnectToAddress(addr) catch |err| {
+            switch (err) {
+                error.ConnectionRefused,
+                error.ConnectionResetByPeer,
+                error.NetworkUnreachable,
+                => {
+                    std.Thread.sleep(10 * std.time.ns_per_ms);
+                    continue;
+                },
+                else => {
+                    pool.shutdown();
+                    pool_thread.join();
+                    return err;
+                },
+            }
+        };
+        client.close();
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
 
     pool.shutdown();
     pool_thread.join();
