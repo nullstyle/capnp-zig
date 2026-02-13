@@ -239,8 +239,10 @@ pub const WorkerPool = struct {
         errdefer std.posix.close(fd);
 
         try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-        if (reuseport and supportsReusePort()) {
-            try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+        if (comptime @hasDecl(std.posix.SO, "REUSEPORT")) {
+            if (reuseport) {
+                try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+            }
         }
 
         try std.posix.bind(fd, &addr.any, addr.getOsSockLen());
