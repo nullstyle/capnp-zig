@@ -123,7 +123,7 @@ pub const WorkerPool = struct {
     pub fn deinit(self: *WorkerPool) void {
         for (self.workers) |*w| {
             if (!w.fd_closed.swap(true, .acq_rel)) {
-                std.posix.close(w.listen_fd);
+                closeListenFd(w.listen_fd);
             }
         }
         self.allocator.free(self.workers);
@@ -171,7 +171,7 @@ pub const WorkerPool = struct {
         // lifecycle within the event loop. We close it here after the
         // loop exits to ensure no more events reference it.
         if (!pool.workers[worker_index].fd_closed.swap(true, .acq_rel)) {
-            std.posix.close(pool.workers[worker_index].listen_fd);
+            closeListenFd(pool.workers[worker_index].listen_fd);
         }
     }
 
@@ -246,5 +246,20 @@ pub const WorkerPool = struct {
         try std.posix.listen(fd, backlog);
 
         return fd;
+    }
+
+    fn closeListenFd(fd: std.posix.fd_t) void {
+        if (builtin.target.os.tag == .windows) {
+            // Use the standard close path for Windows handles.
+            std.posix.close(fd);
+            return;
+        }
+
+        // The listener close completion and this fallback close can race.
+        // Treat BADF as already-closed and ignore EINTR per POSIX close rules.
+        switch (std.posix.errno(std.posix.system.close(fd))) {
+            .SUCCESS, .INTR, .BADF => {},
+            else => {},
+        }
     }
 };
