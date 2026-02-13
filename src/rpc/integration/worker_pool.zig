@@ -59,6 +59,7 @@ pub const WorkerPool = struct {
 
         const concurrency: u32 = config.concurrency orelse @intCast(std.Thread.getCpuCount() catch 1);
         if (concurrency == 0) return error.InvalidConcurrency;
+        if (concurrency > 1 and !supportsReusePort()) return error.ReusePortUnsupported;
 
         const workers = try allocator.alloc(Worker, concurrency);
         errdefer allocator.free(workers);
@@ -238,7 +239,7 @@ pub const WorkerPool = struct {
         errdefer std.posix.close(fd);
 
         try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-        if (reuseport) {
+        if (reuseport and supportsReusePort()) {
             try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
         }
 
@@ -261,5 +262,9 @@ pub const WorkerPool = struct {
             .SUCCESS, .INTR, .BADF => {},
             else => {},
         }
+    }
+
+    fn supportsReusePort() bool {
+        return comptime @hasDecl(std.posix.SO, "REUSEPORT");
     }
 };

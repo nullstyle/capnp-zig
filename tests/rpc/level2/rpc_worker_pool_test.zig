@@ -42,6 +42,16 @@ test "WorkerPool: init and deinit with concurrency=1" {
 test "WorkerPool: init and deinit with concurrency=4" {
     const allocator = std.testing.allocator;
     var dummy_ctx: u8 = 0;
+    if (comptime !@hasDecl(std.posix.SO, "REUSEPORT")) {
+        try std.testing.expectError(error.ReusePortUnsupported, WorkerPool.init(
+            allocator,
+            try std.net.Address.parseIp4("127.0.0.1", 0),
+            @ptrCast(&dummy_ctx),
+            onAcceptNoop,
+            .{ .concurrency = 4 },
+        ));
+        return;
+    }
     var pool = try WorkerPool.init(
         allocator,
         try std.net.Address.parseIp4("127.0.0.1", 0),
@@ -84,6 +94,16 @@ test "WorkerPool: single worker run and immediate shutdown" {
 test "WorkerPool: multi-worker run and immediate shutdown" {
     const allocator = std.testing.allocator;
     var dummy_ctx: u8 = 0;
+    if (comptime !@hasDecl(std.posix.SO, "REUSEPORT")) {
+        try std.testing.expectError(error.ReusePortUnsupported, WorkerPool.init(
+            allocator,
+            try std.net.Address.parseIp4("127.0.0.1", 0),
+            @ptrCast(&dummy_ctx),
+            onAcceptNoop,
+            .{ .concurrency = 2 },
+        ));
+        return;
+    }
     var pool = try WorkerPool.init(
         allocator,
         try std.net.Address.parseIp4("127.0.0.1", 0),

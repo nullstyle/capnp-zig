@@ -31,7 +31,12 @@ fn expectGolden(actual: []const u8, golden_path: []const u8) !void {
     };
     defer testing.allocator.free(golden);
 
-    testing.expectEqualStrings(golden, actual) catch |err| {
+    const golden_normalized = try normalizeLineEndings(testing.allocator, golden);
+    defer testing.allocator.free(golden_normalized);
+    const actual_normalized = try normalizeLineEndings(testing.allocator, actual);
+    defer testing.allocator.free(actual_normalized);
+
+    testing.expectEqualStrings(golden_normalized, actual_normalized) catch |err| {
         std.debug.print(
             "\n=== Golden file mismatch: {s} ===\n" ++
                 "If the change is intentional, delete the golden file and re-run to regenerate.\n\n",
@@ -39,6 +44,26 @@ fn expectGolden(actual: []const u8, golden_path: []const u8) !void {
         );
         return err;
     };
+}
+
+fn normalizeLineEndings(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out = std.ArrayList(u8){};
+    defer out.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < input.len) : (i += 1) {
+        const ch = input[i];
+        if (ch == '\r') {
+            if (i + 1 < input.len and input[i + 1] == '\n') {
+                i += 1;
+            }
+            try out.append(allocator, '\n');
+            continue;
+        }
+        try out.append(allocator, ch);
+    }
+
+    return out.toOwnedSlice(allocator);
 }
 
 // ---------------------------------------------------------------------------
