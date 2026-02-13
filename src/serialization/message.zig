@@ -2319,7 +2319,14 @@ test "packed decoder handles zero and literal runs" {
     const packed_bytes = [_]u8{
         0x00, 0x01, // two zero words
         0xFF, // literal word
-        1, 2, 3, 4, 5, 6, 7, 8,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
         0x00, // no extra literal words
     };
 

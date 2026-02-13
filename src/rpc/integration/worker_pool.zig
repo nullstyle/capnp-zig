@@ -155,7 +155,7 @@ pub const WorkerPool = struct {
         // Periodic timer checks the should_stop flag every 100ms.
         // When set, it calls loop.stop() which makes until_done return
         // immediately regardless of active completions.
-        const timer = xev.Timer.init() catch |err| {
+        var timer = xev.Timer.init() catch |err| {
             log.err("worker {}: timer init failed: {}", .{ worker_index, err });
             return;
         };

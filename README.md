@@ -346,10 +346,16 @@ just act-ci
 
 # Run a single job
 just act-ci-job test
+
+# Optional: run benchmark gate locally
+just act-bench
 ```
 
 Notes:
 - The repo `.actrc` maps all matrix runner labels to a Linux container image for local execution.
+- The default local container architecture is `linux/arm64` (override per command with `--container-architecture linux/amd64` if needed).
+- The repo `.actrc` and `just act-*` tasks pin matrix to `os:ubuntu-latest` for stable local runs.
+- Benchmark regression checks are excluded from `just act-ci` by default; run `just act-bench` when you explicitly want that signal.
 - Ensure Docker is running before invoking `act`.
 
 ### Test Coverage

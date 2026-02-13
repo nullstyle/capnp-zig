@@ -58,15 +58,23 @@ ci:
 
 # List CI workflow jobs as seen by `act`
 act-list:
-    act -W .github/workflows/ci.yml -l
+    act -l
 
-# Run GitHub Actions CI workflow locally with `act`
+# Run local CI-equivalent jobs with `act` (single runner profile, sequential)
+# Excludes benchmark regression job by default since host/container timing is not comparable to CI baseline.
 act-ci event="pull_request":
-    act {{ event }} -W .github/workflows/ci.yml
+    act {{ event }} --matrix os:ubuntu-latest -j fmt-check
+    act {{ event }} --matrix os:ubuntu-latest -j test
+    act {{ event }} --matrix os:ubuntu-latest -j wasm-build
+    act {{ event }} --matrix os:ubuntu-latest -j release-build
 
 # Run a single CI job locally with `act` (example: `just act-ci-job test`)
-act-ci-job job event="pull_request":
-    act {{ event }} -W .github/workflows/ci.yml -j {{ job }}
+act-ci-job job event="pull_request" matrix="os:ubuntu-latest":
+    act {{ event }} --matrix {{ matrix }} -j {{ job }}
+
+# Run benchmark regression check locally under `act` (optional; often noisy on laptops/containers)
+act-bench event="pull_request":
+    act {{ event }} --matrix os:ubuntu-latest -j bench-check
 
 # Install to a local bin path (defaults to ~/.local/bin)
 install dest="${HOME}/.local/bin": release

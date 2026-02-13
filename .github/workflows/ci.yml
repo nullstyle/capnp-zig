@@ -21,6 +21,17 @@ jobs:
 
       - uses: jdx/mise-action@v3
 
+      - name: Install Cap'n Proto compiler (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y capnproto libcapnp-dev
+          else
+            apt-get update
+            apt-get install -y capnproto libcapnp-dev
+          fi
+
       - name: Run tests
         run: zig build test --summary all
 
@@ -36,7 +47,7 @@ jobs:
       - uses: jdx/mise-action@v3
 
       - name: Check formatting
-        run: zig fmt --check --exclude tests/golden src/ tests/ bench/ tools/
+        run: zig fmt --check --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/
 
   bench-check:
     name: Benchmark regression check

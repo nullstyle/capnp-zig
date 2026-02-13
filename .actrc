@@ -2,4 +2,6 @@
 -P ubuntu-latest=catthehacker/ubuntu:act-latest
 -P macos-latest=catthehacker/ubuntu:act-latest
 -P windows-latest=catthehacker/ubuntu:act-latest
---container-architecture linux/amd64
+--container-architecture linux/arm64
+--concurrent-jobs 1
+--matrix os:ubuntu-latest
