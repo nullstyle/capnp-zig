@@ -1,9 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const WorkerPool = capnpc.rpc.worker_pool.WorkerPool;
 const Connection = capnpc.rpc.connection.Connection;
 const Peer = capnpc.rpc.peer.Peer;
+
+fn asSocket(fd: std.posix.fd_t) std.posix.socket_t {
+    if (builtin.target.os.tag == .windows) {
+        return @ptrCast(fd);
+    }
+    return fd;
+}
 
 fn onAcceptNoop(_: *anyopaque, peer: *Peer, _: *Connection, _: u32) void {
     // Just start the peer so it wires up; it will close when the client
@@ -143,7 +151,7 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     // Retrieve the actual bound port from the first worker's fd.
     var sa: std.posix.sockaddr.in = undefined;
     var sa_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.in);
-    try std.posix.getsockname(pool.workers[0].listen_fd, @ptrCast(&sa), &sa_len);
+    try std.posix.getsockname(asSocket(pool.workers[0].listen_fd), @ptrCast(&sa), &sa_len);
     const port = std.mem.bigToNative(u16, sa.port);
 
     // Run pool in a background thread.

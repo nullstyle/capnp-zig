@@ -272,10 +272,17 @@ pub const Listener = struct {
         return socket.fd;
     }
 
+    fn socketHandle(socket: xev.TCP) std.posix.socket_t {
+        if (builtin.target.os.tag == .windows) {
+            return @ptrCast(socketFd(socket));
+        }
+        return socketFd(socket);
+    }
+
     fn enableTcpNoDelay(socket: xev.TCP) void {
         const one = std.mem.toBytes(@as(c_int, 1));
         std.posix.setsockopt(
-            socketFd(socket),
+            socketHandle(socket),
             std.posix.IPPROTO.TCP,
             std.posix.TCP.NODELAY,
             &one,
