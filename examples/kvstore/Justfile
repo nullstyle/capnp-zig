@@ -11,9 +11,13 @@ test:
     zig build test
 
 # Run the KVStore server.
-server host="0.0.0.0" port="9000" db_path="kvstore-data" backup_dir="kvstore-backups":
-    zig build server -- --host {{ host }} --port {{ port }} --db-path {{ db_path }} --backup-dir {{ backup_dir }}
+server host="0.0.0.0" port="9000" db_path="kvstore-data" backup_dir="kvstore-backups" opts="":
+    zig build server -Doptimize=ReleaseFast -- --host {{ host }} --port {{ port }} --db-path {{ db_path }} --backup-dir {{ backup_dir }} {{ opts }}
 
 # Run the interactive KVStore client.
 client host="127.0.0.1" port="9000":
-    zig build client -- --host {{ host }} --port {{ port }}
+    zig build client  -Doptimize=ReleaseFast -- --host {{ host }} --port {{ port }}
+
+# Run the KVStore stressor client.
+stressor host="127.0.0.1" port="9000" operations="1000000" batch_size="10" value_size="512" concurrency="64":
+    zig build stressor -Doptimize=ReleaseFast -- --host {{ host }} --port {{ port }} --operations {{ operations }} --batch-size {{ batch_size }} --value-size {{ value_size }} --concurrency {{ concurrency }}

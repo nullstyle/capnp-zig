@@ -73,6 +73,8 @@ just test
 just server
 # custom:
 just server host=0.0.0.0 port=9000 db_path=kvstore-data backup_dir=kvstore-backups
+# quiet mode:
+just server host=0.0.0.0 port=9000 db_path=kvstore-data backup_dir=kvstore-backups opts="--quiet"
 ```
 
 Server flags:
@@ -81,6 +83,7 @@ Server flags:
 - `--port` (default `9000`)
 - `--db-path` (default `kvstore-data`)
 - `--backup-dir` (default `kvstore-backups`)
+- `--quiet` (suppresses debug/info logs)
 
 ### Start client
 
@@ -89,6 +92,22 @@ just client
 # custom:
 just client host=127.0.0.1 port=9000
 ```
+
+### Start stressor
+
+```bash
+just stressor
+# custom:
+just stressor host=127.0.0.1 port=9000 operations=50000 batch_size=4 value_size=512 concurrency=64
+```
+
+Use `kvstore-stressor --help` for the full flag set:
+
+- `--operations` (default `10000`)
+- `--batch-size` (default `1`)
+- `--value-size` (default `256`)
+- `--concurrency` (default `32`)
+- `--prefix` (default `kvstore-stress`)
 
 Client flags:
 

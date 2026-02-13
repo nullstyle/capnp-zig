@@ -61,6 +61,7 @@ act-list:
     act -l
 
 # Run local CI-equivalent jobs with `act` (single runner profile, sequential)
+
 # Excludes benchmark regression job by default since host/container timing is not comparable to CI baseline.
 act-ci event="pull_request":
     act {{ event }} --matrix os:ubuntu-latest -j fmt-check
@@ -101,18 +102,6 @@ clean:
 # Format code
 fmt:
     zig fmt --exclude tests/golden src/ tests/ bench/ tools/ examples/
-
-# Run example schema compilation
-example: build
-    capnp compile -o ./zig-out/bin/capnpc-zig tests/test_schemas/example.capnp
-
-# Run KVStore example server
-example-kvstore-server port="9000" db_path="kvstore-data":
-    cd examples/kvstore && zig build server -- --port {{ port }} --db-path {{ db_path }}
-
-# Run KVStore example client
-example-kvstore-client port="9000":
-    cd examples/kvstore && zig build client -- --port {{ port }}
 
 # Check for errors without building
 check:

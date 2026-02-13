@@ -67,6 +67,26 @@ pub fn build(b: *std.Build) void {
     const client_step = b.step("client", "Run the KVStore client");
     client_step.dependOn(&run_client.step);
 
+    const stressor = b.addExecutable(.{
+        .name = "kvstore-stressor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("stressor.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    b.installArtifact(stressor);
+
+    const run_stressor = b.addRunArtifact(stressor);
+    if (b.args) |args| {
+        run_stressor.addArgs(args);
+    }
+    const stressor_step = b.step("stressor", "Run the KVStore stressor");
+    stressor_step.dependOn(&run_stressor.step);
+
     // Compile smoke tests for server/client modules.
     const server_tests = b.addTest(.{
         .name = "kvstore-server-tests",

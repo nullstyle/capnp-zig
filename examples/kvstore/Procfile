@@ -1,2 +1,3 @@
-server: zig build server -- --port 9000
-client: sleep 2 && zig build client -Doptimize=ReleaseSafe -- --port 9000
+server: zig build server -Doptimize=ReleaseFast -- --port 9000 --quiet
+# client: sleep 2 && zig build client -Doptimize=ReleaseSafe -- --port 9000
+zig build stressor -Doptimize=ReleaseFast -- --host {{ host }}

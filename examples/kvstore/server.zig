@@ -11,6 +11,21 @@ const KvStore = kvstore.KvStore;
 const KvClientNotifier = kvstore.KvClientNotifier;
 
 const Allocator = std.mem.Allocator;
+var server_is_quiet: bool = false;
+
+pub const std_options: std.Options = .{
+    .logFn = serverLog,
+};
+
+fn serverLog(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (server_is_quiet and (level == .debug or level == .info)) return;
+    std.log.defaultLog(level, scope, format, args);
+}
 
 const user_key_prefix = "u:";
 const next_version_meta_key = "m:next_version";
@@ -1060,6 +1075,7 @@ const CliArgs = struct {
     port: u16 = 9000,
     db_path: []const u8 = "kvstore-data",
     backup_dir: []const u8 = "kvstore-backups",
+    quiet: bool = false,
 };
 
 fn parseArgs(allocator: Allocator) !CliArgs {
@@ -1101,6 +1117,10 @@ fn parseArgs(allocator: Allocator) !CliArgs {
             backup_dir_text = argv[idx];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--quiet")) {
+            out.quiet = true;
+            continue;
+        }
     }
 
     out.host = try allocator.dupe(u8, host_text);
@@ -1116,7 +1136,8 @@ fn parseArgs(allocator: Allocator) !CliArgs {
 
 fn usage() void {
     std.debug.print(
-        \\Usage: kvstore-server [--host 0.0.0.0] [--port 9000] [--db-path kvstore-data] [--backup-dir kvstore-backups]
+        \\Usage: kvstore-server [--host 0.0.0.0] [--port 9000] [--db-path kvstore-data] [--backup-dir kvstore-backups] [--quiet]
+        \\  --quiet             suppress debug/info logs
         \\
     , .{});
 }
@@ -1147,6 +1168,7 @@ pub fn main() !void {
     defer allocator.free(args.host);
     defer allocator.free(args.db_path);
     defer allocator.free(args.backup_dir);
+    server_is_quiet = args.quiet;
 
     var runtime = try rpc.runtime.Runtime.init(allocator);
     defer runtime.deinit();
@@ -1173,13 +1195,15 @@ pub fn main() !void {
 
     listener_ctx.listener.start();
 
-    std.debug.print("READY on {s}:{d} (db: {s}, backup: {s}, next_version={d})\n", .{
-        args.host,
-        args.port,
-        args.db_path,
-        args.backup_dir,
-        svc.next_version,
-    });
+    if (!server_is_quiet) {
+        std.debug.print("READY on {s}:{d} (db: {s}, backup: {s}, next_version={d})\n", .{
+            args.host,
+            args.port,
+            args.db_path,
+            args.backup_dir,
+            svc.next_version,
+        });
+    }
 
     while (true) {
         try runtime.run(.until_done);
