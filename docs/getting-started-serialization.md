@@ -4,7 +4,7 @@ This guide walks you through defining a Cap'n Proto schema and using the generat
 
 ## Prerequisites
 
-- **Zig 0.15.2** (use `mise install` if you have mise)
+- **Zig 0.16** (use `mise install` if you have mise)
 - **Cap'n Proto compiler** (`capnp`) — install via your package manager (e.g. `brew install capnp`, `apt install capnproto`)
 - **capnpc-zig** — built from this repo (`zig build`)
 

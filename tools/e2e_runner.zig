@@ -3,6 +3,22 @@ const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
+/// Replacement for milliTimestamp() (removed in 0.16).
+fn milliTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divFloor(@as(i64, ts.nsec), 1_000_000);
+}
+
+/// Replacement for std.Thread.sleep() (removed in 0.16).
+fn nanosleep(ns: u64) void {
+    var ts = std.c.timespec{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = std.c.nanosleep(&ts, null);
+}
+
 const Backend = enum {
     cpp,
     go,
@@ -160,12 +176,90 @@ fn zigSchemaPort(s: Schema) u16 {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Low-level socket helpers (matching src/rpc/level2/runtime.zig patterns)
+// ---------------------------------------------------------------------------
+
+const SockAddrStorage = extern union {
+    any: std.posix.sockaddr,
+    in: std.posix.sockaddr.in,
+    in6: std.posix.sockaddr.in6,
+};
+
+fn ipAddressToSockaddr(addr: std.Io.net.IpAddress) struct { addr: SockAddrStorage, len: std.posix.socklen_t } {
+    switch (addr) {
+        .ip4 => |ip4| {
+            return .{
+                .addr = .{ .in = .{
+                    .port = std.mem.nativeToBig(u16, ip4.port),
+                    .addr = @bitCast(ip4.bytes),
+                } },
+                .len = @sizeOf(std.posix.sockaddr.in),
+            };
+        },
+        .ip6 => |ip6| {
+            return .{
+                .addr = .{ .in6 = .{
+                    .port = std.mem.nativeToBig(u16, ip6.port),
+                    .flowinfo = ip6.flow,
+                    .addr = ip6.bytes,
+                    .scope_id = if (ip6.interface.isNone()) 0 else ip6.interface.index,
+                } },
+                .len = @sizeOf(std.posix.sockaddr.in6),
+            };
+        },
+    }
+}
+
+fn closeFd(fd: std.posix.fd_t) void {
+    switch (std.posix.errno(std.posix.system.close(fd))) {
+        .SUCCESS, .INTR, .BADF => {},
+        else => {},
+    }
+}
+
+const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
+
+fn rawTcpConnect(addr: std.Io.net.IpAddress) !std.posix.fd_t {
+    const family: c_uint = switch (addr) {
+        .ip4 => std.posix.AF.INET,
+        .ip6 => std.posix.AF.INET6,
+    };
+    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
+    const fd_rc = std.posix.system.socket(family, flags, 0);
+    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
+    const fd: std.posix.fd_t = @intCast(fd_rc);
+    errdefer closeFd(fd);
+
+    if (socket_cloexec_unsupported) {
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
+    }
+
+    const storage = ipAddressToSockaddr(addr);
+    while (true) {
+        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
+            .SUCCESS => return fd,
+            .INTR => continue,
+            .CONNREFUSED => return error.ConnectionRefused,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .NETUNREACH => return error.NetworkUnreachable,
+            .HOSTUNREACH => return error.HostUnreachable,
+            .TIMEDOUT => return error.Timeout,
+            else => return error.ConnectFailed,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ListenSocket
+// ---------------------------------------------------------------------------
+
 const ListenSocket = struct {
     fd: std.posix.fd_t,
     port: u16,
 
     fn close(self: *ListenSocket) void {
-        std.posix.close(self.fd);
+        closeFd(self.fd);
         self.fd = -1;
     }
 };
@@ -174,40 +268,55 @@ const ListenSocket = struct {
 /// The fd is kept open (with CLOEXEC cleared) so it can be inherited by a
 /// child process, eliminating the TOCTOU race in reserve-then-rebind.
 fn createListenSocket() !ListenSocket {
-    const fd = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
-    errdefer std.posix.close(fd);
+    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
+    const fd_rc = std.posix.system.socket(std.posix.AF.INET, flags, 0);
+    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
+    const fd: std.posix.fd_t = @intCast(fd_rc);
+    errdefer closeFd(fd);
+
+    if (socket_cloexec_unsupported) {
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
+    }
 
     // Allow immediate rebind (defense in depth; primary fix is fd passing).
-    const one = std.mem.toBytes(@as(c_int, 1));
-    try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &one);
+    try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
 
-    // Bind to port 0 → OS assigns an ephemeral port.
-    const bind_addr = try std.net.Address.parseIp4("127.0.0.1", 0);
-    try std.posix.bind(fd, &bind_addr.any, bind_addr.getOsSockLen());
+    // Bind to 127.0.0.1:0 → OS assigns an ephemeral port.
+    const addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = 0 } };
+    const storage = ipAddressToSockaddr(addr);
+    if (std.posix.errno(std.posix.system.bind(fd, &storage.addr.any, storage.len)) != .SUCCESS) {
+        return error.BindFailed;
+    }
 
-    try std.posix.listen(fd, 128);
+    if (std.posix.errno(std.posix.system.listen(fd, 128)) != .SUCCESS) {
+        return error.ListenFailed;
+    }
 
     // Read back the assigned port.
-    var sa: std.posix.sockaddr.in = undefined;
-    var sa_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.in);
-    try std.posix.getsockname(fd, @ptrCast(&sa), &sa_len);
-    const port = std.mem.bigToNative(u16, sa.port);
+    var sa_storage: std.posix.sockaddr.storage = undefined;
+    var sa_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
+    if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&sa_storage), &sa_len)) != .SUCCESS) {
+        return error.GetSockNameFailed;
+    }
+    const sa_in: *const std.posix.sockaddr.in = @ptrCast(@alignCast(&sa_storage));
+    const port = std.mem.bigToNative(u16, sa_in.port);
 
     // Clear CLOEXEC so the fd survives fork/exec into the child process.
     if (comptime @hasDecl(std.posix.F, "SETFD")) {
-        _ = try std.posix.fcntl(fd, std.posix.F.SETFD, @as(u32, 0));
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, 0));
     }
 
     return .{ .fd = fd, .port = port };
 }
 
-fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+fn fileExists(io: std.Io, path: []const u8) bool {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    file.close(io);
     return true;
 }
 
-fn detectPaths() !Paths {
-    if (fileExists("tests/e2e/docker-compose.yml")) {
+fn detectPaths(io: std.Io) !Paths {
+    if (fileExists(io, "tests/e2e/docker-compose.yml")) {
         return .{
             .repo_root = ".",
             .compose_file = "tests/e2e/docker-compose.yml",
@@ -220,7 +329,7 @@ fn detectPaths() !Paths {
         };
     }
 
-    if (fileExists("docker-compose.yml") and fileExists("schemas/game_world.capnp")) {
+    if (fileExists(io, "docker-compose.yml") and fileExists(io, "schemas/game_world.capnp")) {
         return .{
             .repo_root = "../..",
             .compose_file = "docker-compose.yml",
@@ -259,15 +368,15 @@ fn parseDirection(text: []const u8) !Direction {
     return error.InvalidDirection;
 }
 
-fn parseArgs(allocator: Allocator) !Config {
+fn parseArgs(args: std.process.Args) !Config {
     var cfg = Config{};
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
 
     var has_backend = false;
     var has_schema = false;
 
-    for (argv[1..]) |arg| {
+    var args_iter = std.process.Args.Iterator.init(args);
+    _ = args_iter.skip(); // skip program name
+    while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             usage();
             return error.HelpRequested;
@@ -321,33 +430,25 @@ fn parseArgs(allocator: Allocator) !Config {
     return cfg;
 }
 
-fn getOptionalEnv(allocator: Allocator, key: []const u8) !?[]u8 {
-    return std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => err,
-    };
-}
-
 fn termExitCode(term: std.process.Child.Term) i32 {
     return switch (term) {
-        .Exited => |code| @as(i32, code),
-        .Signal => |sig| @as(i32, @intCast(sig)) + 128,
+        .exited => |code| @as(i32, code),
+        .signal => |sig| @as(i32, @intCast(@intFromEnum(sig))) + 128,
         else => 1,
     };
 }
 
 fn runCapture(
     allocator: Allocator,
+    io: std.Io,
     argv: []const []const u8,
     cwd: ?[]const u8,
-    env_map: ?*const std.process.EnvMap,
+    environ_map: ?*const std.process.Environ.Map,
 ) !RunResult {
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv,
-        .cwd = cwd,
-        .env_map = env_map,
-        .max_output_bytes = 64 * 1024 * 1024,
+        .cwd = if (cwd) |c| .{ .path = c } else .inherit,
+        .environ_map = environ_map,
     });
 
     return .{
@@ -357,170 +458,166 @@ fn runCapture(
     };
 }
 
-const CollectThreadCtx = struct {
-    child: std.process.Child,
+fn termFromWaitStatus(status: u32) std.process.Child.Term {
+    return if (std.posix.W.IFEXITED(status))
+        .{ .exited = std.posix.W.EXITSTATUS(status) }
+    else if (std.posix.W.IFSIGNALED(status))
+        .{ .signal = std.posix.W.TERMSIG(status) }
+    else if (std.posix.W.IFSTOPPED(status))
+        .{ .stopped = std.posix.W.STOPSIG(status) }
+    else
+        .{ .unknown = status };
+}
+
+const PipeReaderCtx = struct {
+    fd: i32,
     allocator: Allocator,
-    max_output_bytes: usize,
-    stdout: std.ArrayList(u8) = .{},
-    stderr: std.ArrayList(u8) = .{},
-    collect_err: ?anyerror = null,
+    buf: std.ArrayList(u8) = .{},
+};
+
+fn pipeReaderThread(ctx: *PipeReaderCtx) void {
+    var tmp: [4096]u8 = undefined;
+    while (true) {
+        const n = std.c.read(ctx.fd, &tmp, tmp.len);
+        if (n <= 0) break;
+        ctx.buf.appendSlice(ctx.allocator, tmp[0..@intCast(n)]) catch break;
+    }
+}
+
+const WaitThreadCtx = struct {
+    pid: std.posix.pid_t,
+    term: std.process.Child.Term = .{ .unknown = 0 },
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
-fn collectOutputThread(ctx: *CollectThreadCtx) void {
-    ctx.child.collectOutput(ctx.allocator, &ctx.stdout, &ctx.stderr, ctx.max_output_bytes) catch |err| {
-        ctx.collect_err = err;
-    };
-    ctx.done.store(true, .release);
-}
-
-fn closeChildPipes(child: *std.process.Child) void {
-    if (child.stdin) |*stdin_file| {
-        stdin_file.close();
-        child.stdin = null;
+fn waitThread(ctx: *WaitThreadCtx) void {
+    var status: c_int = 0;
+    while (true) {
+        const rc = std.c.waitpid(ctx.pid, &status, 0);
+        if (rc == ctx.pid) {
+            ctx.term = termFromWaitStatus(@bitCast(status));
+            ctx.done.store(true, .release);
+            return;
+        }
+        if (rc >= 0) {
+            // Unexpected pid — treat as unknown error.
+            ctx.term = .{ .unknown = @bitCast(status) };
+            ctx.done.store(true, .release);
+            return;
+        }
+        // rc < 0: typically EINTR on POSIX, retry.
     }
-    if (child.stdout) |*stdout_file| {
-        stdout_file.close();
-        child.stdout = null;
-    }
-    if (child.stderr) |*stderr_file| {
-        stderr_file.close();
-        child.stderr = null;
-    }
-}
-
-fn termFromWaitStatus(status: u32) std.process.Child.Term {
-    return if (std.posix.W.IFEXITED(status))
-        .{ .Exited = std.posix.W.EXITSTATUS(status) }
-    else if (std.posix.W.IFSIGNALED(status))
-        .{ .Signal = std.posix.W.TERMSIG(status) }
-    else if (std.posix.W.IFSTOPPED(status))
-        .{ .Stopped = std.posix.W.STOPSIG(status) }
-    else
-        .{ .Unknown = status };
 }
 
 fn runCaptureWithTimeout(
     allocator: Allocator,
+    io: std.Io,
     argv: []const []const u8,
     cwd: ?[]const u8,
-    env_map: ?*const std.process.EnvMap,
+    environ_map: ?*const std.process.Environ.Map,
     timeout_ms: i64,
 ) !RunResult {
     if (timeout_ms <= 0 or builtin.os.tag == .windows) {
-        return runCapture(allocator, argv, cwd, env_map);
+        return runCapture(allocator, io, argv, cwd, environ_map);
     }
 
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    child.cwd = cwd;
-    child.env_map = env_map;
+    // Spawn child with piped stdout/stderr
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = if (cwd) |c| .{ .path = c } else .inherit,
+        .environ_map = environ_map,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
 
-    try child.spawn();
-    errdefer {
-        _ = child.kill() catch {};
-    }
+    const pid = child.id orelse return error.NoChildPid;
 
-    var collect_ctx = CollectThreadCtx{
-        .child = child,
-        .allocator = allocator,
-        .max_output_bytes = 64 * 1024 * 1024,
-    };
-    errdefer collect_ctx.stdout.deinit(allocator);
-    errdefer collect_ctx.stderr.deinit(allocator);
+    // Spawn threads to read stdout/stderr (prevents pipe buffer deadlock)
+    var stdout_ctx = PipeReaderCtx{ .fd = if (child.stdout) |f| f.handle else -1, .allocator = allocator };
+    errdefer stdout_ctx.buf.deinit(allocator);
+    var stderr_ctx = PipeReaderCtx{ .fd = if (child.stderr) |f| f.handle else -1, .allocator = allocator };
+    errdefer stderr_ctx.buf.deinit(allocator);
 
-    const collector = try std.Thread.spawn(.{}, collectOutputThread, .{&collect_ctx});
-    defer collector.join();
+    const stdout_reader = if (stdout_ctx.fd >= 0)
+        try std.Thread.spawn(.{}, pipeReaderThread, .{&stdout_ctx})
+    else
+        null;
+    const stderr_reader = if (stderr_ctx.fd >= 0)
+        try std.Thread.spawn(.{}, pipeReaderThread, .{&stderr_ctx})
+    else
+        null;
 
-    const deadline = std.time.milliTimestamp() + timeout_ms;
+    // Start a wait thread that blocks on waitpid
+    var wait_ctx = WaitThreadCtx{ .pid = pid };
+    const waiter = try std.Thread.spawn(.{}, waitThread, .{&wait_ctx});
+
+    // Wait for child with timeout
+    const deadline = milliTimestamp() + timeout_ms;
     var timed_out = false;
-    var term: std.process.Child.Term = .{ .Unknown = 0 };
 
-    wait_loop: while (true) {
-        const wait_result = std.posix.waitpid(child.id, std.c.W.NOHANG);
-        if (wait_result.pid == child.id) {
-            term = termFromWaitStatus(wait_result.status);
-            break :wait_loop;
-        }
-
-        if (std.time.milliTimestamp() >= deadline) {
+    while (!wait_ctx.done.load(.acquire)) {
+        if (milliTimestamp() >= deadline) {
             timed_out = true;
-            std.posix.kill(child.id, std.posix.SIG.TERM) catch |err| switch (err) {
-                error.ProcessNotFound => {},
-                else => {},
-            };
+            // Send SIGTERM first
+            std.posix.kill(pid, std.posix.SIG.TERM) catch {};
 
-            const kill_deadline = std.time.milliTimestamp() + 5 * 1000;
-            while (std.time.milliTimestamp() < kill_deadline) {
-                const term_wait = std.posix.waitpid(child.id, std.c.W.NOHANG);
-                if (term_wait.pid == child.id) {
-                    term = termFromWaitStatus(term_wait.status);
-                    break :wait_loop;
-                }
-                std.Thread.sleep(20 * std.time.ns_per_ms);
+            // Wait up to 5s for graceful exit
+            const kill_deadline = milliTimestamp() + 5 * 1000;
+            while (!wait_ctx.done.load(.acquire) and milliTimestamp() < kill_deadline) {
+                nanosleep(20 * std.time.ns_per_ms);
             }
 
-            std.posix.kill(child.id, std.posix.SIG.KILL) catch |err| switch (err) {
-                error.ProcessNotFound => {},
-                else => {},
-            };
-
-            const kill_wait = std.posix.waitpid(child.id, 0);
-            term = termFromWaitStatus(kill_wait.status);
-            break :wait_loop;
+            // Force kill if still running
+            if (!wait_ctx.done.load(.acquire)) {
+                std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+            }
+            break;
         }
-
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        nanosleep(20 * std.time.ns_per_ms);
     }
 
-    while (!collect_ctx.done.load(.acquire)) {
-        std.Thread.sleep(5 * std.time.ns_per_ms);
-    }
-
-    if (collect_ctx.collect_err) |err| {
-        if (!timed_out) return err;
-    }
-
-    closeChildPipes(&child);
-    child.term = term;
-    child.id = undefined;
+    // Join all threads
+    if (stdout_reader) |t| t.join();
+    if (stderr_reader) |t| t.join();
+    waiter.join();
 
     return .{
-        .exit_code = if (timed_out) 124 else termExitCode(term),
-        .stdout = try collect_ctx.stdout.toOwnedSlice(allocator),
-        .stderr = try collect_ctx.stderr.toOwnedSlice(allocator),
+        .exit_code = if (timed_out) 124 else termExitCode(wait_ctx.term),
+        .stdout = try stdout_ctx.buf.toOwnedSlice(allocator),
+        .stderr = try stderr_ctx.buf.toOwnedSlice(allocator),
     };
 }
 
 fn runShellCapture(
     allocator: Allocator,
+    io: std.Io,
     command: []const u8,
-    env_map: ?*const std.process.EnvMap,
+    environ_map: ?*const std.process.Environ.Map,
 ) !RunResult {
-    return runCapture(allocator, &.{ "sh", "-lc", command }, null, env_map);
+    return runCapture(allocator, io, &.{ "sh", "-lc", command }, null, environ_map);
 }
 
 fn runShellCaptureWithTimeout(
     allocator: Allocator,
+    io: std.Io,
     command: []const u8,
-    env_map: ?*const std.process.EnvMap,
+    environ_map: ?*const std.process.Environ.Map,
     timeout_ms: i64,
 ) !RunResult {
-    return runCaptureWithTimeout(allocator, &.{ "sh", "-lc", command }, null, env_map, timeout_ms);
+    return runCaptureWithTimeout(allocator, io, &.{ "sh", "-lc", command }, null, environ_map, timeout_ms);
 }
 
-fn writeCombinedOutput(path: []const u8, stdout_bytes: []const u8, stderr_bytes: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+fn writeCombinedOutput(io: std.Io, path: []const u8, stdout_bytes: []const u8, stderr_bytes: []const u8) !void {
+    const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
 
-    if (stdout_bytes.len > 0) try file.writeAll(stdout_bytes);
+    if (stdout_bytes.len > 0) try file.writeStreamingAll(io, stdout_bytes);
     if (stderr_bytes.len > 0) {
         if (stdout_bytes.len > 0 and stdout_bytes[stdout_bytes.len - 1] != '\n') {
-            try file.writeAll("\n");
+            try file.writeStreamingAll(io, "\n");
         }
-        try file.writeAll(stderr_bytes);
+        try file.writeStreamingAll(io, stderr_bytes);
     }
 }
 
@@ -531,17 +628,17 @@ fn printCommandFailure(label: []const u8, res: RunResult) void {
 }
 
 fn waitForPort(port: u16, timeout_ms: i64) !bool {
-    const addr = try std.net.Address.parseIp4("127.0.0.1", port);
-    const start = std.time.milliTimestamp();
+    const addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
+    const start = milliTimestamp();
 
     while (true) {
-        const stream = std.net.tcpConnectToAddress(addr) catch {
-            if (std.time.milliTimestamp() - start > timeout_ms) return false;
-            std.Thread.sleep(100 * std.time.ns_per_ms);
-            continue;
-        };
-        stream.close();
-        return true;
+        if (rawTcpConnect(addr)) |fd| {
+            closeFd(fd);
+            return true;
+        } else |_| {
+            if (milliTimestamp() - start > timeout_ms) return false;
+            nanosleep(100 * std.time.ns_per_ms);
+        }
     }
 }
 
@@ -556,40 +653,40 @@ fn composeBaseArgs(allocator: Allocator, paths: Paths) !std.ArrayList([]const u8
     return args;
 }
 
-fn dockerRmForce(allocator: Allocator, container: []const u8) !void {
-    const res = try runCapture(allocator, &.{ "docker", "rm", "-f", container }, null, null);
+fn dockerRmForce(allocator: Allocator, io: std.Io, container: []const u8) !void {
+    const res = try runCapture(allocator, io, &.{ "docker", "rm", "-f", container }, null, null);
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
     // Ignore failures; container may not exist.
 }
 
-fn stopRefServers(allocator: Allocator) !void {
+fn stopRefServers(allocator: Allocator, io: std.Io) !void {
     for (all_backends) |backend| {
         for (all_schemas) |schema| {
             const name = try std.fmt.allocPrint(allocator, "e2e-ref-server-{s}-{s}", .{ backendName(backend), schemaName(schema) });
             defer allocator.free(name);
-            try dockerRmForce(allocator, name);
+            try dockerRmForce(allocator, io, name);
         }
     }
 }
 
-fn composeDown(allocator: Allocator, paths: Paths) !void {
+fn composeDown(allocator: Allocator, io: std.Io, paths: Paths) !void {
     var args = try composeBaseArgs(allocator, paths);
     defer args.deinit(allocator);
     try args.appendSlice(allocator, &.{ "down", "--remove-orphans", "--timeout", "5" });
 
-    const res = try runCapture(allocator, args.items, null, null);
+    const res = try runCapture(allocator, io, args.items, null, null);
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
     // Ignore non-zero, used for cleanup only.
 }
 
-fn buildImages(allocator: Allocator, paths: Paths, cfg: Config) !void {
+fn buildImages(allocator: Allocator, io: std.Io, paths: Paths, cfg: Config) !void {
     for (all_backends) |backend| {
         if (!cfg.isBackendSelected(backend)) continue;
 
         const justfile = paths.backendJustfile(backend);
-        const res = try runCapture(allocator, &.{ "just", "--justfile", justfile, "docker-build" }, null, null);
+        const res = try runCapture(allocator, io, &.{ "just", "--justfile", justfile, "docker-build" }, null, null);
         defer allocator.free(res.stdout);
         defer allocator.free(res.stderr);
 
@@ -602,17 +699,17 @@ fn buildImages(allocator: Allocator, paths: Paths, cfg: Config) !void {
     }
 }
 
-fn startRefServer(allocator: Allocator, paths: Paths, backend: Backend, schema: Schema) !void {
+fn startRefServer(allocator: Allocator, io: std.Io, paths: Paths, backend: Backend, schema: Schema) !void {
     const container_name = try std.fmt.allocPrint(allocator, "e2e-ref-server-{s}-{s}", .{ backendName(backend), schemaName(schema) });
     defer allocator.free(container_name);
 
-    try dockerRmForce(allocator, container_name);
+    try dockerRmForce(allocator, io, container_name);
 
     var port_buf: [16]u8 = undefined;
     const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{backendPort(backend)});
 
     const justfile = paths.backendJustfile(backend);
-    const res = try runCapture(allocator, &.{
+    const res = try runCapture(allocator, io, &.{
         "just",
         "--justfile",
         justfile,
@@ -634,15 +731,15 @@ fn startRefServer(allocator: Allocator, paths: Paths, backend: Backend, schema: 
 
     const ready = try waitForPort(backendPort(backend), server_timeout_ms);
     if (!ready) {
-        try dockerRmForce(allocator, container_name);
+        try dockerRmForce(allocator, io, container_name);
         return error.ServerStartTimeout;
     }
 }
 
-fn stopRefServer(allocator: Allocator, backend: Backend, schema: Schema) !void {
+fn stopRefServer(allocator: Allocator, io: std.Io, backend: Backend, schema: Schema) !void {
     const container_name = try std.fmt.allocPrint(allocator, "e2e-ref-server-{s}-{s}", .{ backendName(backend), schemaName(schema) });
     defer allocator.free(container_name);
-    try dockerRmForce(allocator, container_name);
+    try dockerRmForce(allocator, io, container_name);
 }
 
 fn evalTap(output: []const u8) TapEval {
@@ -695,6 +792,8 @@ fn appendResult(allocator: Allocator, list: *std.ArrayList(CaseResult), key: []c
 
 fn runZigClientCase(
     allocator: Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
     paths: Paths,
     zig_client_cmd_override: ?[]const u8,
     backend: Backend,
@@ -704,14 +803,14 @@ fn runZigClientCase(
     var port_buf: [16]u8 = undefined;
     const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{backendPort(backend)});
     const res = if (zig_client_cmd_override) |cmd| blk: {
-        var env = try std.process.getEnvMap(allocator);
+        var env = try environ.createMap(allocator);
         defer env.deinit();
         try env.put("E2E_TARGET_HOST", "127.0.0.1");
         try env.put("E2E_TARGET_PORT", port_text);
         try env.put("E2E_SCHEMA", schemaName(schema));
         try env.put("E2E_BACKEND", backendName(backend));
-        break :blk try runShellCaptureWithTimeout(allocator, cmd, &env, case_timeout_ms);
-    } else try runCaptureWithTimeout(allocator, &.{
+        break :blk try runShellCaptureWithTimeout(allocator, io, cmd, &env, case_timeout_ms);
+    } else try runCaptureWithTimeout(allocator, io, &.{
         "just",
         "--justfile",
         paths.zig_justfile,
@@ -722,12 +821,13 @@ fn runZigClientCase(
         backendName(backend),
     }, null, null, case_timeout_ms);
 
-    try writeCombinedOutput(output_path, res.stdout, res.stderr);
+    try writeCombinedOutput(io, output_path, res.stdout, res.stderr);
     return res;
 }
 
 fn runRefClientCase(
     allocator: Allocator,
+    io: std.Io,
     paths: Paths,
     backend: Backend,
     schema: Schema,
@@ -737,7 +837,7 @@ fn runRefClientCase(
     var port_buf: [16]u8 = undefined;
     const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{target_port});
     const justfile = paths.backendJustfile(backend);
-    const res = try runCaptureWithTimeout(allocator, &.{
+    const res = try runCaptureWithTimeout(allocator, io, &.{
         "just",
         "--justfile",
         justfile,
@@ -746,74 +846,95 @@ fn runRefClientCase(
         port_text,
         schemaNameForBackend(backend, schema),
     }, null, null, case_timeout_ms);
-    try writeCombinedOutput(output_path, res.stdout, res.stderr);
+    try writeCombinedOutput(io, output_path, res.stdout, res.stderr);
     return res;
+}
+
+/// Find a free ephemeral port by binding to port 0 and immediately closing.
+fn findFreePort() !u16 {
+    var listen = try createListenSocket();
+    const port = listen.port;
+    listen.close();
+    return port;
+}
+
+/// Pre-build the e2e-zig-server binary so we can run it directly.
+fn prebuildZigServer(allocator: Allocator, io: std.Io, environ: std.process.Environ, paths: Paths) ![]u8 {
+    var env = try environ.createMap(allocator);
+    defer env.deinit();
+
+    const cache_dir = if (env.get("E2E_ZIG_GLOBAL_CACHE_DIR")) |dir|
+        dir
+    else if (env.get("ZIG_GLOBAL_CACHE_DIR")) |dir|
+        dir
+    else
+        default_e2e_zig_global_cache_dir;
+    try env.put("ZIG_GLOBAL_CACHE_DIR", cache_dir);
+
+    std.debug.print("    pre-building e2e-zig-server...\n", .{});
+    const res = try runCapture(allocator, io, &.{ "zig", "build", "e2e-zig-server-install" }, paths.repo_root, &env);
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+
+    if (res.exit_code != 0) {
+        printCommandFailure("zig build e2e-zig-server-install", res);
+        return error.ServerBuildFailed;
+    }
+
+    return std.fmt.allocPrint(allocator, "{s}/zig-out/bin/e2e-zig-server", .{paths.repo_root});
 }
 
 fn startZigServer(
     allocator: Allocator,
-    paths: Paths,
+    io: std.Io,
+    environ: std.process.Environ,
     zig_server_cmd_override: ?[]const u8,
+    server_bin_path: ?[]const u8,
     schema: Schema,
-    listen: ListenSocket,
+    port: u16,
     inherit_server_logs: bool,
 ) !std.process.Child {
     var port_buf: [16]u8 = undefined;
-    const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{listen.port});
-    var fd_buf: [16]u8 = undefined;
-    const fd_text = try std.fmt.bufPrint(&fd_buf, "{d}", .{listen.fd});
-    var env_storage: ?std.process.EnvMap = null;
-    var env_ptr: ?*std.process.EnvMap = null;
-    env_storage = try std.process.getEnvMap(allocator);
-    env_ptr = &env_storage.?;
-    const e2e_global_cache_dir = try getOptionalEnv(allocator, "E2E_ZIG_GLOBAL_CACHE_DIR");
-    defer if (e2e_global_cache_dir) |dir| allocator.free(dir);
-    const cache_dir = if (e2e_global_cache_dir) |dir|
+    const port_text = try std.fmt.bufPrint(&port_buf, "{d}", .{port});
+
+    var env = try environ.createMap(allocator);
+    defer env.deinit();
+
+    const cache_dir = if (env.get("E2E_ZIG_GLOBAL_CACHE_DIR")) |dir|
         dir
-    else if (env_ptr.?.get("ZIG_GLOBAL_CACHE_DIR")) |dir|
+    else if (env.get("ZIG_GLOBAL_CACHE_DIR")) |dir|
         dir
     else
         default_e2e_zig_global_cache_dir;
-    try env_ptr.?.put("ZIG_GLOBAL_CACHE_DIR", cache_dir);
-    defer if (env_storage) |*map| map.deinit();
+    try env.put("ZIG_GLOBAL_CACHE_DIR", cache_dir);
+
+    const stdout_io: std.process.SpawnOptions.StdIo = if (inherit_server_logs) .inherit else .ignore;
+    const stderr_io: std.process.SpawnOptions.StdIo = if (inherit_server_logs) .inherit else .ignore;
 
     var child = if (zig_server_cmd_override) |cmd| blk: {
-        try env_ptr.?.put("E2E_BIND_HOST", "0.0.0.0");
-        try env_ptr.?.put("E2E_BIND_PORT", port_text);
-        try env_ptr.?.put("E2E_SCHEMA", schemaName(schema));
-        try env_ptr.?.put("E2E_LISTEN_FD", fd_text);
-        var c = std.process.Child.init(&.{ "sh", "-lc", cmd }, allocator);
-        c.env_map = env_ptr.?;
-        break :blk c;
-    } else blk: {
-        var c = std.process.Child.init(&.{
-            "zig",
-            "build",
-            "e2e-zig-server",
-            "--",
-            "--listen-fd",
-            fd_text,
-            "--schema",
-            schemaName(schema),
-        }, allocator);
-        c.cwd = paths.repo_root;
-        c.env_map = env_ptr.?;
-        break :blk c;
-    };
+        try env.put("E2E_BIND_HOST", "0.0.0.0");
+        try env.put("E2E_BIND_PORT", port_text);
+        try env.put("E2E_SCHEMA", schemaName(schema));
+        break :blk try std.process.spawn(io, .{
+            .argv = &.{ "sh", "-lc", cmd },
+            .environ_map = &env,
+            .stdin = .ignore,
+            .stdout = stdout_io,
+            .stderr = stderr_io,
+        });
+    } else if (server_bin_path) |bin| blk: {
+        break :blk try std.process.spawn(io, .{
+            .argv = &.{ bin, "--host", "0.0.0.0", "--port", port_text, "--schema", schemaName(schema) },
+            .environ_map = &env,
+            .stdin = .ignore,
+            .stdout = stdout_io,
+            .stderr = stderr_io,
+        });
+    } else unreachable;
 
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = if (inherit_server_logs) .Inherit else .Ignore;
-    child.stderr_behavior = if (inherit_server_logs) .Inherit else .Ignore;
-
-    try child.spawn();
-
-    // The listening socket is already open, so waitForPort will succeed as
-    // soon as the kernel acknowledges the connection.  The child inherits
-    // the fd and starts accept()ing on the xev loop.
-    const ready = try waitForPort(listen.port, server_timeout_ms);
+    const ready = try waitForPort(port, server_timeout_ms);
     if (!ready) {
-        _ = child.kill() catch {};
-        _ = child.wait() catch {};
+        child.kill(io);
         return error.ServerStartTimeout;
     }
 
@@ -822,6 +943,8 @@ fn startZigServer(
 
 fn runZigClientPhase(
     allocator: Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
     cfg: Config,
     paths: Paths,
     zig_client_cmd_override: ?[]const u8,
@@ -840,19 +963,19 @@ fn runZigClientPhase(
 
             std.debug.print("    case {s}\n", .{key});
 
-            startRefServer(allocator, paths, backend, schema) catch |err| {
+            startRefServer(allocator, io, paths, backend, schema) catch |err| {
                 const status = try std.fmt.allocPrint(allocator, "FAIL(server-start:{s})", .{@errorName(err)});
                 defer allocator.free(status);
                 try appendResult(allocator, results, key, status);
                 continue;
             };
 
-            defer stopRefServer(allocator, backend, schema) catch {};
+            defer stopRefServer(allocator, io, backend, schema) catch {};
 
             const output_path = try std.fmt.allocPrint(allocator, "{s}/zig_client_{s}_{s}.tap", .{ paths.results_dir, schemaName(schema), backendName(backend) });
             defer allocator.free(output_path);
 
-            const run = try runZigClientCase(allocator, paths, zig_client_cmd_override, backend, schema, output_path);
+            const run = try runZigClientCase(allocator, io, environ, paths, zig_client_cmd_override, backend, schema, output_path);
             defer allocator.free(run.stdout);
             defer allocator.free(run.stderr);
 
@@ -873,12 +996,24 @@ fn runZigClientPhase(
 
 fn runZigServerPhase(
     allocator: Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
     cfg: Config,
     paths: Paths,
     zig_server_cmd_override: ?[]const u8,
     results: *std.ArrayList(CaseResult),
 ) !void {
     std.debug.print("==> Phase: reference client -> Zig server\n", .{});
+
+    // Pre-build the server binary once (skip if using override command).
+    var server_bin_path: ?[]u8 = null;
+    defer if (server_bin_path) |p| allocator.free(p);
+    if (zig_server_cmd_override == null) {
+        server_bin_path = prebuildZigServer(allocator, io, environ, paths) catch null;
+        if (server_bin_path == null) {
+            std.debug.print("    WARNING: pre-build failed, server tests will fail\n", .{});
+        }
+    }
 
     for (all_schemas) |schema| {
         if (!cfg.isSchemaSelected(schema)) continue;
@@ -888,27 +1023,22 @@ fn runZigServerPhase(
             const key = try std.fmt.allocPrint(allocator, "zig-server:{s}:{s}", .{ schemaName(schema), backendName(backend) });
             defer allocator.free(key);
 
-            var listen = createListenSocket() catch |err| {
+            const port = findFreePort() catch |err| {
                 const status = try std.fmt.allocPrint(allocator, "FAIL(port-reserve:{s})", .{@errorName(err)});
                 defer allocator.free(status);
                 try appendResult(allocator, results, key, status);
                 continue;
             };
 
-            std.debug.print("    starting Zig server for schema={s} on port={d} fd={d}\n", .{ schemaName(schema), listen.port, listen.fd });
-            var child = startZigServer(allocator, paths, zig_server_cmd_override, schema, listen, cfg.verbose) catch |err| {
-                listen.close();
+            std.debug.print("    starting Zig server for schema={s} on port={d}\n", .{ schemaName(schema), port });
+            var child = startZigServer(allocator, io, environ, zig_server_cmd_override, server_bin_path, schema, port, cfg.verbose) catch |err| {
                 const status = try std.fmt.allocPrint(allocator, "FAIL(server-start:{s})", .{@errorName(err)});
                 defer allocator.free(status);
                 try appendResult(allocator, results, key, status);
                 continue;
             };
-            // Child inherited the fd; close the parent's copy so it doesn't
-            // leak across loop iterations.
-            listen.close();
             defer {
-                _ = child.kill() catch {};
-                _ = child.wait() catch {};
+                child.kill(io);
             }
 
             std.debug.print("    case {s}\n", .{key});
@@ -916,7 +1046,7 @@ fn runZigServerPhase(
             const output_path = try std.fmt.allocPrint(allocator, "{s}/zig_server_{s}_{s}.tap", .{ paths.results_dir, schemaName(schema), backendName(backend) });
             defer allocator.free(output_path);
 
-            const run = try runRefClientCase(allocator, paths, backend, schema, listen.port, output_path);
+            const run = try runRefClientCase(allocator, io, paths, backend, schema, port, output_path);
             defer allocator.free(run.stdout);
             defer allocator.free(run.stderr);
 
@@ -935,13 +1065,7 @@ fn runZigServerPhase(
     }
 }
 
-fn writeFmt(allocator: Allocator, file: std.fs.File, comptime fmt: []const u8, args: anytype) !void {
-    const text = try std.fmt.allocPrint(allocator, fmt, args);
-    defer allocator.free(text);
-    try file.writeAll(text);
-}
-
-fn writeSummary(allocator: Allocator, paths: Paths, results: []const CaseResult) !void {
+fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const CaseResult) !void {
     var passed: usize = 0;
     var failed: usize = 0;
     var skipped: usize = 0;
@@ -970,27 +1094,40 @@ fn writeSummary(allocator: Allocator, paths: Paths, results: []const CaseResult)
         std.debug.print("{s: <36} {s}\n", .{ item.key, item.status });
     }
 
-    const summary_path = try std.fmt.allocPrint(allocator, "{s}/summary.json", .{paths.results_dir});
-    defer allocator.free(summary_path);
+    // Build summary JSON in memory
+    var content = std.ArrayList(u8){};
+    defer content.deinit(allocator);
 
-    var summary_file = try std.fs.cwd().createFile(summary_path, .{});
-    defer summary_file.close();
-
-    try writeFmt(allocator, summary_file, "{{\n", .{});
-    try writeFmt(allocator, summary_file, "  \"total\": {d},\n", .{results.len});
-    try writeFmt(allocator, summary_file, "  \"passed\": {d},\n", .{passed});
-    try writeFmt(allocator, summary_file, "  \"failed\": {d},\n", .{failed});
-    try writeFmt(allocator, summary_file, "  \"skipped\": {d},\n", .{skipped});
-    try writeFmt(allocator, summary_file, "  \"results\": {{\n", .{});
+    try appendFmt(allocator, &content, "{{\n", .{});
+    try appendFmt(allocator, &content, "  \"total\": {d},\n", .{results.len});
+    try appendFmt(allocator, &content, "  \"passed\": {d},\n", .{passed});
+    try appendFmt(allocator, &content, "  \"failed\": {d},\n", .{failed});
+    try appendFmt(allocator, &content, "  \"skipped\": {d},\n", .{skipped});
+    try appendFmt(allocator, &content, "  \"results\": {{\n", .{});
 
     for (results, 0..) |item, idx| {
         const comma = if (idx + 1 == results.len) "" else ",";
-        try writeFmt(allocator, summary_file, "    \"{s}\": \"{s}\"{s}\n", .{ item.key, item.status, comma });
+        try appendFmt(allocator, &content, "    \"{s}\": \"{s}\"{s}\n", .{ item.key, item.status, comma });
     }
 
-    try writeFmt(allocator, summary_file, "  }}\n", .{});
-    try writeFmt(allocator, summary_file, "}}\n", .{});
+    try appendFmt(allocator, &content, "  }}\n", .{});
+    try appendFmt(allocator, &content, "}}\n", .{});
+
+    // Write to file
+    const summary_path = try std.fmt.allocPrint(allocator, "{s}/summary.json", .{paths.results_dir});
+    defer allocator.free(summary_path);
+
+    const file = try std.Io.Dir.cwd().createFile(io, summary_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, content.items);
+
     if (failed > 0) return error.E2EFailed;
+}
+
+fn appendFmt(allocator: Allocator, list: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
+    const text = try std.fmt.allocPrint(allocator, fmt, args);
+    defer allocator.free(text);
+    try list.appendSlice(allocator, text);
 }
 
 fn runScaffoldWithMissingHooks(allocator: Allocator, cfg: Config, results: *std.ArrayList(CaseResult), have_client: bool, have_server: bool) !void {
@@ -1019,39 +1156,35 @@ fn runScaffoldWithMissingHooks(allocator: Allocator, cfg: Config, results: *std.
     }
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const cfg = parseArgs(allocator) catch |err| switch (err) {
+    const cfg = parseArgs(init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => return,
         else => return err,
     };
 
-    const paths = try detectPaths();
-    try std.fs.cwd().makePath(paths.results_dir);
+    const paths = try detectPaths(io);
+    try std.Io.Dir.cwd().createDirPath(io, paths.results_dir);
 
     // Best-effort cleanup of old servers from previous runs.
-    try stopRefServers(allocator);
+    try stopRefServers(allocator, io);
     defer {
-        stopRefServers(allocator) catch {};
-        composeDown(allocator, paths) catch {};
+        stopRefServers(allocator, io) catch {};
+        composeDown(allocator, io, paths) catch {};
     }
 
     if (!cfg.skip_build) {
-        try buildImages(allocator, paths, cfg);
+        try buildImages(allocator, io, paths, cfg);
     }
 
     if (cfg.build_only) return;
 
-    const zig_client_cmd = try getOptionalEnv(allocator, "E2E_ZIG_CLIENT_CMD");
-    defer if (zig_client_cmd) |cmd| allocator.free(cmd);
+    const zig_client_cmd = init.environ_map.get("E2E_ZIG_CLIENT_CMD");
+    const zig_server_cmd = init.environ_map.get("E2E_ZIG_SERVER_CMD");
 
-    const zig_server_cmd = try getOptionalEnv(allocator, "E2E_ZIG_SERVER_CMD");
-    defer if (zig_server_cmd) |cmd| allocator.free(cmd);
-
-    const have_default_hooks = fileExists(paths.zig_justfile);
+    const have_default_hooks = fileExists(io, paths.zig_justfile);
     const have_client_hook = zig_client_cmd != null or have_default_hooks;
     const have_server_hook = zig_server_cmd != null or have_default_hooks;
 
@@ -1080,12 +1213,12 @@ pub fn main() !void {
     }
 
     if ((cfg.direction == .both or cfg.direction == .zig_client) and have_client_hook) {
-        try runZigClientPhase(allocator, cfg, paths, zig_client_cmd, &results);
+        try runZigClientPhase(allocator, io, init.minimal.environ, cfg, paths, zig_client_cmd, &results);
     }
 
     if ((cfg.direction == .both or cfg.direction == .zig_server) and have_server_hook) {
-        try runZigServerPhase(allocator, cfg, paths, zig_server_cmd, &results);
+        try runZigServerPhase(allocator, io, init.minimal.environ, cfg, paths, zig_server_cmd, &results);
     }
 
-    try writeSummary(allocator, paths, results.items);
+    try writeSummary(allocator, io, paths, results.items);
 }

@@ -1,9 +1,9 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
-const xev = @import("xev").Dynamic;
 
 const rpc = capnpc.rpc;
 
+const game_types = @import("generated/game_types.zig");
 const game_world = @import("generated/game_world.zig");
 const chat = @import("generated/chat.zig");
 const inventory = @import("generated/inventory.zig");
@@ -41,7 +41,6 @@ const Tap = struct {
 
 const ClientApp = struct {
     allocator: Allocator,
-    runtime: rpc.runtime.Runtime,
     args: CliArgs,
     tap: Tap = .{},
     done: bool = false,
@@ -60,35 +59,28 @@ fn parseSchema(text: []const u8) !Schema {
     return error.InvalidSchema;
 }
 
-fn parseArgs(allocator: Allocator) !CliArgs {
+fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = out.host;
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
-
-    var idx: usize = 1;
-    while (idx < argv.len) : (idx += 1) {
-        const arg = argv[idx];
+    var args_iter = std.process.Args.Iterator.init(args);
+    _ = args_iter.skip(); // skip program name
+    while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return error.HelpRequested;
         }
         if (std.mem.eql(u8, arg, "--host")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            host_text = argv[idx];
+            host_text = args_iter.next() orelse return error.MissingArgValue;
             continue;
         }
         if (std.mem.eql(u8, arg, "--port")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.port = try std.fmt.parseInt(u16, argv[idx], 10);
+            const port_str = args_iter.next() orelse return error.MissingArgValue;
+            out.port = try std.fmt.parseInt(u16, port_str, 10);
             continue;
         }
         if (std.mem.eql(u8, arg, "--schema")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.schema = try parseSchema(argv[idx]);
+            const schema_str = args_iter.next() orelse return error.MissingArgValue;
+            out.schema = try parseSchema(schema_str);
             continue;
         }
     }
@@ -112,17 +104,31 @@ fn failAndFinish(app: *ClientApp, peer: *rpc.peer.Peer, desc: []const u8) void {
 }
 
 fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
-    std.log.err("rpc peer error: {s}", .{@errorName(err)});
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
     if (g_client_app) |app| {
-        app.err = err;
-        app.done = true;
+        if (!app.done) {
+            std.log.err("rpc peer error: {s}", .{@errorName(err)});
+            app.err = err;
+            app.done = true;
+        }
     }
 }
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
-    _ = peer;
+    const allocator = peer.allocator;
+    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
+
+    peer.deinit();
+    allocator.destroy(peer);
+
+    if (conn) |attached| {
+        attached.deinit();
+        allocator.destroy(attached);
+    }
+
     if (g_client_app) |app| {
+        app.peer = null;
+        app.conn = null;
         app.done = true;
     }
 }
@@ -165,7 +171,7 @@ fn onSpawnEntityReturn(
 
     switch (response) {
         .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(game_world.StatusCode), "spawnEntity returns ok status");
+            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "spawnEntity returns ok status");
             const entity = try results.getEntity();
             app.tap.ok(std.mem.eql(u8, try entity.getName(), "ZigClientHero"), "spawnEntity returns expected name");
         },
@@ -206,7 +212,7 @@ fn onCreateRoomReturn(
 
     switch (response) {
         .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(chat.StatusCode), "createRoom returns ok status");
+            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "createRoom returns ok status");
             const room_cap = try results.getRoom();
             const resolved = try caps.resolveCapability(room_cap);
             app.tap.ok(switch (resolved) {
@@ -251,7 +257,7 @@ fn onGetInventoryReturn(
 
     switch (response) {
         .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(inventory.StatusCode), "getInventory returns ok status");
+            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "getInventory returns ok status");
             const inv = try results.getInventory();
             app.tap.ok((try inv.getUsedSlots()) == 0, "new inventory has zero used slots");
         },
@@ -297,7 +303,7 @@ fn onEnqueueReturn(
 
     switch (response) {
         .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(matchmaking.StatusCode), "enqueue returns ok status");
+            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "enqueue returns ok status");
             const ticket = try results.getTicket();
             app.tap.ok((try ticket.getTicketId()) > 0, "enqueue returns a non-zero ticket id");
         },
@@ -307,65 +313,49 @@ fn onEnqueueReturn(
     finish(app, peer);
 }
 
-const ConnectCtx = struct {
-    app: *ClientApp,
-};
+fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
+    var bytes: [4]u8 = undefined;
+    var byte_idx: usize = 0;
+    var iter = std.mem.splitScalar(u8, host, '.');
+    while (iter.next()) |octet| {
+        if (byte_idx >= 4) return error.InvalidAddress;
+        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
+        byte_idx += 1;
+    }
+    if (byte_idx != 4) return error.InvalidAddress;
+    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
+}
 
-fn onConnect(
-    ctx: ?*ConnectCtx,
-    loop: *xev.Loop,
-    _: *xev.Completion,
-    socket: xev.TCP,
-    res: xev.ConnectError!void,
-) xev.CallbackAction {
-    const connect_ctx = ctx orelse return .disarm;
-    const app = connect_ctx.app;
+fn rawTcpConnect(addr: std.Io.net.IpAddress) !std.posix.fd_t {
+    const builtin = @import("builtin");
+    const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
+    const family: c_uint = switch (addr) {
+        .ip4 => std.posix.AF.INET,
+        .ip6 => std.posix.AF.INET6,
+    };
+    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
+    const fd_rc = std.posix.system.socket(family, flags, 0);
+    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
+    const fd: std.posix.fd_t = @intCast(fd_rc);
+    errdefer rpc.runtime.closeFd(fd);
 
-    if (res) |_| {
-        const conn = app.allocator.create(rpc.connection.Connection) catch {
-            app.err = error.OutOfMemory;
-            app.done = true;
-            return .disarm;
-        };
-
-        conn.* = rpc.connection.Connection.init(app.allocator, loop, socket, .{}) catch |err| {
-            app.allocator.destroy(conn);
-            app.err = err;
-            app.done = true;
-            return .disarm;
-        };
-
-        const peer = app.allocator.create(rpc.peer.Peer) catch {
-            conn.deinit();
-            app.allocator.destroy(conn);
-            app.err = error.OutOfMemory;
-            app.done = true;
-            return .disarm;
-        };
-
-        peer.* = rpc.peer.Peer.init(app.allocator, conn);
-        app.conn = conn;
-        app.peer = peer;
-
-        peer.start(onPeerError, onPeerClose);
-
-        const start_result = switch (app.args.schema) {
-            .game_world => bootstrapGameWorld(app, peer),
-            .chat => bootstrapChat(app, peer),
-            .inventory => bootstrapInventory(app, peer),
-            .matchmaking => bootstrapMatchmaking(app, peer),
-        };
-
-        start_result catch |err| {
-            app.err = err;
-            app.done = true;
-        };
-    } else |err| {
-        app.err = err;
-        app.done = true;
+    if (socket_cloexec_unsupported) {
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
     }
 
-    return .disarm;
+    const storage = rpc.runtime.ipAddressToSockaddr(addr);
+    while (true) {
+        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
+            .SUCCESS => return fd,
+            .INTR => continue,
+            .CONNREFUSED => return error.ConnectionRefused,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .NETUNREACH => return error.NetworkUnreachable,
+            .HOSTUNREACH => return error.HostUnreachable,
+            .TIMEDOUT => return error.Timeout,
+            else => return error.ConnectFailed,
+        }
+    }
 }
 
 fn usage() void {
@@ -374,12 +364,12 @@ fn usage() void {
     , .{});
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -398,33 +388,43 @@ pub fn main() !void {
 
     var app = ClientApp{
         .allocator = allocator,
-        .runtime = try rpc.runtime.Runtime.init(allocator),
         .args = args,
     };
-    defer app.runtime.deinit();
     g_client_app = &app;
     defer g_client_app = null;
 
-    const address = try std.net.Address.parseIp4(args.host, args.port);
+    const address = try parseIp4Address(args.host, args.port);
+    const fd = try rawTcpConnect(address);
 
-    var socket = try xev.TCP.init(address);
-    var completion: xev.Completion = .{};
-    var connect_ctx = ConnectCtx{ .app = &app };
-
-    socket.connect(&app.runtime.loop, &completion, address, ConnectCtx, &connect_ctx, onConnect);
-
-    while (!app.done) {
-        try app.runtime.run(.once);
-    }
-
-    if (app.peer) |peer| {
-        peer.deinit();
-        allocator.destroy(peer);
-    }
-    if (app.conn) |conn| {
-        conn.deinit();
+    const conn = try allocator.create(rpc.connection.Connection);
+    conn.* = rpc.connection.Connection.init(allocator, fd, .{}) catch |err| {
         allocator.destroy(conn);
-    }
+        rpc.runtime.closeFd(fd);
+        return err;
+    };
+    app.conn = conn;
+
+    const peer = try allocator.create(rpc.peer.Peer);
+    peer.* = rpc.peer.Peer.init(allocator, conn);
+    app.peer = peer;
+
+    peer.start(onPeerError, onPeerClose);
+
+    const start_result = switch (app.args.schema) {
+        .game_world => bootstrapGameWorld(&app, peer),
+        .chat => bootstrapChat(&app, peer),
+        .inventory => bootstrapInventory(&app, peer),
+        .matchmaking => bootstrapMatchmaking(&app, peer),
+    };
+
+    start_result catch |err| {
+        app.err = err;
+        if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
+    };
+
+    conn.run();
+
+    // peer and conn are cleaned up by onPeerClose
 
     if (app.err) |err| return err;
 

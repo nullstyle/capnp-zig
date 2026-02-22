@@ -1,10 +1,10 @@
-# RPC Runtime Design (libxev)
+# RPC Runtime Design
 
 ## Goals
 - Full Cap'n Proto RPC protocol compliance (bootstrap, calls, returns, pipelining, capability transfer).
 - Production-ready performance: low overhead, backpressure-aware, minimal allocations.
 - Integration with the existing `src/serialization/message.zig` wire-format layer and codegen.
-- Event-driven, cross-platform IO via libxev.
+- Concurrent read/write I/O via POSIX sockets with dedicated writer threads.
 
 ## Non-Goals (Initial Phase)
 - TLS or authentication (assume a trusted transport).
@@ -14,28 +14,23 @@
 ## Architecture Overview
 The runtime is organized into a small set of components, with strict ownership and lifetime rules:
 
-- `rpc/Runtime` (`src/rpc/level2/runtime.zig`): owns the libxev loop (or attaches to an existing loop), manages connections, and provides a minimal executor to schedule user callbacks without blocking the IO loop.
+- `rpc/Runtime` (`src/rpc/level2/runtime.zig`): listener and socket helpers for creating TCP connections.
 - `rpc/Connection` (`src/rpc/level2/connection.zig`): per-transport state machine for framing, parsing, dispatch, and write scheduling.
-- `rpc/Transport` (`src/rpc/level2/transport_xev.zig`): libxev TCP transport, handling async read/write and exposing buffers to `Connection`.
+- `rpc/Transport` (`src/rpc/level2/transport.zig`): concurrent read/write transport, handling blocking I/O and exposing buffers to `Connection`.
 - `rpc/Protocol` (`src/rpc/level0/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
 - `rpc/CapTable` (`src/rpc/level0/cap_table.zig`): export/import capability tracking with reference counting and lifetime management.
 - `rpc/Peer` (`src/rpc/level3/peer.zig` + `src/rpc/level3/peer/*`): inbound/outbound call orchestration, return handling, and lifecycle dispatch.
 - `rpc/Promise Pipeline` (`src/rpc/common/promise_pipeline.zig`, `src/rpc/level1/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
 
-All runtime types are single-threaded unless explicitly documented. The event loop thread owns connections and transport IO.
+All runtime types are single-threaded unless explicitly documented. Each connection uses a dedicated writer thread for outbound I/O and blocking reads on the main connection thread.
 
-## libxev Integration
-We use libxev’s proactor model:
-- `xev.Loop` is the main reactor.
-- `xev.TCP` provides async `accept`, `read`, `write`, and `close`.
-- `xev.Completion` objects are embedded in connection state and must remain stable while in-flight.
-
-Connection IO pipeline:
-1. `Transport` submits a read into a fixed buffer.
-2. On completion, `Connection` consumes bytes into a framing parser.
+## Transport
+Each connection uses a `Transport` with concurrent read/write I/O:
+1. The read side performs blocking reads into a fixed buffer on the connection thread.
+2. `Connection` consumes bytes into a framing parser.
 3. Complete frames are parsed into RPC messages (Cap’n Proto message framing).
 4. Parsed messages are dispatched to handlers.
-5. Outbound messages are serialized and queued; `Transport` submits writes using libxev’s queued write support.
+5. Outbound messages are serialized and enqueued; a dedicated writer thread drains the write queue.
 
 ## Framing and Parsing
 - RPC messages are Cap’n Proto messages with standard segment framing (and optional packing in future).
@@ -76,7 +71,7 @@ Outbound call:
 ## Current Module Layout
 - `src/rpc/level2/runtime.zig`
 - `src/rpc/level2/connection.zig`
-- `src/rpc/level2/transport_xev.zig`
+- `src/rpc/level2/transport.zig`
 - `src/rpc/level0/protocol.zig`
 - `src/rpc/level0/cap_table.zig`
 - `src/rpc/level0/framing.zig`

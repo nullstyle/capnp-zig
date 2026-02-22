@@ -12,15 +12,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const zigzag_dep = b.dependency("zigzag", .{
-        .target = target,
-        .optimize = optimize,
-    });
 
     const lib_module = capnpc_dep.module("capnpc-zig");
     const rocksdb_module = rocksdb_dep.module("bindings");
     const rocksdb_c_module = rocksdb_dep.module("rocksdb");
-    const zigzag_module = zigzag_dep.module("zigzag");
 
     // Server
     const server = b.addExecutable(.{
@@ -44,28 +39,6 @@ pub fn build(b: *std.Build) void {
     }
     const server_step = b.step("server", "Run the KVStore server");
     server_step.dependOn(&run_server.step);
-
-    // Client
-    const client = b.addExecutable(.{
-        .name = "kvstore-client",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("client.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "zigzag", .module = zigzag_module },
-            },
-        }),
-    });
-    b.installArtifact(client);
-
-    const run_client = b.addRunArtifact(client);
-    if (b.args) |args| {
-        run_client.addArgs(args);
-    }
-    const client_step = b.step("client", "Run the KVStore client");
-    client_step.dependOn(&run_client.step);
 
     const stressor = b.addExecutable(.{
         .name = "kvstore-stressor",
@@ -103,21 +76,6 @@ pub fn build(b: *std.Build) void {
     });
     const run_server_tests = b.addRunArtifact(server_tests);
 
-    const client_tests = b.addTest(.{
-        .name = "kvstore-client-tests",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("client.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "zigzag", .module = zigzag_module },
-            },
-        }),
-    });
-    const run_client_tests = b.addRunArtifact(client_tests);
-
     const test_step = b.step("test", "Run KVStore example compile tests");
     test_step.dependOn(&run_server_tests.step);
-    test_step.dependOn(&run_client_tests.step);
 }

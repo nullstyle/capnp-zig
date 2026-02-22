@@ -1,3 +1,5 @@
 [tools]
+act = "latest"
+go = "1.26.0"
 just = "latest"
-zig = "0.15.2"
+zig = "master"

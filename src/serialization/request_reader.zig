@@ -145,7 +145,7 @@ fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema
     errdefer freeAnnotations(allocator, annotations);
 
     const kind_raw = reader.readU16(12);
-    const kind_tag = std.meta.intToEnum(NodeWhich, kind_raw) catch return error.InvalidNodeKind;
+    const kind_tag = std.enums.fromInt(NodeWhich, kind_raw) orelse return error.InvalidNodeKind;
 
     var struct_node: ?schema.StructNode = null;
     var enum_node: ?schema.EnumNode = null;
@@ -235,7 +235,7 @@ fn parseStructNode(allocator: std.mem.Allocator, reader: message.StructReader) !
     const data_word_count = reader.readU16(14);
     const pointer_count = reader.readU16(24);
     const preferred_raw = reader.readU16(26);
-    const preferred_list_encoding = std.meta.intToEnum(schema.ElementSize, preferred_raw) catch return error.InvalidElementSize;
+    const preferred_list_encoding = std.enums.fromInt(schema.ElementSize, preferred_raw) orelse return error.InvalidElementSize;
     const is_group = reader.readBool(28, 0);
     const discriminant_count = reader.readU16(30);
     const discriminant_offset = reader.readU32(32);
@@ -426,7 +426,7 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
     const discriminant_value = reader.readU16(2) ^ @as(u16, 0xffff);
 
     const which_raw = reader.readU16(8);
-    const which_tag = std.meta.intToEnum(FieldWhich, which_raw) catch return error.InvalidFieldKind;
+    const which_tag = std.enums.fromInt(FieldWhich, which_raw) orelse return error.InvalidFieldKind;
 
     var slot: ?schema.FieldSlot = null;
     var group: ?schema.FieldGroup = null;
@@ -572,7 +572,7 @@ fn parseType(allocator: std.mem.Allocator, reader: message.StructReader, depth: 
     if (depth > 64) return error.TypeNestingTooDeep;
 
     const which_raw = reader.readU16(0);
-    const which_tag = std.meta.intToEnum(TypeWhich, which_raw) catch return error.InvalidTypeKind;
+    const which_tag = std.enums.fromInt(TypeWhich, which_raw) orelse return error.InvalidTypeKind;
 
     return switch (which_tag) {
         .void => .void,
@@ -606,7 +606,7 @@ fn parseType(allocator: std.mem.Allocator, reader: message.StructReader, depth: 
 
 fn parseValue(allocator: std.mem.Allocator, reader: message.StructReader) !?schema.Value {
     const which_raw = reader.readU16(0);
-    const which_tag = std.meta.intToEnum(ValueWhich, which_raw) catch return null;
+    const which_tag = std.enums.fromInt(ValueWhich, which_raw) orelse return null;
 
     return switch (which_tag) {
         .void => .void,

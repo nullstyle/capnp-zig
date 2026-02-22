@@ -11,9 +11,8 @@ pub const Context = struct {
 };
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    return try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    const io = std.testing.io;
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
 }
 
 pub fn loadJson(allocator: std.mem.Allocator, path: []const u8) !json.Parsed(json.Value) {

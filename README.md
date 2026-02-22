@@ -2,16 +2,16 @@
 
 **WARNING: This code was extensively vibed;  It's only for me for now, use at your own risk**
 
-A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on libxev. Written entirely in Zig 0.15.2.
+A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime using synchronous POSIX I/O with a concurrent read/write transport. Written entirely in Zig 0.16.
 
 ## Features
 
-- **Pure Zig Implementation**: No C++ dependencies, written entirely in Zig 0.15.2
+- **Pure Zig Implementation**: No C++ dependencies, written entirely in Zig 0.16
 - **Full Serialization Support**: Complete Cap'n Proto wire format including packed encoding and far pointers
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
 - **Schema-Driven Code Generation**: Generates idiomatic Zig Reader/Builder types from `.capnp` schemas
-- **RPC Runtime**: Cap'n Proto RPC over TCP using libxev, with capability-based messaging
+- **RPC Runtime**: Cap'n Proto RPC over TCP with capability-based messaging
 - **Comprehensive Tests**: Extensive message/codegen/RPC/interop coverage
 - **Type Safe**: Leverages Zig's compile-time type system
 
@@ -19,7 +19,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 
 ### Prerequisites
 
-- Zig 0.15.2
+- Zig 0.16
 - Cap'n Proto compiler (`capnp`) - optional, for schema compilation
 - `mise` (recommended, for environment management)
 - `just` (recommended, for task automation)
@@ -168,11 +168,11 @@ Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generato
 
 `src/rpc/`
 
-Cap'n Proto RPC over TCP using libxev. Organized by Cap'n Proto RPC levels:
+Cap'n Proto RPC over TCP using synchronous POSIX I/O with a concurrent read/write transport. Organized by Cap'n Proto RPC levels:
 
 - **Level 0** (`src/rpc/level0/`): Protocol primitives -- message framing, RPC wire message definitions, and capability export/import table with reference counting.
 - **Level 1** (`src/rpc/level1/`): Promise pipelining -- promised-answer transforms, queued pipelined-call replay, and return-send helpers.
-- **Level 2** (`src/rpc/level2/`): Runtime plumbing -- the libxev event loop and TCP transport, per-connection state machine, host peer management, stream state, and worker pool.
+- **Level 2** (`src/rpc/level2/`): Runtime plumbing -- TCP transport with concurrent read/write I/O, per-connection state machine, host peer management, stream state, and worker pool.
 - **Level 3** (`src/rpc/level3/`): Full peer semantics -- inbound/outbound call orchestration, return handling, capability lifecycle, embargo handling, third-party handoff, and forwarding logic.
 
 ### Key Data Flows
@@ -183,13 +183,11 @@ Cap'n Proto RPC over TCP using libxev. Organized by Cap'n Proto RPC levels:
 
 **Deserialization**: `Message.init(bytes)` -> `Message.getRootStruct()` -> `StructReader.read*()` (zero-copy, reads directly from wire bytes)
 
-**RPC call flow**: Client builds `Call` message -> `Peer` serializes and queues write -> `Transport` sends via libxev -> remote `Connection` frames and parses -> `Peer` dispatches to server implementation -> `Return` message sent back
+**RPC call flow**: Client builds `Call` message -> `Peer` serializes and queues write -> `Transport` sends via write thread -> remote `Connection` frames and parses -> `Peer` dispatches to server implementation -> `Return` message sent back
 
 ### Public API (`src/lib.zig`)
 
-Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`, `xev`
-
-A secondary `lib_core.zig` provides the same exports without the libxev transport surface, for environments that do not need the async I/O runtime.
+Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`
 
 ## Project Structure
 
@@ -197,8 +195,7 @@ A secondary `lib_core.zig` provides the same exports without the libxev transpor
 capnpc-zig/
 ├── src/
 │   ├── main.zig                        # Compiler plugin entry point
-│   ├── lib.zig                         # Full library exports (with xev)
-│   ├── lib_core.zig                    # Core library exports (without xev)
+│   ├── lib.zig                         # Library exports
 │   ├── serialization/
 │   │   ├── message.zig                 # Wire format: segments, pointers, packing
 │   │   ├── message/                    # Sub-modules: struct/list builders & readers,
@@ -212,8 +209,7 @@ capnpc-zig/
 │   │   ├── struct_gen.zig             # Struct field accessor generation
 │   │   └── types.zig                  # Cap'n Proto -> Zig type mapping
 │   ├── rpc/
-│   │   ├── mod.zig                    # RPC public module (full)
-│   │   ├── mod_core.zig               # RPC public module (no xev)
+│   │   ├── mod.zig                    # RPC public module
 │   │   ├── capnp/
 │   │   │   └── rpc.capnp             # Canonical RPC schema copy
 │   │   ├── level0/                    # Framing, protocol defs, cap table
@@ -238,21 +234,21 @@ capnpc-zig/
 ├── docs/                              # Design docs and guides
 ├── vendor/ext/                        # Vendored submodules (go-capnp, capnp_test)
 ├── build.zig                          # Zig build configuration
-├── build.zig.zon                      # Zig package manifest (libxev dep)
+├── build.zig.zon                      # Zig package manifest
 ├── Justfile                           # Task automation
-└── .mise.toml                         # Environment configuration
+└── mise.toml                          # Environment configuration
 ```
 
 ## RPC Runtime
 
-The RPC runtime implements the Cap'n Proto RPC protocol over TCP, using [libxev](https://github.com/kprotty/libxev) as the async I/O backend. It is organized following the Cap'n Proto RPC specification levels.
+The RPC runtime implements the Cap'n Proto RPC protocol over TCP, using synchronous POSIX I/O with a concurrent read/write transport layer. It is organized following the Cap'n Proto RPC specification levels.
 
-**Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `PLAN.md` and `docs/rpc_runtime_design.md` for details.
+**Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `docs/rpc_runtime_design.md` for details.
 Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp` (integration plan: `docs/rpc-capnp-integration-plan.md`).
 
 ### Design Highlights
 
-- **Event-driven I/O**: Built on libxev's proactor model. The event loop thread owns connections and transport I/O. All runtime types are single-threaded unless explicitly documented.
+- **Concurrent I/O**: Each connection uses a dedicated writer thread and blocking reads. All runtime types are single-threaded unless explicitly documented.
 - **Capability-based security**: Each connection maintains export and import tables tracking capabilities by ID with reference counting. The runtime sends `Release` when a refcount reaches zero.
 - **Promise pipelining**: Calls can be pipelined on promised answers before results arrive, reducing round trips.
 - **Structured peer orchestration**: The `Peer` type handles the full lifecycle -- call dispatch, return handling, embargo management, capability forwarding, and third-party handoff.
@@ -423,12 +419,10 @@ Implemented today:
 - Local benchmark and interop gates (`zig build bench-check`, `just e2e`)
 
 Roadmap and parity tracking live in:
-- `ROADMAP.md`
 - `docs/production_parity_checklist.md`
 
 ## Dependencies
 
-- **libxev** -- Event loop library, fetched via `build.zig.zon` URL+hash dependency (used by RPC runtime)
 - **go-capnp** (`vendor/ext/go-capnp/`) -- Go Cap'n Proto reference (git submodule), used by the e2e Go backend
 - **capnp_test** (`vendor/ext/capnp_test/`) -- Official Cap'n Proto test fixtures (git submodule)
 

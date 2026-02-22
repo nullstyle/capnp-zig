@@ -7,51 +7,33 @@ const schema = capnpc.schema;
 const request_reader = capnpc.request;
 const json = std.json;
 
-const max_capnp_output = 32 * 1024 * 1024;
-
 fn runCapnp(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = argv,
+    }) catch |err| {
         return switch (err) {
             error.FileNotFound => error.SkipZigTest,
             else => err,
         };
     };
+    defer allocator.free(result.stderr);
 
-    const stdout_bytes = try child.stdout.?.readToEndAlloc(allocator, max_capnp_output);
-    const stderr_bytes = try child.stderr.?.readToEndAlloc(allocator, max_capnp_output);
-
-    const term = child.wait() catch |err| {
-        allocator.free(stdout_bytes);
-        allocator.free(stderr_bytes);
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
-    switch (term) {
-        .Exited => |code| {
+    switch (result.term) {
+        .exited => |code| {
             if (code != 0) {
-                std.debug.print("capnp command failed: {s}\n", .{stderr_bytes});
-                allocator.free(stdout_bytes);
-                allocator.free(stderr_bytes);
+                std.debug.print("capnp command failed: {s}\n", .{result.stderr});
+                allocator.free(result.stdout);
                 return error.CapnpCommandFailed;
             }
         },
         else => {
             std.debug.print("capnp command failed: unexpected termination\n", .{});
-            allocator.free(stdout_bytes);
-            allocator.free(stderr_bytes);
+            allocator.free(result.stdout);
             return error.CapnpCommandFailed;
         },
     }
 
-    allocator.free(stderr_bytes);
-    return stdout_bytes;
+    return result.stdout;
 }
 
 fn capnpEvalJsonStruct(allocator: std.mem.Allocator, name: []const u8) !json.Parsed(json.Value) {
@@ -102,49 +84,33 @@ fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorR
         "vendor/ext/capnp_test/test.capnp",
     };
 
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |err| {
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = &argv,
+    }) catch |err| {
         return switch (err) {
             error.FileNotFound => error.SkipZigTest,
             else => err,
         };
     };
+    defer allocator.free(result.stderr);
 
-    const stdout_bytes = try child.stdout.?.readToEndAlloc(allocator, max_capnp_output);
-    const stderr_bytes = try child.stderr.?.readToEndAlloc(allocator, max_capnp_output);
-
-    const term = child.wait() catch |err| {
-        allocator.free(stdout_bytes);
-        allocator.free(stderr_bytes);
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
-    switch (term) {
-        .Exited => |code| {
+    switch (result.term) {
+        .exited => |code| {
             if (code != 0) {
-                std.debug.print("capnp compile failed: {s}\n", .{stderr_bytes});
-                allocator.free(stdout_bytes);
-                allocator.free(stderr_bytes);
+                std.debug.print("capnp compile failed: {s}\n", .{result.stderr});
+                allocator.free(result.stdout);
                 return error.CapnpCompileFailed;
             }
         },
         else => {
             std.debug.print("capnp compile failed: unexpected termination\n", .{});
-            allocator.free(stdout_bytes);
-            allocator.free(stderr_bytes);
+            allocator.free(result.stdout);
             return error.CapnpCompileFailed;
         },
     }
 
-    allocator.free(stderr_bytes);
-    const request = try request_reader.parseCodeGeneratorRequest(allocator, stdout_bytes);
-    allocator.free(stdout_bytes);
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
+    allocator.free(result.stdout);
     return request;
 }
 

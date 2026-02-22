@@ -374,7 +374,7 @@ test "protocol DecodedMessage rejects empty input" {
 
     const empty: []const u8 = &.{};
     try std.testing.expectError(
-        error.EndOfStream,
+        error.TruncatedMessage,
         protocol.DecodedMessage.init(allocator, empty),
     );
 }
@@ -385,7 +385,7 @@ test "protocol DecodedMessage rejects truncated segment header" {
     // A valid Cap'n Proto frame needs at least a segment count word (4 bytes).
     const truncated = [_]u8{ 0x00, 0x00, 0x00 };
     try std.testing.expectError(
-        error.EndOfStream,
+        error.TruncatedMessage,
         protocol.DecodedMessage.init(allocator, &truncated),
     );
 }

@@ -54,10 +54,8 @@ test "CodeGeneratorRequest parsing from capnp compile" {
         "tests/test_schemas/example.capnp",
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -65,7 +63,7 @@ test "CodeGeneratorRequest parsing from capnp compile" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -120,10 +118,8 @@ test "CodeGeneratorRequest parsing preserves rpc union discriminants" {
         "src/rpc/capnp/rpc.capnp",
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
-        .max_output_bytes = 20 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -131,7 +127,7 @@ test "CodeGeneratorRequest parsing preserves rpc union discriminants" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

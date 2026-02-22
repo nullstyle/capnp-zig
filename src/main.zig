@@ -9,35 +9,27 @@ const RunOptions = struct {
     shape_sharing: bool = false,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
-    var options = parseRunOptions(argv);
-    try applyEnvRunOptions(allocator, &options);
+    var options = parseRunOptionsFromArgs(init.minimal.args);
+    applyEnvRunOptions(init.environ_map, &options);
 
     // Read CodeGeneratorRequest from stdin
-    const stdin = std.fs.File.stdin();
-    const stderr = std.fs.File.stderr();
-
-    // For now, we'll implement a simple version that just reads and processes
-    // In a full implementation, we would parse the Cap'n Proto message
-
-    // Read the full CodeGeneratorRequest from stdin. Keep this effectively
-    // unbounded and let allocator/OOM behavior enforce practical limits.
-    const max_size = std.math.maxInt(usize);
-    const input_data = stdin.readToEndAlloc(allocator, max_size) catch |err| {
-        logStderr(stderr, "Error reading stdin: {}\n", .{err});
+    const stdin = std.Io.File.stdin();
+    var read_buf: [65536]u8 = undefined;
+    var reader = stdin.reader(io, &read_buf);
+    reader.mode = .streaming;
+    const input_data = reader.interface.allocRemaining(allocator, .unlimited) catch |err| {
+        logStderr("Error reading stdin: {}\n", .{err});
         return err;
     };
     defer allocator.free(input_data);
 
     // Parse the message
     const request = request_reader.parseCodeGeneratorRequest(allocator, input_data) catch |err| {
-        logStderr(stderr, "Error parsing CodeGeneratorRequest: {}\n", .{err});
+        logStderr("Error parsing CodeGeneratorRequest: {}\n", .{err});
         return err;
     };
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -60,26 +52,35 @@ pub fn main() !void {
         defer allocator.free(output_filename);
 
         // Write to file (creating parent directories for nested schema paths)
-        const file = try createOutputFileInDir(std.fs.cwd(), output_filename);
-        defer file.close();
+        const file = try createOutputFileInDir(std.Io.Dir.cwd(), io, output_filename);
+        defer file.close(io);
 
-        try file.writeAll(output_code);
+        try file.writeStreamingAll(io, output_code);
 
         if (options.verbose) {
-            logStderr(stderr, "Generated: {s}\n", .{output_filename});
+            logStderr("Generated: {s}\n", .{output_filename});
         }
     }
     if (options.verbose) {
-        logStderr(stderr, "Code generation complete.\n", .{});
+        logStderr("Code generation complete.\n", .{});
     }
 }
 
 /// Best-effort diagnostic output to stderr using a stack buffer.
-fn logStderr(stderr: std.fs.File, comptime fmt: []const u8, args: anytype) void {
-    var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    std.fmt.format(fbs.writer(), fmt, args) catch {};
-    stderr.writeAll(fbs.getWritten()) catch {};
+fn logStderr(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt, args);
+}
+
+fn parseRunOptionsFromArgs(args: std.process.Args) RunOptions {
+    var options = RunOptions{};
+    var iter = std.process.Args.Iterator.init(args);
+    _ = iter.skip(); // skip program name
+    while (iter.next()) |arg| {
+        applyOptionToken(arg, &options);
+        var tokens = std.mem.tokenizeAny(u8, arg, ",");
+        while (tokens.next()) |token| applyOptionToken(token, &options);
+    }
+    return options;
 }
 
 fn parseRunOptions(argv: anytype) RunOptions {
@@ -95,39 +96,30 @@ fn parseRunOptions(argv: anytype) RunOptions {
     return options;
 }
 
-fn applyEnvRunOptions(allocator: std.mem.Allocator, options: *RunOptions) !void {
-    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_SCHEMA_MANIFEST")) |emit_manifest| {
+fn applyEnvRunOptions(environ_map: *const std.process.Environ.Map, options: *RunOptions) void {
+    if (getEnvBoolOption(environ_map, "CAPNPC_ZIG_SCHEMA_MANIFEST")) |emit_manifest| {
         options.emit_schema_manifest = emit_manifest;
     }
-    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_NO_MANIFEST")) |no_manifest| {
+    if (getEnvBoolOption(environ_map, "CAPNPC_ZIG_NO_MANIFEST")) |no_manifest| {
         if (no_manifest) options.emit_schema_manifest = false;
     }
 
-    if (try getEnvStringOption(allocator, "CAPNPC_ZIG_API_PROFILE")) |profile_value| {
-        defer allocator.free(profile_value);
+    if (environ_map.get("CAPNPC_ZIG_API_PROFILE")) |profile_value| {
         if (parseApiProfileToken(profile_value)) |profile| {
             options.api_profile = profile;
         }
     }
-    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_COMPACT_API")) |compact_api| {
+    if (getEnvBoolOption(environ_map, "CAPNPC_ZIG_COMPACT_API")) |compact_api| {
         options.api_profile = if (compact_api) .compact else .full;
     }
-    if (try getEnvBoolOption(allocator, "CAPNPC_ZIG_SHAPE_SHARING")) |shape_sharing| {
+    if (getEnvBoolOption(environ_map, "CAPNPC_ZIG_SHAPE_SHARING")) |shape_sharing| {
         options.shape_sharing = shape_sharing;
     }
 }
 
-fn getEnvBoolOption(allocator: std.mem.Allocator, name: []const u8) !?bool {
-    const value = try getEnvStringOption(allocator, name) orelse return null;
-    defer allocator.free(value);
+fn getEnvBoolOption(environ_map: *const std.process.Environ.Map, name: []const u8) ?bool {
+    const value = environ_map.get(name) orelse return null;
     return parseBoolToken(value);
-}
-
-fn getEnvStringOption(allocator: std.mem.Allocator, name: []const u8) !?[]u8 {
-    return std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => return err,
-    };
 }
 
 fn parseBoolToken(value: []const u8) ?bool {
@@ -250,13 +242,13 @@ fn getOutputFilename(allocator: std.mem.Allocator, input_filename: []const u8) !
     return std.fmt.allocPrint(allocator, "{s}.zig", .{input_filename});
 }
 
-fn createOutputFileInDir(dir: std.fs.Dir, output_filename: []const u8) !std.fs.File {
+fn createOutputFileInDir(dir: std.Io.Dir, io: std.Io, output_filename: []const u8) !std.Io.File {
     if (std.fs.path.dirname(output_filename)) |parent_dir| {
         if (parent_dir.len != 0 and !std.mem.eql(u8, parent_dir, ".")) {
-            try dir.makePath(parent_dir);
+            try dir.createDirPath(io, parent_dir);
         }
     }
-    return dir.createFile(output_filename, .{});
+    return dir.createFile(io, output_filename, .{});
 }
 
 test "main tests" {
@@ -391,13 +383,14 @@ test "parseShapeSharingToken parses supported values" {
 }
 
 test "createOutputFileInDir creates parent directories for nested output paths" {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var file = try createOutputFileInDir(tmp.dir, "capnp/persistent.zig");
-    defer file.close();
-    try file.writeAll("// generated\n");
+    var file = try createOutputFileInDir(tmp.dir, io, "capnp/persistent.zig");
+    defer file.close(io);
+    try file.writeStreamingAll(io, "// generated\n");
 
-    var reopened = try tmp.dir.openFile("capnp/persistent.zig", .{});
-    defer reopened.close();
+    var reopened = try tmp.dir.openFile(io, "capnp/persistent.zig", .{});
+    defer reopened.close(io);
 }

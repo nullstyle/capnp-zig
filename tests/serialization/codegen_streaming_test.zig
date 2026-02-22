@@ -26,10 +26,8 @@ test "Codegen emits streaming method types and handlers" {
         "tests/test_schemas/streaming.capnp",
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -37,7 +35,7 @@ test "Codegen emits streaming method types and handlers" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -156,12 +154,13 @@ test "Codegen emits streaming method types and handlers" {
 
 test "Codegen omits unused annotation-only imports from rpc.capnp" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const schema_path = blk: {
-        if (std.fs.cwd().access("src/rpc/rpc.capnp", .{})) {
+        if (std.Io.Dir.cwd().access(io, "src/rpc/rpc.capnp", .{})) {
             break :blk "src/rpc/rpc.capnp";
         } else |_| {}
-        if (std.fs.cwd().access("src/rpc/capnp/rpc.capnp", .{})) {
+        if (std.Io.Dir.cwd().access(io, "src/rpc/capnp/rpc.capnp", .{})) {
             break :blk "src/rpc/capnp/rpc.capnp";
         } else |_| {}
         return error.SkipZigTest;
@@ -179,10 +178,8 @@ test "Codegen omits unused annotation-only imports from rpc.capnp" {
         schema_path,
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, io, .{
         .argv = argv,
-        .max_output_bytes = 20 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -190,7 +187,7 @@ test "Codegen omits unused annotation-only imports from rpc.capnp" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

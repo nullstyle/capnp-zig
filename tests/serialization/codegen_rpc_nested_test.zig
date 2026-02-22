@@ -18,10 +18,8 @@ test "Codegen emits nested param/result structs with sanitized names" {
         "tests/test_schemas/rpc_nested.capnp",
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -29,7 +27,7 @@ test "Codegen emits nested param/result structs with sanitized names" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -61,10 +59,8 @@ test "Codegen emits nested interface definitions" {
         "tests/test_schemas/nested_interfaces.capnp",
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -72,7 +68,7 @@ test "Codegen emits nested interface definitions" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

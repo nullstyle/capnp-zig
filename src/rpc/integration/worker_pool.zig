@@ -1,30 +1,33 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_worker_pool);
-const xev = @import("xev").Dynamic;
 const Connection = @import("../level2/connection.zig").Connection;
 const Listener = @import("../level2/runtime.zig").Listener;
+const runtime_helpers = @import("../level2/runtime.zig");
 const Runtime = @import("../level2/runtime.zig").Runtime;
 const Peer = @import("../level3/peer.zig").Peer;
+const net = std.Io.net;
 
-/// A multi-threaded worker pool that runs N independent event loops, each
-/// accepting connections on the same address via `SO_REUSEPORT`. This is
-/// the nginx/envoy model: the OS kernel distributes incoming connections
-/// across workers with no cross-thread communication.
+/// A multi-threaded worker pool that accepts connections from a single
+/// shared listen socket. All worker threads call `accept()` on the same
+/// fd; the kernel wakes one thread per incoming connection.
 ///
-/// Each worker thread owns its own `Runtime`, `Listener`, and event loop.
+/// Each accepted connection is handled on the worker thread that accepted
+/// it. The worker blocks in `Connection.run()` for the lifetime of the
+/// connection, then loops back to accept the next one.
+///
 /// The user-provided `AcceptFn` callback fires on the worker thread when a
 /// connection is accepted; the user sets the bootstrap capability and starts
 /// the peer inside the callback.
 pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
     workers: []Worker,
-    addr: std.net.Address,
+    listen_fd: std.posix.fd_t,
     ctx: *anyopaque,
     on_accept: AcceptFn,
     conn_options: Connection.Options,
-    listen_backlog: u31,
     should_stop: std.atomic.Value(bool),
+    fd_closed: std.atomic.Value(bool),
 
     pub const Config = struct {
         concurrency: ?u32 = null,
@@ -42,49 +45,38 @@ pub const WorkerPool = struct {
     ) void;
 
     const Worker = struct {
-        listen_fd: std.posix.fd_t,
         thread: ?std.Thread = null,
-        /// Set to true when the fd is closed (by shutdown or deinit).
-        fd_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     };
 
     pub fn init(
         allocator: std.mem.Allocator,
-        addr: std.net.Address,
+        addr: net.IpAddress,
         ctx: *anyopaque,
         on_accept: AcceptFn,
         config: Config,
     ) !WorkerPool {
-        try Runtime.ensureBackend();
-
         const concurrency: u32 = config.concurrency orelse @intCast(std.Thread.getCpuCount() catch 1);
         if (concurrency == 0) return error.InvalidConcurrency;
-        if (concurrency > 1 and !supportsReusePort()) return error.ReusePortUnsupported;
+
+        const listen_fd = try runtime_helpers.createListenSocket(addr, config.listen_backlog, false);
+        errdefer runtime_helpers.closeFd(listen_fd);
 
         const workers = try allocator.alloc(Worker, concurrency);
         errdefer allocator.free(workers);
 
-        var created: usize = 0;
-        errdefer for (workers[0..created]) |w| {
-            std.posix.close(w.listen_fd);
-        };
-
         for (workers) |*w| {
-            w.* = .{
-                .listen_fd = try createListenSocket(addr, config.listen_backlog, concurrency > 1),
-            };
-            created += 1;
+            w.* = .{};
         }
 
         return .{
             .allocator = allocator,
             .workers = workers,
-            .addr = addr,
+            .listen_fd = listen_fd,
             .ctx = ctx,
             .on_accept = on_accept,
             .conn_options = config.connection_options,
-            .listen_backlog = config.listen_backlog,
             .should_stop = std.atomic.Value(bool).init(false),
+            .fd_closed = std.atomic.Value(bool).init(false),
         };
     }
 
@@ -94,6 +86,9 @@ pub const WorkerPool = struct {
         var spawned: usize = 0;
         errdefer {
             self.should_stop.store(true, .release);
+            if (!self.fd_closed.swap(true, .acq_rel)) {
+                closeListenFd(self.listen_fd);
+            }
             for (self.workers[1..][0..spawned]) |*w| {
                 if (w.thread) |t| t.join();
                 w.thread = null;
@@ -115,158 +110,68 @@ pub const WorkerPool = struct {
         }
     }
 
-    /// Signal all workers to stop. Workers detect this within ~100ms
-    /// via their periodic timer and exit their event loops.
+    /// Signal all workers to stop. Closes the listen socket to unblock
+    /// any threads blocked in `accept()`.
     pub fn shutdown(self: *WorkerPool) void {
         self.should_stop.store(true, .release);
+        if (!self.fd_closed.swap(true, .acq_rel)) {
+            closeListenFd(self.listen_fd);
+        }
     }
 
     pub fn deinit(self: *WorkerPool) void {
-        for (self.workers) |*w| {
-            if (!w.fd_closed.swap(true, .acq_rel)) {
-                closeListenFd(w.listen_fd);
-            }
+        if (!self.fd_closed.swap(true, .acq_rel)) {
+            closeListenFd(self.listen_fd);
         }
         self.allocator.free(self.workers);
     }
 
     fn workerMain(pool: *WorkerPool, worker_index: u32) void {
-        var runtime = Runtime.init(pool.allocator) catch |err| {
-            log.err("worker {}: runtime init failed: {}", .{ worker_index, err });
-            return;
-        };
-        defer runtime.deinit();
-
-        var wctx = WorkerCtx{
-            .pool = pool,
-            .worker_index = worker_index,
-            .listener = undefined,
-            .timer_completion = .{},
-        };
-
-        wctx.listener = Listener.initFd(
+        var listener = Listener.initFd(
             pool.allocator,
-            &runtime.loop,
-            pool.workers[worker_index].listen_fd,
-            internalOnAccept,
+            pool.listen_fd,
             pool.conn_options,
         );
-        wctx.listener.start();
 
-        // Periodic timer checks the should_stop flag every 100ms.
-        // When set, it calls loop.stop() which makes until_done return
-        // immediately regardless of active completions.
-        var timer = xev.Timer.init() catch |err| {
-            log.err("worker {}: timer init failed: {}", .{ worker_index, err });
-            return;
-        };
-        defer timer.deinit();
+        while (!pool.should_stop.load(.acquire)) {
+            const conn_ptr = listener.accept() catch |err| {
+                if (pool.should_stop.load(.acquire)) break;
+                log.debug("worker {}: accept failed: {}", .{ worker_index, err });
+                continue;
+            };
 
-        timer.run(&runtime.loop, &wctx.timer_completion, 100, WorkerCtx, &wctx, onTimerCheck);
-
-        runtime.run(.until_done) catch |err| {
-            log.err("worker {}: event loop error: {}", .{ worker_index, err });
-        };
-
-        // Mark the fd as closed since the listener owns the socket
-        // lifecycle within the event loop. We close it here after the
-        // loop exits to ensure no more events reference it.
-        if (!pool.workers[worker_index].fd_closed.swap(true, .acq_rel)) {
-            closeListenFd(pool.workers[worker_index].listen_fd);
-        }
-    }
-
-    const WorkerCtx = struct {
-        pool: *WorkerPool,
-        worker_index: u32,
-        listener: Listener,
-        timer_completion: xev.Completion,
-        shutdown_requested: bool = false,
-        shutdown_deadline_ns: i128 = 0,
-    };
-
-    fn onTimerCheck(
-        wctx: ?*WorkerCtx,
-        loop: *xev.Loop,
-        _: *xev.Completion,
-        _: xev.Timer.RunError!void,
-    ) xev.CallbackAction {
-        const ctx = wctx.?;
-        if (ctx.pool.should_stop.load(.acquire)) {
-            if (!ctx.shutdown_requested) {
-                ctx.shutdown_requested = true;
-                ctx.listener.close();
-                // Give close callbacks one timer interval to run so peers can
-                // release owned allocations before we force-stop the loop.
-                ctx.shutdown_deadline_ns = std.time.nanoTimestamp() + (100 * std.time.ns_per_ms);
-                return .rearm;
+            if (pool.should_stop.load(.acquire)) {
+                conn_ptr.deinit();
+                pool.allocator.destroy(conn_ptr);
+                break;
             }
 
-            if (std.time.nanoTimestamp() < ctx.shutdown_deadline_ns) return .rearm;
+            const peer_ptr = pool.allocator.create(Peer) catch {
+                conn_ptr.deinit();
+                pool.allocator.destroy(conn_ptr);
+                continue;
+            };
 
-            // Bound shutdown time so workers do not hang forever on active
-            // client connections that never close.
-            loop.stop();
-            return .disarm;
+            peer_ptr.* = Peer.init(pool.allocator, conn_ptr);
+
+            pool.on_accept(pool.ctx, peer_ptr, conn_ptr, worker_index);
+
+            // Run the connection's blocking read loop.
+            // This returns when the connection closes or errors.
+            conn_ptr.run();
         }
-        return .rearm;
-    }
-
-    fn internalOnAccept(listener: *Listener, conn: *Connection) void {
-        const wctx: *WorkerCtx = @alignCast(@fieldParentPtr("listener", listener));
-
-        const peer_ptr = wctx.pool.allocator.create(Peer) catch {
-            conn.deinit();
-            wctx.pool.allocator.destroy(conn);
-            return;
-        };
-
-        peer_ptr.* = Peer.init(wctx.pool.allocator, conn);
-
-        wctx.pool.on_accept(wctx.pool.ctx, peer_ptr, conn, wctx.worker_index);
-    }
-
-    fn createListenSocket(addr: std.net.Address, backlog: u31, reuseport: bool) !std.posix.fd_t {
-        const flags: u32 = blk: {
-            var f: u32 = std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC;
-            if (builtin.target.os.tag != .linux or xev.backend != .io_uring) {
-                f |= std.posix.SOCK.NONBLOCK;
-            }
-            break :blk f;
-        };
-
-        const fd = try std.posix.socket(addr.any.family, flags, 0);
-        errdefer std.posix.close(fd);
-
-        try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-        if (comptime @hasDecl(std.posix.SO, "REUSEPORT")) {
-            if (reuseport) {
-                try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
-            }
-        }
-
-        try std.posix.bind(fd, &addr.any, addr.getOsSockLen());
-        try std.posix.listen(fd, backlog);
-
-        return fd;
     }
 
     fn closeListenFd(fd: std.posix.fd_t) void {
         if (builtin.target.os.tag == .windows) {
-            // Use the standard close path for Windows handles.
-            std.posix.close(fd);
+            runtime_helpers.closeFd(fd);
             return;
         }
 
-        // The listener close completion and this fallback close can race.
         // Treat BADF as already-closed and ignore EINTR per POSIX close rules.
         switch (std.posix.errno(std.posix.system.close(fd))) {
             .SUCCESS, .INTR, .BADF => {},
             else => {},
         }
-    }
-
-    fn supportsReusePort() bool {
-        return comptime @hasDecl(std.posix.SO, "REUSEPORT");
     }
 };

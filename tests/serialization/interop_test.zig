@@ -3,9 +3,7 @@ const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 
 fn readFixture(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    return try file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .unlimited);
 }
 
 fn verifyWidgetRoot(root: message.StructReader) !void {

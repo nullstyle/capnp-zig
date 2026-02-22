@@ -14,28 +14,28 @@ fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
     }
 }
 
-fn writeFile(dir: std.fs.Dir, name: []const u8, data: []const u8) !void {
-    var file = try dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll(data);
+fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
+    const io = std.testing.io;
+    var file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, data);
 }
 
 fn expectGeneratedOutputParsesAsZig(allocator: std.mem.Allocator, output: []const u8) !void {
+    const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
     try writeFile(tmp.dir, "generated.zig", output);
-    const generated_path = try tmp.dir.realpathAlloc(allocator, "generated.zig");
+    const generated_path = try tmp.dir.realPathFileAlloc(io, "generated.zig", allocator);
     defer allocator.free(generated_path);
 
-    const zig_result = std.process.Child.run(.{
-        .allocator = allocator,
+    const zig_result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
             "zig",
             "fmt",
             generated_path,
         },
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -43,7 +43,7 @@ fn expectGeneratedOutputParsesAsZig(allocator: std.mem.Allocator, output: []cons
     defer allocator.free(zig_result.stdout);
     defer allocator.free(zig_result.stderr);
 
-    if (!(zig_result.term == .Exited and zig_result.term.Exited == 0)) {
+    if (!(zig_result.term == .exited and zig_result.term.exited == 0)) {
         std.debug.print("zig fmt stdout:\n{s}\n", .{zig_result.stdout});
         std.debug.print("zig fmt stderr:\n{s}\n", .{zig_result.stderr});
         return error.GeneratedOutputFailedZigParse;
@@ -60,10 +60,8 @@ test "Codegen annotation uses" {
         "tests/test_schemas/annotations.capnp",
     };
 
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -71,7 +69,7 @@ test "Codegen annotation uses" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .Exited and result.term.Exited == 0);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

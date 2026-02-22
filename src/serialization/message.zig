@@ -339,11 +339,9 @@ pub const Message = struct {
     /// Parses the segment table header and slices `data` into per-segment views.
     /// The caller retains ownership of `data`; this message borrows into it.
     pub fn init(allocator: std.mem.Allocator, data: []const u8) !Message {
-        var stream = std.io.fixedBufferStream(data);
-        const reader = stream.reader();
-
         // Read segment count
-        const segment_count_minus_one = try reader.readInt(u32, .little);
+        if (data.len < 4) return error.TruncatedMessage;
+        const segment_count_minus_one = std.mem.readInt(u32, data[0..4], .little);
         const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
         const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
         if (segment_count_usize > max_segment_count) return error.SegmentCountLimitExceeded;
@@ -362,18 +360,19 @@ pub const Message = struct {
         defer allocator.free(segment_sizes);
 
         // First segment size is in the next word
-        segment_sizes[0] = try reader.readInt(u32, .little);
-        for (segment_sizes[1..]) |*size| {
-            size.* = try reader.readInt(u32, .little);
+        var cursor: usize = 4;
+        for (segment_sizes) |*size| {
+            size.* = std.mem.readInt(u32, data[cursor..][0..4], .little);
+            cursor += 4;
         }
 
         // Padding to 8-byte boundary
         if (segment_count % 2 == 0) {
-            _ = try reader.readInt(u32, .little);
+            cursor += 4;
         }
 
         // Read segment data
-        var offset: usize = stream.pos;
+        var offset: usize = cursor;
         for (segment_sizes, 0..) |size_words, i| {
             const size_words_usize = std.math.cast(usize, size_words) orelse return error.InvalidMessageSize;
             const size_bytes = std.math.mul(usize, size_words_usize, 8) catch return error.InvalidMessageSize;

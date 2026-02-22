@@ -105,7 +105,7 @@ test "Codegen: union generates WhichTag enum and which method" {
 
     // Should have which() method
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(WhichTag, self._reader.readU16(8)) catch return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self._reader.readU16(8)) orelse return error.InvalidEnumValue;"));
 
     // Non-union field should NOT appear in WhichTag
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "area = "));
@@ -226,7 +226,7 @@ test "Codegen: union setter writes discriminant before value" {
 
     // which() method should read from correct offset
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;"));
 }
 
 test "Codegen: struct without union does not generate WhichTag" {
@@ -745,7 +745,7 @@ test "Codegen: group union generates WhichTag and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "receiverLoopback = 1,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "accept = 2,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(WhichTag, self._reader.readU16(4)) catch return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setSenderLoopback(self: *@This(), value: u32) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 0)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setReceiverLoopback(self: *@This(), value: u32) !void"));

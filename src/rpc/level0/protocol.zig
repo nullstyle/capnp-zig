@@ -42,7 +42,7 @@ pub const CapDescriptor = struct {
 
     pub fn fromReader(reader: message.StructReader) !CapDescriptor {
         const tag_value = reader.readUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(CapDescriptorTag, tag_value) catch return error.InvalidDiscriminant;
+        const tag = std.enums.fromInt(CapDescriptorTag, tag_value) orelse return error.InvalidDiscriminant;
         var id: ?u32 = null;
         var promised_answer: ?PromisedAnswer = null;
         var third_party: ?ThirdPartyCapDescriptor = null;
@@ -133,10 +133,7 @@ pub const ThirdPartyCapDescriptor = struct {
     vine_id: u32,
 
     fn fromReader(reader: message.StructReader) !ThirdPartyCapDescriptor {
-        const id_ptr = reader.readAnyPointer(THIRD_PARTY_CAP_DESCRIPTOR_ID_PTR) catch |err| switch (err) {
-            error.OutOfBounds => null,
-            else => return err,
-        };
+        const id_ptr = reader.readAnyPointer(THIRD_PARTY_CAP_DESCRIPTOR_ID_PTR) catch null;
         return .{
             .id = id_ptr,
             .vine_id = reader.readU32(byteOffsetU32(THIRD_PARTY_CAP_DESCRIPTOR_VINE_ID_OFFSET)),
@@ -284,7 +281,7 @@ pub const DecodedMessage = struct {
         errdefer msg.deinit();
         const root = try msg.getRootStruct();
         const disc = root.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(MessageTag, disc) catch return error.InvalidMessageTag;
+        const tag = std.enums.fromInt(MessageTag, disc) orelse return error.InvalidMessageTag;
         return .{ .msg = msg, .tag = tag };
     }
 
@@ -391,10 +388,7 @@ pub const Bootstrap = struct {
 
     fn fromReader(reader: message.StructReader) !Bootstrap {
         const question_id = reader.readU32(byteOffsetU32(BOOTSTRAP_QUESTION_ID_OFFSET));
-        const object_ptr = reader.readAnyPointer(BOOTSTRAP_DEPRECATED_OBJECT_PTR) catch |err| switch (err) {
-            error.OutOfBounds => null,
-            else => return err,
-        };
+        const object_ptr = reader.readAnyPointer(BOOTSTRAP_DEPRECATED_OBJECT_PTR) catch null;
         return .{ .question_id = question_id, .deprecated_object = object_ptr };
     }
 };
@@ -406,14 +400,11 @@ pub const Unimplemented = struct {
 
     fn fromReader(reader: message.StructReader) !Unimplemented {
         const nested_disc = reader.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);
-        const message_tag = std.meta.intToEnum(MessageTag, nested_disc) catch null;
+        const message_tag = std.enums.fromInt(MessageTag, nested_disc);
         var question_id: ?u32 = null;
 
         if (message_tag == .bootstrap or message_tag == .call) {
-            const nested = reader.readStruct(0) catch |err| switch (err) {
-                error.OutOfBounds, error.InvalidPointer => null,
-                else => return err,
-            };
+            const nested = reader.readStruct(0) catch null;
             if (nested) |nested_struct| {
                 question_id = switch (message_tag.?) {
                     .bootstrap => nested_struct.readU32(byteOffsetU32(BOOTSTRAP_QUESTION_ID_OFFSET)),
@@ -497,10 +488,7 @@ pub const SendResultsTo = struct {
 
         var third_party: ?message.AnyPointerReader = null;
         if (tag == .thirdParty) {
-            third_party = generated.getThirdParty() catch |err| switch (err) {
-                error.OutOfBounds => null,
-                else => return err,
-            };
+            third_party = generated.getThirdParty() catch null;
         }
 
         return .{
@@ -536,21 +524,39 @@ pub const Return = struct {
 
         switch (tag) {
             .results => {
-                const payload_reader = try generated.getResults();
-                results = try Payload.fromReader(payload_reader._reader);
+                // go-capnp may send tag=results with a null Payload pointer
+                // for void returns. Synthesize an empty Payload so callers
+                // see a valid (but default/zero) result struct.
+                results = blk: {
+                    const payload_struct = reader.readStruct(0) catch |err| switch (err) {
+                        error.InvalidPointer => break :blk Payload{
+                            .content = .{
+                                .message = reader.message,
+                                .segment_id = reader.segment_id,
+                                .pointer_pos = 0,
+                                .pointer_word = 0,
+                            },
+                            .cap_table = null,
+                        },
+                        else => return err,
+                    };
+                    break :blk try Payload.fromReader(payload_struct);
+                };
             },
             .exception => {
-                const ex_reader = try generated.getException();
-                exception = try Exception.fromReader(ex_reader._reader);
+                exception = blk: {
+                    const ex_struct = reader.readStruct(0) catch |err| switch (err) {
+                        error.InvalidPointer => break :blk null,
+                        else => return err,
+                    };
+                    break :blk try Exception.fromReader(ex_struct);
+                };
             },
             .takeFromOtherQuestion => {
                 take_from_other_question = try generated.getTakeFromOtherQuestion();
             },
             .awaitFromThirdParty => {
-                accept_from_third_party = generated.getAwaitFromThirdParty() catch |err| switch (err) {
-                    error.OutOfBounds => null,
-                    else => return err,
-                };
+                accept_from_third_party = generated.getAwaitFromThirdParty() catch null;
             },
             else => {},
         }
@@ -621,10 +627,7 @@ pub const PromisedAnswer = struct {
 
     fn fromReader(reader: message.StructReader) !PromisedAnswer {
         const question_id = reader.readU32(byteOffsetU32(PROMISED_ANSWER_QUESTION_ID_OFFSET));
-        const transform = reader.readStructList(PROMISED_ANSWER_TRANSFORM_PTR) catch |err| switch (err) {
-            error.InvalidPointer => null,
-            else => return err,
-        };
+        const transform = reader.readStructList(PROMISED_ANSWER_TRANSFORM_PTR) catch null;
         return .{ .question_id = question_id, .transform = .{ .list = transform } };
     }
 };
@@ -649,7 +652,7 @@ pub const PromisedAnswerOp = struct {
 
     fn fromReader(reader: message.StructReader) !PromisedAnswerOp {
         const disc = reader.readUnionDiscriminant(PROMISED_ANSWER_OP_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.meta.intToEnum(PromisedAnswerOpTag, disc) catch return error.InvalidDiscriminant;
+        const tag = std.enums.fromInt(PromisedAnswerOpTag, disc) orelse return error.InvalidDiscriminant;
         const pointer_index = switch (tag) {
             .getPointerField => reader.readU16(PROMISED_ANSWER_OP_GET_POINTER_FIELD_OFFSET_BYTES),
             else => 0,
@@ -739,10 +742,7 @@ pub const Payload = struct {
 
     fn fromReader(reader: message.StructReader) !Payload {
         const content = try reader.readAnyPointer(PAYLOAD_CONTENT_PTR);
-        const cap_table = reader.readStructList(PAYLOAD_CAP_TABLE_PTR) catch |err| switch (err) {
-            error.InvalidPointer => null,
-            else => return err,
-        };
+        const cap_table = reader.readStructList(PAYLOAD_CAP_TABLE_PTR) catch null;
         return .{ .content = content, .cap_table = cap_table };
     }
 };
@@ -807,7 +807,7 @@ pub const Disembargo = struct {
         const target = try MessageTarget.fromReader(target_reader);
 
         const tag_value = reader.readUnionDiscriminant(DISEMBARGO_DISCRIMINANT_OFFSET_BYTES);
-        const context_tag = std.meta.intToEnum(DisembargoContextTag, tag_value) catch return error.InvalidDiscriminant;
+        const context_tag = std.enums.fromInt(DisembargoContextTag, tag_value) orelse return error.InvalidDiscriminant;
         var embargo_id: ?u32 = null;
         var accept: ?[]const u8 = null;
 
@@ -816,10 +816,7 @@ pub const Disembargo = struct {
                 embargo_id = reader.readU32(byteOffsetU32(DISEMBARGO_EMBARGO_ID_OFFSET));
             },
             .accept => {
-                accept = reader.readData(DISEMBARGO_ACCEPT_PTR) catch |err| switch (err) {
-                    error.InvalidPointer => null,
-                    else => return err,
-                };
+                accept = reader.readData(DISEMBARGO_ACCEPT_PTR) catch null;
             },
         }
 
@@ -840,10 +837,7 @@ pub const Provide = struct {
 
     fn fromReader(reader: message.StructReader) !Provide {
         const target_reader = try reader.readStruct(PROVIDE_TARGET_PTR);
-        const recipient = reader.readAnyPointer(PROVIDE_RECIPIENT_PTR) catch |err| switch (err) {
-            error.OutOfBounds => null,
-            else => return err,
-        };
+        const recipient = reader.readAnyPointer(PROVIDE_RECIPIENT_PTR) catch null;
         return .{
             .question_id = reader.readU32(byteOffsetU32(PROVIDE_QUESTION_ID_OFFSET)),
             .target = try MessageTarget.fromReader(target_reader),
@@ -859,14 +853,8 @@ pub const Accept = struct {
     embargo: ?[]const u8,
 
     fn fromReader(reader: message.StructReader) !Accept {
-        const provision = reader.readAnyPointer(ACCEPT_PROVISION_PTR) catch |err| switch (err) {
-            error.OutOfBounds => null,
-            else => return err,
-        };
-        const embargo = reader.readData(ACCEPT_EMBARGO_PTR) catch |err| switch (err) {
-            error.InvalidPointer => null,
-            else => return err,
-        };
+        const provision = reader.readAnyPointer(ACCEPT_PROVISION_PTR) catch null;
+        const embargo = reader.readData(ACCEPT_EMBARGO_PTR) catch null;
         return .{
             .question_id = reader.readU32(byteOffsetU32(ACCEPT_QUESTION_ID_OFFSET)),
             .provision = provision,
@@ -882,10 +870,7 @@ pub const ThirdPartyAnswer = struct {
     answer_id: u32,
 
     fn fromReader(reader: message.StructReader) !ThirdPartyAnswer {
-        const completion = reader.readAnyPointer(THIRD_PARTY_ANSWER_COMPLETION_PTR) catch |err| switch (err) {
-            error.OutOfBounds => null,
-            else => return err,
-        };
+        const completion = reader.readAnyPointer(THIRD_PARTY_ANSWER_COMPLETION_PTR) catch null;
         return .{
             .completion = completion,
             .answer_id = reader.readU32(byteOffsetU32(THIRD_PARTY_ANSWER_ANSWER_ID_OFFSET)),
@@ -901,10 +886,7 @@ pub const Join = struct {
 
     fn fromReader(reader: message.StructReader) !Join {
         const target_reader = try reader.readStruct(JOIN_TARGET_PTR);
-        const key_part = reader.readAnyPointer(JOIN_KEY_PART_PTR) catch |err| switch (err) {
-            error.OutOfBounds => null,
-            else => return err,
-        };
+        const key_part = reader.readAnyPointer(JOIN_KEY_PART_PTR) catch null;
         return .{
             .question_id = reader.readU32(byteOffsetU32(JOIN_QUESTION_ID_OFFSET)),
             .target = try MessageTarget.fromReader(target_reader),
@@ -921,10 +903,7 @@ pub const Exception = struct {
 
     fn fromReader(reader: message.StructReader) !Exception {
         const reason = try reader.readText(EXCEPTION_REASON_PTR);
-        const trace = reader.readText(EXCEPTION_TRACE_PTR) catch |err| switch (err) {
-            error.InvalidPointer => "",
-            else => return err,
-        };
+        const trace = reader.readText(EXCEPTION_TRACE_PTR) catch "";
         const type_value = reader.readU16(byteOffsetU16(EXCEPTION_TYPE_OFFSET));
         return .{ .reason = reason, .trace = trace, .type_value = type_value };
     }

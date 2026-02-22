@@ -1639,7 +1639,7 @@ pub const Peer = struct {
                 try self.sendUnimplementedForFrame(frame);
                 return;
             }
-            log.debug("failed to decode inbound frame: {}", .{err});
+            log.warn("failed to decode inbound frame (len={}): {}", .{ frame.len, err });
             self.sendAbortForError(err);
             return err;
         };
@@ -1647,7 +1647,7 @@ pub const Peer = struct {
         self.last_inbound_tag = decoded.tag;
         log.debug("dispatching inbound {s}", .{@tagName(decoded.tag)});
 
-        try peer_dispatch.dispatchDecodedForPeer(
+        peer_dispatch.dispatchDecodedForPeer(
             Peer,
             self,
             frame,
@@ -1666,7 +1666,10 @@ pub const Peer = struct {
             Peer.handleJoin,
             Peer.handleThirdPartyAnswer,
             Peer.sendUnimplemented,
-        );
+        ) catch |err| {
+            log.warn("dispatch error for {s}: {}", .{ @tagName(decoded.tag), err });
+            return err;
+        };
     }
 
     fn sendAbortForError(self: *Peer, err: anyerror) void {

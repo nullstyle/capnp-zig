@@ -19,6 +19,7 @@ pub const PingPong = struct {
         pub const Results = PingResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
             exception: rpc.protocol.Exception,
@@ -35,21 +36,37 @@ pub const PingPong = struct {
             callback: Callback,
         };
 
-        const ReturnContext = struct {
-            server: *Server,
+        const DirectReturnContext = struct {
+            handler: Handler,
+            ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
             caps: *const rpc.cap_table.InboundCapTable,
         };
 
+        pub const ReturnSender = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+                try self.peer.sendReturnResults(self.question_id, ctx, build);
+            }
+
+            pub fn sendException(self: ReturnSender, reason: []const u8) !void {
+                try self.peer.sendReturnException(self.question_id, reason);
+            }
+        };
+
         fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
-            const params_builder = try call.initParamsStruct(1, 0);
+            var payload = try call.payloadTyped();
+            var params_any = try payload.initContent();
+            const params_builder = try params_any.initStruct(1, 0);
             var params = Params.Builder.wrap(params_builder);
             if (ctx.build) |build_fn| {
                 try build_fn(ctx.user_ctx, &params);
             }
-            try call.setEmptyCapTable();
+            _ = try call.initCapTableTyped(0);
         }
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
@@ -68,34 +85,46 @@ pub const PingPong = struct {
                     response = .{ .exception = ex };
                 },
                 .canceled => response = .canceled,
-                .results_sent_elsewhere => response = .results_sent_elsewhere,
-                .take_from_other_question => {
+                .resultsSentElsewhere => response = .results_sent_elsewhere,
+                .takeFromOtherQuestion => {
                     const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                     response = .{ .take_from_other_question = qid };
                 },
-                .accept_from_third_party => response = .accept_from_third_party,
+                .awaitFromThirdParty => response = .accept_from_third_party,
             }
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
-            var ctx = ReturnContext{
-                .server = server,
-                .peer = peer,
-                .params = params,
-                .caps = caps,
-            };
-            try peer.sendReturnResults(call.question_id, &ctx, buildReturn);
+            if (deferred_handler) |deferred_fn| {
+                const sender = ReturnSender{ .peer = peer, .question_id = call.question_id };
+                try deferred_fn(ctx, peer, params, caps, sender);
+            } else {
+                var dctx = DirectReturnContext{
+                    .handler = handler,
+                    .ctx = ctx,
+                    .peer = peer,
+                    .params = params,
+                    .caps = caps,
+                };
+                try peer.sendReturnResults(call.question_id, &dctx, buildReturnDirect);
+            }
         }
 
-        fn buildReturn(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
-            const ctx: *ReturnContext = @ptrCast(@alignCast(ctx_ptr));
-            const results_builder = try ret.initResultsStruct(1, 0);
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+            try handleCallDirect(server.vtable.ping, server.vtable.ping_deferred, server.ctx, peer, call, caps);
+        }
+
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+            const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
+            var payload = try ret.payloadTyped();
+            var results_any = try payload.initContent();
+            const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
-            try ctx.server.vtable.ping(ctx.server.ctx, ctx.peer, ctx.params, &results, ctx.caps);
-            try ret.setEmptyCapTable();
+            try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
+            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -141,6 +170,8 @@ pub const PingPong = struct {
             .results => {
                 const payload = ret.results orelse return error.MissingReturnPayload;
                 const cap = try payload.content.getCapability();
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
                 const resolved = try caps.resolveCapability(cap);
                 switch (resolved) {
                     .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },
@@ -152,12 +183,12 @@ pub const PingPong = struct {
                 response = .{ .exception = ex };
             },
             .canceled => response = .canceled,
-            .results_sent_elsewhere => response = .results_sent_elsewhere,
-            .take_from_other_question => {
+            .resultsSentElsewhere => response = .results_sent_elsewhere,
+            .takeFromOtherQuestion => {
                 const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
                 response = .{ .take_from_other_question = qid };
             },
-            .accept_from_third_party => response = .accept_from_third_party,
+            .awaitFromThirdParty => response = .accept_from_third_party,
         }
         try ctx.callback(ctx.user_ctx, peer, response);
     }
@@ -175,6 +206,7 @@ pub const PingPong = struct {
 
     pub const VTable = struct {
         ping: Ping.Handler,
+        ping_deferred: ?Ping.DeferredHandler = null,
     };
 
     pub fn exportServer(peer: *rpc.peer.Peer, server: *Server) !u32 {

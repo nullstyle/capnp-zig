@@ -19,7 +19,7 @@ pub fn define(
                 }
 
                 pub fn get(self: @This(), index: u32) !EnumType {
-                    return std.meta.intToEnum(EnumType, try self._list.get(index)) catch return error.InvalidEnumValue;
+                    return std.enums.fromInt(EnumType, try self._list.get(index)) orelse return error.InvalidEnumValue;
                 }
 
                 pub fn raw(self: @This()) MessageModule.U16ListReader {

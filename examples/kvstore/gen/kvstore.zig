@@ -108,7 +108,7 @@ pub const WriteOp = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getKey(self: Reader) ![]const u8 {
@@ -185,7 +185,7 @@ pub const WriteOpResult = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getKey(self: Reader) ![]const u8 {

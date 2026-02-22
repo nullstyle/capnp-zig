@@ -2,7 +2,7 @@
 
 This guide defines a repeatable way to assess a codebase across correctness, safety, protocol behavior, lifecycle management, code generation, FFI, and test quality.
 
-It is designed for audits like `AUDIT_REPORT.md`: broad coverage, concrete findings, fix prioritization, and verification closure.
+It is designed for broad coverage, concrete findings, fix prioritization, and verification closure.
 
 ## Goals
 

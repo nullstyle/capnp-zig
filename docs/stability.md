@@ -28,13 +28,13 @@ provides guidance for downstream consumers.
 
 | Module | Path | Notes |
 |---|---|---|
-| RPC Runtime | `src/rpc/level2/runtime.zig` | Event loop wrapper over libxev. API will evolve. |
+| RPC Runtime | `src/rpc/level2/runtime.zig` | Listener and socket helpers. API will evolve. |
 | RPC Connection | `src/rpc/level2/connection.zig` | Transport + framer combination. Under active development. |
 | RPC Peer | `src/rpc/level3/peer.zig` | Full RPC peer with question/answer tables, capability lifecycle, and bootstrap. Core design is stabilizing but the public API may still change. |
 | RPC Protocol | `src/rpc/level0/protocol.zig` | Wire readers/builders for RPC messages (Call, Return, Resolve, etc.). |
 | RPC Capability Table | `src/rpc/level0/cap_table.zig` | Export/import tracking for capabilities. |
 | RPC Framing | `src/rpc/level0/framing.zig` | Segment-framed message reassembly from byte streams. |
-| RPC Transport (xev) | `src/rpc/level2/transport_xev.zig` | Async TCP I/O via libxev. |
+| RPC Transport | `src/rpc/level2/transport.zig` | Concurrent read/write I/O. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/level3/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
 

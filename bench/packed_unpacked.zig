@@ -4,6 +4,12 @@ const alloc_counter = @import("alloc_counter.zig");
 
 const message = capnp.message;
 
+fn readMonotonicNs() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
+}
+
 const Mode = enum {
     pack,
     unpack,
@@ -28,9 +34,9 @@ const AllocationSample = struct {
     alloc_bytes_per_iter: f64,
 };
 
-fn printUsage() void {
+fn printUsage(io: std.Io) void {
     var buffer: [1024]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&buffer);
+    var out = std.Io.File.stdout().writer(io, &buffer);
     out.interface.print(
         \\Usage: zig build bench-packed -- [options]
         \\       zig build bench-unpacked -- [options]
@@ -66,42 +72,30 @@ fn modeName(mode: Mode) []const u8 {
     };
 }
 
-fn parseArgs(allocator: std.mem.Allocator) !?Config {
+fn parseArgs(args: std.process.Args, io: std.Io) !?Config {
     var cfg = Config{};
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var iter = std.process.Args.Iterator.init(args);
+    _ = iter.skip(); // skip program name
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--mode")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.mode = try parseMode(args[i]);
+            cfg.mode = try parseMode(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--iters")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.iterations = try parseUsize(args[i]);
+            cfg.iterations = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--payload")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.payload_size = try parseUsize(args[i]);
+            cfg.payload_size = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--list-len") or std.mem.eql(u8, arg, "--list")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.list_len = try parseUsize(args[i]);
+            cfg.list_len = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--warmup")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.warmup = try parseUsize(args[i]);
+            cfg.warmup = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--far")) {
@@ -113,12 +107,12 @@ fn parseArgs(allocator: std.mem.Allocator) !?Config {
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            printUsage();
+            printUsage(io);
             return null;
         }
 
         std.debug.print("Unknown argument: {s}\n", .{arg});
-        printUsage();
+        printUsage(io);
         return error.InvalidArgument;
     }
 
@@ -268,7 +262,7 @@ fn measureAllocationSample(
     };
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const deinit_status = gpa.deinit();
@@ -278,8 +272,9 @@ pub fn main() !void {
     }
 
     const allocator = gpa.allocator();
+    const io = init.io;
 
-    const cfg = (parseArgs(allocator) catch |err| {
+    const cfg = (parseArgs(init.minimal.args, io) catch |err| {
         std.debug.print("Argument error: {s}\n", .{@errorName(err)});
         return;
     }) orelse return;
@@ -330,7 +325,7 @@ pub fn main() !void {
         };
     }
 
-    var timer = try std.time.Timer.start();
+    const start_ts = readMonotonicNs();
     var iter: usize = 0;
     while (iter < cfg.iterations) : (iter += 1) {
         checksum +%= switch (cfg.mode) {
@@ -339,7 +334,7 @@ pub fn main() !void {
             .roundtrip => try doRoundTrip(allocator, &builder),
         };
     }
-    const elapsed_ns = timer.read();
+    const elapsed_ns = readMonotonicNs() - start_ts;
 
     const elapsed_ns_f = @as(f64, @floatFromInt(elapsed_ns));
     const seconds = elapsed_ns_f / 1_000_000_000.0;
@@ -366,7 +361,7 @@ pub fn main() !void {
 
     if (cfg.json) {
         var out_buffer: [4096]u8 = undefined;
-        var out = std.fs.File.stdout().writer(&out_buffer);
+        var out = std.Io.File.stdout().writer(io, &out_buffer);
         try out.interface.print(
             "{{\"benchmark\":\"packed_unpacked\",\"mode\":\"{s}\",\"iterations\":{d},\"payload_size\":{d},\"list_len\":{d},\"far_payload\":{s},\"unpacked_len\":{d},\"packed_len\":{d},\"compression\":{d:.6},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"alloc_sample_iters\":{d},\"alloc_calls\":{d},\"alloc_bytes\":{d},\"allocs_per_iter\":{d:.6},\"alloc_bytes_per_iter\":{d:.6},\"checksum\":{d}}}\n",
             .{
@@ -395,7 +390,7 @@ pub fn main() !void {
     }
 
     var out_buffer: [4096]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&out_buffer);
+    var out = std.Io.File.stdout().writer(io, &out_buffer);
     try out.interface.print("packed/unpacked benchmark\n", .{});
     try out.interface.print("mode: {s}\n", .{modeName(cfg.mode)});
     try out.interface.print("iterations: {d}\n", .{cfg.iterations});

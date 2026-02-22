@@ -11,7 +11,7 @@ pub const std_options: std.Options = .{
 
 fn noopLog(
     comptime _: std.log.Level,
-    comptime _: @Type(.enum_literal),
+    comptime _: @EnumLiteral(),
     comptime _: []const u8,
     _: anytype,
 ) void {}
@@ -50,7 +50,15 @@ const GlobalMutex = if (builtin.target.cpu.arch == .wasm32)
         pub fn unlock(_: *@This()) void {}
     }
 else
-    std.Thread.Mutex;
+    struct {
+        m: std.atomic.Mutex = .unlocked,
+        pub fn lock(self: *@This()) void {
+            while (!self.m.tryLock()) {}
+        }
+        pub fn unlock(self: *@This()) void {
+            self.m.unlock();
+        }
+    };
 
 var global_mutex: GlobalMutex = .{};
 const allocator: std.mem.Allocator = if (builtin.target.cpu.arch == .wasm32)

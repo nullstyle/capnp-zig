@@ -42,6 +42,10 @@ e2e-build:
 e2e:
     just --justfile tests/e2e/Justfile test
 
+# Run e2e using the native Zig runner (no Deno dependency)
+e2e-zig:
+    just --justfile tests/e2e/Justfile test-zig
+
 # Run e2e without rebuilding docker images
 e2e-skip-build:
     just --justfile tests/e2e/Justfile test-skip-build

@@ -2,8 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_conn);
 const framing = @import("../level0/framing.zig");
-const transport_xev = @import("transport_xev.zig");
-const xev = @import("xev").Dynamic;
+const transport_mod = @import("transport.zig");
+const runtime_helpers = @import("../level2/runtime.zig");
 const message = @import("../../serialization/message.zig");
 
 /// A framed Cap'n Proto connection over TCP.
@@ -12,20 +12,28 @@ const message = @import("../../serialization/message.zig");
 /// segment-based message framing) to deliver complete RPC messages to
 /// the `on_message` callback.
 ///
+/// ## Usage
+///
+/// 1. Create a connection with `init()`, passing a connected socket fd.
+/// 2. Call `start()` to register message/error/close callbacks (typically
+///    done by `Peer.attachConnection` + `Peer.start`).
+/// 3. Call `run()` to enter the blocking read loop. This method returns
+///    when the connection closes (EOF, error, or explicit `close()`).
+/// 4. Call `deinit()` to free resources.
+///
 /// ## Callback context lifetime
 ///
 /// The `ctx` pointer set via `start()` must remain valid until `deinit`
 /// is called. All callbacks (`on_message`, `on_error`, `on_close`) are
-/// invoked on the event-loop thread and may reference `ctx`.
+/// invoked on the thread that calls `run()`.
 ///
 /// ## Ownership
 ///
 /// The `Connection` owns its `Transport` and `Framer`. Call `deinit` to
-/// release both (which also clears transport callbacks and drains pending
-/// writes). The `Connection` does **not** own the `ctx` pointer.
+/// release both. The `Connection` does **not** own the `ctx` pointer.
 pub const Connection = struct {
     allocator: std.mem.Allocator,
-    transport: transport_xev.Transport,
+    transport: transport_mod.Transport,
     framer: framing.Framer,
     /// Opaque context pointer passed to `start()`. Must remain valid until
     /// `deinit`. All callbacks may dereference this pointer.
@@ -35,7 +43,7 @@ pub const Connection = struct {
     /// Called on transport or framing errors. The connection may be
     /// in a degraded state after an error callback.
     on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
-    /// Called exactly once when the transport closes.
+    /// Called exactly once when the connection's run loop exits.
     ///
     /// If close includes an error, `on_error` is dispatched first and then
     /// `on_close`. `on_error` callbacks must not call `deinit`/destroy the
@@ -43,6 +51,17 @@ pub const Connection = struct {
     /// calling `deinit()` from `on_error` panics in all build modes.
     on_close: ?*const fn (conn: *Connection) void = null,
     in_error_callback: bool = false,
+
+    // -- Cross-thread wake support -------------------------------------------
+
+    /// Pipe fds for cross-thread signaling. [0]=read, [1]=write.
+    /// When set, `run()` uses `poll()` on both the socket and the pipe,
+    /// and calls `on_wake` when the pipe is readable.
+    wake_fds: ?[2]std.posix.fd_t = null,
+
+    /// Called on the run loop's thread when woken by `wake()`.
+    /// Use this to drain a per-connection work queue on the correct thread.
+    on_wake: ?*const fn (conn: *Connection) void = null,
 
     // -- Thread-affinity check (debug only) ---------------------------------
 
@@ -70,20 +89,41 @@ pub const Connection = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        loop: *xev.Loop,
-        socket: xev.TCP,
+        fd: std.posix.fd_t,
         options: Options,
     ) !Connection {
         return .{
             .allocator = allocator,
-            .transport = try transport_xev.Transport.init(allocator, loop, socket, options.read_buffer_size),
+            .transport = try transport_mod.Transport.init(allocator, fd, options.read_buffer_size),
             .framer = framing.Framer.init(allocator),
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
     }
 
-    /// Release all internal state: clears callbacks, drains pending
-    /// writes, and tears down the transport and framer.
+    /// Enable cross-thread wake support. Creates a pipe so that other
+    /// threads can call `wake()` to interrupt the blocking `run()` loop.
+    /// The `on_wake` callback is invoked on the run loop's thread.
+    pub fn enableWake(
+        self: *Connection,
+        on_wake: *const fn (conn: *Connection) void,
+    ) !void {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+        var fds: [2]std.posix.fd_t = undefined;
+        if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
+            return error.WakePipeCreateFailed;
+        }
+        self.wake_fds = fds;
+        self.on_wake = on_wake;
+    }
+
+    /// Wake the run loop from any thread. Thread-safe.
+    /// The run loop will call `on_wake` on its own thread.
+    pub fn wake(self: *Connection) void {
+        const fds = self.wake_fds orelse return;
+        _ = std.posix.system.write(fds[1], &[_]u8{1}, 1);
+    }
+
+    /// Release all internal state: tears down the transport and framer.
     ///
     /// This does **not** free the `Connection` object itself. When the
     /// `Connection` was heap-allocated (e.g., via `Listener.createConnection`
@@ -106,11 +146,20 @@ pub const Connection = struct {
         self.on_message = null;
         self.on_error = null;
         self.on_close = null;
-        self.transport.clearHandlers();
+        self.on_wake = null;
+        if (self.wake_fds) |fds| {
+            runtime_helpers.closeFd(fds[0]);
+            runtime_helpers.closeFd(fds[1]);
+            self.wake_fds = null;
+        }
         self.transport.deinit();
         self.framer.deinit();
     }
 
+    /// Register callbacks for inbound messages, errors, and close events.
+    ///
+    /// Callbacks are invoked during `run()` on the calling thread.
+    /// After `start()`, call `run()` to begin the blocking read loop.
     pub fn start(
         self: *Connection,
         ctx: *anyopaque,
@@ -124,30 +173,115 @@ pub const Connection = struct {
         self.on_message = on_message;
         self.on_error = on_error;
         self.on_close = on_close;
-
-        self.transport.setCloseHandler(self, onTransportClose);
-        self.transport.startRead(self, onTransportRead);
     }
 
+    /// Blocking read loop. Reads from the transport, pushes data through
+    /// the framer, and dispatches complete message frames to callbacks.
+    ///
+    /// Returns when:
+    /// - The peer closes the connection (EOF / read returns 0)
+    /// - A read error occurs
+    /// - `close()` is called (from a callback or another thread)
+    ///
+    /// Starts a dedicated writer thread before entering the read loop.
+    /// Writes enqueued via `sendFrame()` are drained by the writer thread
+    /// concurrently with reads. The writer thread is joined before
+    /// `on_close` fires.
+    ///
+    /// If wake support is enabled via `enableWake()`, the loop uses
+    /// `poll()` to wait on both the socket and the wake pipe. When
+    /// woken by another thread, `on_wake` is called before the next read.
+    ///
+    /// After `run()` returns, the `on_close` callback is invoked.
+    pub fn run(self: *Connection) void {
+        self.transport.startWriter() catch |err| {
+            log.debug("failed to start writer thread: {}", .{err});
+            self.invokeOnError(err);
+            if (self.on_close) |cb| {
+                cb(self);
+            }
+            return;
+        };
+
+        while (!self.transport.isClosing()) {
+            // If wake support is enabled, use poll() to wait on both
+            // the socket and the wake pipe.
+            if (self.wake_fds) |wfds| {
+                var fds = [2]std.posix.pollfd{
+                    .{ .fd = self.transport.fd, .events = std.posix.POLL.IN, .revents = 0 },
+                    .{ .fd = wfds[0], .events = std.posix.POLL.IN, .revents = 0 },
+                };
+                while (true) {
+                    const rc = std.posix.system.poll(@ptrCast(&fds), 2, -1);
+                    if (rc > 0) break;
+                    if (std.posix.errno(rc) == .INTR) continue;
+                    break;
+                }
+                // Drain wake pipe and invoke callback.
+                if (fds[1].revents & std.posix.POLL.IN != 0) {
+                    var drain_buf: [64]u8 = undefined;
+                    _ = std.posix.system.read(wfds[0], &drain_buf, drain_buf.len);
+                    if (self.on_wake) |cb| cb(self);
+                }
+                // If socket has no data, loop back (might have been woken only).
+                if (fds[0].revents & std.posix.POLL.IN == 0 and
+                    fds[0].revents & std.posix.POLL.HUP == 0 and
+                    fds[0].revents & std.posix.POLL.ERR == 0)
+                {
+                    continue;
+                }
+            }
+
+            const n = self.transport.read() catch |err| {
+                log.debug("transport read error: {}", .{err});
+                self.invokeOnError(err);
+                break;
+            };
+            if (n == 0) {
+                log.debug("transport EOF", .{});
+                break;
+            }
+            self.handleRead(self.transport.read_buf[0..n]);
+        }
+        // Stop the writer thread before invoking on_close, since on_close
+        // may deinit/destroy the connection.
+        self.transport.stopWriter();
+
+        // Signal close to the owner (typically the Peer).
+        if (self.on_close) |cb| {
+            cb(self);
+        }
+    }
+
+    /// Enqueue a framed message for sending to the remote peer.
+    /// Non-blocking — the frame is copied into the write queue and
+    /// delivered by the writer thread.
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
         self.assertThreadAffinity();
-        try self.transport.queueWrite(frame, self, onWriteDone);
+        self.transport.enqueueWrite(frame) catch |err| {
+            log.debug("write enqueue failed: {}", .{err});
+            self.invokeOnError(err);
+            return err;
+        };
     }
 
+    /// Initiate connection close. This shuts down the socket, which will
+    /// cause `run()` to exit on the next read attempt.
     pub fn close(self: *Connection) void {
         self.assertThreadAffinity();
         log.debug("connection closing", .{});
         self.transport.close();
     }
 
+    /// Signal the transport to stop from any thread. Wakes a blocked
+    /// `run()` loop by shutting down the socket.
+    pub fn requestClose(self: *Connection) void {
+        self.transport.shutdown();
+    }
+
     pub fn isClosing(self: *const Connection) bool {
         self.assertThreadAffinity();
         return self.transport.isClosing();
-    }
-
-    fn onTransportRead(ctx: *anyopaque, data: []const u8) void {
-        const conn: *Connection = @ptrCast(@alignCast(ctx));
-        conn.handleRead(data);
     }
 
     fn handleRead(self: *Connection, data: []const u8) void {
@@ -215,28 +349,6 @@ pub const Connection = struct {
         self.in_error_callback = true;
         defer self.in_error_callback = false;
         cb(self, err);
-    }
-
-    fn onTransportClose(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
-        const conn: *Connection = @ptrCast(@alignCast(ctx));
-        if (err) |e| {
-            log.debug("transport closed with error: {}", .{e});
-            conn.invokeOnError(e);
-        } else {
-            log.debug("transport closed cleanly", .{});
-        }
-        const on_close = conn.on_close;
-        if (on_close) |cb| {
-            cb(conn);
-        }
-    }
-
-    fn onWriteDone(ctx: *anyopaque, err: ?transport_xev.TransportError) void {
-        if (err) |e| {
-            log.debug("write failed: {}", .{e});
-            const conn: *Connection = @ptrCast(@alignCast(ctx));
-            if (conn.on_error) |cb| cb(conn, e);
-        }
     }
 };
 
@@ -499,123 +611,6 @@ test "connection handleRead rejects oversized frame headers" {
     try std.testing.expectEqual(@as(?anyerror, error.FrameTooLarge), state.last_error);
 }
 
-test "connection onTransportClose reports error then close" {
-    const allocator = std.testing.allocator;
-
-    const Harness = struct {
-        const State = struct {
-            error_count: usize = 0,
-            close_count: usize = 0,
-            last_error: ?anyerror = null,
-        };
-
-        fn onMessage(_: *Connection, _: []const u8) !void {}
-
-        fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            state.error_count += 1;
-            state.last_error = err;
-        }
-
-        fn onClose(conn: *Connection) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            state.close_count += 1;
-        }
-    };
-
-    var state = Harness.State{};
-    var conn = Connection{
-        .allocator = allocator,
-        .transport = undefined,
-        .framer = framing.Framer.init(allocator),
-        .ctx = &state,
-        .on_message = Harness.onMessage,
-        .on_error = Harness.onError,
-        .on_close = Harness.onClose,
-    };
-    defer conn.framer.deinit();
-
-    Connection.onTransportClose(&conn, error.ConnectionResetByPeer);
-    try std.testing.expectEqual(@as(usize, 1), state.error_count);
-    try std.testing.expectEqual(@as(usize, 1), state.close_count);
-    try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), state.last_error);
-}
-
-test "connection onTransportClose invokes close callback on clean close" {
-    const allocator = std.testing.allocator;
-
-    const Harness = struct {
-        const State = struct {
-            error_count: usize = 0,
-            close_count: usize = 0,
-        };
-
-        fn onMessage(_: *Connection, _: []const u8) !void {}
-
-        fn onError(conn: *Connection, _: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            state.error_count += 1;
-        }
-
-        fn onClose(conn: *Connection) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            state.close_count += 1;
-        }
-    };
-
-    var state = Harness.State{};
-    var conn = Connection{
-        .allocator = allocator,
-        .transport = undefined,
-        .framer = framing.Framer.init(allocator),
-        .ctx = &state,
-        .on_message = Harness.onMessage,
-        .on_error = Harness.onError,
-        .on_close = Harness.onClose,
-    };
-    defer conn.framer.deinit();
-
-    Connection.onTransportClose(&conn, null);
-    try std.testing.expectEqual(@as(usize, 0), state.error_count);
-    try std.testing.expectEqual(@as(usize, 1), state.close_count);
-}
-
-test "connection onWriteDone forwards write errors to on_error" {
-    const allocator = std.testing.allocator;
-
-    const Harness = struct {
-        const State = struct {
-            error_count: usize = 0,
-            last_error: ?anyerror = null,
-        };
-
-        fn onMessage(_: *Connection, _: []const u8) !void {}
-
-        fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            state.error_count += 1;
-            state.last_error = err;
-        }
-    };
-
-    var state = Harness.State{};
-    var conn = Connection{
-        .allocator = allocator,
-        .transport = undefined,
-        .framer = framing.Framer.init(allocator),
-        .ctx = &state,
-        .on_message = Harness.onMessage,
-        .on_error = Harness.onError,
-    };
-    defer conn.framer.deinit();
-
-    Connection.onWriteDone(&conn, error.ConnectionResetByPeer);
-    Connection.onWriteDone(&conn, null);
-
-    try std.testing.expectEqual(@as(usize, 1), state.error_count);
-    try std.testing.expectEqual(@as(?anyerror, error.ConnectionResetByPeer), state.last_error);
-}
-
 test "connection isClosing reflects transport state" {
     const allocator = std.testing.allocator;
     var read_buf = [_]u8{0} ** 8;
@@ -623,9 +618,8 @@ test "connection isClosing reflects transport state" {
     var conn = Connection{
         .allocator = allocator,
         .transport = .{
-            .loop = undefined,
-            .socket = undefined,
             .allocator = allocator,
+            .fd = undefined,
             .read_buf = read_buf[0..],
         },
         .framer = framing.Framer.init(allocator),
@@ -634,6 +628,6 @@ test "connection isClosing reflects transport state" {
 
     try std.testing.expect(!conn.isClosing());
 
-    conn.transport.close_requested = true;
+    conn.transport.close_requested.store(true, .release);
     try std.testing.expect(conn.isClosing());
 }

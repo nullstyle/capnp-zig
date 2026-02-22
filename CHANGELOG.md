@@ -37,14 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream-based message reading.
 
 - **RPC runtime** (`src/rpc/`, experimental): Cap'n Proto RPC implementation
-  over TCP using libxev. Includes:
-  - Event loop and listener (`runtime.zig`)
+  over TCP using synchronous POSIX I/O with concurrent read/write transport. Includes:
+  - Listener and socket helpers (`runtime.zig`)
   - Connection state machine (`connection.zig`)
   - Full RPC peer with question/answer tables, capability export/import,
     bootstrap, call routing, and promise pipelining (`peer.zig`)
   - RPC protocol message types and wire-format readers/builders (`protocol.zig`)
   - Segment-framed message reassembly (`framing.zig`)
-  - Async TCP transport via libxev (`transport_xev.zig`)
+  - Concurrent read/write TCP transport (`transport.zig`)
   - Host-neutral detached frame-pump for wasm environments (`host_peer.zig`)
   - Capability descriptor remapping (`payload_remap.zig`)
   - Three-party handoff (provide/accept/join) and third-party capability
@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Benchmarks**: Ping-pong RPC benchmark with configurable iterations and
   payload size. Packed and unpacked serialization benchmarks.
 
-- **Build system**: Zig 0.15.2 build with `build.zig` providing targets for
+- **Build system**: Zig 0.16 build with `build.zig` providing targets for
   `build`, `test`, `check`, `bench-*`, and `example-rpc`. Justfile aliases for
   common tasks.
 

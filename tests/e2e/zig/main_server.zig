@@ -4,6 +4,7 @@ const capnpc = @import("capnpc-zig");
 const rpc = capnpc.rpc;
 const message = capnpc.message;
 
+const game_types = @import("generated/game_types.zig");
 const game_world = @import("generated/game_world.zig");
 const chat = @import("generated/chat.zig");
 const inventory = @import("generated/inventory.zig");
@@ -27,7 +28,6 @@ const CliArgs = struct {
 
 const App = struct {
     allocator: Allocator,
-    runtime: rpc.runtime.Runtime,
     schema: Schema,
     game_world_service: GameWorldService,
     chat_service: ChatService,
@@ -37,7 +37,6 @@ const App = struct {
     fn init(allocator: Allocator, schema: Schema) !App {
         return .{
             .allocator = allocator,
-            .runtime = try rpc.runtime.Runtime.init(allocator),
             .schema = schema,
             .game_world_service = GameWorldService.init(allocator),
             .chat_service = ChatService.init(allocator),
@@ -58,14 +57,9 @@ const App = struct {
         self.inventory_service.deinit();
         self.chat_service.deinit();
         self.game_world_service.deinit();
-        self.runtime.deinit();
     }
 };
 
-const ListenerCtx = struct {
-    listener: rpc.runtime.Listener,
-    app: *App,
-};
 
 const GameEntity = struct {
     id: u64,
@@ -76,7 +70,7 @@ const GameEntity = struct {
     z: f32,
     health: i32,
     max_health: i32,
-    faction: game_world.Faction,
+    faction: game_types.Faction,
     alive: bool,
 };
 
@@ -127,7 +121,7 @@ const ChatMsgKind = enum {
 const ChatMsg = struct {
     sender_id: u64,
     sender_name: []u8,
-    sender_faction: chat.Faction,
+    sender_faction: game_types.Faction,
     sender_level: u16,
     content: []u8,
     timestamp_ms: i64,
@@ -148,7 +142,7 @@ const ChatRoomSession = struct {
     room: *ChatRoomState,
     sender_id: u64,
     sender_name: []u8,
-    sender_faction: chat.Faction,
+    sender_faction: game_types.Faction,
     sender_level: u16,
     server: chat.ChatRoom.Server,
 };
@@ -210,7 +204,7 @@ const ChatService = struct {
         room: *ChatRoomState,
         sender_id: u64,
         sender_name: []const u8,
-        sender_faction: chat.Faction,
+        sender_faction: game_types.Faction,
         sender_level: u16,
     ) !*ChatRoomSession {
         const session = try self.allocator.create(ChatRoomSession);
@@ -250,7 +244,7 @@ const InventorySlotState = struct {
     slot_index: u16,
     item_id: u64,
     item_name: []u8,
-    rarity: inventory.Rarity,
+    rarity: game_types.Rarity,
     item_level: u16,
     stack_size: u32,
     quantity: u32,
@@ -350,7 +344,7 @@ const InventoryService = struct {
 const MatchPlayer = struct {
     id: u64,
     name: []u8,
-    faction: matchmaking.Faction,
+    faction: game_types.Faction,
     level: u16,
 };
 
@@ -471,41 +465,33 @@ fn parseSchema(text: []const u8) !Schema {
     return error.InvalidSchema;
 }
 
-fn parseArgs(allocator: Allocator) !CliArgs {
+fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = out.host;
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
-
-    var idx: usize = 1;
-    while (idx < argv.len) : (idx += 1) {
-        const arg = argv[idx];
+    var args_iter = std.process.Args.Iterator.init(args);
+    _ = args_iter.skip(); // skip program name
+    while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return error.HelpRequested;
         }
         if (std.mem.eql(u8, arg, "--host")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            host_text = argv[idx];
+            host_text = args_iter.next() orelse return error.MissingArgValue;
             continue;
         }
         if (std.mem.eql(u8, arg, "--port")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.port = try std.fmt.parseInt(u16, argv[idx], 10);
+            const port_str = args_iter.next() orelse return error.MissingArgValue;
+            out.port = try std.fmt.parseInt(u16, port_str, 10);
             continue;
         }
         if (std.mem.eql(u8, arg, "--schema")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.schema = try parseSchema(argv[idx]);
+            const schema_str = args_iter.next() orelse return error.MissingArgValue;
+            out.schema = try parseSchema(schema_str);
             continue;
         }
         if (std.mem.eql(u8, arg, "--listen-fd")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.listen_fd = try std.fmt.parseInt(std.posix.fd_t, argv[idx], 10);
+            const fd_str = args_iter.next() orelse return error.MissingArgValue;
+            out.listen_fd = try std.fmt.parseInt(std.posix.fd_t, fd_str, 10);
             continue;
         }
     }
@@ -515,7 +501,9 @@ fn parseArgs(allocator: Allocator) !CliArgs {
 }
 
 fn nowMillis() i64 {
-    return std.time.milliTimestamp();
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.REALTIME, &ts);
+    return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
 fn statusOk(comptime T: type) T {
@@ -548,7 +536,7 @@ fn distance3(x1: f32, y1: f32, z1: f32, x2: f32, y2: f32, z2: f32) f32 {
 fn parseGameWorldFilter(query: game_world.AreaQuery.Reader) union(enum) {
     all,
     by_kind: game_world.EntityKind,
-    by_faction: game_world.Faction,
+    by_faction: game_types.Faction,
 } {
     // `AreaQuery.filter` union helpers are not generated yet.
     // Discriminant and payload are read directly from the struct data section.
@@ -614,7 +602,7 @@ fn onSpawnEntity(
 
     var out_entity = try results.initEntity();
     try fillGameEntity(&out_entity, &entity);
-    try results.setStatus(statusOk(game_world.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onDespawnEntity(
@@ -630,9 +618,9 @@ fn onDespawnEntity(
 
     if (service.entities.fetchRemove(id)) |entry| {
         service.allocator.free(entry.value.name);
-        try results.setStatus(statusOk(game_world.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
-        try results.setStatus(statusNotFound(game_world.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -650,9 +638,9 @@ fn onGetEntity(
     if (service.entities.get(id)) |entity| {
         var out_entity = try results.initEntity();
         try fillGameEntity(&out_entity, &entity);
-        try results.setStatus(statusOk(game_world.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
-        try results.setStatus(statusNotFound(game_world.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -679,9 +667,9 @@ fn onMoveEntity(
 
         var out_entity = try results.initEntity();
         try fillGameEntity(&out_entity, entity);
-        try results.setStatus(statusOk(game_world.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
-        try results.setStatus(statusNotFound(game_world.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -709,10 +697,10 @@ fn onDamageEntity(
         var out_entity = try results.initEntity();
         try fillGameEntity(&out_entity, entity);
         try results.setKilled(killed);
-        try results.setStatus(statusOk(game_world.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
         try results.setKilled(false);
-        try results.setStatus(statusNotFound(game_world.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -780,7 +768,7 @@ fn setChatMessageKind(builder: *chat.ChatMessage.Builder, kind: ChatMsgKind, whi
         .whisper => {
             builder._builder.writeU16(0, 3);
             const ptr = try builder._builder.initStruct(3, 1, 0);
-            var pid = chat.PlayerId.Builder.wrap(ptr);
+            var pid = game_types.PlayerId.Builder.wrap(ptr);
             try pid.setId(whisper_target);
         },
     }
@@ -814,7 +802,7 @@ fn onCreateRoom(
     const room_topic = try params.getTopic();
 
     if (service.rooms.get(room_name) != null) {
-        try results.setStatus(statusAlreadyExists(chat.StatusCode));
+        try results.setStatus(statusAlreadyExists(game_types.StatusCode));
         return;
     }
 
@@ -836,7 +824,7 @@ fn onCreateRoom(
 
     var info = try results.initInfo();
     try fillChatRoomInfo(&info, room);
-    try results.setStatus(statusOk(chat.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onJoinRoom(
@@ -850,7 +838,7 @@ fn onJoinRoom(
 
     const room_name = try params.getName();
     const room = service.rooms.get(room_name) orelse {
-        try results.setStatus(statusNotFound(chat.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
         return;
     };
 
@@ -865,7 +853,7 @@ fn onJoinRoom(
     const session = try service.createRoomSession(room, player_id, player_name, player_faction, player_level);
     const cap_id = try chat.ChatRoom.exportServer(peer, &session.server);
     try results.setRoomCapability(.{ .id = cap_id });
-    try results.setStatus(statusOk(chat.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onListRooms(
@@ -922,7 +910,7 @@ fn onWhisper(
     try ts.setUnixMillis(nowMillis());
     try setChatMessageKind(&msg, .whisper, to_id);
 
-    try results.setStatus(statusOk(chat.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onSendMessage(
@@ -949,7 +937,7 @@ fn onSendMessage(
 
     var msg = try results.initMessage();
     try fillChatMessage(&msg, &stored);
-    try results.setStatus(statusOk(chat.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onSendEmote(
@@ -976,7 +964,7 @@ fn onSendEmote(
 
     var msg = try results.initMessage();
     try fillChatMessage(&msg, &stored);
-    try results.setStatus(statusOk(chat.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onGetHistory(
@@ -1027,7 +1015,7 @@ fn onLeave(
     results: *chat.ChatRoom.Leave.Results.Builder,
     _: *const rpc.cap_table.InboundCapTable,
 ) !void {
-    try results.setStatus(statusOk(chat.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn fillInventorySlot(builder: *inventory.InventorySlot.Builder, slot: *const InventorySlotState) !void {
@@ -1076,7 +1064,7 @@ fn onGetInventory(
 
     try out.setCapacity(inv.capacity);
     try out.setUsedSlots(@intCast(inv.slots.items.len));
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onAddItem(
@@ -1095,7 +1083,7 @@ fn onAddItem(
 
     const inv = try service.getOrCreateInventory(player_id);
     if (inv.slots.items.len >= inv.capacity) {
-        try results.setStatus(statusResourceExhausted(inventory.StatusCode));
+        try results.setStatus(statusResourceExhausted(game_types.StatusCode));
         return;
     }
 
@@ -1133,7 +1121,7 @@ fn onAddItem(
 
     var out_slot = try results.initSlot();
     try fillInventorySlot(&out_slot, &inv.slots.items[inv.slots.items.len - 1]);
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onRemoveItem(
@@ -1169,9 +1157,9 @@ fn onRemoveItem(
         } else {
             slot.quantity -= quantity;
         }
-        try results.setStatus(statusOk(inventory.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
-        try results.setStatus(statusNotFound(inventory.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -1217,7 +1205,7 @@ fn onStartTrade(
 
     const cap_id = try inventory.TradeSession.exportServer(peer, &server_state.server);
     try results.setSessionCapability(.{ .id = cap_id });
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onFilterByRarity(
@@ -1297,7 +1285,7 @@ fn onOfferItems(
 
     var offer = try results.initOffer();
     try buildTradeOffer(state.service, state.trade, &offer);
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onRemoveTradeItems(
@@ -1314,7 +1302,7 @@ fn onRemoveTradeItems(
     var offer = try results.initOffer();
     try offer.setAccepted(false);
     _ = try offer.initOfferedItems(0);
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onAcceptTrade(
@@ -1328,7 +1316,7 @@ fn onAcceptTrade(
 
     state.trade.state = .Accepted;
     try results.setState(.Accepted);
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onConfirmTrade(
@@ -1342,7 +1330,7 @@ fn onConfirmTrade(
 
     state.trade.state = .Confirmed;
     try results.setState(.Confirmed);
-    try results.setStatus(statusOk(inventory.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onCancelTrade(
@@ -1381,7 +1369,7 @@ fn onGetTradeState(
     try results.setState(state.trade.state);
 }
 
-fn fillMatchPlayer(builder: *matchmaking.PlayerInfo.Builder, p: *const MatchPlayer) !void {
+fn fillMatchPlayer(builder: *game_types.PlayerInfo.Builder, p: *const MatchPlayer) !void {
     var id = try builder.initId();
     try id.setId(p.id);
     try builder.setName(p.name);
@@ -1452,7 +1440,7 @@ fn onEnqueue(
     var enqueued_at = try ticket.initEnqueuedAt();
     try enqueued_at.setUnixMillis(entry.enqueued_at);
     try ticket.setEstimatedWaitSecs(30);
-    try results.setStatus(statusOk(matchmaking.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onDequeue(
@@ -1467,9 +1455,9 @@ fn onDequeue(
 
     if (service.queue.fetchRemove(ticket_id)) |entry| {
         service.allocator.free(entry.value.player.name);
-        try results.setStatus(statusOk(matchmaking.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
-        try results.setStatus(statusNotFound(matchmaking.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -1590,9 +1578,9 @@ fn onGetMatchResult(
             try dst.setScore(ps.score);
         }
 
-        try results.setStatus(statusOk(matchmaking.StatusCode));
+        try results.setStatus(statusOk(game_types.StatusCode));
     } else {
-        try results.setStatus(statusNotFound(matchmaking.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
     }
 }
 
@@ -1619,7 +1607,7 @@ fn onControllerSignalReady(
 ) !void {
     const controller: *MatchControllerServerState = @ptrCast(@alignCast(ctx_ptr));
     const match_state = controller.service.matches.get(controller.match_id) orelse {
-        try results.setStatus(statusNotFound(matchmaking.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
         try results.setAllReady(false);
         return;
     };
@@ -1633,7 +1621,7 @@ fn onControllerSignalReady(
     }
 
     try results.setAllReady(true);
-    try results.setStatus(statusOk(matchmaking.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onControllerReportResult(
@@ -1647,7 +1635,7 @@ fn onControllerReportResult(
     const service = controller.service;
 
     const match_state = service.matches.get(controller.match_id) orelse {
-        try results.setStatus(statusNotFound(matchmaking.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
         return;
     };
 
@@ -1692,7 +1680,7 @@ fn onControllerReportResult(
     try service.results.put(controller.match_id, output);
     match_state.state = .Completed;
 
-    try results.setStatus(statusOk(matchmaking.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onControllerCancelMatch(
@@ -1704,17 +1692,17 @@ fn onControllerCancelMatch(
 ) !void {
     const controller: *MatchControllerServerState = @ptrCast(@alignCast(ctx_ptr));
     const match_state = controller.service.matches.get(controller.match_id) orelse {
-        try results.setStatus(statusNotFound(matchmaking.StatusCode));
+        try results.setStatus(statusNotFound(game_types.StatusCode));
         return;
     };
 
     if (match_state.state == .InProgress or match_state.state == .Completed) {
-        try results.setStatus(statusInvalidArgument(matchmaking.StatusCode));
+        try results.setStatus(statusInvalidArgument(game_types.StatusCode));
         return;
     }
 
     match_state.state = .Cancelled;
-    try results.setStatus(statusOk(matchmaking.StatusCode));
+    try results.setStatus(statusOk(game_types.StatusCode));
 }
 
 fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
@@ -1735,34 +1723,39 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
     }
 }
 
-fn onAccept(listener: *rpc.runtime.Listener, conn: *rpc.connection.Connection) void {
-    const ctx: *ListenerCtx = @fieldParentPtr("listener", listener);
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, _: u32) void {
+    const app: *App = @ptrCast(@alignCast(ctx_ptr));
 
-    const peer = ctx.app.allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        ctx.app.allocator.destroy(conn);
-        return;
-    };
-
-    peer.* = rpc.peer.Peer.init(ctx.app.allocator, conn);
-
-    const bootstrap_result = switch (ctx.app.schema) {
-        .game_world => game_world.GameWorld.setBootstrap(peer, &ctx.app.game_world_service.server),
-        .chat => chat.ChatService.setBootstrap(peer, &ctx.app.chat_service.server),
-        .inventory => inventory.InventoryService.setBootstrap(peer, &ctx.app.inventory_service.server),
-        .matchmaking => matchmaking.MatchmakingService.setBootstrap(peer, &ctx.app.matchmaking_service.server),
+    const bootstrap_result = switch (app.schema) {
+        .game_world => game_world.GameWorld.setBootstrap(peer, &app.game_world_service.server),
+        .chat => chat.ChatService.setBootstrap(peer, &app.chat_service.server),
+        .inventory => inventory.InventoryService.setBootstrap(peer, &app.inventory_service.server),
+        .matchmaking => matchmaking.MatchmakingService.setBootstrap(peer, &app.matchmaking_service.server),
     };
 
     _ = bootstrap_result catch |err| {
         std.log.err("failed to set bootstrap: {s}", .{@errorName(err)});
         peer.deinit();
-        ctx.app.allocator.destroy(peer);
+        app.allocator.destroy(peer);
         conn.deinit();
-        ctx.app.allocator.destroy(conn);
+        app.allocator.destroy(conn);
         return;
     };
 
     peer.start(onPeerError, onPeerClose);
+}
+
+fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
+    var bytes: [4]u8 = undefined;
+    var byte_idx: usize = 0;
+    var iter = std.mem.splitScalar(u8, host, '.');
+    while (iter.next()) |octet| {
+        if (byte_idx >= 4) return error.InvalidAddress;
+        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
+        byte_idx += 1;
+    }
+    if (byte_idx != 4) return error.InvalidAddress;
+    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
 }
 
 fn usage() void {
@@ -1771,12 +1764,12 @@ fn usage() void {
     , .{});
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -1797,32 +1790,18 @@ pub fn main() !void {
     defer app.deinit();
     app.bind();
 
-    var listener_ctx = ListenerCtx{
-        .app = &app,
-        .listener = if (args.listen_fd) |fd|
-            rpc.runtime.Listener.initFd(
-                allocator,
-                &app.runtime.loop,
-                fd,
-                onAccept,
-                .{},
-            )
-        else
-            try rpc.runtime.Listener.init(
-                allocator,
-                &app.runtime.loop,
-                try std.net.Address.parseIp4(args.host, args.port),
-                onAccept,
-                .{},
-            ),
-    };
-    defer listener_ctx.listener.close();
+    const address = try parseIp4Address(args.host, args.port);
 
-    listener_ctx.listener.start();
+    var pool = try rpc.worker_pool.WorkerPool.init(
+        allocator,
+        address,
+        &app,
+        onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
 
     std.debug.print("READY\n", .{});
 
-    while (true) {
-        try app.runtime.run(.once);
-    }
+    try pool.run();
 }

@@ -45,4 +45,4 @@
 - PRs should include a clear summary, the commands you ran, and any schema samples if codegen behavior changes.
 
 ## Tooling & Configuration
-- Target Zig `0.15.2`. `capnp`, `just`, and `mise` are optional but recommended for local workflows.
+- Target Zig `0.16`. `capnp`, `just`, and `mise` are optional but recommended for local workflows.

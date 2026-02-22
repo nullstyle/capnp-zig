@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is this project?
 
-capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/) — a serialization framework and RPC system. It includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on libxev.
+capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/) — a serialization framework and RPC system. It includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime using synchronous POSIX I/O with a concurrent read/write transport.
 
 ## Build & Test Commands
 
-Requires **Zig 0.15.2** (use `mise install` to set up toolchain).
+Requires **Zig 0.16** (use `mise install` to set up toolchain).
 
 | Task | Command |
 |---|---|
@@ -42,7 +42,7 @@ Four-layer design, each building on the previous:
 
 **Code Generation** (`src/capnpc-zig/`) — Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP using libxev. Modules: `runtime.zig` (event loop), `connection.zig` (state machine), `framing.zig` (message framing), `transport_xev.zig` (async I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
+**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP using synchronous POSIX I/O with concurrent read/write transport. Modules: `runtime.zig` (listener/socket helpers), `connection.zig` (state machine), `framing.zig` (message framing), `transport.zig` (concurrent read/write I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
 
 ### Key data flows
 
@@ -65,10 +65,9 @@ Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation
 
 ## Dependencies & Vendored Code
 
-- `libxev` — Event loop library, fetched via `build.zig.zon` URL+hash dependency (used by RPC runtime)
 - `vendor/ext/go-capnp/` — Go Cap'n Proto reference (git submodule), used by the e2e Go backend and Cap'n Proto schema tooling
 - `vendor/ext/capnp_test/` — Official Cap'n Proto test fixtures (git submodule)
 
 ## Current Status
 
-Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC runtime + codegen). Phase 7 (production hardening) is in progress — see `PLAN.md` and `docs/rpc_runtime_design.md`.
+Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC runtime + codegen). Phase 7 (production hardening) is in progress — see `docs/rpc_runtime_design.md`.

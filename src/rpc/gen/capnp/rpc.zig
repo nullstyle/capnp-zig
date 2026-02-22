@@ -52,7 +52,7 @@ pub const Message = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getUnimplemented(self: Reader) !Message.Reader {
@@ -384,7 +384,7 @@ pub const Call = struct {
             }
 
             pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.meta.intToEnum(WhichTag, self._reader.readU16(6)) catch return error.InvalidEnumValue;
+                return std.enums.fromInt(WhichTag, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
             }
 
             pub fn getCaller(self: @This()) !void {
@@ -574,7 +574,7 @@ pub const Return = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(6)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getAnswerId(self: Reader) !u32 {
@@ -802,7 +802,7 @@ pub const Resolve = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(4)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getPromiseId(self: Reader) !u32 {
@@ -941,7 +941,7 @@ pub const Disembargo = struct {
             }
 
             pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.meta.intToEnum(WhichTag, self._reader.readU16(4)) catch return error.InvalidEnumValue;
+                return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
             }
 
             pub fn getSenderLoopback(self: @This()) !u32 {
@@ -1406,7 +1406,7 @@ pub const MessageTarget = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(4)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getImportedCap(self: Reader) !u32 {
@@ -1558,7 +1558,7 @@ pub const CapDescriptor = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getNone(self: Reader) !void {
@@ -1745,7 +1745,7 @@ pub const Op = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(0)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getNoop(self: Reader) !void {
@@ -1904,7 +1904,7 @@ pub const Exception = struct {
 
         pub fn getType(self: Reader) !Type {
             const raw = self._reader.readU16(4) ^ @as(u16, 0);
-            return std.meta.intToEnum(Type, raw) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(Type, raw) orelse return error.InvalidEnumValue;
         }
 
         pub fn getTrace(self: Reader) ![]const u8 {

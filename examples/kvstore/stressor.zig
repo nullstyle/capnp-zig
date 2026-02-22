@@ -2,7 +2,6 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const kvstore = @import("gen/kvstore.zig");
 
-const xev = capnpc.xev;
 const rpc = capnpc.rpc;
 const KvStore = kvstore.KvStore;
 
@@ -21,7 +20,6 @@ const CliArgs = struct {
 
 const KvStoreStressor = struct {
     allocator: Allocator,
-    runtime: rpc.runtime.Runtime,
     args: CliArgs,
 
     value: []const u8,
@@ -64,67 +62,90 @@ const StresserError = error{
     PeerClosed,
 };
 
-fn parseArgs(allocator: Allocator) !CliArgs {
+fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = "127.0.0.1";
     var key_prefix: []const u8 = "kvstore-stress";
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
-
-    var idx: usize = 1;
-    while (idx < argv.len) : (idx += 1) {
-        const arg = argv[idx];
+    var args_iter = std.process.Args.Iterator.init(args);
+    _ = args_iter.skip(); // skip program name
+    var need_value: enum { none, host, port, operations, batch_size, concurrency, value_size, prefix } = .none;
+    while (args_iter.next()) |arg| {
+        switch (need_value) {
+            .host => {
+                host_text = arg;
+                need_value = .none;
+                continue;
+            },
+            .port => {
+                out.port = try std.fmt.parseInt(u16, arg, 10);
+                need_value = .none;
+                continue;
+            },
+            .operations => {
+                out.operations = try std.fmt.parseInt(u64, arg, 10);
+                need_value = .none;
+                continue;
+            },
+            .batch_size => {
+                const batch_size = try std.fmt.parseInt(u32, arg, 10);
+                if (batch_size == 0) return StresserError.InvalidArguments;
+                out.batch_size = batch_size;
+                need_value = .none;
+                continue;
+            },
+            .concurrency => {
+                const concurrency = try std.fmt.parseInt(u32, arg, 10);
+                if (concurrency == 0) return StresserError.InvalidArguments;
+                out.concurrency = concurrency;
+                need_value = .none;
+                continue;
+            },
+            .value_size => {
+                out.value_size = try std.fmt.parseInt(usize, arg, 10);
+                need_value = .none;
+                continue;
+            },
+            .prefix => {
+                key_prefix = arg;
+                need_value = .none;
+                continue;
+            },
+            .none => {},
+        }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return error.HelpRequested;
         }
         if (std.mem.eql(u8, arg, "--host")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            host_text = argv[idx];
+            need_value = .host;
             continue;
         }
         if (std.mem.eql(u8, arg, "--port")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.port = try std.fmt.parseInt(u16, argv[idx], 10);
+            need_value = .port;
             continue;
         }
         if (std.mem.eql(u8, arg, "--operations")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.operations = try std.fmt.parseInt(u64, argv[idx], 10);
+            need_value = .operations;
             continue;
         }
         if (std.mem.eql(u8, arg, "--batch-size")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            const batch_size = try std.fmt.parseInt(u32, argv[idx], 10);
-            if (batch_size == 0) return StresserError.InvalidArguments;
-            out.batch_size = batch_size;
+            need_value = .batch_size;
             continue;
         }
         if (std.mem.eql(u8, arg, "--concurrency")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            const concurrency = try std.fmt.parseInt(u32, argv[idx], 10);
-            if (concurrency == 0) return StresserError.InvalidArguments;
-            out.concurrency = concurrency;
+            need_value = .concurrency;
             continue;
         }
         if (std.mem.eql(u8, arg, "--value-size")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.value_size = try std.fmt.parseInt(usize, argv[idx], 10);
+            need_value = .value_size;
             continue;
         }
         if (std.mem.eql(u8, arg, "--prefix")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            key_prefix = argv[idx];
+            need_value = .prefix;
             continue;
         }
     }
+    if (need_value != .none) return error.MissingArgValue;
 
     out.host = try allocator.dupe(u8, host_text);
     out.key_prefix = try allocator.dupe(u8, key_prefix);
@@ -154,7 +175,7 @@ fn usage() void {
 }
 
 fn reportProgress(stressor: *KvStoreStressor) void {
-    const now = std.time.nanoTimestamp();
+    const now = nanoTimestamp();
     const elapsed_since_last = now - stressor.last_report_ns;
     if (elapsed_since_last < @as(Timestamp, std.time.ns_per_s)) return;
     if (stressor.start_ns == 0) return;
@@ -184,7 +205,7 @@ fn reportProgress(stressor: *KvStoreStressor) void {
 }
 
 fn printSummary(stressor: *KvStoreStressor) void {
-    const end_ns = if (stressor.end_ns != 0) stressor.end_ns else std.time.nanoTimestamp();
+    const end_ns = if (stressor.end_ns != 0) stressor.end_ns else nanoTimestamp();
     const elapsed_ns = if (end_ns <= stressor.start_ns or stressor.start_ns == 0) 0 else end_ns - stressor.start_ns;
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     const ops_sec = if (elapsed_ns == 0) 0 else
@@ -246,7 +267,7 @@ fn fail(stressor: *KvStoreStressor, reason: anyerror, peer: ?*rpc.peer.Peer) voi
     if (stressor.done) return;
     stressor.err = reason;
     stressor.done = true;
-    if (stressor.end_ns == 0) stressor.end_ns = std.time.nanoTimestamp();
+    if (stressor.end_ns == 0) stressor.end_ns = nanoTimestamp();
     if (peer) |active_peer| {
         if (!active_peer.isAttachedTransportClosing()) {
             active_peer.closeAttachedTransport();
@@ -267,7 +288,7 @@ fn onWriteBatchReturn(
     if (stressor.err != null) return;
     if (stressor.done) return;
 
-    const duration_ns = std.time.nanoTimestamp() - request_ctx.start_ns;
+    const duration_ns = nanoTimestamp() - request_ctx.start_ns;
     stressor.operations_inflight -= 1;
     if (duration_ns > 0) {
         stressor.total_latency_ns += @as(u128, @intCast(duration_ns));
@@ -285,7 +306,7 @@ fn onWriteBatchReturn(
             stressor.operations_completed += 1;
             stressor.operations_applied += applied;
         },
-        .exception => |_| {
+        .exception => {
             stressor.operations_failed += 1;
             fail(stressor, StresserError.RpcFailure, peer);
             return;
@@ -304,7 +325,7 @@ fn onWriteBatchReturn(
 
     if (stressor.operations_completed >= stressor.args.operations and stressor.operations_inflight == 0) {
         stressor.done = true;
-        stressor.end_ns = std.time.nanoTimestamp();
+        stressor.end_ns = nanoTimestamp();
         if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
         return;
     }
@@ -342,7 +363,7 @@ fn pumpRequests(stressor: *KvStoreStressor, peer: *rpc.peer.Peer) !void {
         request_ctx.* = .{
             .stressor = stressor,
             .id = request_id,
-            .start_ns = std.time.nanoTimestamp(),
+            .start_ns = nanoTimestamp(),
         };
 
         _ = try client.callWriteBatch(
@@ -373,12 +394,12 @@ fn onBootstrap(
             stressor.client = client;
             if (stressor.args.operations == 0) {
                 stressor.done = true;
-                stressor.end_ns = std.time.nanoTimestamp();
+                stressor.end_ns = nanoTimestamp();
                 if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
                 return;
             }
 
-            stressor.start_ns = std.time.nanoTimestamp();
+            stressor.start_ns = nanoTimestamp();
             stressor.last_report_ns = stressor.start_ns;
             pumpRequests(stressor, peer) catch |err| {
                 fail(stressor, err, peer);
@@ -422,61 +443,56 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
         stressor.peer = null;
         stressor.conn = null;
         if (stressor.start_ns != 0 and stressor.end_ns == 0) {
-            stressor.end_ns = std.time.nanoTimestamp();
+            stressor.end_ns = nanoTimestamp();
         }
     }
 }
 
-fn onConnect(
-    ctx: ?*KvStoreStressor,
-    loop: *xev.Loop,
-    _: *xev.Completion,
-    socket: xev.TCP,
-    res: xev.ConnectError!void,
-) xev.CallbackAction {
-    const stressor = ctx orelse return .disarm;
-
-    if (res) |_| {
-        const conn = stressor.allocator.create(rpc.connection.Connection) catch {
-            fail(stressor, error.OutOfMemory, null);
-            return .disarm;
-        };
-
-        conn.* = rpc.connection.Connection.init(stressor.allocator, loop, socket, .{}) catch |err| {
-            stressor.allocator.destroy(conn);
-            fail(stressor, err, null);
-            return .disarm;
-        };
-
-        const peer = stressor.allocator.create(rpc.peer.Peer) catch {
-            conn.deinit();
-            stressor.allocator.destroy(conn);
-            fail(stressor, error.OutOfMemory, null);
-            return .disarm;
-        };
-        peer.* = rpc.peer.Peer.init(stressor.allocator, conn);
-
-        stressor.conn = conn;
-        stressor.peer = peer;
-        peer.start(onPeerError, onPeerClose);
-
-        _ = KvStore.Client.fromBootstrap(peer, stressor, onBootstrap) catch |err| {
-            stressor.peer = peer;
-            fail(stressor, err, peer);
-        };
-    } else |err| {
+fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress) void {
+    const fd = rawTcpConnect(address) catch |err| {
         fail(stressor, err, null);
-    }
+        return;
+    };
 
-    return .disarm;
+    const conn = stressor.allocator.create(rpc.connection.Connection) catch {
+        rpc.runtime.closeFd(fd);
+        fail(stressor, error.OutOfMemory, null);
+        return;
+    };
+
+    conn.* = rpc.connection.Connection.init(stressor.allocator, fd, .{}) catch |err| {
+        stressor.allocator.destroy(conn);
+        rpc.runtime.closeFd(fd);
+        fail(stressor, err, null);
+        return;
+    };
+
+    const peer = stressor.allocator.create(rpc.peer.Peer) catch {
+        conn.deinit();
+        stressor.allocator.destroy(conn);
+        fail(stressor, error.OutOfMemory, null);
+        return;
+    };
+    peer.* = rpc.peer.Peer.init(stressor.allocator, conn);
+
+    stressor.conn = conn;
+    stressor.peer = peer;
+    peer.start(onPeerError, onPeerClose);
+
+    _ = KvStore.Client.fromBootstrap(peer, stressor, onBootstrap) catch |err| {
+        stressor.peer = peer;
+        fail(stressor, err, peer);
+    };
+
+    conn.run();
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -499,29 +515,74 @@ pub fn main() !void {
 
     var stressor = KvStoreStressor{
         .allocator = allocator,
-        .runtime = try rpc.runtime.Runtime.init(allocator),
         .args = args,
         .value = value,
     };
-    defer stressor.runtime.deinit();
 
     g_stressor = &stressor;
     defer g_stressor = null;
 
-    const address = try std.net.Address.parseIp4(args.host, args.port);
-    var socket = try xev.TCP.init(address);
-    var connect_completion: xev.Completion = .{};
+    const address = try parseIp4Address(args.host, args.port);
+    const conn_thread = try std.Thread.spawn(.{}, connThreadFn, .{ &stressor, address });
 
-    socket.connect(&stressor.runtime.loop, &connect_completion, address, KvStoreStressor, &stressor, onConnect);
-
-    while (!stressor.done) {
-        try stressor.runtime.run(.once);
-    }
+    conn_thread.join();
 
     if (stressor.end_ns == 0 and stressor.start_ns != 0) {
-        stressor.end_ns = std.time.nanoTimestamp();
+        stressor.end_ns = nanoTimestamp();
     }
 
     printSummary(&stressor);
+
     if (stressor.err) |err| return err;
+}
+
+fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
+    var bytes: [4]u8 = undefined;
+    var byte_idx: usize = 0;
+    var iter = std.mem.splitScalar(u8, host, '.');
+    while (iter.next()) |octet| {
+        if (byte_idx >= 4) return error.InvalidAddress;
+        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
+        byte_idx += 1;
+    }
+    if (byte_idx != 4) return error.InvalidAddress;
+    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
+}
+
+fn rawTcpConnect(addr: std.Io.net.IpAddress) !std.posix.fd_t {
+    const builtin = @import("builtin");
+    const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
+    const family: c_uint = switch (addr) {
+        .ip4 => std.posix.AF.INET,
+        .ip6 => std.posix.AF.INET6,
+    };
+    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
+    const fd_rc = std.posix.system.socket(family, flags, 0);
+    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
+    const fd: std.posix.fd_t = @intCast(fd_rc);
+    errdefer rpc.runtime.closeFd(fd);
+
+    if (socket_cloexec_unsupported) {
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
+    }
+
+    const storage = rpc.runtime.ipAddressToSockaddr(addr);
+    while (true) {
+        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
+            .SUCCESS => return fd,
+            .INTR => continue,
+            .CONNREFUSED => return error.ConnectionRefused,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .NETUNREACH => return error.NetworkUnreachable,
+            .HOSTUNREACH => return error.HostUnreachable,
+            .TIMEDOUT => return error.Timeout,
+            else => return error.ConnectFailed,
+        }
+    }
+}
+
+fn nanoTimestamp() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

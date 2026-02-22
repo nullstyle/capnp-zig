@@ -18,7 +18,7 @@
 - **List(Interface)**: `CapabilityListReader`/`CapabilityListBuilder` wrappers are generated
 - **Interface fields as parameters/results**: generated `setXxxCapability(cap)` and `readCapability()` work
 - **Promise resolution, three-party handoff, disembargo**: implemented and tested
-- **libxev TCP transport**: functional on macOS (kqueue) and Linux (io_uring)
+- **POSIX TCP transport**: functional on macOS and Linux via synchronous blocking I/O with concurrent read/write
 - **Promise pipelining client API**: `PipelinedClient` + `callXxxPipelined()` + `sendCallPromisedWithOps()` generated (GAP-1 resolved)
 - **Typed capability parameter passing**: `setXxxServer(peer, server)` + `setXxxClient(client)` helpers on builders (GAP-3 resolved)
 - **Typed capability resolution**: `resolveXxx(peer, caps)` on readers returns typed Client (GAP-5 resolved)
@@ -30,9 +30,9 @@
 ### Remaining Gaps
 
 - **Streaming flow control (GAP-2)**: Client-side flow control via `StreamClient` with error sealing and drain notification. Server auto-ack unchanged.
-- **Verbose callback-driven API (GAP-4)**: Zig 0.15 removed async/await. The `DeferredHandler` pattern (GAP-8) provides the escape hatch for async handler scenarios.
+- **Verbose callback-driven API (GAP-4)**: Zig removed async/await. The `DeferredHandler` pattern (GAP-8) provides the escape hatch for async handler scenarios.
 - **Interface inheritance (GAP-9)**: Full `extends` support with `handleCallDirect`, ancestor VTable fields, and `(interface_id, method_id)` dispatch.
-- **Single-threaded event loop (GAP-10)**: Architecture choice. All RPC operations run on a single libxev thread.
+- **Thread-per-connection model (GAP-10)**: Architecture choice. Each connection uses a dedicated reader thread and writer thread.
 
 ### Overall Readiness
 
@@ -188,7 +188,7 @@ The codegen now generates `setXxxServer(peer, server)` and `setXxxClient(client)
 
 **Status:** Mitigated by DeferredHandler (GAP-8)
 
-Zig 0.15.2 removed async/await, so coroutine-based solutions are not available. The `DeferredHandler` + `ReturnSender` pattern (GAP-8) provides the escape hatch for scenarios requiring async sub-calls within a handler. The callback-driven API remains verbose for complex bidirectional patterns but is functionally complete.
+Zig removed async/await, so coroutine-based solutions are not available. The `DeferredHandler` + `ReturnSender` pattern (GAP-8) provides the escape hatch for scenarios requiring async sub-calls within a handler. The callback-driven API remains verbose for complex bidirectional patterns but is functionally complete.
 
 ---
 
@@ -243,7 +243,7 @@ The codegen now handles interface inheritance (`extends`):
 
 **Status:** By design. Not a correctness issue.
 
-All RPC operations run on a single-threaded libxev event loop. CPU-bound handlers block the loop. For Arena benchmarks involving computation, all workers share a single thread. This is a performance characteristic, not a bug.
+Each connection uses a dedicated reader thread and writer thread. CPU-bound handlers block the connection's reader thread. The WorkerPool spawns a thread per connection. This is a performance characteristic, not a bug.
 
 ---
 
@@ -291,7 +291,7 @@ All RPC operations run on a single-threaded libxev event loop. CPU-bound handler
 | Protocol types | `src/rpc/level0/protocol.zig` |
 | Runtime/listener | `src/rpc/level2/runtime.zig` |
 | Connection/framing | `src/rpc/level2/connection.zig`, `src/rpc/level0/framing.zig` |
-| Transport (libxev) | `src/rpc/level2/transport_xev.zig` |
+| Transport | `src/rpc/level2/transport.zig` |
 | Ping-pong example | `examples/rpc_pingpong.zig` |
 | KvStore example (full client/server) | `examples/kvstore/` |
 | E2E server (capability passing) | `tests/e2e/zig/main_server.zig` |

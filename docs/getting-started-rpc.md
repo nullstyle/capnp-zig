@@ -6,7 +6,7 @@ This guide walks you through defining a Cap'n Proto RPC interface and building a
 
 ## Prerequisites
 
-- **Zig 0.15.2** (use `mise install` if you have mise)
+- **Zig 0.16** (use `mise install` if you have mise)
 - **Cap'n Proto compiler** (`capnp`) — for schema compilation
 - **capnpc-zig** — built from this repo (`zig build`)
 
@@ -137,7 +137,7 @@ Each handler:
 
 ## 4. Set Up the RPC Runtime
 
-The RPC runtime uses [libxev](https://github.com/mitchellh/libxev) for async I/O. Everything runs on a single-threaded event loop.
+The RPC runtime uses synchronous POSIX I/O with a concurrent read/write transport. Each connection runs on its own thread.
 
 ```zig
 const std = @import("std");

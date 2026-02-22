@@ -7,16 +7,17 @@ const Generator = @import("capnpc-zig").codegen.Generator;
 /// exist, write the output to disk and return an error so the developer can
 /// review the snapshot before checking it in.
 fn expectGolden(actual: []const u8, golden_path: []const u8) !void {
-    const golden = std.fs.cwd().readFileAlloc(testing.allocator, golden_path, 1024 * 1024) catch |err| {
+    const io = std.testing.io;
+    const golden = std.Io.Dir.cwd().readFileAlloc(io, golden_path, testing.allocator, .limited(1024 * 1024)) catch |err| {
         if (err == error.FileNotFound) {
             // Write the golden file so the developer can review it.
-            const dir = std.fs.cwd();
-            const file = dir.createFile(golden_path, .{}) catch |create_err| {
+            const dir = std.Io.Dir.cwd();
+            const file = dir.createFile(io, golden_path, .{}) catch |create_err| {
                 std.debug.print("Failed to create golden file '{s}': {}\n", .{ golden_path, create_err });
                 return error.GoldenFileMissing;
             };
-            defer file.close();
-            file.writeAll(actual) catch |write_err| {
+            defer file.close(io);
+            file.writeStreamingAll(io, actual) catch |write_err| {
                 std.debug.print("Failed to write golden file '{s}': {}\n", .{ golden_path, write_err });
                 return error.GoldenFileMissing;
             };

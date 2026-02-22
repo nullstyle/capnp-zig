@@ -1,6 +1,7 @@
 zig-out/
 .zig-cache/
 .zig-global-cache/
+zig-pkg
 *.o
 *.a
 *.so
@@ -12,3 +13,7 @@ zig-out/
 obj/
 __cmake_systeminformation/
 ext/capnp-deno/.artifacts/
+examples/kvstore/go-client/kvstore-client
+test_*
+e2e_runner
+.tmp/

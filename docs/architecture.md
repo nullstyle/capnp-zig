@@ -10,13 +10,13 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 |                                                                       |
 |  Layer 4: RPC Runtime  (EXPERIMENTAL)              src/rpc/           |
 |                                                                       |
-|    runtime.zig          Event loop (xev-backed)                       |
+|    runtime.zig          Listener/socket helpers                        |
 |    connection.zig       Connection state machine                      |
 |    peer.zig             Call routing, bootstrap, capability lifecycle  |
 |    protocol.zig         RPC message types (Call, Return, Resolve, ..) |
 |    cap_table.zig        Capability export/import tables               |
 |    framing.zig          Segment-framed message reassembly             |
-|    transport_xev.zig    Async TCP I/O via libxev                      |
+|    transport.zig        Concurrent read/write I/O|
 |    host_peer.zig        Host-neutral peer transport (wasm-compatible) |
 |    payload_remap.zig    Capability descriptor remapping               |
 |                                                                       |
@@ -61,7 +61,7 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 |                                                                       |
 +-----------------------------------------------------------------------+
 
-External dependency: libxev (TCP event loop, used by Layer 4 only)
+No external dependencies (pure Zig + POSIX)
 ```
 
 ## Key Types by Layer
@@ -100,7 +100,7 @@ External dependency: libxev (TCP event loop, used by Layer 4 only)
 
 | Type | Role |
 |---|---|
-| `Runtime` | Owns the xev event loop |
+| `Runtime` | Listener and socket helpers |
 | `Listener` | Accepts inbound TCP connections |
 | `Connection` | Combines transport + framer for a single link |
 | `Peer` | Full RPC peer: question/answer tables, call routing, bootstrap |
@@ -195,6 +195,6 @@ pub const rpc                = @import("rpc/mod.zig");           // Layer 4
 
 | Dependency | Used by | Purpose |
 |---|---|---|
-| libxev | Layer 4 (RPC) | Cross-platform async I/O event loop |
+| (none) | — | RPC uses POSIX sockets directly (no external I/O library) |
 | vendor/ext/go-capnp | Tests / e2e | Go Cap'n Proto reference for interop testing |
 | vendor/ext/capnp_test | Tests | Official Cap'n Proto test fixtures |

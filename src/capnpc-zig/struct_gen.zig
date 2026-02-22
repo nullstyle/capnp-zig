@@ -2,6 +2,7 @@ const std = @import("std");
 const schema = @import("../serialization/schema.zig");
 const types = @import("types.zig");
 const TypeGenerator = types.TypeGenerator;
+const ArrayListWriter = @import("generator.zig").ArrayListWriter;
 
 /// Generates Zig source code for a single Cap'n Proto struct node, emitting
 /// a `Reader` type (zero-copy field accessors) and a `Builder` type (field
@@ -148,7 +149,7 @@ pub const StructGenerator = struct {
             if (group_struct_info.discriminant_count > 0) {
                 const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
                 try writer.writeAll("            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {\n");
-                try writer.print("                return std.meta.intToEnum(WhichTag, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{disc_byte_offset});
+                try writer.print("                return std.enums.fromInt(WhichTag, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{disc_byte_offset});
                 try writer.writeAll("            }\n\n");
             }
             for (group_struct_info.fields) |group_field| {
@@ -265,7 +266,7 @@ pub const StructGenerator = struct {
         if (struct_info.discriminant_count > 0) {
             const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
             try writer.print("        pub fn which(self: Reader) error{{InvalidEnumValue}}!WhichTag {{\n", .{});
-            try writer.print("            return std.meta.intToEnum(WhichTag, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{disc_byte_offset});
+            try writer.print("            return std.enums.fromInt(WhichTag, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{disc_byte_offset});
             try writer.writeAll("        }\n\n");
         }
 
@@ -364,7 +365,7 @@ pub const StructGenerator = struct {
                         defer self.allocator.free(literal);
                         try writer.print("            const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
                         if (enum_name) |en| {
-                            try writer.print("            return std.meta.intToEnum({s}, raw) catch return error.InvalidEnumValue;\n", .{en});
+                            try writer.print("            return std.enums.fromInt({s}, raw) orelse return error.InvalidEnumValue;\n", .{en});
                         } else {
                             try writer.writeAll("            return raw;\n");
                         }
@@ -374,7 +375,7 @@ pub const StructGenerator = struct {
 
                 if (!emitted_default_path) {
                     if (enum_name) |en| {
-                        try writer.print("            return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
+                        try writer.print("            return std.enums.fromInt({s}, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{ en, byte_offset });
                     } else {
                         try writer.print("            return self._reader.readU16({});\n", .{byte_offset});
                     }
@@ -703,7 +704,7 @@ pub const StructGenerator = struct {
                         defer self.allocator.free(literal);
                         try writer.print("                const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
                         if (enum_name) |en| {
-                            try writer.print("                return std.meta.intToEnum({s}, raw) catch return error.InvalidEnumValue;\n", .{en});
+                            try writer.print("                return std.enums.fromInt({s}, raw) orelse return error.InvalidEnumValue;\n", .{en});
                         } else {
                             try writer.writeAll("                return raw;\n");
                         }
@@ -713,7 +714,7 @@ pub const StructGenerator = struct {
 
                 if (!emitted_default_path) {
                     if (enum_name) |en| {
-                        try writer.print("                return std.meta.intToEnum({s}, self._reader.readU16({})) catch return error.InvalidEnumValue;\n", .{ en, byte_offset });
+                        try writer.print("                return std.enums.fromInt({s}, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{ en, byte_offset });
                     } else {
                         try writer.print("                return self._reader.readU16({});\n", .{byte_offset});
                     }
@@ -2126,7 +2127,7 @@ test "StructGenerator.writeByteArrayLiteral formats bytes" {
 
     var buf = std.ArrayList(u8){};
     defer buf.deinit(alloc);
-    const writer = buf.writer(alloc);
+    const writer = ArrayListWriter{ .list = &buf, .allocator = alloc };
 
     try sg.writeByteArrayLiteral(writer, &[_]u8{ 0xDE, 0xAD });
     try std.testing.expectEqualStrings("&[_]u8{0xDE, 0xAD}", buf.items);

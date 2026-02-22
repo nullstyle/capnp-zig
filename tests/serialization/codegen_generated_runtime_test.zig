@@ -1,12 +1,12 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
-const build_options = @import("build_options");
 
-fn writeFile(dir: std.fs.Dir, name: []const u8, data: []const u8) !void {
-    var file = try dir.createFile(name, .{});
-    defer file.close();
-    try file.writeAll(data);
+fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
+    const io = std.testing.io;
+    var file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, data);
 }
 
 fn runGeneratedHarness(
@@ -14,23 +14,23 @@ fn runGeneratedHarness(
     schema_path: []const u8,
     harness_source: []const u8,
 ) !void {
+    const io = std.testing.io;
+
     const capnp_argv = &[_][]const u8{
         "capnp",
         "compile",
         "-o-",
         schema_path,
     };
-    const capnp_result = std.process.Child.run(.{
-        .allocator = allocator,
+    const capnp_result = std.process.run(allocator, io, .{
         .argv = capnp_argv,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
     };
     defer allocator.free(capnp_result.stdout);
     defer allocator.free(capnp_result.stderr);
-    try std.testing.expect(capnp_result.term == .Exited and capnp_result.term.Exited == 0);
+    try std.testing.expect(capnp_result.term == .exited and capnp_result.term.exited == 0);
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, capnp_result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);
@@ -47,17 +47,14 @@ fn runGeneratedHarness(
     try writeFile(tmp.dir, "generated.zig", generated);
     try writeFile(tmp.dir, "harness.zig", harness_source);
 
-    const harness_path = try tmp.dir.realpathAlloc(allocator, "harness.zig");
+    const harness_path = try tmp.dir.realPathFileAlloc(io, "harness.zig", allocator);
     defer allocator.free(harness_path);
 
-    const lib_path = try std.fs.cwd().realpathAlloc(allocator, "src/lib.zig");
+    const lib_path = try std.Io.Dir.cwd().realPathFileAlloc(io, "src/lib.zig", allocator);
     defer allocator.free(lib_path);
-    const xev_path = build_options.xev_src_path;
 
     const lib_arg = try std.fmt.allocPrint(allocator, "-Mcapnpc-zig={s}", .{lib_path});
     defer allocator.free(lib_arg);
-    const xev_arg = try std.fmt.allocPrint(allocator, "-Mxev={s}", .{xev_path});
-    defer allocator.free(xev_arg);
     const root_arg = try std.fmt.allocPrint(allocator, "-Mroot={s}", .{harness_path});
     defer allocator.free(root_arg);
 
@@ -68,15 +65,10 @@ fn runGeneratedHarness(
     try zig_argv.append(allocator, "--dep");
     try zig_argv.append(allocator, "capnpc-zig");
     try zig_argv.append(allocator, root_arg);
-    try zig_argv.append(allocator, "--dep");
-    try zig_argv.append(allocator, "xev");
     try zig_argv.append(allocator, lib_arg);
-    try zig_argv.append(allocator, xev_arg);
 
-    const zig_result = std.process.Child.run(.{
-        .allocator = allocator,
+    const zig_result = std.process.run(allocator, io, .{
         .argv = zig_argv.items,
-        .max_output_bytes = 10 * 1024 * 1024,
     }) catch |err| switch (err) {
         error.FileNotFound => return error.SkipZigTest,
         else => return err,
@@ -84,7 +76,7 @@ fn runGeneratedHarness(
     defer allocator.free(zig_result.stdout);
     defer allocator.free(zig_result.stderr);
 
-    if (!(zig_result.term == .Exited and zig_result.term.Exited == 0)) {
+    if (!(zig_result.term == .exited and zig_result.term.exited == 0)) {
         std.debug.print("zig test stdout:\n{s}\n", .{zig_result.stdout});
         std.debug.print("zig test stderr:\n{s}\n", .{zig_result.stderr});
         return error.GeneratedRuntimeCompileFailed;

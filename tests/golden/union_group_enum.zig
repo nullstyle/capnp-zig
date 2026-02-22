@@ -72,11 +72,11 @@ pub const Shape = struct {
         }
 
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.meta.intToEnum(WhichTag, self._reader.readU16(2)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getColor(self: Reader) !Color {
-            return std.meta.intToEnum(Color, self._reader.readU16(0)) catch return error.InvalidEnumValue;
+            return std.enums.fromInt(Color, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getCircle(self: Reader) !f64 {

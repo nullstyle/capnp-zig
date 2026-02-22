@@ -4,20 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const xev_dep = b.dependency("libxev", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const xev_module = xev_dep.module("xev");
-
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
         .root_source_file = b.path("src/lib.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "xev", .module = xev_module },
-        },
+        .imports = &.{},
     });
     lib_module.addImport("capnpc-zig", lib_module);
 
@@ -97,9 +89,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "xev", .module = xev_module },
-            },
+            .imports = &.{},
         }),
     });
     const install_docs = b.addInstallDirectory(.{
@@ -194,7 +184,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "xev", .module = xev_module },
             },
         }),
     });
@@ -216,7 +205,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "xev", .module = xev_module },
             },
         }),
     });
@@ -237,7 +225,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "xev", .module = xev_module },
             },
         }),
     });
@@ -249,6 +236,9 @@ pub fn build(b: *std.Build) void {
 
     const e2e_zig_server_step = b.step("e2e-zig-server", "Run Zig RPC e2e server hook");
     e2e_zig_server_step.dependOn(&run_e2e_zig_server.step);
+
+    const install_e2e_zig_server_step = b.step("e2e-zig-server-install", "Build Zig RPC e2e server (install only)");
+    install_e2e_zig_server_step.dependOn(&b.addInstallArtifact(e2e_zig_server, .{}).step);
 
     // Unit tests for main
     const main_tests = b.addTest(.{
@@ -266,9 +256,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "xev", .module = xev_module },
-            },
+            .imports = &.{},
         }),
     });
 
@@ -368,9 +356,6 @@ pub fn build(b: *std.Build) void {
 
     const run_codegen_streaming_tests = b.addRunArtifact(codegen_streaming_tests);
 
-    const codegen_gen_rt_options = b.addOptions();
-    codegen_gen_rt_options.addOptionPath("xev_src_path", xev_module.root_source_file.?);
-
     const codegen_generated_runtime_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/serialization/codegen_generated_runtime_test.zig"),
@@ -378,7 +363,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
-                .{ .name = "build_options", .module = codegen_gen_rt_options.createModule() },
             },
         }),
     });

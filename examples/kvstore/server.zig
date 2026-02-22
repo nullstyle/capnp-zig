@@ -19,7 +19,7 @@ pub const std_options: std.Options = .{
 
 fn serverLog(
     comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
@@ -153,11 +153,42 @@ fn logRocksCStringError(operation: []const u8, err_ptr: ?[*:0]u8) void {
 // KV service state
 // ---------------------------------------------------------------------------
 
+const PendingNotification = union(enum) {
+    keys_changed: struct {
+        /// Owned copies of keys and values (already filtered to watched keys).
+        changes: []OwnedNotifyChange,
+    },
+    state_reset: struct {
+        restored_backup_id: u32,
+        next_version: u64,
+    },
+};
+
+const OwnedNotifyChange = union(enum) {
+    put: struct { key: []u8, value: []u8, version: u64 },
+    delete: struct { key: []u8, found: bool },
+
+    fn deinit(self: OwnedNotifyChange, allocator: Allocator) void {
+        switch (self) {
+            .put => |p| {
+                allocator.free(p.key);
+                allocator.free(p.value);
+            },
+            .delete => |d| allocator.free(d.key),
+        }
+    }
+};
+
 const KvService = struct {
     const Subscriber = struct {
         peer: *rpc.peer.Peer,
+        conn: *rpc.connection.Connection,
         notifier: KvClientNotifier.Client,
         watched_keys: std.ArrayListUnmanaged([]u8) = .{},
+        /// Pending notifications queued from other worker threads.
+        /// Protected by `pending_mu`.
+        pending: std.ArrayListUnmanaged(PendingNotification) = .{},
+        pending_mu: std.atomic.Mutex = .unlocked,
     };
 
     allocator: Allocator,
@@ -169,10 +200,8 @@ const KvService = struct {
     next_version: u64,
     server: KvStore.Server,
     subscribers: std.ArrayListUnmanaged(Subscriber),
-    notify_build_changes: ?[]const NotifyChange = null,
-    notify_build_watched_keys: ?[]const []u8 = null,
-    notify_build_restored_backup_id: ?u32 = null,
-    notify_build_next_version: ?u64 = null,
+    /// Protects all mutable state when accessed from multiple worker threads.
+    mu: std.atomic.Mutex = .unlocked,
 
     fn init(allocator: Allocator, db_path: []const u8, backup_dir: []const u8) !KvService {
         var err_data: ?rocksdb.Data = null;
@@ -238,6 +267,8 @@ const KvService = struct {
         for (self.subscribers.items) |*subscriber| {
             self.clearWatchedKeys(&subscriber.watched_keys);
             subscriber.watched_keys.deinit(self.allocator);
+            self.drainAndFreePending(&subscriber.pending);
+            subscriber.pending.deinit(self.allocator);
         }
         self.subscribers.deinit(self.allocator);
         if (self.db_open) self.db.deinit();
@@ -302,10 +333,11 @@ const KvService = struct {
         const options = rdb.rocksdb_options_create() orelse return error.RocksDBBackupOptionsCreateFailed;
         defer rdb.rocksdb_options_destroy(options);
 
-        try std.fs.cwd().makePath(self.backup_dir);
-
         const backup_dir_z = try self.allocator.dupeZ(u8, self.backup_dir);
         defer self.allocator.free(backup_dir_z);
+
+        // Create backup directory if it doesn't exist.
+        _ = std.c.mkdir(backup_dir_z.ptr, 0o755);
 
         var err_ptr: ?[*:0]u8 = null;
         const engine = rdb.rocksdb_backup_engine_open(options, backup_dir_z.ptr, @ptrCast(&err_ptr));
@@ -441,16 +473,18 @@ const KvService = struct {
         return target_backup_id;
     }
 
-    fn addOrUpdateSubscriber(self: *KvService, peer: *rpc.peer.Peer, notifier: KvClientNotifier.Client) !void {
+    fn addOrUpdateSubscriber(self: *KvService, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, notifier: KvClientNotifier.Client) !void {
         for (self.subscribers.items) |*subscriber| {
             if (subscriber.peer == peer) {
                 subscriber.notifier = notifier;
+                subscriber.conn = conn;
                 return;
             }
         }
 
         try self.subscribers.append(self.allocator, .{
             .peer = peer,
+            .conn = conn,
             .notifier = notifier,
         });
     }
@@ -504,100 +538,148 @@ const KvService = struct {
                 var removed = self.subscribers.swapRemove(idx);
                 self.clearWatchedKeys(&removed.watched_keys);
                 removed.watched_keys.deinit(self.allocator);
+                self.drainAndFreePending(&removed.pending);
+                removed.pending.deinit(self.allocator);
             } else {
                 idx += 1;
             }
         }
     }
 
+    fn drainAndFreePending(self: *KvService, pending: *std.ArrayListUnmanaged(PendingNotification)) void {
+        for (pending.items) |*notif| {
+            switch (notif.*) {
+                .keys_changed => |kc| {
+                    for (kc.changes) |c| c.deinit(self.allocator);
+                    self.allocator.free(kc.changes);
+                },
+                .state_reset => {},
+            }
+        }
+        pending.clearRetainingCapacity();
+    }
+
+    /// Queue notifications for subscribers and wake their connections.
+    /// The actual send happens on the subscriber's own worker thread
+    /// via the connection's on_wake callback.
     fn notifySubscribers(self: *KvService, source_peer: *rpc.peer.Peer, changes: []const NotifyChange) void {
         if (changes.len == 0 or self.subscribers.items.len == 0) return;
 
-        var idx: usize = 0;
-        while (idx < self.subscribers.items.len) {
-            if (self.subscribers.items[idx].peer == source_peer) {
-                idx += 1;
+        for (self.subscribers.items) |*subscriber| {
+            if (subscriber.peer == source_peer) continue;
+
+            const watched_keys = subscriber.watched_keys.items;
+            if (!notifyChangesIntersectWatched(watched_keys, changes)) continue;
+
+            // Build owned copies of the relevant (filtered) changes.
+            const owned_changes = self.buildOwnedKeysChanged(changes, watched_keys) catch |err| {
+                std.log.warn("failed to build notification: {s}", .{@errorName(err)});
                 continue;
-            }
+            };
 
-            const watched_keys = self.subscribers.items[idx].watched_keys.items;
-            if (!notifyChangesIntersectWatched(watched_keys, changes)) {
-                idx += 1;
+            // Push to subscriber's queue (thread-safe via spinlock).
+            while (!subscriber.pending_mu.tryLock()) {}
+            defer subscriber.pending_mu.unlock();
+            subscriber.pending.append(self.allocator, .{
+                .keys_changed = .{ .changes = owned_changes },
+            }) catch |err| {
+                std.log.warn("failed to queue notification: {s}", .{@errorName(err)});
+                for (owned_changes) |c| c.deinit(self.allocator);
+                self.allocator.free(owned_changes);
                 continue;
-            }
+            };
 
-            var notifier = self.subscribers.items[idx].notifier;
-            self.notify_build_changes = changes;
-            self.notify_build_watched_keys = watched_keys;
-            const send_result = notifier.callKeysChanged(self, buildKeysChangedNotification, onKeysChangedNotificationReturn);
-            self.notify_build_changes = null;
-            self.notify_build_watched_keys = null;
-
-            if (send_result) |_| {
-                idx += 1;
-            } else |err| {
-                std.log.warn("dropping subscriber after notify send failure: {s}", .{@errorName(err)});
-                var removed = self.subscribers.swapRemove(idx);
-                self.clearWatchedKeys(&removed.watched_keys);
-                removed.watched_keys.deinit(self.allocator);
-            }
+            // Wake the subscriber's connection so it drains the queue.
+            subscriber.conn.wake();
         }
     }
 
+    fn buildOwnedKeysChanged(
+        self: *KvService,
+        changes: []const NotifyChange,
+        watched_keys: []const []u8,
+    ) ![]OwnedNotifyChange {
+        // Count matching changes.
+        var count: usize = 0;
+        for (changes) |change| {
+            if (watchedKeysContain(watched_keys, notifyChangeKey(change))) count += 1;
+        }
+
+        const owned_changes = try self.allocator.alloc(OwnedNotifyChange, count);
+        errdefer self.allocator.free(owned_changes);
+
+        var allocated: usize = 0;
+        errdefer for (owned_changes[0..allocated]) |c| c.deinit(self.allocator);
+
+        for (changes) |change| {
+            if (!watchedKeysContain(watched_keys, notifyChangeKey(change))) continue;
+            owned_changes[allocated] = switch (change) {
+                .put => |p| .{ .put = .{
+                    .key = try self.allocator.dupe(u8, p.key),
+                    .value = try self.allocator.dupe(u8, p.value),
+                    .version = p.version,
+                } },
+                .delete => |d| .{ .delete = .{
+                    .key = try self.allocator.dupe(u8, d.key),
+                    .found = d.found,
+                } },
+            };
+            allocated += 1;
+        }
+
+        return owned_changes;
+    }
+
+    /// Queue state-reset notifications for subscribers and wake their connections.
     fn notifyStateResetSubscribers(self: *KvService, source_peer: *rpc.peer.Peer, restored_backup_id: u32, next_version: u64) void {
         if (self.subscribers.items.len == 0) return;
 
-        var idx: usize = 0;
-        while (idx < self.subscribers.items.len) {
-            if (self.subscribers.items[idx].peer == source_peer) {
-                idx += 1;
+        for (self.subscribers.items) |*subscriber| {
+            if (subscriber.peer == source_peer) continue;
+
+            // Push to subscriber's queue (thread-safe via spinlock).
+            while (!subscriber.pending_mu.tryLock()) {}
+            defer subscriber.pending_mu.unlock();
+            subscriber.pending.append(self.allocator, .{
+                .state_reset = .{
+                    .restored_backup_id = restored_backup_id,
+                    .next_version = next_version,
+                },
+            }) catch |err| {
+                std.log.warn("failed to queue state reset notification: {s}", .{@errorName(err)});
                 continue;
-            }
+            };
 
-            var notifier = self.subscribers.items[idx].notifier;
-            self.notify_build_restored_backup_id = restored_backup_id;
-            self.notify_build_next_version = next_version;
-            const send_result = notifier.callStateResetRequired(
-                self,
-                buildStateResetRequiredNotification,
-                onStateResetRequiredNotificationReturn,
-            );
-            self.notify_build_restored_backup_id = null;
-            self.notify_build_next_version = null;
-
-            if (send_result) |_| {
-                idx += 1;
-            } else |err| {
-                std.log.warn("dropping subscriber after reset notify send failure: {s}", .{@errorName(err)});
-                var removed = self.subscribers.swapRemove(idx);
-                self.clearWatchedKeys(&removed.watched_keys);
-                removed.watched_keys.deinit(self.allocator);
-            }
+            // Wake the subscriber's connection so it drains the queue.
+            subscriber.conn.wake();
         }
     }
 };
 
-fn buildKeysChangedNotification(
+// ---------------------------------------------------------------------------
+// Wake-pipe notification support
+// ---------------------------------------------------------------------------
+
+/// Context for building a keysChanged notification from owned data.
+const WakeKeysChangedCtx = struct {
+    changes: []OwnedNotifyChange,
+};
+
+/// Context for building a stateResetRequired notification.
+const WakeStateResetCtx = struct {
+    restored_backup_id: u32,
+    next_version: u64,
+};
+
+fn buildWakeKeysChanged(
     ctx_ptr: *anyopaque,
     params: *KvClientNotifier.KeysChanged.Params.Builder,
 ) anyerror!void {
-    const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
-    const changes = svc.notify_build_changes orelse return error.MissingNotificationChanges;
-    const watched_keys = svc.notify_build_watched_keys orelse return error.MissingNotificationWatchedKeys;
-
-    var count: u32 = 0;
-    for (changes) |change| {
-        if (watchedKeysContain(watched_keys, notifyChangeKey(change))) {
-            count += 1;
-        }
-    }
-
+    const ctx: *const WakeKeysChangedCtx = @ptrCast(@alignCast(ctx_ptr));
+    const count: u32 = @intCast(ctx.changes.len);
     var out_changes = try params.initChanges(count);
-    var out_idx: u32 = 0;
-    for (changes) |change| {
-        if (!watchedKeysContain(watched_keys, notifyChangeKey(change))) continue;
-
-        var out_change = try out_changes.get(out_idx);
+    for (ctx.changes, 0..) |change, idx| {
+        var out_change = try out_changes.get(@intCast(idx));
         switch (change) {
             .put => |put| {
                 try out_change.setKey(put.key);
@@ -611,18 +693,24 @@ fn buildKeysChangedNotification(
                 try out_change.setDelete(del.found);
             },
         }
-
-        out_idx += 1;
     }
 }
 
-fn onKeysChangedNotificationReturn(
+fn buildWakeStateReset(
     ctx_ptr: *anyopaque,
+    params: *KvClientNotifier.StateResetRequired.Params.Builder,
+) anyerror!void {
+    const ctx: *const WakeStateResetCtx = @ptrCast(@alignCast(ctx_ptr));
+    try params.setRestoredBackupId(ctx.restored_backup_id);
+    try params.setNextVersion(ctx.next_version);
+}
+
+fn onWakeKeysChangedReturn(
+    _: *anyopaque,
     _: *rpc.peer.Peer,
     response: KvClientNotifier.KeysChanged.Response,
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
-    _ = ctx_ptr;
     switch (response) {
         .exception => |ex| {
             std.log.debug("client notifier returned exception: {s}", .{ex.reason});
@@ -631,30 +719,87 @@ fn onKeysChangedNotificationReturn(
     }
 }
 
-fn buildStateResetRequiredNotification(
-    ctx_ptr: *anyopaque,
-    params: *KvClientNotifier.StateResetRequired.Params.Builder,
-) anyerror!void {
-    const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
-    const restored_backup_id = svc.notify_build_restored_backup_id orelse return error.MissingResetNotificationBackupId;
-    const next_version = svc.notify_build_next_version orelse return error.MissingResetNotificationNextVersion;
-
-    try params.setRestoredBackupId(restored_backup_id);
-    try params.setNextVersion(next_version);
-}
-
-fn onStateResetRequiredNotificationReturn(
-    ctx_ptr: *anyopaque,
+fn onWakeStateResetReturn(
+    _: *anyopaque,
     _: *rpc.peer.Peer,
     response: KvClientNotifier.StateResetRequired.Response,
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
-    _ = ctx_ptr;
     switch (response) {
         .exception => |ex| {
             std.log.debug("client reset notifier returned exception: {s}", .{ex.reason});
         },
         else => {},
+    }
+}
+
+/// Called on the connection's own thread when woken by another thread.
+/// Drains the subscriber's pending notification queue and sends each
+/// notification via the Peer (which is thread-affine to this thread).
+fn onConnectionWake(conn: *rpc.connection.Connection) void {
+    const svc = g_service orelse return;
+
+    // Find the subscriber for this connection under the service lock.
+    while (!svc.mu.tryLock()) {}
+
+    var sub_ptr: ?*KvService.Subscriber = null;
+    for (svc.subscribers.items) |*sub| {
+        if (sub.conn == conn) {
+            sub_ptr = sub;
+            break;
+        }
+    }
+
+    const sub = sub_ptr orelse {
+        svc.mu.unlock();
+        return;
+    };
+
+    // Drain pending queue under the subscriber's spinlock.
+    while (!sub.pending_mu.tryLock()) {}
+    const pending = svc.allocator.dupe(PendingNotification, sub.pending.items) catch {
+        sub.pending_mu.unlock();
+        svc.mu.unlock();
+        return;
+    };
+    sub.pending.clearRetainingCapacity();
+    sub.pending_mu.unlock();
+
+    // Copy notifier reference so we can release the service lock before I/O.
+    var notifier = sub.notifier;
+    svc.mu.unlock();
+
+    // Process each queued notification on this connection's thread.
+    defer svc.allocator.free(pending);
+    std.log.info("WAKE: draining {d} pending notification(s)", .{pending.len});
+    for (pending) |notif| {
+        switch (notif) {
+            .keys_changed => |kc| {
+                var ctx = WakeKeysChangedCtx{ .changes = kc.changes };
+                _ = notifier.callKeysChanged(
+                    @ptrCast(&ctx),
+                    buildWakeKeysChanged,
+                    onWakeKeysChangedReturn,
+                ) catch |err| {
+                    std.log.warn("failed to send keysChanged: {s}", .{@errorName(err)});
+                };
+                for (kc.changes) |c| c.deinit(svc.allocator);
+                svc.allocator.free(kc.changes);
+            },
+            .state_reset => |sr| {
+                var ctx = WakeStateResetCtx{
+                    .restored_backup_id = sr.restored_backup_id,
+                    .next_version = sr.next_version,
+                };
+                _ = notifier.callStateResetRequired(
+                    @ptrCast(&ctx),
+                    buildWakeStateReset,
+                    onWakeStateResetReturn,
+                ) catch |err| {
+                    std.log.warn("failed to send stateResetRequired: {s}", .{@errorName(err)});
+                };
+            },
+        }
     }
 }
 
@@ -670,6 +815,8 @@ fn handleGet(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const key = try params.getKey();
     std.log.info("GET \"{s}\"", .{key});
 
@@ -706,6 +853,8 @@ fn handleWriteBatch(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const ops = try params.getOps();
     const op_count: u32 = ops.len();
     std.log.info("WRITE BATCH ops={d}", .{op_count});
@@ -850,6 +999,8 @@ fn handleList(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const prefix = try params.getPrefix();
     const limit = try params.getLimit();
     std.log.info("LIST prefix=\"{s}\" limit={d}", .{ prefix, limit });
@@ -928,8 +1079,11 @@ fn handleSubscribe(
     caps: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const notifier = try params.resolveNotifier(peer, caps);
-    try svc.addOrUpdateSubscriber(peer, notifier);
+    const conn = peer.getAttachedConnection(*rpc.connection.Connection) orelse return error.NoPeerConnection;
+    try svc.addOrUpdateSubscriber(peer, conn, notifier);
     std.log.info("SUBSCRIBE cap={d}", .{notifier.cap_id});
 }
 
@@ -941,9 +1095,11 @@ fn handleSetWatchedKeys(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const watched_keys = try params.getKeys();
     const count = try svc.setSubscriberWatchedKeys(peer, watched_keys);
-    std.log.debug("SET WATCHED KEYS count={d}", .{count});
+    std.log.info("SET WATCHED KEYS count={d}", .{count});
 }
 
 fn writeBackupInfo(builder: *BackupInfo.Builder, record: BackupRecord) !void {
@@ -961,6 +1117,8 @@ fn handleCreateBackup(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const flush_before_backup = try params.getFlushBeforeBackup();
     const outcome = try svc.createBackup(flush_before_backup);
 
@@ -977,6 +1135,8 @@ fn handleListBackups(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const records = try svc.listBackups();
     defer svc.allocator.free(records);
 
@@ -995,6 +1155,8 @@ fn handleRestoreFromBackup(
     _: *const rpc.cap_table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
+    while (!svc.mu.tryLock()) {}
+    defer svc.mu.unlock();
     const backup_id = try params.getBackupId();
     const keep_log_files = try params.getKeepLogFiles();
 
@@ -1009,12 +1171,15 @@ fn handleRestoreFromBackup(
 // ---------------------------------------------------------------------------
 
 fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
-    std.log.err("peer error: {s}", .{@errorName(err)});
+    const last_tag: []const u8 = if (peer.last_inbound_tag) |tag| @tagName(tag) else "none";
+    std.log.err("peer error: {s} (last_inbound_tag={s})", .{ @errorName(err), last_tag });
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
     if (g_service) |svc| {
+        while (!svc.mu.tryLock()) {}
+        defer svc.mu.unlock();
         svc.removeSubscriber(peer);
     }
 
@@ -1033,32 +1198,20 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 }
 
 // ---------------------------------------------------------------------------
-// Listener
+// Listener (WorkerPool)
 // ---------------------------------------------------------------------------
 
-const ListenerCtx = struct {
-    listener: rpc.runtime.Listener,
-    svc: *KvService,
-};
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, _: u32) void {
+    const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
 
-fn onAccept(listener: *rpc.runtime.Listener, conn: *rpc.connection.Connection) void {
-    const ctx: *ListenerCtx = @fieldParentPtr("listener", listener);
-    const allocator = ctx.svc.allocator;
-
-    const peer = allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        allocator.destroy(conn);
-        return;
+    // Enable cross-thread wake so notifications can be sent on this
+    // connection's thread rather than the notifying worker's thread.
+    conn.enableWake(onConnectionWake) catch |err| {
+        std.log.err("failed to enable wake pipe: {s}", .{@errorName(err)});
     };
 
-    peer.* = rpc.peer.Peer.init(allocator, conn);
-
-    _ = KvStore.setBootstrap(peer, &ctx.svc.server) catch |err| {
+    _ = KvStore.setBootstrap(peer, &svc.server) catch |err| {
         std.log.err("failed to set bootstrap: {s}", .{@errorName(err)});
-        peer.deinit();
-        allocator.destroy(peer);
-        conn.deinit();
-        allocator.destroy(conn);
         return;
     };
 
@@ -1078,43 +1231,56 @@ const CliArgs = struct {
     quiet: bool = false,
 };
 
-fn parseArgs(allocator: Allocator) !CliArgs {
+fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = out.host;
     var db_path_text: []const u8 = out.db_path;
     var backup_dir_text: []const u8 = out.backup_dir;
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
-
-    var idx: usize = 1;
-    while (idx < argv.len) : (idx += 1) {
-        const arg = argv[idx];
+    var args_iter = std.process.Args.Iterator.init(args);
+    _ = args_iter.skip(); // skip program name
+    var need_value: enum { none, host, port, db_path, backup_dir } = .none;
+    while (args_iter.next()) |arg| {
+        switch (need_value) {
+            .host => {
+                host_text = arg;
+                need_value = .none;
+                continue;
+            },
+            .port => {
+                out.port = try std.fmt.parseInt(u16, arg, 10);
+                need_value = .none;
+                continue;
+            },
+            .db_path => {
+                db_path_text = arg;
+                need_value = .none;
+                continue;
+            },
+            .backup_dir => {
+                backup_dir_text = arg;
+                need_value = .none;
+                continue;
+            },
+            .none => {},
+        }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return error.HelpRequested;
         }
         if (std.mem.eql(u8, arg, "--host")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            host_text = argv[idx];
+            need_value = .host;
             continue;
         }
         if (std.mem.eql(u8, arg, "--port")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            out.port = try std.fmt.parseInt(u16, argv[idx], 10);
+            need_value = .port;
             continue;
         }
         if (std.mem.eql(u8, arg, "--db-path")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            db_path_text = argv[idx];
+            need_value = .db_path;
             continue;
         }
         if (std.mem.eql(u8, arg, "--backup-dir")) {
-            idx += 1;
-            if (idx >= argv.len) return error.MissingArgValue;
-            backup_dir_text = argv[idx];
+            need_value = .backup_dir;
             continue;
         }
         if (std.mem.eql(u8, arg, "--quiet")) {
@@ -1122,6 +1288,7 @@ fn parseArgs(allocator: Allocator) !CliArgs {
             continue;
         }
     }
+    if (need_value != .none) return error.MissingArgValue;
 
     out.host = try allocator.dupe(u8, host_text);
     errdefer allocator.free(out.host);
@@ -1146,12 +1313,25 @@ fn usage() void {
 // main
 // ---------------------------------------------------------------------------
 
-pub fn main() !void {
+fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
+    var bytes: [4]u8 = undefined;
+    var byte_idx: usize = 0;
+    var iter = std.mem.splitScalar(u8, host, '.');
+    while (iter.next()) |octet| {
+        if (byte_idx >= 4) return error.InvalidAddress;
+        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
+        byte_idx += 1;
+    }
+    if (byte_idx != 4) return error.InvalidAddress;
+    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -1170,30 +1350,22 @@ pub fn main() !void {
     defer allocator.free(args.backup_dir);
     server_is_quiet = args.quiet;
 
-    var runtime = try rpc.runtime.Runtime.init(allocator);
-    defer runtime.deinit();
-
     var svc = try KvService.init(allocator, args.db_path, args.backup_dir);
     defer svc.deinit();
     svc.bind();
     g_service = &svc;
     defer g_service = null;
 
-    const address = try std.net.Address.parseIp4(args.host, args.port);
+    const address = try parseIp4Address(args.host, args.port);
 
-    var listener_ctx = ListenerCtx{
-        .svc = &svc,
-        .listener = try rpc.runtime.Listener.init(
-            allocator,
-            &runtime.loop,
-            address,
-            onAccept,
-            .{},
-        ),
-    };
-    defer listener_ctx.listener.close();
-
-    listener_ctx.listener.start();
+    var pool = try rpc.worker_pool.WorkerPool.init(
+        allocator,
+        address,
+        &svc,
+        onAccept,
+        .{ .concurrency = 4 },
+    );
+    defer pool.deinit();
 
     if (!server_is_quiet) {
         std.debug.print("READY on {s}:{d} (db: {s}, backup: {s}, next_version={d})\n", .{
@@ -1205,7 +1377,5 @@ pub fn main() !void {
         });
     }
 
-    while (true) {
-        try runtime.run(.until_done);
-    }
+    try pool.run();
 }

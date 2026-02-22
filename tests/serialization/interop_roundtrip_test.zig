@@ -151,14 +151,22 @@ fn verifyWidgetAgainstJson(root: message.StructReader, expected: json.Value) !vo
     }
 }
 
+fn writeToTmpFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
+    const io = std.testing.io;
+    var file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, data);
+}
+
 test "Interop: Zig -> pycapnp round trip" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const python_path = ".venv/bin/python";
     const script_path = "tests/interop/verify_pycapnp.py";
 
-    std.fs.cwd().access(python_path, .{}) catch return error.SkipZigTest;
-    std.fs.cwd().access(script_path, .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, python_path, .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, script_path, .{}) catch return error.SkipZigTest;
 
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -228,34 +236,38 @@ test "Interop: Zig -> pycapnp round trip" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var file = try tmp.dir.createFile("zig_roundtrip.bin", .{});
-    defer file.close();
-    try file.writeAll(bytes);
-
-    const abs_path = try tmp.dir.realpathAlloc(allocator, "zig_roundtrip.bin");
+    try writeToTmpFile(tmp.dir, "zig_roundtrip.bin", bytes);
+    const abs_path = try tmp.dir.realPathFileAlloc(io, "zig_roundtrip.bin", allocator);
     defer allocator.free(abs_path);
 
-    var child = std.process.Child.init(&[_][]const u8{
-        python_path,
-        script_path,
-        abs_path,
-    }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
+    const result = std.process.run(allocator, io, .{
+        .argv = &[_][]const u8{
+            python_path,
+            script_path,
+            abs_path,
+        },
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    const term = try child.spawnAndWait();
-    try std.testing.expect(term == .Exited and term.Exited == 0);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        std.debug.print("pycapnp verify failed:\nstdout: {s}\nstderr: {s}\n", .{ result.stdout, result.stderr });
+        return error.PycapnpVerifyFailed;
+    }
 }
 
 test "Interop: Zig -> pycapnp packed round trip" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const python_path = ".venv/bin/python";
     const script_path = "tests/interop/verify_pycapnp.py";
 
-    std.fs.cwd().access(python_path, .{}) catch return error.SkipZigTest;
-    std.fs.cwd().access(script_path, .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, python_path, .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, script_path, .{}) catch return error.SkipZigTest;
 
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -325,40 +337,44 @@ test "Interop: Zig -> pycapnp packed round trip" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var file = try tmp.dir.createFile("zig_roundtrip_packed.bin", .{});
-    defer file.close();
-    try file.writeAll(packed_bytes);
-
-    const abs_path = try tmp.dir.realpathAlloc(allocator, "zig_roundtrip_packed.bin");
+    try writeToTmpFile(tmp.dir, "zig_roundtrip_packed.bin", packed_bytes);
+    const abs_path = try tmp.dir.realPathFileAlloc(io, "zig_roundtrip_packed.bin", allocator);
     defer allocator.free(abs_path);
 
-    var child = std.process.Child.init(&[_][]const u8{
-        python_path,
-        script_path,
-        "--packed",
-        abs_path,
-    }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
+    const result = std.process.run(allocator, io, .{
+        .argv = &[_][]const u8{
+            python_path,
+            script_path,
+            "--packed",
+            abs_path,
+        },
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    const term = try child.spawnAndWait();
-    try std.testing.expect(term == .Exited and term.Exited == 0);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        std.debug.print("pycapnp packed verify failed:\nstdout: {s}\nstderr: {s}\n", .{ result.stdout, result.stderr });
+        return error.PycapnpVerifyFailed;
+    }
 }
 
 fn runRandomFixture(use_packed: bool) !void {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
     const python_path = ".venv/bin/python";
     const script_path = "tests/interop/generate_random_fixture.py";
 
-    std.fs.cwd().access(python_path, .{}) catch return error.SkipZigTest;
-    std.fs.cwd().access(script_path, .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, python_path, .{}) catch return error.SkipZigTest;
+    std.Io.Dir.cwd().access(io, script_path, .{}) catch return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const tmp_root = try tmp.dir.realpathAlloc(allocator, ".");
+    const tmp_root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
     defer allocator.free(tmp_root);
 
     const seeds = [_]u32{ 1, 2, 3 };
@@ -389,21 +405,24 @@ fn runRandomFixture(use_packed: bool) !void {
             try argv.append(allocator, "--packed");
         }
 
-        var child = std.process.Child.init(argv.items, allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
-        const term = try child.spawnAndWait();
-        try std.testing.expect(term == .Exited and term.Exited == 0);
+        const result = std.process.run(allocator, io, .{
+            .argv = argv.items,
+        }) catch |err| switch (err) {
+            error.FileNotFound => return error.SkipZigTest,
+            else => return err,
+        };
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
 
-        var bin_file = try std.fs.openFileAbsolute(bin_path, .{});
-        defer bin_file.close();
-        const bin_bytes = try bin_file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        if (!(result.term == .exited and result.term.exited == 0)) {
+            std.debug.print("python fixture gen failed:\nstdout: {s}\nstderr: {s}\n", .{ result.stdout, result.stderr });
+            return error.PythonFixtureGenFailed;
+        }
+
+        const bin_bytes = try std.Io.Dir.cwd().readFileAlloc(io, bin_path, allocator, .unlimited);
         defer allocator.free(bin_bytes);
 
-        var json_file = try std.fs.openFileAbsolute(json_path, .{});
-        defer json_file.close();
-        const json_bytes = try json_file.readToEndAlloc(allocator, std.math.maxInt(usize));
+        const json_bytes = try std.Io.Dir.cwd().readFileAlloc(io, json_path, allocator, .unlimited);
         defer allocator.free(json_bytes);
 
         var parsed = try json.parseFromSlice(json.Value, allocator, json_bytes, .{});

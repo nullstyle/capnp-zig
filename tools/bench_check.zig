@@ -33,24 +33,18 @@ fn parseF64(arg: []const u8) !f64 {
     return std.fmt.parseFloat(f64, arg);
 }
 
-fn parseArgs(allocator: std.mem.Allocator) !?Options {
+fn parseArgs(args: std.process.Args) !?Options {
     var opts = Options{};
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var iter = std.process.Args.Iterator.init(args);
+    _ = iter.skip(); // skip program name
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--baseline")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            opts.baseline_path = args[i];
+            opts.baseline_path = iter.next() orelse return error.InvalidArgument;
             continue;
         }
         if (std.mem.eql(u8, arg, "--max-reg-pct")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            opts.max_regression_pct_override = try parseF64(args[i]);
+            opts.max_regression_pct_override = try parseF64(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -75,6 +69,7 @@ fn metricFromJson(root: std.json.Value, metric: []const u8) !f64 {
 
 fn runCase(
     allocator: std.mem.Allocator,
+    io: std.Io,
     case: Case,
     default_max_regression_pct: f64,
     override_max_regression_pct: ?f64,
@@ -84,15 +79,15 @@ fn runCase(
     argv[0] = case.binary;
     for (case.args, 0..) |arg, idx| argv[idx + 1] = arg;
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
+    const result = try std.process.run(allocator, io, .{
         .argv = argv,
-        .max_output_bytes = 8 * 1024 * 1024,
+        .stdout_limit = .limited(8 * 1024 * 1024),
+        .stderr_limit = .limited(8 * 1024 * 1024),
     });
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (!(result.term == .Exited and result.term.Exited == 0)) {
+    if (!(result.term == .exited and result.term.exited == 0)) {
         std.debug.print("[FAIL] {s}: benchmark command failed\n", .{case.name});
         if (result.stdout.len > 0) std.debug.print("stdout:\n{s}\n", .{result.stdout});
         if (result.stderr.len > 0) std.debug.print("stderr:\n{s}\n", .{result.stderr});
@@ -122,18 +117,19 @@ fn runCase(
     return pass;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    const io = init.io;
 
-    const opts = (parseArgs(allocator) catch |err| {
+    const opts = (parseArgs(init.minimal.args) catch |err| {
         std.debug.print("Argument error: {s}\n", .{@errorName(err)});
         printUsage();
         return;
     }) orelse return;
 
-    const baseline_bytes = try std.fs.cwd().readFileAlloc(allocator, opts.baseline_path, 4 * 1024 * 1024);
+    const baseline_bytes = try std.Io.Dir.cwd().readFileAlloc(io, opts.baseline_path, allocator, .limited(4 * 1024 * 1024));
     defer allocator.free(baseline_bytes);
 
     const parsed = try std.json.parseFromSlice(Baselines, allocator, baseline_bytes, .{});
@@ -149,6 +145,7 @@ pub fn main() !void {
     for (baselines.cases) |case| {
         const pass = runCase(
             allocator,
+            io,
             case,
             baselines.max_regression_pct,
             opts.max_regression_pct_override,

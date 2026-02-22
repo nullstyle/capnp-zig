@@ -1,11 +1,16 @@
 # Zig-focused Cap'n Proto RPC interop e2e harness.
-runner := 'cache_dir="${E2E_ZIG_GLOBAL_CACHE_DIR:-../../.zig-global-cache}"; E2E_ZIG_GLOBAL_CACHE_DIR="$cache_dir" ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig run ../../tools/e2e_runner.zig --'
+runner := 'deno run --allow-all ../../tools/e2e_runner.ts'
+zig-runner := 'zig run ../../tools/e2e_runner.zig --'
 
 build:
     {{runner}} --build-only
 
 test:
     {{runner}}
+
+# Run e2e using the native Zig runner (no Deno dependency)
+test-zig:
+    {{zig-runner}}
 
 test-skip-build:
     {{runner}} --skip-build

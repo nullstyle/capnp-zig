@@ -1,165 +1,55 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_runtime);
-const xev_pkg = @import("xev");
-const xev = xev_pkg.Dynamic;
 const Connection = @import("connection.zig").Connection;
+const net = std.Io.net;
 
-/// The RPC event-loop runtime.
+/// Minimal RPC runtime context.
 ///
-/// Wraps a libxev `Loop` and provides the single-threaded execution context
-/// for all RPC I/O. All `Peer`, `Connection`, and `Transport` operations
-/// associated with this runtime **must** be called from the thread that
-/// created the `Runtime` (i.e., the thread that calls `run`). In debug
-/// builds, key entry points assert this invariant.
+/// In the previous xev-based architecture, Runtime wrapped the event loop.
+/// With synchronous POSIX I/O, the runtime is a thin holder for shared
+/// state (allocator). Connection read loops are driven directly by
+/// calling `Connection.run()` on a dedicated thread.
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
-    loop: xev.Loop,
-    thread_pool: ?*xev_pkg.ThreadPool = null,
 
-    /// Thread ID captured at creation time. Used by debug-mode assertions
-    /// to verify single-threaded access. Initialized to 0 and set to the
-    /// real thread ID in `init`.
-    owner_thread_id: std.Thread.Id = 0,
-
-    /// Protects one-time backend detection for dynamic xev mode.
-    var backend_detect_mutex: std.Thread.Mutex = .{};
-    var backend_detected: bool = false;
-    var backend_detect_error: ?anyerror = null;
-
-    /// Ensure the xev backend is selected once process-wide before using
-    /// any loop/socket types. In dynamic mode this picks the preferred
-    /// available backend (io_uring first, then epoll on Linux).
-    pub fn ensureBackend() !void {
-        if (comptime !xev.dynamic) return;
-
-        backend_detect_mutex.lock();
-        defer backend_detect_mutex.unlock();
-
-        if (backend_detected) return;
-        if (backend_detect_error) |err| return err;
-
-        xev.detect() catch |err| {
-            backend_detect_error = err;
-            return err;
-        };
-        backend_detected = true;
-    }
-
-    /// Assert that the caller is on the thread that created this runtime.
-    /// No-op in release builds.
-    fn assertThreadAffinity(self: *const Runtime) void {
-        if (comptime builtin.target.os.tag == .freestanding) return;
-        if (builtin.mode == .Debug) {
-            const current = std.Thread.getCurrentId();
-            if (current != self.owner_thread_id) {
-                @panic("Runtime method called from wrong thread: the event loop must be driven from its owner thread");
-            }
-        }
-    }
-
-    /// Create a new runtime with a fresh xev event loop.
-    ///
-    /// The calling thread becomes the owner thread for thread-affinity
-    /// checks.
     pub fn init(allocator: std.mem.Allocator) !Runtime {
-        try Runtime.ensureBackend();
-        const thread_pool = try allocator.create(xev_pkg.ThreadPool);
-        errdefer allocator.destroy(thread_pool);
-        thread_pool.* = xev_pkg.ThreadPool.init(.{});
-        errdefer {
-            thread_pool.shutdown();
-            thread_pool.deinit();
-        }
-
-        const loop = try xev.Loop.init(.{
-            .thread_pool = thread_pool,
-        });
         return .{
             .allocator = allocator,
-            .loop = loop,
-            .thread_pool = thread_pool,
-            .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) 0 else std.Thread.getCurrentId(),
         };
     }
 
-    /// Tear down the event loop. Must be called from the owner thread.
     pub fn deinit(self: *Runtime) void {
-        self.assertThreadAffinity();
-        self.loop.deinit();
-        if (self.thread_pool) |thread_pool| {
-            thread_pool.shutdown();
-            thread_pool.deinit();
-            self.allocator.destroy(thread_pool);
-            self.thread_pool = null;
-        }
-    }
-
-    /// Drive the event loop. Must be called from the owner thread.
-    ///
-    /// `mode` controls whether to block waiting for events (`.until_done`)
-    /// or return immediately after processing ready events (`.no_wait`).
-    pub fn run(self: *Runtime, mode: xev.RunMode) !void {
-        self.assertThreadAffinity();
-        try self.loop.run(mode);
+        _ = self;
     }
 };
 
 /// TCP listener that accepts inbound connections and wraps them in
 /// `Connection` objects.
 ///
-/// The listener is tied to the event loop passed at construction time.
-/// All methods and callbacks execute on the event-loop owner thread.
-/// The `on_accept` callback is invoked for each new connection; the
-/// callee takes ownership of the heap-allocated `Connection`.
+/// Uses blocking POSIX socket operations. Call `accept()` in a loop
+/// to accept connections; each call blocks until a client connects.
 ///
 /// ## Cleanup
 ///
-/// `Listener` has no synchronous `deinit`. The only cleanup path is
-/// `close()`, which enqueues an asynchronous close on the event loop.
-/// The underlying socket fd is not released until the event loop
-/// processes the close completion. Therefore:
-///
-///  1. Call `close()` to initiate shutdown.
-///  2. Continue driving the event loop (e.g., `runtime.run(.until_done)`)
-///     until all pending completions — including the listener's close —
-///     have fired.
-///  3. Only after the event loop has been fully drained is it safe to
-///     tear down the `Runtime`.
-///
-/// If the process exits or the event loop is torn down before the close
-/// completion fires, the listener's socket file descriptor will leak.
+/// Call `close()` to stop accepting. This closes the listening socket
+/// which also unblocks any thread blocked in `accept()`.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
-    loop: *xev.Loop,
-    socket: xev.TCP,
-    accept_completion: xev.Completion = .{},
-    close_completion: xev.Completion = .{},
+    fd: std.posix.fd_t,
     close_requested: bool = false,
-    on_accept: *const fn (listener: *Listener, conn: *Connection) void,
     conn_options: Connection.Options,
 
     /// Bind and listen on the given address.
-    ///
-    /// The `on_accept` callback fires on the event-loop thread for each
-    /// accepted connection. Call `start()` to begin accepting.
     pub fn init(
         allocator: std.mem.Allocator,
-        loop: *xev.Loop,
-        addr: std.net.Address,
-        on_accept: *const fn (listener: *Listener, conn: *Connection) void,
+        addr: net.IpAddress,
         conn_options: Connection.Options,
     ) !Listener {
-        var socket = try xev.TCP.init(addr);
-        errdefer std.posix.close(socketFd(socket));
-        try socket.bind(addr);
-        try socket.listen(128);
-
+        const fd = try createListenSocket(addr, 128, false);
         return .{
             .allocator = allocator,
-            .loop = loop,
-            .socket = socket,
-            .on_accept = on_accept,
+            .fd = fd,
             .conn_options = conn_options,
         };
     }
@@ -171,198 +61,264 @@ pub const Listener = struct {
     /// in test harnesses).
     pub fn initFd(
         allocator: std.mem.Allocator,
-        loop: *xev.Loop,
         fd: std.posix.fd_t,
-        on_accept: *const fn (listener: *Listener, conn: *Connection) void,
         conn_options: Connection.Options,
     ) Listener {
         return .{
             .allocator = allocator,
-            .loop = loop,
-            .socket = xev.TCP.initFd(fd),
-            .on_accept = on_accept,
+            .fd = fd,
             .conn_options = conn_options,
         };
     }
 
-    /// Begin accepting connections. Must be called after `init`.
-    pub fn start(self: *Listener) void {
-        self.queueAccept();
+    /// Accept a single connection. Blocks until a client connects.
+    /// Returns a heap-allocated Connection.
+    pub fn accept(self: *Listener) !*Connection {
+        if (self.close_requested) return error.ListenerClosed;
+
+        const client_fd = try sysAccept(self.fd);
+        errdefer closeFd(client_fd);
+
+        enableTcpNoDelay(client_fd);
+
+        return self.createConnection(client_fd);
     }
 
-    /// Stop accepting and close the listener socket asynchronously.
-    ///
-    /// The socket is not actually closed until the event loop processes
-    /// the close completion. Callers must continue running the event loop
-    /// after calling this method to ensure the fd is released. See the
-    /// struct-level documentation for the full cleanup protocol.
+    /// Close the listening socket. Idempotent.
+    /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {
         if (self.close_requested) return;
         self.close_requested = true;
-        self.socket.close(self.loop, &self.close_completion, Listener, self, Listener.onClosed);
+        closeFd(self.fd);
     }
 
-    fn queueAccept(self: *Listener) void {
-        self.socket.accept(self.loop, &self.accept_completion, Listener, self, Listener.onAccept);
-    }
-
-    fn onAccept(
-        self: ?*Listener,
-        _: *xev.Loop,
-        _: *xev.Completion,
-        res: xev.AcceptError!xev.TCP,
-    ) xev.CallbackAction {
-        const listener = self.?;
-        const socket = res catch |err| {
-            log.debug("accept failed: {}", .{err});
-            if (!listener.close_requested) listener.queueAccept();
-            return .disarm;
-        };
-
-        if (listener.close_requested) {
-            std.posix.close(socketFd(socket));
-            return .disarm;
-        }
-
-        // Disable Nagle on accepted RPC sockets to avoid delayed-ACK/Nagle
-        // interaction adding ~40ms request/response stalls for some clients.
-        enableTcpNoDelay(socket);
-
-        const conn_ptr = listener.createConnection(socket) catch |err| {
-            log.debug("connection setup failed: {}", .{err});
-            std.posix.close(socketFd(socket));
-            if (!listener.close_requested) listener.queueAccept();
-            return .disarm;
-        };
-
-        listener.on_accept(listener, conn_ptr);
-        if (!listener.close_requested) listener.queueAccept();
-        return .disarm;
+    /// Return the bound address. Useful for resolving ephemeral ports (port 0).
+    pub fn getAddress(self: *const Listener) !net.IpAddress {
+        return getSockAddress(self.fd);
     }
 
     /// Allocate and initialize a Connection. Uses errdefer to guarantee
     /// the heap allocation is freed if Connection.init fails.
-    fn createConnection(self: *Listener, socket: xev.TCP) !*Connection {
+    fn createConnection(self: *Listener, fd: std.posix.fd_t) !*Connection {
         const conn_ptr = try self.allocator.create(Connection);
         errdefer self.allocator.destroy(conn_ptr);
 
         conn_ptr.* = try Connection.init(
             self.allocator,
-            self.loop,
-            socket,
+            fd,
             self.conn_options,
         );
         return conn_ptr;
     }
 
-    fn onClosed(
-        _: ?*Listener,
-        _: *xev.Loop,
-        _: *xev.Completion,
-        _: xev.TCP,
-        _: xev.CloseError!void,
-    ) xev.CallbackAction {
-        return .disarm;
-    }
-
-    fn socketFd(socket: xev.TCP) std.posix.fd_t {
-        if (comptime xev.dynamic) {
-            return socket.fd();
-        }
-        return socket.fd;
-    }
-
-    fn socketHandle(socket: xev.TCP) std.posix.socket_t {
-        if (builtin.target.os.tag == .windows) {
-            return @ptrCast(socketFd(socket));
-        }
-        return socketFd(socket);
-    }
-
-    fn enableTcpNoDelay(socket: xev.TCP) void {
-        const one = std.mem.toBytes(@as(c_int, 1));
+    fn enableTcpNoDelay(fd: std.posix.fd_t) void {
         std.posix.setsockopt(
-            socketHandle(socket),
+            fd,
             std.posix.IPPROTO.TCP,
             std.posix.TCP.NODELAY,
-            &one,
+            &std.mem.toBytes(@as(c_int, 1)),
         ) catch |err| {
             log.debug("failed to set TCP_NODELAY on accepted socket: {}", .{err});
         };
     }
 };
 
-test "runtime backend selection can initialize a loop" {
-    try Runtime.ensureBackend();
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
+// ---------------------------------------------------------------------------
+// Raw POSIX socket helpers
+// ---------------------------------------------------------------------------
+
+/// On Darwin, SOCK_CLOEXEC is not supported by the raw socket() syscall.
+const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
+
+/// Create a TCP listening socket bound to `addr`.
+pub fn createListenSocket(addr: net.IpAddress, backlog: u31, reuseport: bool) !std.posix.fd_t {
+    const family: c_uint = switch (addr) {
+        .ip4 => std.posix.AF.INET,
+        .ip6 => std.posix.AF.INET6,
+    };
+    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
+    const fd_rc = std.posix.system.socket(family, flags, 0);
+    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
+    const fd: std.posix.fd_t = @intCast(fd_rc);
+    errdefer closeFd(fd);
+
+    // Set CLOEXEC via fcntl on platforms that don't support it in socket().
+    if (socket_cloexec_unsupported) {
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
+    }
+
+    // SO_REUSEADDR
+    try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+
+    // SO_REUSEPORT
+    if (comptime @hasDecl(std.posix.SO, "REUSEPORT")) {
+        if (reuseport) {
+            try std.posix.setsockopt(fd, std.posix.SOL.SOCKET, std.posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+        }
+    }
+
+    // Bind
+    var storage = ipAddressToSockaddr(addr);
+    if (std.posix.errno(std.posix.system.bind(fd, &storage.addr.any, storage.len)) != .SUCCESS) {
+        return error.BindFailed;
+    }
+
+    // Listen
+    if (std.posix.errno(std.posix.system.listen(fd, backlog)) != .SUCCESS) {
+        return error.ListenFailed;
+    }
+
+    return fd;
+}
+
+/// Accept one connection from a listening socket. Blocks until a client connects.
+fn sysAccept(listen_fd: std.posix.fd_t) !std.posix.fd_t {
+    while (true) {
+        const rc = std.posix.system.accept(listen_fd, null, null);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .AGAIN => return error.WouldBlock,
+            .CONNABORTED => return error.ConnectionAborted,
+            .INVAL => return error.SocketNotListening,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            .NOBUFS, .NOMEM => return error.SystemResources,
+            else => return error.AcceptFailed,
+        }
+    }
+}
+
+/// Close a file descriptor, tolerating EINTR and EBADF.
+pub fn closeFd(fd: std.posix.fd_t) void {
+    switch (std.posix.errno(std.posix.system.close(fd))) {
+        .SUCCESS, .INTR, .BADF => {},
+        else => {},
+    }
+}
+
+/// Storage union for POSIX socket addresses.
+pub const SockAddrStorage = extern union {
+    any: std.posix.sockaddr,
+    in: std.posix.sockaddr.in,
+    in6: std.posix.sockaddr.in6,
+};
+
+/// Convert an IpAddress to a POSIX sockaddr for bind/connect.
+pub fn ipAddressToSockaddr(addr: net.IpAddress) struct { addr: SockAddrStorage, len: std.posix.socklen_t } {
+    switch (addr) {
+        .ip4 => |ip4| {
+            return .{
+                .addr = .{ .in = .{
+                    .port = std.mem.nativeToBig(u16, ip4.port),
+                    .addr = @bitCast(ip4.bytes),
+                } },
+                .len = @sizeOf(std.posix.sockaddr.in),
+            };
+        },
+        .ip6 => |ip6| {
+            return .{
+                .addr = .{ .in6 = .{
+                    .port = std.mem.nativeToBig(u16, ip6.port),
+                    .flowinfo = ip6.flow,
+                    .addr = ip6.bytes,
+                    .scope_id = if (ip6.interface.isNone()) 0 else ip6.interface.index,
+                } },
+                .len = @sizeOf(std.posix.sockaddr.in6),
+            };
+        },
+    }
+}
+
+/// Retrieve the bound address of a socket (resolves ephemeral ports).
+fn getSockAddress(fd: std.posix.fd_t) !net.IpAddress {
+    var storage: std.posix.sockaddr.storage = undefined;
+    var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
+    if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&storage), &addr_len)) != .SUCCESS) {
+        return error.GetSockNameFailed;
+    }
+    const sa: *const std.posix.sockaddr = @ptrCast(&storage);
+    return sockaddrToIpAddress(sa);
+}
+
+/// Convert a POSIX sockaddr back to an IpAddress.
+fn sockaddrToIpAddress(sa: *const std.posix.sockaddr) net.IpAddress {
+    if (sa.family == std.posix.AF.INET) {
+        const sa_in: *const std.posix.sockaddr.in = @ptrCast(@alignCast(sa));
+        return .{ .ip4 = .{
+            .bytes = @bitCast(sa_in.addr),
+            .port = std.mem.bigToNative(u16, sa_in.port),
+        } };
+    } else if (sa.family == std.posix.AF.INET6) {
+        const sa_in6: *const std.posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
+        return .{ .ip6 = .{
+            .bytes = sa_in6.addr,
+            .port = std.mem.bigToNative(u16, sa_in6.port),
+            .flow = sa_in6.flowinfo,
+            .interface = .none,
+        } };
+    }
+    // Fallback — should not happen for TCP sockets.
+    return .{ .ip4 = .loopback(0) };
+}
+
+test "runtime init and deinit" {
+    var rt = try Runtime.init(std.testing.allocator);
+    rt.deinit();
 }
 
 test "createConnection returns OOM when Connection allocation fails" {
-    try Runtime.ensureBackend();
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
+    const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
+    const fd = try createListenSocket(addr, 128, false);
 
-    const DummyAccept = struct {
-        fn onAccept(_: *Listener, _: *Connection) void {}
-    };
+    var listener = Listener.initFd(std.testing.allocator, fd, .{});
+    defer listener.close();
 
     // fail_index = 0: the very first allocation (create(Connection)) fails.
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    var listener = Listener{
+    var fail_listener = Listener{
         .allocator = failing.allocator(),
-        .loop = &loop,
-        .socket = undefined,
-        .on_accept = DummyAccept.onAccept,
+        .fd = fd,
         .conn_options = .{},
     };
 
-    // createConnection should propagate OutOfMemory. No memory should leak.
-    try std.testing.expectError(error.OutOfMemory, listener.createConnection(undefined));
+    // Need a real connected fd for createConnection.
+    // Create a socketpair to get a valid fd.
+    const fds = try createSocketPair();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
+
+    try std.testing.expectError(error.OutOfMemory, fail_listener.createConnection(fds[0]));
 }
 
 test "createConnection errdefer frees Connection when Transport.init fails" {
-    try Runtime.ensureBackend();
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
+    const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
+    const fd = try createListenSocket(addr, 128, false);
 
-    const DummyAccept = struct {
-        fn onAccept(_: *Listener, _: *Connection) void {}
-    };
+    var listener = Listener.initFd(std.testing.allocator, fd, .{});
+    defer listener.close();
 
     // fail_index = 1: the first allocation (create(Connection)) succeeds,
     // but the second allocation (read buffer inside Transport.init) fails.
-    // The errdefer in createConnection must free the Connection to avoid a leak.
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
-    var listener = Listener{
+    var fail_listener = Listener{
         .allocator = failing.allocator(),
-        .loop = &loop,
-        .socket = undefined,
-        .on_accept = DummyAccept.onAccept,
+        .fd = fd,
         .conn_options = .{},
     };
 
-    // createConnection should propagate OutOfMemory. The errdefer ensures
-    // the already-allocated Connection is freed — no leak.
-    try std.testing.expectError(error.OutOfMemory, listener.createConnection(undefined));
+    const fds = try createSocketPair();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
+
+    try std.testing.expectError(error.OutOfMemory, fail_listener.createConnection(fds[0]));
 }
 
-test "listener onAccept does not re-arm when close was requested" {
-    const DummyAccept = struct {
-        fn onAccept(_: *Listener, _: *Connection) void {}
-    };
-
-    var listener = Listener{
-        .allocator = std.testing.allocator,
-        .loop = undefined,
-        .socket = undefined,
-        .close_requested = true,
-        .on_accept = DummyAccept.onAccept,
-        .conn_options = .{},
-    };
-
-    // If onAccept attempted to re-arm here, it would touch the undefined
-    // socket and fail this test.
-    const action = Listener.onAccept(&listener, undefined, undefined, error.ConnectionResetByPeer);
-    try std.testing.expectEqual(xev.CallbackAction.disarm, action);
+/// Create a UNIX socketpair for testing.
+fn createSocketPair() ![2]std.posix.fd_t {
+    var fds: [2]std.posix.fd_t = undefined;
+    if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
+        return error.SocketPairFailed;
+    }
+    return fds;
 }

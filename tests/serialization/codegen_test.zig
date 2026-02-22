@@ -1608,7 +1608,7 @@ test "Codegen: zero numeric and enum defaults skip xor paths" {
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU32(0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU32(0, @bitCast(value));"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.meta.intToEnum(State, self._reader.readU16(2)) catch return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(State, self._reader.readU16(2)) orelse return error.InvalidEnumValue;"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, @as(u16, @intFromEnum(value)));"));
 
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u32, 0)"));

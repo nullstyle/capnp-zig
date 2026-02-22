@@ -25,14 +25,8 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
-/// Cap'n Proto RPC runtime: capability-based messaging over TCP using libxev.
 pub const rpc = @import("rpc/mod.zig");
-
-/// Re-export xev so downstream consumers share the same module instance.
-pub const xev = @import("xev").Dynamic;
 
 test {
     @import("std").testing.refAllDecls(@This());
-    _ = @import("rpc/level2/connection.zig");
-    _ = @import("rpc/level2/transport_xev.zig");
 }

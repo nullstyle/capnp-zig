@@ -4,6 +4,12 @@ const alloc_counter = @import("alloc_counter.zig");
 
 const message = capnp.message;
 
+fn readMonotonicNs() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
+}
+
 const Config = struct {
     iterations: usize = 10_000,
     payload_size: usize = 1024,
@@ -26,9 +32,9 @@ const AllocationSample = struct {
     alloc_bytes_per_iter: f64,
 };
 
-fn printUsage() void {
+fn printUsage(io: std.Io) void {
     var buffer: [1024]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&buffer);
+    var out = std.Io.File.stdout().writer(io, &buffer);
     out.interface.print(
         \\Usage: zig build bench-ping-pong -- [options]
         \\  --iters N    Number of iterations (default: 10000)
@@ -46,30 +52,22 @@ fn parseUsize(arg: []const u8) !usize {
     return std.fmt.parseUnsigned(usize, arg, 10);
 }
 
-fn parseArgs(allocator: std.mem.Allocator) !?Config {
+fn parseArgs(args: std.process.Args, io: std.Io) !?Config {
     var cfg = Config{};
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var iter = std.process.Args.Iterator.init(args);
+    _ = iter.skip(); // skip program name
 
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--iters")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.iterations = try parseUsize(args[i]);
+            cfg.iterations = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--payload")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.payload_size = try parseUsize(args[i]);
+            cfg.payload_size = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--warmup")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgument;
-            cfg.warmup = try parseUsize(args[i]);
+            cfg.warmup = try parseUsize(iter.next() orelse return error.InvalidArgument);
             continue;
         }
         if (std.mem.eql(u8, arg, "--far")) {
@@ -81,12 +79,12 @@ fn parseArgs(allocator: std.mem.Allocator) !?Config {
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            printUsage();
+            printUsage(io);
             return null;
         }
 
         std.debug.print("Unknown argument: {s}\n", .{arg});
-        printUsage();
+        printUsage(io);
         return error.InvalidArgument;
     }
 
@@ -213,7 +211,7 @@ fn measureAllocationSample(
     };
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
         const deinit_status = gpa.deinit();
@@ -223,8 +221,9 @@ pub fn main() !void {
     }
 
     const allocator = gpa.allocator();
+    const io = init.io;
 
-    const cfg = (parseArgs(allocator) catch |err| {
+    const cfg = (parseArgs(init.minimal.args, io) catch |err| {
         std.debug.print("Argument error: {s}\n", .{@errorName(err)});
         return;
     }) orelse return;
@@ -263,13 +262,13 @@ pub fn main() !void {
         checksum +%= warm.checksum;
     }
 
-    var timer = try std.time.Timer.start();
+    const start_ts = readMonotonicNs();
     var iter: usize = 0;
     while (iter < cfg.iterations) : (iter += 1) {
         const run = try runPingPong(&ping_arena, &pong_arena, payload, @as(u64, @intCast(iter + 1)), cfg.far_payload);
         checksum +%= run.checksum;
     }
-    const elapsed_ns = timer.read();
+    const elapsed_ns = readMonotonicNs() - start_ts;
 
     const elapsed_ns_f = @as(f64, @floatFromInt(elapsed_ns));
     const seconds = elapsed_ns_f / 1_000_000_000.0;
@@ -284,7 +283,7 @@ pub fn main() !void {
 
     if (cfg.json) {
         var out_buffer: [4096]u8 = undefined;
-        var out = std.fs.File.stdout().writer(&out_buffer);
+        var out = std.Io.File.stdout().writer(io, &out_buffer);
         try out.interface.print(
             "{{\"benchmark\":\"ping_pong\",\"iterations\":{d},\"payload_size\":{d},\"far_payload\":{s},\"ping_size\":{d},\"pong_size\":{d},\"elapsed_ns\":{d},\"ns_per_iter\":{d:.6},\"ops_per_sec\":{d:.6},\"mib_per_sec\":{d:.6},\"alloc_sample_iters\":{d},\"alloc_calls\":{d},\"alloc_bytes\":{d},\"allocs_per_iter\":{d:.6},\"alloc_bytes_per_iter\":{d:.6},\"checksum\":{d}}}\n",
             .{
@@ -310,7 +309,7 @@ pub fn main() !void {
     }
 
     var out_buffer: [4096]u8 = undefined;
-    var out = std.fs.File.stdout().writer(&out_buffer);
+    var out = std.Io.File.stdout().writer(io, &out_buffer);
     try out.interface.print("ping-pong benchmark\n", .{});
     try out.interface.print("iterations: {d}\n", .{cfg.iterations});
     try out.interface.print("payload: {d} bytes\n", .{cfg.payload_size});
