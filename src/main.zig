@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Generator = @import("capnpc-zig/generator.zig").Generator;
 const request_reader = @import("serialization/request_reader.zig");
 
@@ -73,6 +74,7 @@ fn logStderr(comptime fmt: []const u8, args: anytype) void {
 
 fn parseRunOptionsFromArgs(args: std.process.Args) RunOptions {
     var options = RunOptions{};
+    if (builtin.target.os.tag == .windows) return options;
     var iter = std.process.Args.Iterator.init(args);
     _ = iter.skip(); // skip program name
     while (iter.next()) |arg| {

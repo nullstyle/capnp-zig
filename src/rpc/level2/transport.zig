@@ -2,6 +2,12 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_transport);
 
+/// Sentinel for "no fd". POSIX uses -1; Windows uses INVALID_HANDLE_VALUE.
+const invalid_fd: std.posix.fd_t = if (builtin.target.os.tag == .windows)
+    @ptrFromInt(std.math.maxInt(usize))
+else
+    -1;
+
 /// TCP transport layer with concurrent read/write support.
 ///
 /// `Transport` owns a TCP socket file descriptor and provides blocking
@@ -57,7 +63,7 @@ pub const Transport = struct {
         closed: bool = false,
         /// Notification socketpair. [0]=read (writer thread), [1]=write (enqueue).
         /// Set to -1 when not initialized or after close.
-        notify_fds: [2]std.posix.fd_t = .{ -1, -1 },
+        notify_fds: [2]std.posix.fd_t = .{ invalid_fd, invalid_fd },
 
         fn initNotify(self: *WriteQueue) !void {
             var fds: [2]std.posix.fd_t = undefined;
@@ -68,13 +74,13 @@ pub const Transport = struct {
         }
 
         fn deinitNotify(self: *WriteQueue) void {
-            if (self.notify_fds[0] != -1) {
+            if (self.notify_fds[0] != invalid_fd) {
                 closeFd(self.notify_fds[0]);
-                self.notify_fds[0] = -1;
+                self.notify_fds[0] = invalid_fd;
             }
-            if (self.notify_fds[1] != -1) {
+            if (self.notify_fds[1] != invalid_fd) {
                 closeFd(self.notify_fds[1]);
-                self.notify_fds[1] = -1;
+                self.notify_fds[1] = invalid_fd;
             }
         }
 
@@ -130,9 +136,9 @@ pub const Transport = struct {
             const was_closed = self.closed;
             self.closed = true;
             self.mu.unlock();
-            if (!was_closed and self.notify_fds[1] != -1) {
+            if (!was_closed and self.notify_fds[1] != invalid_fd) {
                 closeFd(self.notify_fds[1]);
-                self.notify_fds[1] = -1;
+                self.notify_fds[1] = invalid_fd;
             }
         }
 

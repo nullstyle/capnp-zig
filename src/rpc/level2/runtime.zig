@@ -132,6 +132,7 @@ const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.t
 
 /// Create a TCP listening socket bound to `addr`.
 pub fn createListenSocket(addr: net.IpAddress, backlog: u31, reuseport: bool) !std.posix.fd_t {
+    if (builtin.target.os.tag == .windows) return error.SocketCreateFailed;
     const family: c_uint = switch (addr) {
         .ip4 => std.posix.AF.INET,
         .ip6 => std.posix.AF.INET6,
