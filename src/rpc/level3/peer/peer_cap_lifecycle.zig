@@ -94,9 +94,12 @@ pub fn releaseExport(
         return;
     };
 
+    // NOTE: Bootstrap export entry persists for the connection lifetime by design.
+    // The bootstrap handler (Export.ctx) must outlive the Peer.
     if (bootstrap_export_id) |bootstrap_id| {
         if (bootstrap_id == id) {
             if (entry.value_ptr.ref_count <= count) {
+                log.debug("bootstrap export ref count saturated to zero (release_count={d} exceeded ref_count={d})", .{ count, entry.value_ptr.ref_count });
                 entry.value_ptr.ref_count = 0;
             } else {
                 entry.value_ptr.ref_count -= count;

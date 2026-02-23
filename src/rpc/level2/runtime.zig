@@ -37,7 +37,7 @@ pub const Runtime = struct {
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     fd: std.posix.fd_t,
-    close_requested: bool = false,
+    close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     conn_options: Connection.Options,
 
     /// Bind and listen on the given address.
@@ -74,7 +74,7 @@ pub const Listener = struct {
     /// Accept a single connection. Blocks until a client connects.
     /// Returns a heap-allocated Connection.
     pub fn accept(self: *Listener) !*Connection {
-        if (self.close_requested) return error.ListenerClosed;
+        if (self.close_requested.load(.acquire)) return error.ListenerClosed;
 
         const client_fd = try sysAccept(self.fd);
         errdefer closeFd(client_fd);
@@ -87,8 +87,8 @@ pub const Listener = struct {
     /// Close the listening socket. Idempotent.
     /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {
-        if (self.close_requested) return;
-        self.close_requested = true;
+        if (self.close_requested.load(.acquire)) return;
+        self.close_requested.store(true, .release);
         closeFd(self.fd);
     }
 

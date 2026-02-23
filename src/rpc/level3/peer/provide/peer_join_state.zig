@@ -185,10 +185,17 @@ pub fn completeJoin(
         }
     }
 
+    // Remove all join question entries before fan-out so cleanup runs even if
+    // send callbacks error partway through the loop.
+    defer {
+        var cleanup_it = join_state.parts.iterator();
+        while (cleanup_it.next()) |entry| {
+            _ = pending_join_questions.remove(entry.value_ptr.question_id);
+        }
+    }
+
     var send_it = join_state.parts.iterator();
     while (send_it.next()) |entry| {
-        _ = pending_join_questions.remove(entry.value_ptr.question_id);
-
         if (all_equal) {
             const target = first_target orelse &entry.value_ptr.target;
             send_return_provided_target(peer, entry.value_ptr.question_id, target) catch |err| {

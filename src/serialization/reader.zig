@@ -64,6 +64,11 @@ pub const Reader = struct {
     }
 
     /// Read a segment-framed message from a reader and return the framed bytes.
+    ///
+    /// The returned bytes can be passed to `Message.init` to obtain a reader.
+    /// Note that `Message` does not enforce a traversal limit on its own;
+    /// callers MUST invoke `Message.validate()` before reading untrusted
+    /// messages to prevent amplification attacks.
     pub fn readMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
         const segment_count_minus_one = try reader.readInt(u32, .little);
         const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
@@ -118,6 +123,10 @@ pub const Reader = struct {
     }
 
     /// Read a packed message from a reader and return the unpacked framed bytes.
+    ///
+    /// Note: pre-validation allocation is bounded to ~max_header_size before
+    /// segment_count is checked, so amplification from a malicious packed
+    /// stream is limited to the header region.
     pub fn readPackedMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
         var out = std.ArrayList(u8){};
         errdefer out.deinit(allocator);

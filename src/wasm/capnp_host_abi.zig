@@ -50,10 +50,13 @@ const GlobalMutex = if (builtin.target.cpu.arch == .wasm32)
         pub fn unlock(_: *@This()) void {}
     }
 else
+    // Native-only synchronization for testing; WASM is single-threaded.
     struct {
         m: std.atomic.Mutex = .unlocked,
         pub fn lock(self: *@This()) void {
-            while (!self.m.tryLock()) {}
+            while (!self.m.tryLock()) {
+                std.Thread.yield() catch {};
+            }
         }
         pub fn unlock(self: *@This()) void {
             self.m.unlock();
@@ -98,6 +101,7 @@ const ERROR_SERDE_DECODE: u32 = 8;
 const ERROR_BOOTSTRAP_CONFIG: u32 = 9;
 const ERROR_HOST_CALL: u32 = 10;
 const ERROR_PEER_CONTROL: u32 = 11;
+const ERROR_INVALID_FREE: u32 = 12;
 
 const PersonJson = struct {
     name: []const u8,
@@ -169,7 +173,10 @@ var bootstrap_stub_ctx: u8 = 0;
 
 var peers = std.AutoHashMapUnmanaged(u32, *PeerState){};
 var next_peer_id: u32 = 1;
+var outstanding_allocs = std.AutoHashMapUnmanaged(usize, usize){};
 
+// NOTE: Error state is global (one error at a time). Callers must check return values
+// and drain errors via capnp_error_take immediately after each ABI call.
 var last_error_code: u32 = 0;
 var last_error_len: u32 = 0;
 var last_error_buf: [1024]u8 = [_]u8{0} ** 1024;
@@ -294,11 +301,18 @@ pub export fn capnp_alloc(len: u32) AbiPtr {
         setError(ERROR_ALLOC, "capnp_alloc out of memory");
         return 0;
     };
-    return ptrToAbi(@intFromPtr(mem.ptr)) catch {
+    const ptr_addr = @intFromPtr(mem.ptr);
+    const abi_ptr = ptrToAbi(ptr_addr) catch {
         allocator.free(mem);
         setError(ERROR_ALLOC, "capnp_alloc pointer overflow");
         return 0;
     };
+    outstanding_allocs.put(allocator, ptr_addr, size) catch {
+        allocator.free(mem);
+        setError(ERROR_ALLOC, "capnp_alloc tracking failed");
+        return 0;
+    };
+    return abi_ptr;
 }
 
 /// Free a previously allocated buffer.
@@ -309,14 +323,24 @@ pub export fn capnp_free(ptr: AbiPtr, len: u32) void {
 
     if (ptr == 0) return;
     const size: usize = if (len == 0) 1 else @as(usize, len);
-    const mem: [*]u8 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    const ptr_addr: usize = @intCast(ptr);
+    const tracked_size = outstanding_allocs.get(ptr_addr) orelse {
+        setError(ERROR_INVALID_FREE, "capnp_free: unknown allocation");
+        return;
+    };
+    if (tracked_size != size) {
+        setError(ERROR_INVALID_FREE, "capnp_free: length mismatch");
+        return;
+    }
+    _ = outstanding_allocs.remove(ptr_addr);
+    const mem: [*]u8 = @ptrFromInt(ptr_addr);
     allocator.free(mem[0..size]);
 }
 
 /// Free a buffer returned by an ABI function (alias for capnp_free).
 /// Thread-safe on native targets (mutex-protected).
 pub export fn capnp_buf_free(ptr: AbiPtr, len: u32) void {
-    // capnp_free acquires the mutex internally.
+    // Both capnp_buf_free and capnp_free go through the same validated path.
     capnp_free(ptr, len);
 }
 
@@ -510,14 +534,9 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
     }
 
     const frame = state.host.popOutgoingFrame() orelse {
-        writeAbiPtr(out_ptr_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_ptr_ptr");
-            return 0;
-        };
-        writeU32(out_len_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_len_ptr");
-            return 0;
-        };
+        // unreachable: null pointers rejected above
+        writeAbiPtr(out_ptr_ptr, 0) catch unreachable;
+        writeU32(out_len_ptr, 0) catch unreachable;
         state.resetScratchIfIdle();
         return 0;
     };
@@ -783,35 +802,23 @@ pub export fn capnp_peer_pop_host_call(
     }
 
     const call = state.host.popHostCall() orelse {
-        writeU32(out_question_id_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_question_id_ptr");
-            return 0;
-        };
-        writeU64(out_interface_id_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_interface_id_ptr");
-            return 0;
-        };
-        writeU16(out_method_id_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_method_id_ptr");
-            return 0;
-        };
-        writeAbiPtr(out_frame_ptr_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_frame_ptr_ptr");
-            return 0;
-        };
-        writeU32(out_frame_len_ptr, 0) catch {
-            setError(ERROR_INVALID_ARG, "invalid out_frame_len_ptr");
-            return 0;
-        };
+        // unreachable: null pointers rejected above
+        writeU32(out_question_id_ptr, 0) catch unreachable;
+        writeU64(out_interface_id_ptr, 0) catch unreachable;
+        writeU16(out_method_id_ptr, 0) catch unreachable;
+        writeAbiPtr(out_frame_ptr_ptr, 0) catch unreachable;
+        writeU32(out_frame_len_ptr, 0) catch unreachable;
         return 0;
     };
 
     const frame_ptr: AbiPtr = if (call.frame.len == 0) 0 else ptrToAbi(@intFromPtr(call.frame.ptr)) catch {
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_HOST_CALL, "host call frame pointer overflow");
         return 0;
     };
     if (call.frame.len > std.math.maxInt(u32)) {
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_HOST_CALL, "frame too large for ABI");
         return 0;
@@ -820,11 +827,13 @@ pub export fn capnp_peer_pop_host_call(
     if (frame_len != 0) {
         const frame_addr = @intFromPtr(call.frame.ptr);
         const slot = state.outstanding_host_call_frames.getOrPut(frame_addr) catch {
+            _ = state.host.pending_host_call_questions.remove(call.question_id);
             state.host.freeHostCallFrame(call.frame);
             setError(ERROR_HOST_CALL, "host call frame tracking failed");
             return 0;
         };
         if (slot.found_existing) {
+            _ = state.host.pending_host_call_questions.remove(call.question_id);
             state.host.freeHostCallFrame(call.frame);
             setError(ERROR_HOST_CALL, "host call frame tracking collision");
             return 0;
@@ -836,6 +845,7 @@ pub export fn capnp_peer_pop_host_call(
         if (frame_len != 0) {
             _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
         }
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_question_id_ptr");
         return 0;
@@ -844,6 +854,7 @@ pub export fn capnp_peer_pop_host_call(
         if (frame_len != 0) {
             _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
         }
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_interface_id_ptr");
         return 0;
@@ -852,6 +863,7 @@ pub export fn capnp_peer_pop_host_call(
         if (frame_len != 0) {
             _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
         }
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_method_id_ptr");
         return 0;
@@ -860,6 +872,7 @@ pub export fn capnp_peer_pop_host_call(
         if (frame_len != 0) {
             _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
         }
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_frame_ptr_ptr");
         return 0;
@@ -868,6 +881,7 @@ pub export fn capnp_peer_pop_host_call(
         if (frame_len != 0) {
             _ = state.outstanding_host_call_frames.remove(@intFromPtr(call.frame.ptr));
         }
+        _ = state.host.pending_host_call_questions.remove(call.question_id);
         state.host.freeHostCallFrame(call.frame);
         setError(ERROR_INVALID_ARG, "invalid out_frame_len_ptr");
         return 0;
@@ -900,15 +914,15 @@ pub export fn capnp_peer_free_host_call_frame(
     }
 
     const frame_addr: usize = @intCast(frame_ptr);
-    const tracked = state.outstanding_host_call_frames.fetchRemove(frame_addr) orelse {
+    const tracked_len = state.outstanding_host_call_frames.get(frame_addr) orelse {
         setError(ERROR_INVALID_ARG, "unknown host call frame");
         return 0;
     };
-    if (tracked.value != frame_len) {
-        state.outstanding_host_call_frames.put(frame_addr, tracked.value) catch {};
+    if (tracked_len != frame_len) {
         setError(ERROR_INVALID_ARG, "host call frame length mismatch");
         return 0;
     }
+    _ = state.outstanding_host_call_frames.remove(frame_addr);
 
     const frame_ptr_bytes: [*]u8 = @ptrFromInt(@as(usize, @intCast(frame_ptr)));
     state.host.freeHostCallFrame(frame_ptr_bytes[0..@as(usize, frame_len)]);
@@ -1081,7 +1095,14 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
     };
     std.mem.copyForwards(u8, copy, manifest);
 
+    outstanding_allocs.put(allocator, @intFromPtr(copy.ptr), copy.len) catch {
+        allocator.free(copy);
+        setError(ERROR_ALLOC, "schema manifest tracking failed");
+        return 0;
+    };
+
     writeOutBuffer(out_ptr_ptr, out_len_ptr, copy) catch |err| {
+        _ = outstanding_allocs.remove(@intFromPtr(copy.ptr));
         allocator.free(copy);
         setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
@@ -1140,7 +1161,14 @@ pub export fn capnp_example_person_to_json(
         return 0;
     };
 
+    outstanding_allocs.put(allocator, @intFromPtr(json_bytes.ptr), json_bytes.len) catch {
+        allocator.free(json_bytes);
+        setError(ERROR_ALLOC, "person json tracking failed");
+        return 0;
+    };
+
     writeOutBuffer(out_json_ptr_ptr, out_json_len_ptr, json_bytes) catch |err| {
+        _ = outstanding_allocs.remove(@intFromPtr(json_bytes.ptr));
         allocator.free(json_bytes);
         setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
@@ -1199,11 +1227,49 @@ pub export fn capnp_example_person_from_json(
         return 0;
     };
 
+    outstanding_allocs.put(allocator, @intFromPtr(frame.ptr), frame.len) catch {
+        allocator.free(frame);
+        setError(ERROR_ALLOC, "person frame tracking failed");
+        return 0;
+    };
+
     writeOutBuffer(out_frame_ptr_ptr, out_frame_len_ptr, frame) catch |err| {
+        _ = outstanding_allocs.remove(@intFromPtr(frame.ptr));
         allocator.free(frame);
         setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
     };
 
     return 1;
+}
+
+/// Tear down all global state: destroy every peer and free all tracked
+/// allocations. After this call, the module is in a clean state equivalent
+/// to a fresh instantiation.
+/// Thread-safe on native targets (mutex-protected).
+pub export fn capnp_shutdown() void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    clearErrorState();
+
+    // Destroy all peers.
+    var peer_it = peers.iterator();
+    while (peer_it.next()) |entry| {
+        var state = entry.value_ptr.*;
+        state.deinit();
+        allocator.destroy(state);
+    }
+    peers.deinit(allocator);
+    peers = .{};
+    next_peer_id = 1;
+
+    // Free any outstanding tracked allocations.
+    var alloc_it = outstanding_allocs.iterator();
+    while (alloc_it.next()) |entry| {
+        const mem: [*]u8 = @ptrFromInt(entry.key_ptr.*);
+        allocator.free(mem[0..entry.value_ptr.*]);
+    }
+    outstanding_allocs.deinit(allocator);
+    outstanding_allocs = .{};
 }

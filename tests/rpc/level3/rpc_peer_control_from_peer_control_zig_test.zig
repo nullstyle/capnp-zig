@@ -63,8 +63,8 @@ test "peer_control resolve/disembargo peer helper factories operate on peer stat
     const take_pending = takePendingEmbargoPromiseForPeerFn(FakePeer);
     const clear_embargo = clearResolvedImportEmbargoForPeerFn(FakePeer);
 
-    const first_id = alloc_embargo_id(&peer);
-    const second_id = alloc_embargo_id(&peer);
+    const first_id = try alloc_embargo_id(&peer);
+    const second_id = try alloc_embargo_id(&peer);
     try std.testing.expectEqual(@as(u32, 0), first_id);
     try std.testing.expectEqual(@as(u32, 1), second_id);
     try remember_pending(&peer, first_id, 41);
@@ -74,8 +74,8 @@ test "peer_control resolve/disembargo peer helper factories operate on peer stat
     try std.testing.expectEqual(@as(?u32, 42), take_pending(&peer, second_id));
 
     peer.next_embargo_id = std.math.maxInt(u32);
-    try std.testing.expectEqual(std.math.maxInt(u32), alloc_embargo_id(&peer));
-    try std.testing.expectEqual(@as(u32, 0), alloc_embargo_id(&peer));
+    try std.testing.expectEqual(std.math.maxInt(u32), try alloc_embargo_id(&peer));
+    try std.testing.expectEqual(@as(u32, 0), try alloc_embargo_id(&peer));
 
     try peer.resolved_imports.put(9, .{
         .cap = .none,

@@ -92,6 +92,7 @@ pub const CapTable = struct {
         // Keep promise IDs in the same local export identity set used for
         // outbound descriptor classification.
         try self.exports.put(export_id, {});
+        errdefer _ = self.exports.remove(export_id);
         try self.promised_exports.put(export_id, {});
     }
 
@@ -445,12 +446,12 @@ fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_p
     std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], word, .little);
 }
 
-fn classifyCap(table: *CapTable, cap_id: u32) protocol.CapDescriptorTag {
+fn classifyCap(table: *CapTable, cap_id: u32) error{UnknownCapabilityId}!protocol.CapDescriptorTag {
     if (table.receiver_answers.contains(cap_id)) return .receiverAnswer;
     if (table.promised_exports.contains(cap_id)) return .senderPromise;
     if (table.exports.contains(cap_id)) return .senderHosted;
     if (table.imports.contains(cap_id)) return .receiverHosted;
-    return .senderHosted;
+    return error.UnknownCapabilityId;
 }
 
 fn anyPointerReaderFromBuilder(
@@ -526,7 +527,7 @@ fn collectCapsFromPointer(
         },
         3 => {
             const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
-            const tag = classifyCap(table, cap_id);
+            const tag = try classifyCap(table, cap_id);
             const index = try outbound.indexFor(tag, cap_id);
             const new_word = makeCapabilityPointer(index);
             try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, new_word);
@@ -537,6 +538,9 @@ fn collectCapsFromPointer(
 
 /// Encode capability descriptors into the outbound payload's cap table.
 ///
+// SAFETY: writePointerWord only mutates capability pointers after they have been fully
+// resolved by collectCapsFromPointer, which processes each pointer exactly once.
+// The read view will never re-read a mutated pointer.
 fn encodePayloadCaps(
     table: *CapTable,
     payload: protocol.PayloadBuilder,
@@ -559,7 +563,7 @@ fn encodePayloadCaps(
         const resolved = try view.msg.resolvePointer(any_reader.segment_id, any_reader.pointer_pos, any_reader.pointer_word, 8);
         if (resolved.pointer_word != 0 and (@as(u2, @truncate(resolved.pointer_word & 0x3)) == 3)) {
             const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
-            const tag = classifyCap(table, cap_id);
+            const tag = try classifyCap(table, cap_id);
             root_cap = switch (tag) {
                 .receiverHosted => .{ .imported = .{ .id = cap_id } },
                 .senderHosted => .{ .exported = .{ .id = cap_id } },

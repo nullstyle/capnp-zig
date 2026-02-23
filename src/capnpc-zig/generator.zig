@@ -381,6 +381,9 @@ pub const Generator = struct {
         }
     }
 
+    // NOTE: Nested types with the same simple name in different parents will collide
+    // at the file scope. Cap'n Proto's own compiler prevents this for well-formed schemas,
+    // but hand-crafted binary schemas could trigger it.
     fn generateNodeRecursive(
         self: *Generator,
         id: schema.Id,
@@ -625,6 +628,7 @@ pub const Generator = struct {
 
         try writer.print("pub const {s} = struct {{\n", .{decl_name});
         try writer.print("    pub const interface_id: u64 = 0x{x};\n", .{node.id});
+        // Zero-method interfaces produce an empty enum; this is valid Zig but uninhabitable.
         try writer.writeAll("    pub const Method = enum(u16) {\n");
         for (interface_info.methods) |method| {
             const zig_name = try self.toZigIdentifier(method.name);
@@ -1428,7 +1432,7 @@ pub const Generator = struct {
         return result;
     }
 
-    /// Convert Cap'n Proto identifier to Zig identifier
+    /// Convert Cap'n Proto identifier to Zig type name (PascalCase)
     fn toZigIdentifier(self: *Generator, name: []const u8) ![]const u8 {
         return types.identToZigTypeName(self.allocator, name);
     }

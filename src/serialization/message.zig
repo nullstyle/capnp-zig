@@ -17,8 +17,8 @@ fn decodeOffsetWords(pointer_word: u64) i32 {
     return @as(i32, @intCast(raw));
 }
 
-fn encodeOffsetWords(offset_words: i32) u32 {
-    std.debug.assert(offset_words >= -(1 << 29) and offset_words < (1 << 29));
+fn encodeOffsetWords(offset_words: i32) !u32 {
+    if (offset_words < -(1 << 29) or offset_words >= (1 << 29)) return error.OffsetOutOfRange;
     if (offset_words < 0) {
         const base: i64 = 1 << 30;
         return @as(u32, @intCast(base + offset_words));
@@ -26,17 +26,17 @@ fn encodeOffsetWords(offset_words: i32) u32 {
     return @as(u32, @intCast(offset_words));
 }
 
-fn makeStructPointer(offset_words: i32, data_words: u16, pointer_words: u16) u64 {
+fn makeStructPointer(offset_words: i32, data_words: u16, pointer_words: u16) !u64 {
     var pointer: u64 = 0;
-    pointer |= @as(u64, encodeOffsetWords(offset_words)) << 2;
+    pointer |= @as(u64, try encodeOffsetWords(offset_words)) << 2;
     pointer |= @as(u64, data_words) << 32;
     pointer |= @as(u64, pointer_words) << 48;
     return pointer;
 }
 
-fn makeListPointer(offset_words: i32, element_size: u3, element_count: u32) u64 {
+fn makeListPointer(offset_words: i32, element_size: u3, element_count: u32) !u64 {
     var pointer: u64 = 1; // list pointer
-    pointer |= @as(u64, encodeOffsetWords(offset_words)) << 2;
+    pointer |= @as(u64, try encodeOffsetWords(offset_words)) << 2;
     pointer |= @as(u64, element_size) << 32;
     pointer |= @as(u64, element_count) << 35;
     return pointer;
@@ -303,6 +303,14 @@ pub const Capability = struct {
 ///
 /// The message is split into one or more segments. Reading is zero-copy:
 /// `StructReader` and list readers reference the original byte slices directly.
+/// A parsed Cap'n Proto message providing zero-copy read access to segments.
+///
+/// **Important**: This type does not enforce a traversal limit during reads.
+/// When reading untrusted input, callers MUST call `validate()` before using
+/// `getRootStruct()` or any other reader method.  `validate()` performs a
+/// full pointer-graph walk with depth and size checks that prevent
+/// amplification attacks from malicious messages.
+///
 /// Callers must keep the source data (or `backing_data`) alive for the lifetime
 /// of any readers obtained from this message. Call `deinit` to free the
 /// segment index (and backing data, if owned).
@@ -489,7 +497,7 @@ pub const Message = struct {
     }
 
     pub fn resolveStructPointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64) !StructReader {
-        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 8);
+        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
         if (resolved.pointer_word == 0) return error.InvalidRootPointer;
 
         const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
@@ -522,7 +530,7 @@ pub const Message = struct {
     }
 
     pub fn resolveListPointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64) !ResolvedListPointer {
-        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 8);
+        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
         if (resolved.pointer_word == 0) return error.InvalidPointer;
 
         const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
@@ -969,6 +977,10 @@ pub const Message = struct {
     /// Return a reader for the root struct of this message.
     ///
     /// The root pointer is always at offset 0 in segment 0.
+    ///
+    /// **Warning**: This method does not enforce a traversal limit.  For
+    /// untrusted input, call `validate()` first to guard against
+    /// amplification attacks from cyclic or deeply nested pointers.
     pub fn getRootStruct(self: *const Message) !StructReader {
         if (self.segments.len == 0) return error.EmptyMessage;
 
@@ -1029,6 +1041,8 @@ pub const StructReader = struct {
         return segment[start..end];
     }
 
+    /// Check whether the pointer at `pointer_index` is null.
+    // pointer_index is always a small codegen constant; overflow not possible in practice
     pub fn isPointerNull(self: StructReader, pointer_index: usize) bool {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
@@ -1664,6 +1678,7 @@ pub const MessageBuilder = struct {
         if (self.segments.items.len > std.math.maxInt(u32)) return error.TooManySegments;
         const id: u32 = @intCast(self.segments.items.len);
         try self.segments.append(self.allocator, std.ArrayList(u8){});
+        errdefer _ = self.segments.pop();
         if (min_capacity > 0) {
             try self.segments.items[id].ensureTotalCapacity(self.allocator, min_capacity);
         }
@@ -1757,7 +1772,7 @@ pub const MessageBuilder = struct {
             @memset(struct_storage, 0);
         }
 
-        const struct_ptr = makeStructPointer(0, data_words, pointer_words);
+        const struct_ptr = try makeStructPointer(0, data_words, pointer_words);
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], struct_ptr, .little);
 
         {
@@ -1804,11 +1819,12 @@ pub const MessageBuilder = struct {
         }
 
         if (pointer_segment_id == target_segment_id) {
+            // Safe: segment sizes bounded well below i32 range by allocation limits
             const relative_offset = @as(i32, @intCast(@divTrunc(
                 @as(isize, @intCast(text_offset)) - @as(isize, @intCast(pointer_pos)) - 8,
                 8,
             )));
-            const pointer = makeListPointer(relative_offset, 2, @as(u32, @intCast(text.len + 1)));
+            const pointer = try makeListPointer(relative_offset, 2, @as(u32, @intCast(text.len + 1)));
             std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], pointer, .little);
             return;
         }
@@ -1823,7 +1839,7 @@ pub const MessageBuilder = struct {
             @as(isize, @intCast(text_offset)) - @as(isize, @intCast(landing_pad_pos)) - 8,
             8,
         )));
-        const list_ptr = makeListPointer(list_offset, 2, @as(u32, @intCast(text.len + 1)));
+        const list_ptr = try makeListPointer(list_offset, 2, @as(u32, @intCast(text.len + 1)));
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], list_ptr, .little);
 
         const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
@@ -1872,7 +1888,7 @@ pub const MessageBuilder = struct {
                 @as(isize, @intCast(struct_offset)) - @as(isize, @intCast(pointer_pos)) - 8,
                 8,
             )));
-            const pointer = makeStructPointer(relative_offset, data_words, pointer_words);
+            const pointer = try makeStructPointer(relative_offset, data_words, pointer_words);
             std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], pointer, .little);
 
             return StructBuilder{
@@ -1890,7 +1906,7 @@ pub const MessageBuilder = struct {
         const struct_offset = target_segment.items.len;
         try target_segment.appendNTimes(self.allocator, 0, total_bytes);
 
-        const struct_ptr = makeStructPointer(0, data_words, pointer_words);
+        const struct_ptr = try makeStructPointer(0, data_words, pointer_words);
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], struct_ptr, .little);
 
         const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
@@ -1943,7 +1959,7 @@ pub const MessageBuilder = struct {
                 @as(isize, @intCast(list_offset)) - @as(isize, @intCast(pointer_pos)) - 8,
                 8,
             )));
-            const list_ptr = makeListPointer(rel_offset, element_size, element_count);
+            const list_ptr = try makeListPointer(rel_offset, element_size, element_count);
             std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], list_ptr, .little);
         } else {
             const landing_pos = landing_pad_pos.?;
@@ -1951,7 +1967,7 @@ pub const MessageBuilder = struct {
                 @as(isize, @intCast(list_offset)) - @as(isize, @intCast(landing_pos)) - 8,
                 8,
             )));
-            const list_ptr = makeListPointer(rel_offset, element_size, element_count);
+            const list_ptr = try makeListPointer(rel_offset, element_size, element_count);
             std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
 
             const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
@@ -2000,17 +2016,17 @@ pub const MessageBuilder = struct {
             const elements_offset = target_segment.items.len;
             try target_segment.appendNTimes(self.allocator, 0, total_bytes);
 
-            const tag_word = makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
+            const tag_word = try makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
             std.mem.writeInt(u64, target_segment.items[tag_offset..][0..8], tag_word, .little);
 
             if (pointer_segment_id == landing_segment_id) {
                 const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(tag_offset)) - @as(isize, @intCast(pointer_pos)) - 8, 8)));
-                const list_ptr = makeListPointer(rel_offset, 7, total_words);
+                const list_ptr = try makeListPointer(rel_offset, 7, total_words);
                 std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], list_ptr, .little);
             } else {
                 const landing_pos = landing_pad_pos.?;
                 const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(tag_offset)) - @as(isize, @intCast(landing_pos)) - 8, 8)));
-                const list_ptr = makeListPointer(rel_offset, 7, total_words);
+                const list_ptr = try makeListPointer(rel_offset, 7, total_words);
                 std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
 
                 const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
@@ -2038,7 +2054,7 @@ pub const MessageBuilder = struct {
         const landing_far = makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
         std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
 
-        const tag_word = makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
+        const tag_word = try makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
         std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
 
         const far_ptr = makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);

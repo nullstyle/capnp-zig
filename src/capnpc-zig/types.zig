@@ -40,7 +40,7 @@ fn normalizeIdentifier(allocator: std.mem.Allocator, name: []const u8, capitaliz
         if (c == '_' or c == '$') {
             capitalize_next = true;
             continue;
-        }
+        } else if (!std.ascii.isAlphanumeric(c)) continue;
 
         if (capitalize_next) {
             try result.append(allocator, std.ascii.toUpper(c));

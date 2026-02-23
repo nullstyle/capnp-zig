@@ -109,8 +109,8 @@ pub fn handleBootstrap(
     const bytes = try buildBootstrapReturnFrame(allocator, bootstrap.question_id, export_id);
     defer allocator.free(bytes);
 
-    try send_frame(peer, bytes);
     try note_export_ref(peer, export_id);
+    try send_frame(peer, bytes);
 
     const copy = try allocator.alloc(u8, bytes.len);
     errdefer allocator.free(copy);
@@ -266,7 +266,7 @@ pub fn ResolveOps(comptime PeerType: type) type {
         has_known_promise: *const fn (*PeerType, u32) bool,
         resolve_cap_descriptor: *const fn (*PeerType, protocol.CapDescriptor) anyerror!cap_table.ResolvedCap,
         release_resolved_cap: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!void,
-        alloc_embargo_id: *const fn (*PeerType) u32,
+        alloc_embargo_id: *const fn (*PeerType) anyerror!u32,
         remember_pending_embargo: *const fn (*PeerType, u32, u32) anyerror!void,
         send_disembargo_sender_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
         store_resolved_import: *const fn (*PeerType, u32, ?cap_table.ResolvedCap, ?u32, bool) anyerror!void,
@@ -280,7 +280,7 @@ pub fn handleResolve(
     has_known_promise: *const fn (*PeerType, u32) bool,
     resolve_cap_descriptor: *const fn (*PeerType, protocol.CapDescriptor) anyerror!cap_table.ResolvedCap,
     release_resolved_cap: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!void,
-    alloc_embargo_id: *const fn (*PeerType) u32,
+    alloc_embargo_id: *const fn (*PeerType) anyerror!u32,
     remember_pending_embargo: *const fn (*PeerType, u32, u32) anyerror!void,
     send_disembargo_sender_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
     store_resolved_import: *const fn (*PeerType, u32, ?cap_table.ResolvedCap, ?u32, bool) anyerror!void,
@@ -324,7 +324,7 @@ pub fn handleResolveWithOps(
             if (resolved == .exported or resolved == .promised) {
                 // Exported/promise resolutions require a sender-loopback disembargo handshake
                 // before the resolved import can be considered callable locally.
-                const new_embargo_id = ops.alloc_embargo_id(peer);
+                const new_embargo_id = try ops.alloc_embargo_id(peer);
                 embargo_id = new_embargo_id;
                 embargoed = true;
                 try ops.remember_pending_embargo(peer, new_embargo_id, promise_id);
@@ -453,15 +453,21 @@ pub fn resolveCapDescriptorForPeerFn(
     }.call;
 }
 
-pub fn allocateEmbargoIdForPeer(comptime PeerType: type, peer: *PeerType) u32 {
-    const embargo_id = peer.next_embargo_id;
-    peer.next_embargo_id +%= 1;
-    return embargo_id;
+pub fn allocateEmbargoIdForPeer(comptime PeerType: type, peer: *PeerType) error{EmbargoIdExhausted}!u32 {
+    const start_id = peer.next_embargo_id;
+    while (true) {
+        const embargo_id = peer.next_embargo_id;
+        peer.next_embargo_id +%= 1;
+        if (!peer.pending_embargoes.contains(embargo_id)) {
+            return embargo_id;
+        }
+        if (peer.next_embargo_id == start_id) return error.EmbargoIdExhausted;
+    }
 }
 
-pub fn allocateEmbargoIdForPeerFn(comptime PeerType: type) *const fn (*PeerType) u32 {
+pub fn allocateEmbargoIdForPeerFn(comptime PeerType: type) *const fn (*PeerType) anyerror!u32 {
     return struct {
-        fn call(peer: *PeerType) u32 {
+        fn call(peer: *PeerType) anyerror!u32 {
             return allocateEmbargoIdForPeer(PeerType, peer);
         }
     }.call;

@@ -123,6 +123,15 @@ pub const WorkerPool = struct {
         if (!self.fd_closed.swap(true, .acq_rel)) {
             closeListenFd(self.listen_fd);
         }
+        // Join any worker threads that are still running. Normally run()
+        // joins all threads before returning, but deinit must be safe if
+        // called after shutdown() without a completed run().
+        for (self.workers) |*w| {
+            if (w.thread) |t| {
+                t.join();
+                w.thread = null;
+            }
+        }
         self.allocator.free(self.workers);
     }
 

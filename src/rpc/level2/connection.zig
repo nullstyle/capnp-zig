@@ -223,6 +223,11 @@ pub const Connection = struct {
                     _ = std.posix.system.read(wfds[0], &drain_buf, drain_buf.len);
                     if (self.on_wake) |cb| cb(self);
                 }
+                // POLLNVAL means the fd is invalid — break out of the run loop.
+                if (fds[0].revents & std.posix.POLL.NVAL != 0) {
+                    log.debug("poll NVAL on socket fd, exiting run loop", .{});
+                    break;
+                }
                 // If socket has no data, loop back (might have been woken only).
                 if (fds[0].revents & std.posix.POLL.IN == 0 and
                     fds[0].revents & std.posix.POLL.HUP == 0 and
@@ -307,6 +312,15 @@ pub const Connection = struct {
             if (self.on_message == null or self.on_error == null) break;
 
             const frame = self.framer.popFrame() catch |err| {
+                if (err == error.OutOfMemory) {
+                    // OOM is transient — report the error but leave the
+                    // framer and callbacks intact so the next read can retry.
+                    log.debug("popFrame OOM, will retry on next read", .{});
+                    self.invokeOnError(err);
+                    return;
+                }
+                // Framing errors (InvalidFrame, FrameTooLarge) corrupt the
+                // byte stream — reset the framer and null the callbacks.
                 log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.framer.reset();
                 self.on_message = null;

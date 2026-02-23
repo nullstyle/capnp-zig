@@ -205,8 +205,8 @@ pub const Transport = struct {
     }
 
     /// Enqueue bytes for asynchronous writing by the writer thread.
-    /// Makes an owned copy of `bytes`. Thread-safe — may be called
-    /// from any thread.
+    /// Makes an owned copy of `bytes`. Called from the owner thread.
+    /// The write queue itself is thread-safe via its internal mutex.
     ///
     /// If the writer thread has not been started yet (i.e., before
     /// `startWriter()`), falls back to a synchronous blocking write.
@@ -277,6 +277,7 @@ pub const Transport = struct {
     /// Also closes the write queue so the writer thread will exit.
     /// The owning thread should subsequently call `deinit()`.
     pub fn shutdown(self: *Transport) void {
+        if (self.fd_closed) return;
         self.close_requested.store(true, .release);
         self.write_queue.close();
         sysShutdown(self.fd);

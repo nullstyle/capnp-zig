@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_peer);
 const cap_table = @import("../level0/cap_table.zig");
 const protocol = @import("../level0/protocol.zig");
 
@@ -65,6 +66,7 @@ pub fn recordResolvedAnswer(
 ) !void {
     const resolved_entry = try resolved_answers.getOrPut(question_id);
     if (resolved_entry.found_existing) {
+        log.debug("duplicate resolved answer for question_id={d}, replacing", .{question_id});
         allocator.free(resolved_entry.value_ptr.frame);
     }
     resolved_entry.value_ptr.* = .{ .frame = frame };

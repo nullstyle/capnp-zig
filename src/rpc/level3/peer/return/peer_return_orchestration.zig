@@ -12,6 +12,15 @@ pub fn fetchRemoveQuestionForPeer(
     answer_id: u32,
 ) ?QuestionType {
     const entry = peer.questions.fetchRemove(answer_id) orelse return null;
+
+    // Mirror the shutdown-completion check from Peer.removeQuestion() so that
+    // graceful shutdown can complete when the last in-flight question is answered.
+    if (@hasField(PeerType, "is_shutting_down") and @hasDecl(PeerType, "completeShutdown")) {
+        if (peer.is_shutting_down and peer.questions.count() == 0) {
+            peer.completeShutdown();
+        }
+    }
+
     return entry.value;
 }
 

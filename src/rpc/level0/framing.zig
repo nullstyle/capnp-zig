@@ -2,6 +2,8 @@ const std = @import("std");
 const log = std.log.scoped(.rpc_framing);
 
 pub const Framer = struct {
+    /// Default matches Cap'n Proto reference traversalLimitInWords. Production deployments
+    /// may want to lower this for untrusted peers.
     pub const max_frame_words: usize = 8 * 1024 * 1024;
     pub const max_segment_count: u32 = 512;
 
@@ -39,6 +41,8 @@ pub const Framer = struct {
         self.expected_total = null;
     }
 
+    /// Attempt to extract a complete frame from the buffer.
+    /// On framing error, caller must call `reset()` to discard corrupt data before retrying.
     pub fn popFrame(self: *Framer) !?[]u8 {
         try self.updateExpected();
         const total = self.expected_total orelse return null;

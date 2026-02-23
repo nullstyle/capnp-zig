@@ -541,6 +541,8 @@ pub const Peer = struct {
             self.allocator,
             &self.resolved_answers,
         );
+        // NOTE: deinit_ctx callbacks must NOT access peer maps (loopback_questions,
+        // forwarded_questions, etc.) as they may be deinited after this loop.
         {
             var q_it = self.questions.valueIterator();
             while (q_it.next()) |q| {
@@ -2023,6 +2025,8 @@ pub const Peer = struct {
         if (self.resolved_answers.contains(call.question_id) or
             self.send_results_to_yourself.contains(call.question_id) or
             self.send_results_to_third_party.contains(call.question_id) or
+            self.forwarded_questions.contains(call.question_id) or
+            self.forwarded_tail_questions.contains(call.question_id) or
             try self.hasQueuedPendingQuestionId(call.question_id))
         {
             return error.DuplicateQuestionId;

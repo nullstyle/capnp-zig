@@ -744,6 +744,17 @@ pub const StructGenerator = struct {
                 const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
                 if (struct_name) |name| {
+                    if (slot.default_value) |default_value| {
+                        if (self.defaultPointerBytes(default_value)) |bytes| {
+                            const const_name = try self.defaultConstName(field.name);
+                            defer self.allocator.free(const_name);
+                            try writer.print("                if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                            try writer.print("                    const value = try {s}();\n", .{const_name});
+                            try writer.print("                    return {s}.Reader{{ ._reader = value }};\n", .{name});
+                            try writer.writeAll("                }\n");
+                            _ = bytes;
+                        }
+                    }
                     try writer.print("                const value = try self._reader.readStruct({});\n", .{slot.offset});
                     try writer.print("                return {s}.Reader{{ ._reader = value }};\n", .{name});
                 } else {
@@ -751,10 +762,124 @@ pub const StructGenerator = struct {
                 }
             },
             .list => |list_info| {
+                if (list_info.element_type.* == .@"enum") {
+                    const enum_info = list_info.element_type.@"enum";
+                    const enum_name = try self.enumTypeName(enum_info.type_id);
+                    defer if (enum_name) |name| self.allocator.free(name);
+                    if (slot.default_value) |default_value| {
+                        if (self.defaultPointerBytes(default_value)) |bytes| {
+                            const const_name = try self.defaultConstName(field.name);
+                            defer self.allocator.free(const_name);
+                            if (enum_name) |name| {
+                                try writer.print("                if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                                try writer.print("                    const raw = try {s}();\n", .{const_name});
+                                try writer.print("                    return EnumListReader({s}){{ ._list = raw }};\n", .{name});
+                                try writer.writeAll("                }\n");
+                            } else {
+                                try writer.print("                if (self._reader.isPointerNull({})) return try {s}();\n", .{
+                                    slot.offset,
+                                    const_name,
+                                });
+                            }
+                            _ = bytes;
+                        }
+                    }
+                    if (enum_name) |name| {
+                        try writer.print("                const raw = try self._reader.readU16List({});\n", .{slot.offset});
+                        try writer.print("                return EnumListReader({s}){{ ._list = raw }};\n", .{name});
+                    } else {
+                        try writer.print("                return try self._reader.readU16List({});\n", .{slot.offset});
+                    }
+                    try writer.writeAll("            }\n\n");
+                    return;
+                }
+                if (list_info.element_type.* == .data) {
+                    if (slot.default_value) |default_value| {
+                        if (self.defaultPointerBytes(default_value)) |bytes| {
+                            const const_name = try self.defaultConstName(field.name);
+                            defer self.allocator.free(const_name);
+                            try writer.print("                if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                            try writer.print("                    const raw = try {s}();\n", .{const_name});
+                            try writer.writeAll("                    return DataListReader{ ._list = raw };\n");
+                            try writer.writeAll("                }\n");
+                            _ = bytes;
+                        }
+                    }
+                    try writer.print("                const raw = try self._reader.readPointerList({});\n", .{slot.offset});
+                    try writer.writeAll("                return DataListReader{ ._list = raw };\n");
+                    try writer.writeAll("            }\n\n");
+                    return;
+                }
+                if (list_info.element_type.* == .interface) {
+                    if (slot.default_value) |default_value| {
+                        if (self.defaultPointerBytes(default_value)) |bytes| {
+                            const const_name = try self.defaultConstName(field.name);
+                            defer self.allocator.free(const_name);
+                            try writer.print("                if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                            try writer.print("                    const raw = try {s}();\n", .{const_name});
+                            try writer.writeAll("                    return CapabilityListReader{ ._list = raw };\n");
+                            try writer.writeAll("                }\n");
+                            _ = bytes;
+                        }
+                    }
+                    try writer.print("                const raw = try self._reader.readPointerList({});\n", .{slot.offset});
+                    try writer.writeAll("                return CapabilityListReader{ ._list = raw };\n");
+                    try writer.writeAll("            }\n\n");
+                    return;
+                }
+                if (list_info.element_type.* == .@"struct") {
+                    const si = list_info.element_type.@"struct";
+                    const struct_name = try self.structTypeName(si.type_id);
+                    defer if (struct_name) |name| self.allocator.free(name);
+                    if (slot.default_value) |default_value| {
+                        if (self.defaultPointerBytes(default_value)) |bytes| {
+                            const const_name = try self.defaultConstName(field.name);
+                            defer self.allocator.free(const_name);
+                            if (struct_name) |name| {
+                                try writer.print("                if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                                try writer.print("                    const raw = try {s}();\n", .{const_name});
+                                try writer.print("                    return StructListReader({s}){{ ._list = raw }};\n", .{name});
+                                try writer.writeAll("                }\n");
+                            } else {
+                                try writer.print("                if (self._reader.isPointerNull({})) return try {s}();\n", .{
+                                    slot.offset,
+                                    const_name,
+                                });
+                            }
+                            _ = bytes;
+                        }
+                    }
+                    if (struct_name) |name| {
+                        try writer.print("                const raw = try self._reader.readStructList({});\n", .{slot.offset});
+                        try writer.print("                return StructListReader({s}){{ ._list = raw }};\n", .{name});
+                    } else {
+                        try writer.print("                return try self._reader.readStructList({});\n", .{slot.offset});
+                    }
+                    try writer.writeAll("            }\n\n");
+                    return;
+                }
+
+                // Primitive list types (void, bool, integers, floats, text)
                 const method = self.listReaderMethod(list_info.element_type.*);
+                if (slot.default_value) |default_value| {
+                    if (self.defaultPointerBytes(default_value)) |bytes| {
+                        const const_name = try self.defaultConstName(field.name);
+                        defer self.allocator.free(const_name);
+                        try writer.print("                if (self._reader.isPointerNull({})) return try {s}();\n", .{ slot.offset, const_name });
+                        _ = bytes;
+                    }
+                }
                 try writer.print("                return try self._reader.{s}({});\n", .{ method, slot.offset });
             },
             .any_pointer => {
+                if (slot.default_value) |default_value| {
+                    if (self.defaultPointerBytes(default_value)) |bytes| {
+                        const const_name = try self.defaultConstName(field.name);
+                        defer self.allocator.free(const_name);
+                        try writer.print("                if (self._reader.isPointerNull({})) return try {s}();\n", .{ slot.offset, const_name });
+                        _ = bytes;
+                    }
+                }
                 try writer.print("                return try self._reader.readAnyPointer({});\n", .{slot.offset});
             },
             .interface => {
@@ -1230,6 +1355,7 @@ pub const StructGenerator = struct {
         return node.display_name[prefix_len..];
     }
 
+    // PascalCase normalization prevents keyword collision (all Zig keywords are lowercase)
     fn allocTypeName(self: *StructGenerator, node: *const schema.Node) ![]u8 {
         const name = self.getSimpleName(node);
         return types.identToZigTypeName(self.allocator, name);

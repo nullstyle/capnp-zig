@@ -20,6 +20,7 @@ test "encode outbound cap table rewrites capability pointers" {
 
     try any.setCapability(.{ .id = 42 });
 
+    try caps.noteExport(42);
     try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
 
     const bytes = try builder.finish();
@@ -125,6 +126,9 @@ test "encode outbound cap table rewrites capability pointer lists in struct payl
     try workers.setCapability(1, .{ .id = 41 });
     try workers.setCapability(2, .{ .id = 42 });
 
+    try caps.noteExport(40);
+    try caps.noteExport(41);
+    try caps.noteExport(42);
     _ = try cap_table.encodeReturnPayloadCaps(&caps, &ret, null, null, null);
 
     const bytes = try builder.finish();
@@ -179,6 +183,10 @@ test "encode outbound cap table rewrites large capability lists in struct payloa
         try workers.setCapability(i, .{ .id = 1000 + i });
     }
 
+    i = 0;
+    while (i < width) : (i += 1) {
+        try caps.noteExport(1000 + i);
+    }
     _ = try cap_table.encodeReturnPayloadCaps(&caps, &ret, null, null, null);
 
     const bytes = try builder.finish();
@@ -335,6 +343,7 @@ fn encodeCallPayloadCapsOomImpl(allocator: std.mem.Allocator) !void {
 
     try any.setCapability(.{ .id = 7 });
 
+    try caps.noteExport(7);
     try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -360,6 +369,9 @@ test "encodeCallPayloadCaps rolls back applied callbacks when a later callback f
     var ptrs = try any.initPointerList(2);
     try ptrs.setCapability(0, .{ .id = 40 });
     try ptrs.setCapability(1, .{ .id = 41 });
+
+    try caps.noteExport(40);
+    try caps.noteExport(41);
 
     const Ctx = struct {
         calls: usize = 0,
