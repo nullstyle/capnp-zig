@@ -174,6 +174,7 @@ pub fn createListenSocket(addr: net.IpAddress, backlog: u31, reuseport: bool) !s
 
 /// Accept one connection from a listening socket. Blocks until a client connects.
 fn sysAccept(listen_fd: std.posix.fd_t) !std.posix.fd_t {
+    if (builtin.target.os.tag == .windows) return error.AcceptFailed;
     while (true) {
         const rc = std.posix.system.accept(listen_fd, null, null);
         switch (std.posix.errno(rc)) {
@@ -192,6 +193,7 @@ fn sysAccept(listen_fd: std.posix.fd_t) !std.posix.fd_t {
 
 /// Close a file descriptor, tolerating EINTR and EBADF.
 pub fn closeFd(fd: std.posix.fd_t) void {
+    if (builtin.target.os.tag == .windows) return;
     switch (std.posix.errno(std.posix.system.close(fd))) {
         .SUCCESS, .INTR, .BADF => {},
         else => {},
@@ -233,6 +235,7 @@ pub fn ipAddressToSockaddr(addr: net.IpAddress) struct { addr: SockAddrStorage, 
 
 /// Retrieve the bound address of a socket (resolves ephemeral ports).
 fn getSockAddress(fd: std.posix.fd_t) !net.IpAddress {
+    if (builtin.target.os.tag == .windows) return error.GetSockNameFailed;
     var storage: std.posix.sockaddr.storage = undefined;
     var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
     if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&storage), &addr_len)) != .SUCCESS) {
@@ -317,6 +320,7 @@ test "createConnection errdefer frees Connection when Transport.init fails" {
 
 /// Create a UNIX socketpair for testing.
 fn createSocketPair() ![2]std.posix.fd_t {
+    if (builtin.target.os.tag == .windows) return error.SocketPairFailed;
     var fds: [2]std.posix.fd_t = undefined;
     if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
         return error.SocketPairFailed;

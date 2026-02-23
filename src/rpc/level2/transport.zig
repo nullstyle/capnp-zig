@@ -66,6 +66,7 @@ pub const Transport = struct {
         notify_fds: [2]std.posix.fd_t = .{ invalid_fd, invalid_fd },
 
         fn initNotify(self: *WriteQueue) !void {
+            if (builtin.target.os.tag == .windows) return error.SystemResources;
             var fds: [2]std.posix.fd_t = undefined;
             if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
                 return error.SystemResources;
@@ -102,12 +103,15 @@ pub const Transport = struct {
                 return error.OutOfMemory;
             };
             // Signal the writer thread.
-            _ = std.posix.system.write(self.notify_fds[1], &[_]u8{1}, 1);
+            if (builtin.target.os.tag != .windows) {
+                _ = std.posix.system.write(self.notify_fds[1], &[_]u8{1}, 1);
+            }
         }
 
         /// Block until the notification pipe is readable. Returns false on
         /// EOF (pipe closed — queue is shutting down).
         fn waitForSignal(self: *WriteQueue) bool {
+            if (builtin.target.os.tag == .windows) return false;
             var buf: [64]u8 = undefined;
             while (true) {
                 const rc = std.posix.system.read(self.notify_fds[0], &buf, buf.len);
@@ -327,6 +331,7 @@ fn ignoreSigpipe() void {
 
 /// Close a file descriptor, tolerating EINTR and EBADF.
 fn closeFd(fd: std.posix.fd_t) void {
+    if (builtin.target.os.tag == .windows) return;
     switch (std.posix.errno(std.posix.system.close(fd))) {
         .SUCCESS, .INTR, .BADF => {},
         else => {},
@@ -335,6 +340,7 @@ fn closeFd(fd: std.posix.fd_t) void {
 
 /// Blocking write using the raw system call. Returns bytes written.
 fn sysWrite(fd: std.posix.fd_t, bytes: []const u8) Transport.WriteError!usize {
+    if (builtin.target.os.tag == .windows) return error.Unexpected;
     if (bytes.len == 0) return 0;
     const max_count: usize = switch (builtin.target.os.tag) {
         .linux => 0x7ffff000,
@@ -356,11 +362,13 @@ fn sysWrite(fd: std.posix.fd_t, bytes: []const u8) Transport.WriteError!usize {
 
 /// Shut down a socket for both reading and writing. Ignores errors.
 fn sysShutdown(fd: std.posix.fd_t) void {
+    if (builtin.target.os.tag == .windows) return;
     _ = std.posix.system.shutdown(fd, std.posix.SHUT.RDWR);
 }
 
 /// Create a UNIX socketpair for testing.
 fn createSocketPair() !struct { [2]std.posix.fd_t } {
+    if (builtin.target.os.tag == .windows) return error.SocketPairFailed;
     var fds: [2]std.posix.fd_t = undefined;
     if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
         return error.SocketPairFailed;
