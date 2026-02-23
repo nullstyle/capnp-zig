@@ -1,13 +1,20 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnp = @import("capnpc-zig");
 const alloc_counter = @import("alloc_counter.zig");
 
 const message = capnp.message;
 
 fn readMonotonicNs() u64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
+    if (builtin.os.tag == .linux) {
+        var ts: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+        return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
+    } else {
+        var ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+        return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
+    }
 }
 
 const Config = struct {
