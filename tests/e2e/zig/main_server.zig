@@ -60,7 +60,6 @@ const App = struct {
     }
 };
 
-
 const GameEntity = struct {
     id: u64,
     kind: game_world.EntityKind,

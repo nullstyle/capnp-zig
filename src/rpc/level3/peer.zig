@@ -1641,7 +1641,11 @@ pub const Peer = struct {
                 try self.sendUnimplementedForFrame(frame);
                 return;
             }
-            log.warn("failed to decode inbound frame (len={}): {}", .{ frame.len, err });
+            if (err == error.OutOfMemory) {
+                log.debug("failed to decode inbound frame (len={}): {}", .{ frame.len, err });
+            } else {
+                log.warn("failed to decode inbound frame (len={}): {}", .{ frame.len, err });
+            }
             self.sendAbortForError(err);
             return err;
         };
@@ -1669,7 +1673,11 @@ pub const Peer = struct {
             Peer.handleThirdPartyAnswer,
             Peer.sendUnimplemented,
         ) catch |err| {
-            log.warn("dispatch error for {s}: {}", .{ @tagName(decoded.tag), err });
+            if (err == error.OutOfMemory) {
+                log.debug("dispatch error for {s}: {}", .{ @tagName(decoded.tag), err });
+            } else {
+                log.warn("dispatch error for {s}: {}", .{ @tagName(decoded.tag), err });
+            }
             return err;
         };
     }

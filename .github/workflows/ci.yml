@@ -47,7 +47,7 @@ jobs:
       - uses: jdx/mise-action@v3
 
       - name: Check formatting
-        run: zig fmt --check --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/
+        run: zig fmt --check --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/
 
   bench-check:
     name: Benchmark regression check

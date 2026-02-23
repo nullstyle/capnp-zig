@@ -177,6 +177,11 @@ pub const WorkerPool = struct {
             return;
         }
 
+        // Shutdown the listen socket first. On Linux, close() from another
+        // thread does NOT wake a thread blocked in accept() on the same fd.
+        // shutdown(RDWR) delivers an event that unblocks accept().
+        _ = std.posix.system.shutdown(fd, std.posix.SHUT.RDWR);
+
         // Treat BADF as already-closed and ignore EINTR per POSIX close rules.
         switch (std.posix.errno(std.posix.system.close(fd))) {
             .SUCCESS, .INTR, .BADF => {},

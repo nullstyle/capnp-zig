@@ -373,7 +373,7 @@ fn createSocketPair() !struct { [2]std.posix.fd_t } {
     if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
         return error.SocketPairFailed;
     }
-    return .{ fds };
+    return .{fds};
 }
 
 test "transport init and deinit" {
