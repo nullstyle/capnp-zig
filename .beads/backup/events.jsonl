@@ -1,1 +1,20 @@
 {"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:28Z","event_type":"created","id":1,"issue_id":"capnpc-zig-4kz","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:31Z","event_type":"created","id":2,"issue_id":"capnpc-zig-v1m","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:31Z","event_type":"created","id":3,"issue_id":"capnpc-zig-7le","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:31Z","event_type":"created","id":4,"issue_id":"capnpc-zig-08t","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:31Z","event_type":"created","id":5,"issue_id":"capnpc-zig-tvc","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:31Z","event_type":"created","id":6,"issue_id":"capnpc-zig-69w","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:32Z","event_type":"created","id":7,"issue_id":"capnpc-zig-5gx","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:32Z","event_type":"created","id":8,"issue_id":"capnpc-zig-kd3","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:32Z","event_type":"created","id":9,"issue_id":"capnpc-zig-ac9","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:32Z","event_type":"created","id":10,"issue_id":"capnpc-zig-hwj","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:32Z","event_type":"created","id":11,"issue_id":"capnpc-zig-0yg","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:14:32Z","event_type":"created","id":12,"issue_id":"capnpc-zig-oqj","new_value":"","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:25:03Z","event_type":"closed","id":13,"issue_id":"capnpc-zig-ac9","new_value":"Documented purpose of mod_core.zig and lib_core.zig (WASM/no-POSIX subset, not cruft)","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:28:04Z","event_type":"closed","id":14,"issue_id":"capnpc-zig-08t","new_value":"Unified type-to-string mapping via primitiveTypeToZig() in types.zig","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:28:04Z","event_type":"closed","id":15,"issue_id":"capnpc-zig-tvc","new_value":"Extracted MethodCallParams struct for interface method generation","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:28:04Z","event_type":"closed","id":16,"issue_id":"capnpc-zig-oqj","new_value":"Extracted writeByteArray() with parameterized prefix/suffix","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:28:58Z","event_type":"closed","id":17,"issue_id":"capnpc-zig-5gx","new_value":"Extracted cap pointer encoding/decoding to shared module","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:29:01Z","event_type":"closed","id":18,"issue_id":"capnpc-zig-kd3","new_value":"Extracted pointer traversal logic to shared module","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:29:27Z","event_type":"closed","id":19,"issue_id":"capnpc-zig-4kz","new_value":"Extracted stripNullTerminator utility, replaced 4 call sites","old_value":""}
+{"actor":"Scott Fleckenstein","comment":null,"created_at":"2026-03-02T18:29:30Z","event_type":"closed","id":20,"issue_id":"capnpc-zig-69w","new_value":"Refactored AnyPointerBuilder list init into generic helper","old_value":""}
