@@ -2,6 +2,13 @@ const std = @import("std");
 const cap_table = @import("../level0/cap_table.zig");
 const message = @import("../../serialization/message.zig");
 const protocol = @import("../level0/protocol.zig");
+const cap_pointer = @import("../common/cap_pointer.zig");
+
+const buildMessageView = cap_pointer.buildMessageView;
+const writePointerWord = cap_pointer.writePointerWord;
+const max_traversal_depth = cap_pointer.max_traversal_depth;
+const capabilityPointerWord = cap_pointer.makeCapabilityPointer;
+const decodeCapabilityPointerWord = cap_pointer.decodeCapabilityPointer;
 
 pub fn clonePayloadWithRemappedCaps(
     comptime PeerType: type,
@@ -56,8 +63,6 @@ fn remapPayloadCapabilities(
         max_traversal_depth,
     );
 }
-
-const max_traversal_depth: u32 = 64;
 
 fn remapPayloadCapabilityPointer(
     comptime PeerType: type,
@@ -173,7 +178,7 @@ fn remapPayloadCapabilityPointer(
         3 => {
             const cap_index = try decodeCapabilityPointerWord(resolved.pointer_word);
             if (try map_inbound_cap(peer, inbound_caps, cap_index)) |cap_id| {
-                const cap_word = try capabilityPointerWord(cap_id);
+                const cap_word = capabilityPointerWord(cap_id);
                 try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, cap_word);
             } else {
                 try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, 0);
@@ -183,47 +188,9 @@ fn remapPayloadCapabilityPointer(
     }
 }
 
-fn capabilityPointerWord(cap_id: u32) !u64 {
-    return 3 | (@as(u64, cap_id) << 32);
-}
-
-fn decodeCapabilityPointerWord(pointer_word: u64) !u32 {
-    if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
-    if (((pointer_word >> 2) & 0x3FFFFFFF) != 0) return error.InvalidPointer;
-    return @as(u32, @truncate(pointer_word >> 32));
-}
-
-fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_pos: usize, word: u64) !void {
-    if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
-    var segment = &builder.segments.items[segment_id];
-    if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-    std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], word, .little);
-}
-
-fn buildMessageView(
-    allocator: std.mem.Allocator,
-    builder: *message.MessageBuilder,
-) !struct { msg: message.Message, segments: []const []const u8 } {
-    const segment_count = builder.segments.items.len;
-    const segments = try allocator.alloc([]const u8, segment_count);
-    errdefer allocator.free(segments);
-
-    for (builder.segments.items, 0..) |segment, idx| {
-        segments[idx] = segment.items;
-    }
-
-    const msg = message.Message{
-        .allocator = allocator,
-        .segments = segments,
-        .segments_owned = false,
-        .backing_data = null,
-    };
-    return .{ .msg = msg, .segments = segments };
-}
-
 test "payload_remap capability pointer roundtrip" {
     const cap_id: u32 = 12345;
-    const word = try capabilityPointerWord(cap_id);
+    const word = capabilityPointerWord(cap_id);
     try std.testing.expectEqual(@as(u64, 3 | (@as(u64, cap_id) << 32)), word);
     try std.testing.expectEqual(cap_id, try decodeCapabilityPointerWord(word));
 }
@@ -240,6 +207,6 @@ test "payload_remap decode capability pointer rejects high bits" {
 }
 
 test "payload_remap capability pointer supports full u32 range" {
-    const word = try capabilityPointerWord(std.math.maxInt(u32));
+    const word = capabilityPointerWord(std.math.maxInt(u32));
     try std.testing.expectEqual(std.math.maxInt(u32), try decodeCapabilityPointerWord(word));
 }

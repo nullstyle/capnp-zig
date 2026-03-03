@@ -84,6 +84,29 @@ pub fn normalizeAndEscapeTypeIdentifier(allocator: std.mem.Allocator, name: []co
     return escapeZigKeyword(allocator, normalized);
 }
 
+/// Map a primitive Cap'n Proto type to its Zig type string.
+/// Returns null for compound types (list, enum, struct, interface, any_pointer)
+/// that require context-specific resolution.
+pub fn primitiveTypeToZig(typ: schema.Type) ?[]const u8 {
+    return switch (typ) {
+        .void => "void",
+        .bool => "bool",
+        .int8 => "i8",
+        .int16 => "i16",
+        .int32 => "i32",
+        .int64 => "i64",
+        .uint8 => "u8",
+        .uint16 => "u16",
+        .uint32 => "u32",
+        .uint64 => "u64",
+        .float32 => "f32",
+        .float64 => "f64",
+        .text => "[]const u8",
+        .data => "[]const u8",
+        else => null,
+    };
+}
+
 /// Generate Zig type code for Cap'n Proto types
 pub const TypeGenerator = struct {
     allocator: std.mem.Allocator,
@@ -117,26 +140,14 @@ pub const TypeGenerator = struct {
 
     /// Convert Cap'n Proto type to Zig type string
     pub fn typeToZig(self: *TypeGenerator, typ: schema.Type) ![]const u8 {
+        if (primitiveTypeToZig(typ)) |prim| return try self.allocator.dupe(u8, prim);
         return switch (typ) {
-            .void => try self.allocator.dupe(u8, "void"),
-            .bool => try self.allocator.dupe(u8, "bool"),
-            .int8 => try self.allocator.dupe(u8, "i8"),
-            .int16 => try self.allocator.dupe(u8, "i16"),
-            .int32 => try self.allocator.dupe(u8, "i32"),
-            .int64 => try self.allocator.dupe(u8, "i64"),
-            .uint8 => try self.allocator.dupe(u8, "u8"),
-            .uint16 => try self.allocator.dupe(u8, "u16"),
-            .uint32 => try self.allocator.dupe(u8, "u32"),
-            .uint64 => try self.allocator.dupe(u8, "u64"),
-            .float32 => try self.allocator.dupe(u8, "f32"),
-            .float64 => try self.allocator.dupe(u8, "f64"),
-            .text => try self.allocator.dupe(u8, "[]const u8"),
-            .data => try self.allocator.dupe(u8, "[]const u8"),
             .list => |list_info| try self.listReaderType(list_info.element_type.*),
             .@"enum" => |enum_info| try self.enumTypeName(enum_info.type_id),
             .@"struct" => |struct_info| try self.structReaderTypeName(struct_info.type_id),
             .interface => try self.allocator.dupe(u8, "message.Capability"),
             .any_pointer => try self.allocator.dupe(u8, "message.AnyPointerReader"),
+            else => unreachable,
         };
     }
 

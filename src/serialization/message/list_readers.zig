@@ -126,10 +126,7 @@ pub fn define(
 
                 const list_segment = self.message.segments[list.segment_id];
                 const text_data = list_segment[list.content_offset .. list.content_offset + list.element_count];
-                if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
-                    return text_data[0 .. text_data.len - 1];
-                }
-                return text_data;
+                return bounds.stripNullTerminator(text_data);
             }
 
             /// Like `get`, but returns `error.InvalidUtf8` when the text
@@ -265,10 +262,7 @@ pub fn define(
                 try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
 
                 const text_data = self.message.segments[list.segment_id][list.content_offset .. list.content_offset + list.element_count];
-                if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
-                    return text_data[0 .. text_data.len - 1];
-                }
-                return text_data;
+                return bounds.stripNullTerminator(text_data);
             }
 
             /// Like `getText`, but returns `error.InvalidUtf8` when the text

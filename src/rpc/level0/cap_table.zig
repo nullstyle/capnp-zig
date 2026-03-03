@@ -4,6 +4,13 @@ const message = @import("../../serialization/message.zig");
 const bounds = @import("../../serialization/message/bounds.zig");
 const protocol = @import("protocol.zig");
 const promise_pipeline = @import("../common/promise_pipeline.zig");
+const cap_pointer = @import("../common/cap_pointer.zig");
+
+const makeCapabilityPointer = cap_pointer.makeCapabilityPointer;
+const decodeCapabilityPointer = cap_pointer.decodeCapabilityPointer;
+const buildMessageView = cap_pointer.buildMessageView;
+const writePointerWord = cap_pointer.writePointerWord;
+const max_traversal_depth = cap_pointer.max_traversal_depth;
 
 /// An exported (local) capability referenced by ID.
 pub const ExportCap = struct {
@@ -410,42 +417,6 @@ const OutboundCapTable = struct {
     }
 };
 
-fn makeCapabilityPointer(cap_id: u32) u64 {
-    return 3 | (@as(u64, cap_id) << 32);
-}
-
-fn decodeCapabilityPointer(pointer_word: u64) !u32 {
-    if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
-    if (((pointer_word >> 2) & 0x3FFFFFFF) != 0) return error.InvalidPointer;
-    return @as(u32, @truncate(pointer_word >> 32));
-}
-
-fn buildMessageView(
-    allocator: std.mem.Allocator,
-    builder: *message.MessageBuilder,
-) !struct { msg: message.Message, segments: []const []const u8 } {
-    const segment_count = builder.segments.items.len;
-    const segs = try allocator.alloc([]const u8, segment_count);
-    errdefer allocator.free(segs);
-    for (builder.segments.items, 0..) |segment, i| {
-        segs[i] = segment.items;
-    }
-    const msg = message.Message{
-        .allocator = allocator,
-        .segments = segs,
-        .segments_owned = false,
-        .backing_data = null,
-    };
-    return .{ .msg = msg, .segments = segs };
-}
-
-fn writePointerWord(builder: *message.MessageBuilder, segment_id: u32, pointer_pos: usize, word: u64) !void {
-    if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
-    var segment = &builder.segments.items[segment_id];
-    if (pointer_pos + 8 > segment.items.len) return error.OutOfBounds;
-    std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], word, .little);
-}
-
 fn classifyCap(table: *CapTable, cap_id: u32) error{UnknownCapabilityId}!protocol.CapDescriptorTag {
     if (table.receiver_answers.contains(cap_id)) return .receiverAnswer;
     if (table.promised_exports.contains(cap_id)) return .senderPromise;
@@ -467,8 +438,6 @@ fn anyPointerReaderFromBuilder(
         .pointer_word = pointer_word,
     };
 }
-
-const max_traversal_depth: u32 = 64;
 
 fn collectCapsFromPointer(
     outbound: *OutboundCapTable,

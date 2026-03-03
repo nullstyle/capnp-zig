@@ -1092,29 +1092,55 @@ pub const Generator = struct {
         }
     }
 
-    /// Generate a Client call method. Uses `interface_id_expr` for own methods or ancestor_name for inherited.
-    fn generateClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, writer: anytype) !void {
-        const zig_name = try self.toZigIdentifier(method.name);
-        defer self.allocator.free(zig_name);
-        const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
-        defer self.allocator.free(call_name);
+    /// Resolved names for a method call, shared across Client, StreamClient, and PipelinedClient generation.
+    const MethodCallParams = struct {
+        zig_name: []const u8,
+        call_name: []const u8,
+        method_prefix: []const u8,
+        dot: []const u8,
+        iface_id: []const u8,
+        iface_id_owned: bool,
+    };
 
-        const method_prefix = ancestor_name orelse "";
-        const dot = if (ancestor_name != null) "." else "";
+    fn resolveMethodCallParams(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8) !MethodCallParams {
+        const zig_name = try self.toZigIdentifier(method.name);
+        errdefer self.allocator.free(zig_name);
+        const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
+        errdefer self.allocator.free(call_name);
+
         const iface_id = if (interface_id_expr) |expr| expr else blk: {
             const temp = try std.fmt.allocPrint(self.allocator, "{s}.interface_id", .{ancestor_name.?});
             break :blk temp;
         };
-        const iface_id_owned = interface_id_expr == null;
-        defer if (iface_id_owned) self.allocator.free(iface_id);
+
+        return .{
+            .zig_name = zig_name,
+            .call_name = call_name,
+            .method_prefix = ancestor_name orelse "",
+            .dot = if (ancestor_name != null) "." else "",
+            .iface_id = iface_id,
+            .iface_id_owned = interface_id_expr == null,
+        };
+    }
+
+    fn freeMethodCallParams(self: *Generator, params: MethodCallParams) void {
+        self.allocator.free(params.zig_name);
+        self.allocator.free(params.call_name);
+        if (params.iface_id_owned) self.allocator.free(params.iface_id);
+    }
+
+    /// Generate a Client call method. Uses `interface_id_expr` for own methods or ancestor_name for inherited.
+    fn generateClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, writer: anytype) !void {
+        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
+        defer self.freeMethodCallParams(p);
 
         try writer.print("        pub fn {s}(self: *Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
-            call_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+            p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
-        try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ method_prefix, dot, zig_name });
+        try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
         try writer.print("            return self.peer.sendCall(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
-            iface_id, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+            p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.writeAll("        }\n\n");
     }
@@ -1163,31 +1189,20 @@ pub const Generator = struct {
         ancestor_name: ?[]const u8,
         writer: anytype,
     ) !void {
-        const zig_name = try self.toZigIdentifier(method.name);
-        defer self.allocator.free(zig_name);
-        const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
-        defer self.allocator.free(call_name);
-
-        const method_prefix = ancestor_name orelse "";
-        const dot = if (ancestor_name != null) "." else "";
-        const iface_id = if (interface_id_expr) |expr| expr else blk: {
-            const temp = try std.fmt.allocPrint(self.allocator, "{s}.interface_id", .{ancestor_name.?});
-            break :blk temp;
-        };
-        const iface_id_owned = interface_id_expr == null;
-        defer if (iface_id_owned) self.allocator.free(iface_id);
+        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
+        defer self.freeMethodCallParams(p);
 
         if (method.isStreaming()) {
             // Fire-and-forget streaming call
             try writer.print("        pub fn {s}(self: *StreamClient, build_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn) !void {{\n", .{
-                call_name, method_prefix, dot, zig_name,
+                p.call_name, p.method_prefix, p.dot, p.zig_name,
             });
             try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
-            try writer.print("            const ctx = try self.client.peer.allocator.create({s}{s}{s}.StreamCallContext);\n", .{ method_prefix, dot, zig_name });
+            try writer.print("            const ctx = try self.client.peer.allocator.create({s}{s}{s}.StreamCallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
             try writer.writeAll("            ctx.* = .{ .stream = &self.stream, .build_ctx = build_ctx, .build = build };\n");
             try writer.writeAll("            self.stream.noteCallSent();\n");
             try writer.print("            _ = self.client.peer.sendCall(self.client.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.streamCallBuild, {s}{s}{s}.streamCallReturn) catch |err| {{\n", .{
-                iface_id, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+                p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });
             try writer.writeAll("                self.stream.in_flight -= 1;\n");
             try writer.writeAll("                self.client.peer.allocator.destroy(ctx);\n");
@@ -1197,9 +1212,9 @@ pub const Generator = struct {
         } else {
             // Pass-through to inner Client
             try writer.print("        pub fn {s}(self: *StreamClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
-                call_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+                p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });
-            try writer.print("            return self.client.{s}(user_ctx, build, on_return);\n", .{call_name});
+            try writer.print("            return self.client.{s}(user_ctx, build, on_return);\n", .{p.call_name});
             try writer.writeAll("        }\n\n");
         }
     }
@@ -1254,27 +1269,16 @@ pub const Generator = struct {
 
     /// Generate a PipelinedClient call method.
     fn generatePipelinedClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, writer: anytype) !void {
-        const zig_name = try self.toZigIdentifier(method.name);
-        defer self.allocator.free(zig_name);
-        const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
-        defer self.allocator.free(call_name);
-
-        const method_prefix = ancestor_name orelse "";
-        const dot = if (ancestor_name != null) "." else "";
-        const iface_id = if (interface_id_expr) |expr| expr else blk: {
-            const temp = try std.fmt.allocPrint(self.allocator, "{s}.interface_id", .{ancestor_name.?});
-            break :blk temp;
-        };
-        const iface_id_owned = interface_id_expr == null;
-        defer if (iface_id_owned) self.allocator.free(iface_id);
+        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
+        defer self.freeMethodCallParams(p);
 
         try writer.print("        pub fn {s}(self: *PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
-            call_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+            p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
-        try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ method_prefix, dot, zig_name });
+        try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
         try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
-            iface_id, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+            p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.writeAll("        }\n\n");
     }
@@ -1565,21 +1569,8 @@ pub const Generator = struct {
     }
 
     fn typeNameForConst(self: *Generator, typ: schema.Type) ![]const u8 {
+        if (types.primitiveTypeToZig(typ)) |prim| return try self.allocator.dupe(u8, prim);
         return switch (typ) {
-            .void => try self.allocator.dupe(u8, "void"),
-            .bool => try self.allocator.dupe(u8, "bool"),
-            .int8 => try self.allocator.dupe(u8, "i8"),
-            .int16 => try self.allocator.dupe(u8, "i16"),
-            .int32 => try self.allocator.dupe(u8, "i32"),
-            .int64 => try self.allocator.dupe(u8, "i64"),
-            .uint8 => try self.allocator.dupe(u8, "u8"),
-            .uint16 => try self.allocator.dupe(u8, "u16"),
-            .uint32 => try self.allocator.dupe(u8, "u32"),
-            .uint64 => try self.allocator.dupe(u8, "u64"),
-            .float32 => try self.allocator.dupe(u8, "f32"),
-            .float64 => try self.allocator.dupe(u8, "f64"),
-            .text => try self.allocator.dupe(u8, "[]const u8"),
-            .data => try self.allocator.dupe(u8, "[]const u8"),
             .list => |list_info| try self.listReaderTypeString(list_info.element_type.*),
             .@"enum" => |enum_info| blk: {
                 if (self.getNode(enum_info.type_id)) |node| {
@@ -1598,6 +1589,7 @@ pub const Generator = struct {
             },
             .interface => try self.allocator.dupe(u8, "message.Capability"),
             .any_pointer => try self.allocator.dupe(u8, "message.AnyPointerReader"),
+            else => unreachable,
         };
     }
 
@@ -1888,24 +1880,22 @@ pub const Generator = struct {
         return try self.allocTypeDeclName(node);
     }
 
-    fn writeByteArrayInitializer(self: *Generator, writer: anytype, data: []const u8) !void {
+    fn writeByteArray(self: *Generator, writer: anytype, prefix: []const u8, data: []const u8, suffix: []const u8) !void {
         _ = self;
-        try writer.writeAll("[_]u8{");
+        try writer.writeAll(prefix);
         for (data, 0..) |byte, i| {
             if (i != 0) try writer.writeAll(", ");
             try writer.print("0x{X:0>2}", .{byte});
         }
-        try writer.writeAll("}");
+        try writer.writeAll(suffix);
+    }
+
+    fn writeByteArrayInitializer(self: *Generator, writer: anytype, data: []const u8) !void {
+        return self.writeByteArray(writer, "[_]u8{", data, "}");
     }
 
     fn writeByteArrayLiteral(self: *Generator, writer: anytype, data: []const u8) !void {
-        _ = self;
-        try writer.writeAll("&[_]u8{");
-        for (data, 0..) |byte, i| {
-            if (i != 0) try writer.writeAll(", ");
-            try writer.print("0x{X:0>2}", .{byte});
-        }
-        try writer.writeAll("}");
+        return self.writeByteArray(writer, "&[_]u8{", data, "}");
     }
 };
 

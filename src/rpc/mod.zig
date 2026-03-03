@@ -6,6 +6,7 @@ pub const host_peer = @import("integration/host_peer.zig");
 pub const protocol = @import("level0/protocol.zig");
 pub const cap_table = @import("level0/cap_table.zig");
 pub const promise_pipeline = @import("common/promise_pipeline.zig");
+pub const cap_pointer = @import("common/cap_pointer.zig");
 pub const peer = @import("level3/peer.zig");
 pub const stream_state = @import("level2/stream_state.zig");
 pub const worker_pool = @import("integration/worker_pool.zig");

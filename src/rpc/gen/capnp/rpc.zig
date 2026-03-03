@@ -127,7 +127,6 @@ pub const Message = struct {
             const value = try self._reader.readStruct(0);
             return ThirdPartyAnswer.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -277,7 +276,6 @@ pub const Message = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return ThirdPartyAnswer.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -312,7 +310,6 @@ pub const Bootstrap = struct {
         pub fn getDeprecatedObjectId(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -355,7 +352,6 @@ pub const Bootstrap = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
-
     };
 };
 
@@ -400,7 +396,6 @@ pub const Call = struct {
             pub fn getThirdParty(self: @This()) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(2);
             }
-
         };
 
         pub const Builder = struct {
@@ -411,20 +406,19 @@ pub const Call = struct {
             }
 
             pub fn setCaller(self: *@This(), value: void) !void {
-            self._builder.writeU16(6, 0);
+                self._builder.writeU16(6, 0);
                 _ = value;
             }
 
             pub fn setYourself(self: *@This(), value: void) !void {
-            self._builder.writeU16(6, 1);
+                self._builder.writeU16(6, 1);
                 _ = value;
             }
 
             pub fn initThirdParty(self: *@This()) !message.AnyPointerBuilder {
-            self._builder.writeU16(6, 2);
+                self._builder.writeU16(6, 2);
                 return try self._builder.getAnyPointer(2);
             }
-
         };
     };
 
@@ -483,7 +477,6 @@ pub const Call = struct {
         pub fn getOnlyPromisePipeline(self: Reader) !bool {
             return self._reader.readBool(16, 2) != false;
         }
-
     };
 
     pub const Builder = struct {
@@ -538,7 +531,6 @@ pub const Call = struct {
         pub fn setOnlyPromisePipeline(self: *Builder, value: bool) !void {
             self._builder.writeBool(16, 2, value != false);
         }
-
     };
 };
 
@@ -620,7 +612,6 @@ pub const Return = struct {
         pub fn getNoFinishNeeded(self: Reader) !bool {
             return self._reader.readBool(4, 1) != false;
         }
-
     };
 
     pub const Builder = struct {
@@ -704,7 +695,6 @@ pub const Return = struct {
         pub fn setNoFinishNeeded(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 1, value != false);
         }
-
     };
 };
 
@@ -743,7 +733,6 @@ pub const Finish = struct {
         pub fn getRequireEarlyCancellationWorkaround(self: Reader) !bool {
             return self._reader.readBool(4, 1) != true;
         }
-
     };
 
     pub const Builder = struct {
@@ -770,7 +759,6 @@ pub const Finish = struct {
         pub fn setRequireEarlyCancellationWorkaround(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 1, value != true);
         }
-
     };
 };
 
@@ -820,7 +808,6 @@ pub const Resolve = struct {
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -851,7 +838,6 @@ pub const Resolve = struct {
             const builder = try self._builder.initStruct(0, 1, 3);
             return Exception.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -888,7 +874,6 @@ pub const Release = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -912,7 +897,6 @@ pub const Release = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(4, stored);
         }
-
     };
 };
 
@@ -960,7 +944,6 @@ pub const Disembargo = struct {
                 if (self._reader.isPointerNull(1)) return &[_]u8{};
                 return try self._reader.readData(1);
             }
-
         };
 
         pub const Builder = struct {
@@ -971,22 +954,21 @@ pub const Disembargo = struct {
             }
 
             pub fn setSenderLoopback(self: *@This(), value: u32) !void {
-            self._builder.writeU16(4, 0);
+                self._builder.writeU16(4, 0);
                 const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
                 self._builder.writeU32(0, stored);
             }
 
             pub fn setReceiverLoopback(self: *@This(), value: u32) !void {
-            self._builder.writeU16(4, 1);
+                self._builder.writeU16(4, 1);
                 const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
                 self._builder.writeU32(0, stored);
             }
 
             pub fn setAccept(self: *@This(), value: []const u8) !void {
-            self._builder.writeU16(4, 2);
+                self._builder.writeU16(4, 2);
                 try self._builder.writeData(1, value);
             }
-
         };
     };
 
@@ -1010,7 +992,6 @@ pub const Disembargo = struct {
         pub fn getContext(self: Reader) Context.Reader {
             return .{ ._reader = self._reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1033,7 +1014,6 @@ pub const Disembargo = struct {
         pub fn getContext(self: *Builder) Context.Builder {
             return .{ ._builder = self._builder };
         }
-
     };
 };
 
@@ -1073,7 +1053,6 @@ pub const Provide = struct {
         pub fn getRecipient(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -1121,7 +1100,6 @@ pub const Provide = struct {
             var any = try self._builder.getAnyPointer(1);
             try any.setCapability(cap);
         }
-
     };
 };
 
@@ -1161,7 +1139,6 @@ pub const Accept = struct {
             if (self._reader.isPointerNull(1)) return &[_]u8{};
             return try self._reader.readData(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -1208,7 +1185,6 @@ pub const Accept = struct {
         pub fn setEmbargo(self: *Builder, value: []const u8) !void {
             try self._builder.writeData(1, value);
         }
-
     };
 };
 
@@ -1243,7 +1219,6 @@ pub const ThirdPartyAnswer = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -1286,7 +1261,6 @@ pub const ThirdPartyAnswer = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -1326,7 +1300,6 @@ pub const Join = struct {
         pub fn getKeyPart(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -1374,7 +1347,6 @@ pub const Join = struct {
             var any = try self._builder.getAnyPointer(1);
             try any.setCapability(cap);
         }
-
     };
 };
 
@@ -1419,7 +1391,6 @@ pub const MessageTarget = struct {
             const value = try self._reader.readStruct(0);
             return PromisedAnswer.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1445,7 +1416,6 @@ pub const MessageTarget = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return PromisedAnswer.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1479,7 +1449,6 @@ pub const Payload = struct {
             const raw = try self._reader.readStructList(1);
             return StructListReader(CapDescriptor){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -1522,7 +1491,6 @@ pub const Payload = struct {
             const raw = try self._builder.writeStructList(1, element_count, 1, 1);
             return StructListBuilder(CapDescriptor){ ._list = raw };
         }
-
     };
 };
 
@@ -1599,7 +1567,6 @@ pub const CapDescriptor = struct {
             const value = raw ^ @as(u8, 255);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -1653,7 +1620,6 @@ pub const CapDescriptor = struct {
             const stored = @as(u8, @bitCast(value)) ^ @as(u8, 255);
             self._builder.writeU8(2, stored);
         }
-
     };
 };
 
@@ -1689,7 +1655,6 @@ pub const PromisedAnswer = struct {
             const raw = try self._reader.readStructList(0);
             return StructListReader(Op){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -1713,7 +1678,6 @@ pub const PromisedAnswer = struct {
             const raw = try self._builder.writeStructList(0, element_count, 1, 0);
             return StructListBuilder(Op){ ._list = raw };
         }
-
     };
 };
 
@@ -1758,7 +1722,6 @@ pub const Op = struct {
             const value = raw ^ @as(u16, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -1783,7 +1746,6 @@ pub const Op = struct {
             const stored = @as(u16, @bitCast(value)) ^ @as(u16, 0);
             self._builder.writeU16(2, stored);
         }
-
     };
 };
 
@@ -1818,7 +1780,6 @@ pub const ThirdPartyCapDescriptor = struct {
             const value = raw ^ @as(u32, 0);
             return value;
         }
-
     };
 
     pub const Builder = struct {
@@ -1861,7 +1822,6 @@ pub const ThirdPartyCapDescriptor = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
             self._builder.writeU32(0, stored);
         }
-
     };
 };
 
@@ -1916,7 +1876,6 @@ pub const Exception = struct {
             const raw = try self._reader.readStructList(2);
             return StructListReader(Detail){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -1958,7 +1917,6 @@ pub const Exception = struct {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
             return StructListBuilder(Detail){ ._list = raw };
         }
-
     };
 };
 
@@ -2001,7 +1959,6 @@ pub const Detail = struct {
             if (self._reader.isPointerNull(0)) return &[_]u8{};
             return try self._reader.readData(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -2024,7 +1981,5 @@ pub const Detail = struct {
         pub fn setData(self: *Builder, value: []const u8) !void {
             try self._builder.writeData(0, value);
         }
-
     };
 };
-

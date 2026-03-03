@@ -1295,14 +1295,19 @@ pub const StructReader = struct {
         };
     }
 
-    pub fn readI8List(self: StructReader, pointer_index: usize) !I8ListReader {
-        const list = try self.readU8List(pointer_index);
+    /// Cast a list reader to a different element type with the same layout.
+    /// Used to reinterpret unsigned list readers as signed/float variants.
+    fn castListReader(comptime Target: type, source: anytype) Target {
         return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
+            .message = source.message,
+            .segment_id = source.segment_id,
+            .elements_offset = source.elements_offset,
+            .element_count = source.element_count,
         };
+    }
+
+    pub fn readI8List(self: StructReader, pointer_index: usize) !I8ListReader {
+        return castListReader(I8ListReader, try self.readU8List(pointer_index));
     }
 
     pub fn readU16List(self: StructReader, pointer_index: usize) !U16ListReader {
@@ -1321,13 +1326,7 @@ pub const StructReader = struct {
     }
 
     pub fn readI16List(self: StructReader, pointer_index: usize) !I16ListReader {
-        const list = try self.readU16List(pointer_index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
+        return castListReader(I16ListReader, try self.readU16List(pointer_index));
     }
 
     pub fn readU32List(self: StructReader, pointer_index: usize) !U32ListReader {
@@ -1346,23 +1345,11 @@ pub const StructReader = struct {
     }
 
     pub fn readI32List(self: StructReader, pointer_index: usize) !I32ListReader {
-        const list = try self.readU32List(pointer_index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
+        return castListReader(I32ListReader, try self.readU32List(pointer_index));
     }
 
     pub fn readF32List(self: StructReader, pointer_index: usize) !F32ListReader {
-        const list = try self.readU32List(pointer_index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
+        return castListReader(F32ListReader, try self.readU32List(pointer_index));
     }
 
     pub fn readU64List(self: StructReader, pointer_index: usize) !U64ListReader {
@@ -1381,23 +1368,11 @@ pub const StructReader = struct {
     }
 
     pub fn readI64List(self: StructReader, pointer_index: usize) !I64ListReader {
-        const list = try self.readU64List(pointer_index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
+        return castListReader(I64ListReader, try self.readU64List(pointer_index));
     }
 
     pub fn readF64List(self: StructReader, pointer_index: usize) !F64ListReader {
-        const list = try self.readU64List(pointer_index);
-        return .{
-            .message = list.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-        };
+        return castListReader(F64ListReader, try self.readU64List(pointer_index));
     }
 
     pub fn readBoolList(self: StructReader, pointer_index: usize) !BoolListReader {
@@ -1449,10 +1424,7 @@ pub const StructReader = struct {
         // Text includes null terminator, so return without it
         const segment = self.message.segments[list.segment_id];
         const text_data = segment[list.content_offset .. list.content_offset + list.element_count];
-        if (text_data.len > 0 and text_data[text_data.len - 1] == 0) {
-            return text_data[0 .. text_data.len - 1];
-        }
-        return text_data;
+        return bounds.stripNullTerminator(text_data);
     }
 
     /// Read a text field with strict UTF-8 validation.
@@ -1566,84 +1538,49 @@ pub const AnyPointerBuilder = struct {
         };
     }
 
-    fn initList(self: AnyPointerBuilder, element_size: u3, element_count: u32) !struct { offset: usize } {
+    fn initTypedList(self: AnyPointerBuilder, comptime T: type, element_size: u3, element_count: u32) !T {
         const offset = try any_pointer_builder_module.initList(self.builder, self.segment_id, self.pointer_pos, element_size, element_count);
-        return .{ .offset = offset };
+        if (T == VoidListBuilder) {
+            return .{ .element_count = element_count };
+        }
+        return .{
+            .builder = self.builder,
+            .segment_id = self.segment_id,
+            .elements_offset = offset,
+            .element_count = element_count,
+        };
     }
 
     pub fn initVoidList(self: AnyPointerBuilder, element_count: u32) !VoidListBuilder {
-        _ = try self.initList(0, element_count);
-        return .{ .element_count = element_count };
+        return self.initTypedList(VoidListBuilder, 0, element_count);
     }
 
     pub fn initU8List(self: AnyPointerBuilder, element_count: u32) !U8ListBuilder {
-        const info = try self.initList(2, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(U8ListBuilder, 2, element_count);
     }
 
     pub fn initU16List(self: AnyPointerBuilder, element_count: u32) !U16ListBuilder {
-        const info = try self.initList(3, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(U16ListBuilder, 3, element_count);
     }
 
     pub fn initU32List(self: AnyPointerBuilder, element_count: u32) !U32ListBuilder {
-        const info = try self.initList(4, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(U32ListBuilder, 4, element_count);
     }
 
     pub fn initU64List(self: AnyPointerBuilder, element_count: u32) !U64ListBuilder {
-        const info = try self.initList(5, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(U64ListBuilder, 5, element_count);
     }
 
     pub fn initBoolList(self: AnyPointerBuilder, element_count: u32) !BoolListBuilder {
-        const info = try self.initList(1, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(BoolListBuilder, 1, element_count);
     }
 
     pub fn initF32List(self: AnyPointerBuilder, element_count: u32) !F32ListBuilder {
-        const info = try self.initList(4, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(F32ListBuilder, 4, element_count);
     }
 
     pub fn initF64List(self: AnyPointerBuilder, element_count: u32) !F64ListBuilder {
-        const info = try self.initList(5, element_count);
-        return .{
-            .builder = self.builder,
-            .segment_id = self.segment_id,
-            .elements_offset = info.offset,
-            .element_count = element_count,
-        };
+        return self.initTypedList(F64ListBuilder, 5, element_count);
     }
 };
 

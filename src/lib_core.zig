@@ -1,4 +1,6 @@
-// Core library exports without the xev transport/runtime surface.
+// Core library exports without the POSIX transport/runtime surface.
+// Used by the wasm32-freestanding build target and test fixture tooling.
+// See lib.zig for the full export surface including RPC transport.
 pub const message = @import("serialization/message.zig");
 pub const schema = @import("serialization/schema.zig");
 pub const reader = @import("serialization/reader.zig");

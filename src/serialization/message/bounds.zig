@@ -45,6 +45,17 @@ pub inline fn checkListContentBounds(
     if (end > segment.len) return error.OutOfBounds;
 }
 
+/// Strip a trailing null terminator from Cap'n Proto text data.
+///
+/// Cap'n Proto text fields include a NUL byte in the wire encoding;
+/// callers want the content without it.
+pub inline fn stripNullTerminator(text: []const u8) []const u8 {
+    if (text.len > 0 and text[text.len - 1] == 0) {
+        return text[0 .. text.len - 1];
+    }
+    return text;
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
