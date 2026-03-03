@@ -1,0 +1,63 @@
+# capnpc-zig
+
+> Pure Zig Cap'n Proto stack: wire-format serialization, schema-driven codegen (`capnpc-zig`), and a layered RPC runtime.
+
+This file is optimized for LLM orientation. Use module-level `llms.txt` files first, then follow key docs for contracts and edge cases.
+
+## Key Concepts
+
+- Architecture is layered: wire format (`src/serialization/`) -> schema/request parsing -> code generation (`src/capnpc-zig/`) -> RPC runtime (`src/rpc/`).
+- Two library export surfaces exist: [src/lib.zig](src/lib.zig) (full) and [src/lib_core.zig](src/lib_core.zig) (reduced core/runtime surface).
+- [src/main.zig](src/main.zig) is a Cap'n Proto plugin entrypoint that reads `CodeGeneratorRequest` from stdin and writes generated `.zig` files.
+- Codegen behavior can be tuned via option tokens and `CAPNPC_ZIG_*` environment variables (manifest emission, API profile, shape sharing).
+- RPC tests are cumulative by level (`test-rpc-level0` -> `test-rpc-level3`) and build on the lower-level protocol machinery.
+- RPC and WASM host ABI are still evolving; check stability and contracts docs before changing runtime behavior.
+
+## Structure
+
+- [src/](src/): Library/plugin implementation (serialization, codegen, RPC, wasm ABI).
+- [tests/](tests/): Serialization, RPC, wasm ABI, interop, fixtures, and e2e harnesses.
+- [docs/](docs/): Architecture, API contracts, stability, integration guides, and audits.
+- [examples/](examples/): Ping-pong and kvstore examples plus generated schema usage patterns.
+- [bench/](bench/): Benchmarks and regression baselines.
+- [vendor/ext/](vendor/ext/): Vendored Cap'n Proto and go-capnp references used by fixture/interop paths.
+
+## Modules
+
+- [src/llms.txt](src/llms.txt): Source-tree orientation and entrypoints.
+- [src/serialization/llms.txt](src/serialization/llms.txt): Wire format, validation, and schema request parsing internals.
+- [src/rpc/llms.txt](src/rpc/llms.txt): RPC layering and peer orchestration internals.
+- [tests/llms.txt](tests/llms.txt): Test topology, fixture sources, and target commands.
+
+## Key Files
+
+- [README.md](README.md): Project overview and high-level architecture.
+- [build.zig](build.zig): Canonical build graph and all test target wiring.
+- [Justfile](Justfile): Contributor command wrappers (`build`, `test*`, `fmt`, `check`, e2e shortcuts).
+- [docs/architecture.md](docs/architecture.md): Layer boundaries, data flows, and API surface map.
+- [docs/stability.md](docs/stability.md): Module stability classes and upgrade risk.
+- [docs/api_contracts.md](docs/api_contracts.md): Threading, ownership/lifetime, and error-handling contracts.
+- [docs/build-integration.md](docs/build-integration.md): Canonical `build.zig` integration for code generation.
+- [docs/getting-started-serialization.md](docs/getting-started-serialization.md): Serialization-first onboarding.
+- [docs/getting-started-rpc.md](docs/getting-started-rpc.md): RPC runtime onboarding and callback model.
+
+## Development
+
+- Build: `just build`
+- Release build: `just release`
+- Full tests: `just test`
+- Serialization tests: `just test-serialization`
+- RPC tests: `just test-rpc` or `just test-rpc-level0..3`
+- Format: `just fmt`
+- Compile-check only: `just check`
+- RPC schema sync/check helpers: `just src/rpc/check-rpc`, `just src/rpc/sync-rpc`
+
+## Optional
+
+- [docs/audit-2026-02-22.md](docs/audit-2026-02-22.md): Latest broad audit and open risk items.
+- [docs/rpc_runtime_design.md](docs/rpc_runtime_design.md): Runtime threading and transport model details.
+- [docs/rpc-capnp-integration-plan.md](docs/rpc-capnp-integration-plan.md): Generated RPC schema integration plan.
+- [docs/wasm_host_abi.md](docs/wasm_host_abi.md): Host ABI contract and expected host responsibilities.
+- [docs/large_schema_dedup_assessment.md](docs/large_schema_dedup_assessment.md): Large-schema/codegen scaling controls.
+- [examples/rpc_pingpong.zig](examples/rpc_pingpong.zig): Minimal end-to-end RPC example.
+- [examples/kvstore/README.md](examples/kvstore/README.md): Richer service example with persistence/notifications.

@@ -1,0 +1,44 @@
+# serialization
+
+> Cap'n Proto wire-format runtime plus schema request decoding and schema-aware validation/canonicalization.
+
+## Key Concepts
+
+- [message.zig](message.zig) is the central runtime: message framing, pointer resolution, packing/unpacking, and zero-copy readers/builders.
+- Raw traversal is permissive by design; validation/canonicalization utilities are available for untrusted or schema-constrained inputs.
+- Non-strict read/write behaviors support schema evolution; strict behaviors are used when protocol invariants must be enforced.
+- Non-zero defaults and discriminants use encoded representations, which affects correctness when adding/changing schema defaults.
+- Generated code depends on typed helper abstractions in `message/` and schema model/types in this directory.
+
+## Structure
+
+- [message.zig](message.zig): Main API surface and re-exports for message internals.
+- [message/](message/): Bounds checks, struct/list helpers, any-pointer access, pointer cloning, typed list utilities.
+- [reader.zig](reader.zig): Framed/packed stream readers and convenience adapters.
+- [request_reader.zig](request_reader.zig): `CodeGeneratorRequest` parsing and deep-free logic.
+- [schema.zig](schema.zig): In-memory schema node/type/value representation.
+- [schema_validation.zig](schema_validation.zig): Validation and canonicalization pipeline.
+
+## Key Files
+
+- [message/bounds.zig](message/bounds.zig): Shared bounds-check primitives.
+- [message/struct_builder.zig](message/struct_builder.zig): Struct writes, pointer writes, and cross-segment behavior.
+- [message/list_readers.zig](message/list_readers.zig): Typed and generic list readers.
+- [message/list_builders.zig](message/list_builders.zig): Typed and generic list builders.
+- [message/any_pointer_reader.zig](message/any_pointer_reader.zig): Type-erased pointer reads.
+- [message/any_pointer_builder.zig](message/any_pointer_builder.zig): Type-erased pointer writes.
+- [message/clone_any_pointer.zig](message/clone_any_pointer.zig): Deep pointer cloning across message contexts.
+- [message/typed_list_helpers.zig](message/typed_list_helpers.zig): Helpers consumed by generated Reader/Builder APIs.
+- [schema_validation.zig](schema_validation.zig): Validation/canonicalization entrypoints.
+
+## Development
+
+- Message-focused tests: `zig build test-message`
+- Full serialization suite: `zig build test-serialization --summary all` or `just test-serialization`
+- Codegen suite (depends on serialization primitives): `zig build test-codegen`
+- Full regression: `just test`
+
+## Optional
+
+- [../capnpc-zig/struct_gen.zig](../capnpc-zig/struct_gen.zig): Generator code that consumes serialization helpers.
+- [../../tests/serialization/](../../tests/serialization/): Serialization/codegen/interop tests for this module.

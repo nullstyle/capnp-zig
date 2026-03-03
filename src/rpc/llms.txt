@@ -1,0 +1,52 @@
+# rpc
+
+> Cap'n Proto RPC runtime implementation, from wire framing and capability tables to peer orchestration and integration helpers.
+
+## Key Concepts
+
+- Runtime is layered by responsibility: `level0` (wire/protocol/cap table), `level1` (promises/pipelining), `level2` (transport/runtime plumbing), `level3` (full peer semantics).
+- `level2` in this repository means connection/transport runtime plumbing, not the Cap'n Proto spec's persistent-capability level naming.
+- `common/` contains promised-answer helpers shared across levels and should be treated as cross-level internals.
+- `level3/peer.zig` is the composition root; `level3/peer/*` splits behavior by domain (`call`, `return`, `forward`, `provide`, `third_party`, lifecycle/control).
+- `integration/` provides host-facing adapters (`HostPeer`, `WorkerPool`) and is intentionally separate from protocol-core code.
+- Source `.capnp` files live in [capnp/](capnp/); generated Zig bindings live in [gen/capnp/](gen/capnp/).
+
+## Structure
+
+- [mod.zig](mod.zig): Full RPC module exports (including integration-facing types).
+- [mod_core.zig](mod_core.zig): Reduced core export surface.
+- [level0/](level0/): Framing, protocol readers/builders, capability table primitives.
+- [level1/](level1/): Promised-answer transforms and return-send helper internals.
+- [common/](common/): Shared promise/pipeline support helpers.
+- [level2/](level2/): Transport, stream state, listener/runtime, and connection loop.
+- [level3/](level3/): Top-level peer and payload remap logic.
+- [level3/peer/](level3/peer/): Peer orchestration split by domain.
+- [integration/](integration/): Host-neutral peer wrapper and worker pool.
+- [capnp/](capnp/): RPC schema source files.
+- [gen/capnp/](gen/capnp/): Generated schema bindings used by protocol helpers.
+
+## Key Files
+
+- [level3/peer.zig](level3/peer.zig): Primary `Peer` API and state transitions.
+- [level3/peer/peer_control.zig](level3/peer/peer_control.zig): Control-path handlers (`finish`, `resolve`, embargo, provide/accept/join).
+- [level3/peer/call/peer_call_orchestration.zig](level3/peer/call/peer_call_orchestration.zig): Inbound/outbound call orchestration.
+- [level3/peer/return/peer_return_orchestration.zig](level3/peer/return/peer_return_orchestration.zig): Return lifecycle and table cleanup.
+- [level3/payload_remap.zig](level3/payload_remap.zig): Capability descriptor remapping for forwarding.
+- [level0/protocol.zig](level0/protocol.zig): Typed RPC message readers/builders.
+- [level0/cap_table.zig](level0/cap_table.zig): Import/export tracking and refcounted capability tables.
+- [level2/connection.zig](level2/connection.zig): Framed connection loop between transport and peer callbacks.
+- [integration/host_peer.zig](integration/host_peer.zig): Host-facing frame pump adapter.
+- [integration/worker_pool.zig](integration/worker_pool.zig): Shared-listener worker pool wiring.
+
+## Development
+
+- From repo root: `just test-rpc-level0`, `just test-rpc-level1`, `just test-rpc-level2`, `just test-rpc-level3`, or `just test-rpc`.
+- From this directory: `just gen-rpc` to regenerate schema bindings (requires `../../zig-out/bin/capnpc-zig` and `capnpc`).
+- From this directory: `just check-rpc` to verify schema sync, `just sync-rpc` to update local schema copies from vendor.
+- After peer/control edits, run at least `test-rpc-level3` because higher levels include lower-level checks.
+
+## Optional
+
+- [level1/README.md](level1/README.md): Notes on promise/pipelining helper intent.
+- [../../docs/rpc_runtime_design.md](../../docs/rpc_runtime_design.md): Runtime threading and transport design.
+- [../../docs/rpc-capnp-integration-plan.md](../../docs/rpc-capnp-integration-plan.md): Status of generated-vs-manual protocol integration.

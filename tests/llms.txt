@@ -1,0 +1,51 @@
+# tests
+
+> Test topology for serialization, RPC levels, wasm ABI, fixtures, and optional cross-language e2e interoperability.
+
+## Key Concepts
+
+- [../build.zig](../build.zig) defines canonical test steps; [../Justfile](../Justfile) provides contributor-friendly wrappers.
+- `zig build test` runs serialization, RPC, and wasm host ABI groups.
+- RPC levels are cumulative by design: level1 includes level0, level2 includes level1+0, level3 includes level2+1+0.
+- Fixture-heavy suites rely on vendored Cap'n Proto assets and optional external tooling (`capnp`, Python/pycapnp) for full coverage.
+- `tests/e2e/` is an optional interop harness across Zig/C++/Go/Rust/Python implementations.
+
+## Structure
+
+- [serialization/](serialization/): Message, codegen, schema-validation, integration, interop, and fixture suites.
+- [rpc/level0/](rpc/level0/): Framing/protocol/cap-table/release-failure tests.
+- [rpc/level1/](rpc/level1/): Promise/pipelining tests layered on level0.
+- [rpc/level2/](rpc/level2/): Transport/runtime plumbing tests layered on level1.
+- [rpc/level3/](rpc/level3/): Advanced peer semantics tests layered on level2.
+- [rpc/support/](rpc/support/): Shared fixture tooling.
+- [capnp_testdata/](capnp_testdata/): Official-style Cap'n Proto schema/fixture data.
+- [interop/](interop/): Cross-language fixture generation/verification helpers.
+- [test_schemas/](test_schemas/): `.capnp` fixtures used by codegen/integration tests.
+- [golden/](golden/): Golden generated Zig output snapshots.
+- [e2e/](e2e/): Multi-language e2e harness (optional in many local workflows).
+
+## Key Files
+
+- [../build.zig](../build.zig): Authoritative test graph and level dependencies.
+- [../Justfile](../Justfile): Main entrypoints (`just test*`, e2e wrappers).
+- [serialization/codegen_golden_test.zig](serialization/codegen_golden_test.zig): Snapshot codegen assertions against [golden/](golden/).
+- [serialization/capnp_testdata_test.zig](serialization/capnp_testdata_test.zig): Official fixture validation.
+- [serialization/capnp_test_vendor_test.zig](serialization/capnp_test_vendor_test.zig): Vendor fixture integration checks.
+- [serialization/interop_test.zig](serialization/interop_test.zig): Validates committed interop fixtures.
+- [serialization/interop_roundtrip_test.zig](serialization/interop_roundtrip_test.zig): Python-assisted roundtrip and random fixtures.
+- [wasm_host_abi_test.zig](wasm_host_abi_test.zig): Host ABI behavior tests with RPC fixture helpers.
+- [rpc/support/rpc_fixture_tool.zig](rpc/support/rpc_fixture_tool.zig): Shared fixture generation utility.
+
+## Development
+
+- Full suite: `just test` or `zig build test --summary all`
+- Serialization: `just test-serialization` or `zig build test-serialization --summary all`
+- RPC aggregate: `just test-rpc` or `zig build test-rpc --summary all`
+- RPC levels: `just test-rpc-level0`, `just test-rpc-level1`, `just test-rpc-level2`, `just test-rpc-level3`
+- Focused suites: `zig build test-message`, `zig build test-codegen`, `zig build test-integration`, `zig build test-interop`, `zig build test-real-world`, `zig build test-union`, `zig build test-capnp-testdata`, `zig build test-capnp-test-vendor`, `zig build test-schema-validation`
+
+## Optional
+
+- [e2e/README.md](e2e/README.md): E2E model, supported languages, and execution modes.
+- [e2e/Justfile](e2e/Justfile): E2E targets and filters.
+- [e2e/run_tests.sh](e2e/run_tests.sh): Compatibility wrapper script for E2E execution.

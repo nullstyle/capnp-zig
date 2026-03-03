@@ -1,0 +1,48 @@
+# src
+
+> Main source tree for capnpc-zig: serialization runtime, schema/request handling, code generation plugin, RPC runtime, and wasm host ABI.
+
+## Key Concepts
+
+- [lib.zig](lib.zig) is the full public surface; [lib_core.zig](lib_core.zig) is a reduced variant that uses `rpc/mod_core.zig`.
+- [main.zig](main.zig) is the `capnpc-zig` plugin executable: stdin request parsing, generator setup, and output file emission.
+- Codegen supports API profile selection and optional shape sharing for structurally equivalent generated types.
+- Serialization internals are intentionally reusable by both generated code and runtime modules.
+- WASM host ABI exposes C-style exports and a global error retrieval path (`capnp_error_take`) for host integrations.
+
+## Structure
+
+- [lib.zig](lib.zig): Full library exports.
+- [lib_core.zig](lib_core.zig): Core exports without full runtime surface.
+- [main.zig](main.zig): Compiler plugin entrypoint.
+- [serialization/](serialization/): Wire format, readers/builders, schema model, request parsing, validation/canonicalization.
+- [capnpc-zig/](capnpc-zig/): Code generation driver and emitters.
+- [rpc/](rpc/): Layered RPC runtime and integration helpers.
+- [wasm/](wasm/): Host ABI and generated example schema module.
+
+## Key Files
+
+- [serialization/message.zig](serialization/message.zig): Core wire-format implementation and message traversal/building.
+- [serialization/request_reader.zig](serialization/request_reader.zig): `CodeGeneratorRequest` parser and cleanup helpers.
+- [serialization/schema_validation.zig](serialization/schema_validation.zig): Schema-aware validation/canonicalization.
+- [capnpc-zig/generator.zig](capnpc-zig/generator.zig): File-level codegen orchestration.
+- [capnpc-zig/struct_gen.zig](capnpc-zig/struct_gen.zig): Reader/Builder emission for structs, unions, and groups.
+- [capnpc-zig/types.zig](capnpc-zig/types.zig): Type/name mapping and Zig keyword handling.
+- [rpc/mod.zig](rpc/mod.zig): Full RPC exports.
+- [rpc/mod_core.zig](rpc/mod_core.zig): Core RPC exports used by `lib_core`.
+- [wasm/capnp_host_abi.zig](wasm/capnp_host_abi.zig): Host ABI entrypoints for frame/peer lifecycle.
+
+## Development
+
+- Build plugin/library: `just build`
+- Run full tests: `just test`
+- Run serialization suite: `just test-serialization`
+- Run RPC suite: `just test-rpc`
+- Focus codegen tests: `zig build test-codegen`
+- Format source and tests: `just fmt`
+
+## Optional
+
+- [serialization/llms.txt](serialization/llms.txt): Deep serialization-specific orientation.
+- [rpc/llms.txt](rpc/llms.txt): Deep RPC runtime orientation.
+- [../docs/build-integration.md](../docs/build-integration.md): How to wire the plugin into downstream builds.
