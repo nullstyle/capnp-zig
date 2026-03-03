@@ -17,3 +17,7 @@ examples/kvstore/go-client/kvstore-client
 test_*
 e2e_runner
 .tmp/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
