@@ -58,7 +58,7 @@ fn runGeneratedHarness(
     const root_arg = try std.fmt.allocPrint(allocator, "-Mroot={s}", .{harness_path});
     defer allocator.free(root_arg);
 
-    var zig_argv = std.ArrayList([]const u8){};
+    var zig_argv = std.ArrayList([]const u8).empty;
     defer zig_argv.deinit(allocator);
     try zig_argv.append(allocator, "zig");
     try zig_argv.append(allocator, "test");

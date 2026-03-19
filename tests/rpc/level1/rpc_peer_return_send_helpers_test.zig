@@ -115,7 +115,7 @@ test "peer_return_send_helpers noteOutboundReturnCapRefsForPeer tracks sender re
         fn init(allocator: std.mem.Allocator) @This() {
             return .{
                 .allocator = allocator,
-                .noted = std.ArrayList(u32){},
+                .noted = std.ArrayList(u32).empty,
             };
         }
 

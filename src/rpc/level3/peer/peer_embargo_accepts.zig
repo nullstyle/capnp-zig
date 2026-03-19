@@ -31,7 +31,7 @@ pub fn queueEmbargoedAccept(
         const key = try allocator.dupe(u8, embargo);
         errdefer allocator.free(key);
 
-        var pending = std.ArrayList(PendingAcceptType){};
+        var pending = std.ArrayList(PendingAcceptType).empty;
         errdefer pending.deinit(allocator);
         try pending.append(allocator, .{
             .answer_id = answer_id,
@@ -335,8 +335,8 @@ test "peer_embargo_accepts release routes to provided target and exception for m
         fn init(allocator: std.mem.Allocator) @This() {
             return .{
                 .allocator = allocator,
-                .provided = std.ArrayList(SentResult){},
-                .exceptions = std.ArrayList(SentException){},
+                .provided = std.ArrayList(SentResult).empty,
+                .exceptions = std.ArrayList(SentException).empty,
             };
         }
 
@@ -437,7 +437,7 @@ test "peer_embargo_accepts release converts provided-send errors to return excep
         fn init(allocator: std.mem.Allocator) @This() {
             return .{
                 .allocator = allocator,
-                .exceptions = std.ArrayList(SentException){},
+                .exceptions = std.ArrayList(SentException).empty,
             };
         }
 
@@ -563,8 +563,8 @@ test "peer_embargo_accepts peer helper factories queue and release through peer 
         .pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(TestPendingAccept)).init(std.testing.allocator),
         .pending_accept_embargo_by_question = std.AutoHashMap(u32, []u8).init(std.testing.allocator),
         .provides_by_question = std.AutoHashMap(u32, ProvideEntry).init(std.testing.allocator),
-        .provided = std.ArrayList(SentProvided){},
-        .exceptions = std.ArrayList(SentException){},
+        .provided = std.ArrayList(SentProvided).empty,
+        .exceptions = std.ArrayList(SentException).empty,
     };
     defer peer.deinit();
 

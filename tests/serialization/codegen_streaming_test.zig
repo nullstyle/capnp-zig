@@ -16,6 +16,13 @@ fn expectNotContains(haystack: []const u8, needle: []const u8) !void {
     }
 }
 
+fn requirePath(path: []const u8) !void {
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
 test "Codegen emits streaming method types and handlers" {
     const allocator = std.testing.allocator;
 
@@ -156,6 +163,8 @@ test "Codegen omits unused annotation-only imports from rpc.capnp" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
+    try requirePath("vendor/ext/capnproto/c++/src");
+
     const schema_path = blk: {
         if (std.Io.Dir.cwd().access(io, "src/rpc/rpc.capnp", .{})) {
             break :blk "src/rpc/rpc.capnp";
@@ -187,7 +196,10 @@ test "Codegen omits unused annotation-only imports from rpc.capnp" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        std.debug.print("capnp compile failed: {s}\n", .{result.stderr});
+        return error.TestUnexpectedResult;
+    }
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

@@ -389,7 +389,7 @@ fn runRandomFixture(use_packed: bool) !void {
         const json_path = try std.fs.path.join(allocator, &.{ tmp_root, json_name });
         defer allocator.free(json_path);
 
-        var argv = std.ArrayList([]const u8){};
+        var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
         try argv.append(allocator, python_path);
         try argv.append(allocator, script_path);

@@ -21,14 +21,14 @@ test "peer_cleanup deinitPendingCallMapOwned releases frames and calls caps dein
 
     var pending_map = std.AutoHashMap(u32, std.ArrayList(Pending)).init(std.testing.allocator);
 
-    var list_a = std.ArrayList(Pending){};
+    var list_a = std.ArrayList(Pending).empty;
     try list_a.append(std.testing.allocator, .{
         .caps = .{ .count = &caps_deinit_count },
         .frame = try std.testing.allocator.alloc(u8, 3),
     });
     try pending_map.put(1, list_a);
 
-    var list_b = std.ArrayList(Pending){};
+    var list_b = std.ArrayList(Pending).empty;
     try list_b.append(std.testing.allocator, .{
         .caps = .{ .count = &caps_deinit_count },
         .frame = try std.testing.allocator.alloc(u8, 4),
@@ -111,7 +111,7 @@ test "peer_cleanup deinitOwnedStringKeyMap and deinitOwnedStringKeyListMap free 
 
     var list_map = std.StringHashMap(std.ArrayList(u32)).init(std.testing.allocator);
     const list_key = try std.testing.allocator.dupe(u8, "list");
-    var values = std.ArrayList(u32){};
+    var values = std.ArrayList(u32).empty;
     try values.append(std.testing.allocator, 1);
     try values.append(std.testing.allocator, 2);
     try list_map.put(list_key, values);

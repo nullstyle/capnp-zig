@@ -14,7 +14,7 @@ pub const Framer = struct {
     pub fn init(allocator: std.mem.Allocator) Framer {
         return .{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8){},
+            .buffer = std.ArrayList(u8).empty,
             .expected_total = null,
         };
     }

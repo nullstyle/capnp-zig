@@ -1052,7 +1052,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -1249,7 +1249,7 @@ test "handleResolvedCall forwards sendResultsTo.yourself when forwarding importe
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -1322,7 +1322,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -1585,7 +1585,7 @@ test "handleReturn adopts thirdPartyAnswer when await arrives first" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -1709,7 +1709,7 @@ test "handleReturn replays buffered thirdPartyAnswer return when await arrives l
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -1823,7 +1823,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2012,7 +2012,7 @@ test "handleFinish forwards mapped tail finish question id" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2201,7 +2201,7 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2304,7 +2304,7 @@ test "forwarded tail finish before forwarded return still emits single finish an
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2385,7 +2385,7 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2507,7 +2507,7 @@ test "promisedAnswer target queues when resolved cap is unresolved promise expor
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2649,7 +2649,7 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2732,7 +2732,7 @@ test "bootstrap promisedAnswer call still resolves after bootstrap export releas
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |frame| allocator.free(frame);
@@ -2900,7 +2900,7 @@ test "handleFrame provide stores provision without immediate return" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -2979,7 +2979,7 @@ test "handleFrame duplicate provide recipient sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3077,7 +3077,7 @@ test "handleFrame accept returns provided capability" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3154,7 +3154,7 @@ test "handleFrame accept unknown provision returns exception" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3221,7 +3221,7 @@ test "handleFrame finish clears stored provide entry" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3320,7 +3320,7 @@ test "handleFrame join returns capability" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3417,7 +3417,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3526,7 +3526,7 @@ test "handleFrame thirdPartyAnswer rejects missing completion" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);
@@ -3570,7 +3570,7 @@ test "handleFrame unknown message tag sends unimplemented" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer {
         for (capture.frames.items) |out_frame| allocator.free(out_frame);

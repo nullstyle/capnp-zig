@@ -89,7 +89,7 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
     // Size-estimation pass: scan packed bytes to calculate exact output size.
     const total_size = try estimateUnpackedSize(packed_bytes);
 
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     try out.ensureTotalCapacity(allocator, total_size);
@@ -200,7 +200,7 @@ inline fn wordHasZeroByte(v: u64) bool {
 fn packPacked(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     if (bytes.len % 8 != 0) return error.InvalidMessageSize;
 
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     var index: usize = 0;
@@ -1599,7 +1599,7 @@ pub const MessageBuilder = struct {
     pub fn init(allocator: std.mem.Allocator) MessageBuilder {
         return .{
             .allocator = allocator,
-            .segments = std.ArrayList(std.ArrayList(u8)){},
+            .segments = std.ArrayList(std.ArrayList(u8)).empty,
         };
     }
 
@@ -1614,7 +1614,7 @@ pub const MessageBuilder = struct {
     fn createSegmentWithCapacity(self: *MessageBuilder, min_capacity: usize) !u32 {
         if (self.segments.items.len > std.math.maxInt(u32)) return error.TooManySegments;
         const id: u32 = @intCast(self.segments.items.len);
-        try self.segments.append(self.allocator, std.ArrayList(u8){});
+        try self.segments.append(self.allocator, std.ArrayList(u8).empty);
         errdefer _ = self.segments.pop();
         if (min_capacity > 0) {
             try self.segments.items[id].ensureTotalCapacity(self.allocator, min_capacity);
@@ -2073,7 +2073,7 @@ pub const MessageBuilder = struct {
     /// header followed by all segment data. The caller must free the returned
     /// slice.
     pub fn toBytes(self: *MessageBuilder) ![]const u8 {
-        var result = std.ArrayList(u8){};
+        var result = std.ArrayList(u8).empty;
         errdefer result.deinit(self.allocator);
 
         // Ensure we have at least one segment
@@ -2133,7 +2133,7 @@ pub const MessageBuilder = struct {
     /// Stream the framed wire format directly to `writer` without intermediate allocation.
     pub fn writeTo(self: *MessageBuilder, writer: anytype) !void {
         if (self.segments.items.len == 0) {
-            try self.segments.append(self.allocator, std.ArrayList(u8){});
+            try self.segments.append(self.allocator, std.ArrayList(u8).empty);
         }
 
         const segment_count_usize = self.segments.items.len;

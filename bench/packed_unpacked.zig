@@ -270,15 +270,8 @@ fn measureAllocationSample(
 }
 
 pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const deinit_status = gpa.deinit();
-        if (deinit_status == .leak) {
-            std.debug.print("warning: allocator reported leaks\n", .{});
-        }
-    }
-
-    const allocator = gpa.allocator();
+    // Keep benchmark timings close to release behavior rather than debug allocator overhead.
+    const allocator = std.heap.smp_allocator;
     const io = init.io;
 
     const cfg = (parseArgs(init.minimal.args, io) catch |err| {

@@ -2185,7 +2185,7 @@ test "StructGenerator.writeByteArrayLiteral formats bytes" {
     const alloc = std.testing.allocator;
     var sg = StructGenerator.init(alloc);
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     const writer = ArrayListWriter{ .list = &buf, .allocator = alloc };
 

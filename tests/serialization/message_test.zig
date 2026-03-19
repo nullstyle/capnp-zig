@@ -331,7 +331,7 @@ test "Message: negative list pointer offset" {
     const list_ptr = makeListPointer(-2, 2, 3);
     std.mem.writeInt(u64, segment[16..24], list_ptr, .little);
 
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [8]u8 = undefined;
@@ -363,7 +363,7 @@ test "Message: far pointer root struct in another segment" {
     std.mem.writeInt(u64, segment1[0..8], struct_ptr, .little);
     std.mem.writeInt(u32, segment1[8..12], 123, .little);
 
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -403,7 +403,7 @@ test "Message: far pointer list in another segment" {
     segment1[9] = 'i';
     segment1[10] = 0;
 
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -442,7 +442,7 @@ test "Message: double-far pointer root struct" {
 
     std.mem.writeInt(u32, segment1[16..20], 77, .little);
 
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -1373,7 +1373,7 @@ test "Message: far pointer to inline-composite list (raw bytes)" {
     // Segment 1, word 5: element 1, pointer word (null = 0)
 
     // Frame the message: 2 segments
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -1434,7 +1434,7 @@ test "Message: double-far pointer Layout A inline-composite list (raw bytes)" {
     std.mem.writeInt(u32, segment2[8..12], 20, .little);
 
     // Frame the message: 3 segments
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -1504,7 +1504,7 @@ test "Message: double-far pointer Layout B inline-composite list (raw bytes)" {
     // Segment 2, word 4: element 1 pointer (null = 0, already zeroed)
 
     // Frame the message: 3 segments (odd count -> padding word in header)
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -1566,7 +1566,7 @@ test "Message: double-far pointer Layout B with multi-word struct elements" {
     std.mem.writeInt(u32, segment2[32..36], 400, .little);
 
     // Frame
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;
@@ -1638,7 +1638,7 @@ test "Message: far pointer inline-composite list at nonzero offset in target seg
     // word 6: element 1 pointer (null)
 
     // Frame
-    var framed = std.ArrayList(u8){};
+    var framed = std.ArrayList(u8).empty;
     defer framed.deinit(allocator);
 
     var header: [16]u8 = undefined;

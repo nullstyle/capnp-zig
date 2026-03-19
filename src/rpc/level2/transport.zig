@@ -59,7 +59,7 @@ pub const Transport = struct {
     /// a socketpair for blocking/waking the writer thread.
     const WriteQueue = struct {
         mu: std.atomic.Mutex = .unlocked,
-        items: std.ArrayListUnmanaged([]u8) = .{},
+        items: std.ArrayListUnmanaged([]u8) = .empty,
         closed: bool = false,
         /// Notification socketpair. [0]=read (writer thread), [1]=write (enqueue).
         /// Set to -1 when not initialized or after close.
@@ -129,7 +129,7 @@ pub const Transport = struct {
             defer self.mu.unlock();
             if (self.items.items.len == 0) return null;
             const result = self.items;
-            self.items = .{};
+            self.items = .empty;
             return result;
         }
 
@@ -158,7 +158,7 @@ pub const Transport = struct {
             // Reinitialize to valid empty state. ArrayListUnmanaged.deinit
             // sets self.* = undefined, so a second drain would crash without
             // this reset.
-            self.items = .{};
+            self.items = .empty;
         }
     };
 
