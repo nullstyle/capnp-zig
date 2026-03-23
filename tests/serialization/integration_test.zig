@@ -44,6 +44,13 @@ fn fieldDiscriminant(fields: []const capnpc.schema.Field, name: []const u8) ?u16
     return null;
 }
 
+fn requirePath(path: []const u8) !void {
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
 test "CodeGeneratorRequest parsing from capnp compile" {
     const allocator = std.testing.allocator;
 
@@ -109,6 +116,8 @@ test "CodeGeneratorRequest parsing from capnp compile" {
 test "CodeGeneratorRequest parsing preserves rpc union discriminants" {
     const allocator = std.testing.allocator;
 
+    try requirePath("vendor/ext/capnproto/c++/src");
+
     const argv = &[_][]const u8{
         "capnp",
         "compile",
@@ -127,7 +136,10 @@ test "CodeGeneratorRequest parsing preserves rpc union discriminants" {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    if (!(result.term == .exited and result.term.exited == 0)) {
+        std.debug.print("capnp compile failed: {s}\n", .{result.stderr});
+        return error.TestUnexpectedResult;
+    }
 
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

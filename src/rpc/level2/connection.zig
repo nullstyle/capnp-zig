@@ -406,7 +406,7 @@ test "connection handleRead assembles fragmented frame and dispatches once compl
 
     var state = Harness.State{
         .allocator = allocator,
-        .received = std.ArrayList(u32){},
+        .received = std.ArrayList(u32).empty,
     };
     defer state.received.deinit(allocator);
 
@@ -467,7 +467,7 @@ test "connection handleRead dispatches coalesced frames in order" {
 
     var state = Harness.State{
         .allocator = allocator,
-        .received = std.ArrayList(u32){},
+        .received = std.ArrayList(u32).empty,
     };
     defer state.received.deinit(allocator);
 
@@ -527,7 +527,7 @@ test "connection handleRead stops draining when message handler errors" {
 
     var state = Harness.State{
         .allocator = allocator,
-        .received = std.ArrayList(u32){},
+        .received = std.ArrayList(u32).empty,
     };
     defer state.received.deinit(allocator);
 

@@ -157,7 +157,7 @@ pub const Generator = struct {
 
         // Generate declarations into a body buffer first, then emit only imports
         // that are actually referenced by generated declarations.
-        var body = std.ArrayList(u8){};
+        var body = std.ArrayList(u8).empty;
         defer body.deinit(self.allocator);
         const body_writer = ArrayListWriter{ .list = &body, .allocator = self.allocator };
 
@@ -173,7 +173,7 @@ pub const Generator = struct {
             try self.generateNodeRecursive(nested.id, &generated, &body);
         }
 
-        var output = std.ArrayList(u8){};
+        var output = std.ArrayList(u8).empty;
         errdefer output.deinit(self.allocator);
         const writer = ArrayListWriter{ .list = &output, .allocator = self.allocator };
 
@@ -235,7 +235,7 @@ pub const Generator = struct {
         var seen = std.AutoHashMap(schema.Id, void).init(self.allocator);
         defer seen.deinit();
 
-        var entries = std.ArrayList(ManifestSerdeEntry){};
+        var entries = std.ArrayList(ManifestSerdeEntry).empty;
         defer {
             for (entries.items) |entry| {
                 self.allocator.free(entry.type_name);
@@ -503,7 +503,7 @@ pub const Generator = struct {
     /// Reuses the first declaration for identical struct bodies by emitting a
     /// type alias for later occurrences.
     fn generateStructWithShapeSharing(self: *Generator, node: *const schema.Node, writer: anytype) !void {
-        var struct_buf = std.ArrayList(u8){};
+        var struct_buf = std.ArrayList(u8).empty;
         defer struct_buf.deinit(self.allocator);
 
         {
@@ -560,7 +560,7 @@ pub const Generator = struct {
     /// Walk superclasses recursively to collect all ancestor interfaces (not including self).
     /// Deduplicates by interface_id to handle diamond inheritance.
     fn collectAncestors(self: *Generator, node: *const schema.Node) ![]AncestorInfo {
-        var result = std.ArrayList(AncestorInfo){};
+        var result = std.ArrayList(AncestorInfo).empty;
         errdefer {
             for (result.items) |a| self.allocator.free(a.name);
             result.deinit(self.allocator);
@@ -1386,7 +1386,7 @@ pub const Generator = struct {
         const node = self.getNode(struct_id) orelse return try self.allocator.alloc(InterfaceFieldInfo, 0);
         const struct_info = node.struct_node orelse return try self.allocator.alloc(InterfaceFieldInfo, 0);
 
-        var result = std.ArrayList(InterfaceFieldInfo){};
+        var result = std.ArrayList(InterfaceFieldInfo).empty;
         errdefer {
             for (result.items) |item| {
                 self.allocator.free(item.name);
@@ -1521,7 +1521,7 @@ pub const Generator = struct {
     }
 
     fn toSnakeCaseLower(self: *Generator, name: []const u8) ![]u8 {
-        var out = std.ArrayList(u8){};
+        var out = std.ArrayList(u8).empty;
         errdefer out.deinit(self.allocator);
 
         var prev_was_sep = false;
@@ -2685,7 +2685,7 @@ test "Generator.writeByteArrayLiteral formats bytes" {
     var gen = Generator.init(alloc, &.{}) catch unreachable;
     defer gen.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     const writer = ArrayListWriter{ .list = &buf, .allocator = alloc };
 
@@ -2698,7 +2698,7 @@ test "Generator.writeByteArrayLiteral handles empty data" {
     var gen = Generator.init(alloc, &.{}) catch unreachable;
     defer gen.deinit();
 
-    var buf = std.ArrayList(u8){};
+    var buf = std.ArrayList(u8).empty;
     defer buf.deinit(alloc);
     const writer = ArrayListWriter{ .list = &buf, .allocator = alloc };
 

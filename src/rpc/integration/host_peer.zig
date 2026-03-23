@@ -46,8 +46,8 @@ pub const HostPeer = struct {
             .allocator = allocator,
             .outgoing_allocator = outgoing_allocator,
             .peer = peer_mod.Peer.initDetached(allocator),
-            .outgoing = std.ArrayList([]u8){},
-            .host_calls = std.ArrayList(HostCall){},
+            .outgoing = std.ArrayList([]u8).empty,
+            .host_calls = std.ArrayList(HostCall).empty,
             .pending_host_call_questions = std.AutoHashMap(u32, void).init(allocator),
         };
     }

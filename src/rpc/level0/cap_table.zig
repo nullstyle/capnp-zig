@@ -348,8 +348,8 @@ pub const OutboundCapEffects = struct {
             .allocator = allocator,
             .ctx = ctx,
             .on_entry_rollback = on_entry_rollback,
-            .callback_applied = std.ArrayList(OutboundEntry){},
-            .consumed_receiver_answer_ids = std.ArrayList(u32){},
+            .callback_applied = std.ArrayList(OutboundEntry).empty,
+            .consumed_receiver_answer_ids = std.ArrayList(u32).empty,
         };
     }
 
@@ -390,7 +390,7 @@ const OutboundCapTable = struct {
     fn init(allocator: std.mem.Allocator) OutboundCapTable {
         return .{
             .allocator = allocator,
-            .entries = std.ArrayList(OutboundEntry){},
+            .entries = std.ArrayList(OutboundEntry).empty,
             .index_map = std.AutoHashMap(u64, u32).init(allocator),
         };
     }

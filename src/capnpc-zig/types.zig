@@ -32,7 +32,7 @@ pub fn escapeZigKeyword(allocator: std.mem.Allocator, name: []const u8) ![]const
 }
 
 fn normalizeIdentifier(allocator: std.mem.Allocator, name: []const u8, capitalize_first: bool) ![]u8 {
-    var result = std.ArrayList(u8){};
+    var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
     var capitalize_next = capitalize_first;

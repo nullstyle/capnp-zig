@@ -61,7 +61,7 @@ test "peer release message removes exported capability" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -97,7 +97,7 @@ test "peer release with ref_count > 1 only decrements, does not remove" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -125,7 +125,7 @@ test "peer release for unknown export id is handled gracefully" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -160,7 +160,7 @@ test "peer release for already-released export is handled gracefully" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -206,7 +206,7 @@ test "peer release with zero reference count is a no-op" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -243,7 +243,7 @@ test "peer bootstrap export is not removed by release" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -294,7 +294,7 @@ test "peer call to exported capability returns exception" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -356,7 +356,7 @@ test "peer call handler error is reported as exception return" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -393,7 +393,7 @@ test "peer handleFrame with invalid message tag sends unimplemented" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -423,7 +423,7 @@ test "peer handleFrame with obsolete_save tag sends unimplemented" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -503,7 +503,7 @@ test "peer call to unknown export returns exception" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -542,7 +542,7 @@ test "peer bootstrap without configured bootstrap returns exception" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -582,7 +582,7 @@ test "peer shutdown rejects new outbound calls" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -608,7 +608,7 @@ test "peer shutdown rejects new bootstrap requests" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -634,7 +634,7 @@ test "peer finish for never-sent question does not crash" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -661,7 +661,7 @@ test "peer sendReturnException for answer creates and sends frame" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);

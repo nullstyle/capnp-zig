@@ -1787,7 +1787,7 @@ pub const Peer = struct {
         question_id: u32,
     ) !bool {
         var canceled = false;
-        var empty_keys = std.ArrayList(u32){};
+        var empty_keys = std.ArrayList(u32).empty;
         defer empty_keys.deinit(self.allocator);
 
         var pending_it = pending_map.iterator();

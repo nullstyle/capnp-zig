@@ -345,7 +345,7 @@ test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-pro
         releases: std.ArrayList(u32),
 
         fn init() @This() {
-            return .{ .releases = std.ArrayList(u32){} };
+            return .{ .releases = std.ArrayList(u32).empty };
         }
 
         fn deinit(state: *@This(), allocator: std.mem.Allocator) void {

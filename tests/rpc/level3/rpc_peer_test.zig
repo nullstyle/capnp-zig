@@ -131,7 +131,7 @@ test "peer sendReleaseForHost emits release frame" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -156,7 +156,7 @@ test "peer sendFinishForHost emits finish frame with explicit flags" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -214,7 +214,7 @@ test "peer provide+accept returns provided capability" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -275,7 +275,7 @@ test "peer finish clears stored provide entry" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -338,7 +338,7 @@ test "peer accept with embargo waits for disembargo.accept" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -413,7 +413,7 @@ test "peer finish cancels pending embargoed accept" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -496,7 +496,7 @@ test "peer pipelined call to embargoed accept answer waits for disembargo.accept
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -608,7 +608,7 @@ test "peer handleFrame embargoed accept + promised calls preserve ordering under
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -729,7 +729,7 @@ test "peer duplicate provide recipient sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -790,7 +790,7 @@ test "peer duplicate provide question sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -854,7 +854,7 @@ test "peer join returns provided capability" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -917,7 +917,7 @@ test "peer handleFrame join aggregates parts and returns capability for each par
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1003,7 +1003,7 @@ test "peer duplicate join question sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1066,7 +1066,7 @@ test "peer join part count mismatch returns exception" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1132,7 +1132,7 @@ test "peer duplicate join part returns exception" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1194,7 +1194,7 @@ test "peer provide with unresolved promise target sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1235,7 +1235,7 @@ test "peer thirdPartyAnswer rejects invalid answer id" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1265,7 +1265,7 @@ test "peer thirdPartyAnswer conflicting completion sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1305,7 +1305,7 @@ test "peer thirdPartyAnswer duplicate completion with same answer id is ignored"
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1339,7 +1339,7 @@ test "peer duplicate third-party return before await errors" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
@@ -1374,7 +1374,7 @@ test "peer duplicate awaitFromThirdParty completion sends abort" {
 
     var capture = Capture{
         .allocator = allocator,
-        .frames = std.ArrayList([]u8){},
+        .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);

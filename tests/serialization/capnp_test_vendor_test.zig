@@ -7,6 +7,13 @@ const schema = capnpc.schema;
 const request_reader = capnpc.request;
 const json = std.json;
 
+fn requirePath(path: []const u8) !void {
+    std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+}
+
 fn runCapnp(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     const result = std.process.run(allocator, std.testing.io, .{
         .argv = argv,
@@ -130,6 +137,8 @@ fn expectJsonString(value: json.Value) ![]const u8 {
 
 test "capnp_test vendor suite" {
     const allocator = std.testing.allocator;
+
+    try requirePath("vendor/ext/capnp_test/test.capnp");
 
     const request = try loadCodeGeneratorRequest(allocator);
     defer request_reader.freeCodeGeneratorRequest(allocator, request);

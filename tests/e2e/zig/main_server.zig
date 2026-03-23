@@ -157,7 +157,7 @@ const ChatService = struct {
         return .{
             .allocator = allocator,
             .rooms = std.StringHashMap(*ChatRoomState).init(allocator),
-            .room_sessions = std.ArrayList(*ChatRoomSession){},
+            .room_sessions = std.ArrayList(*ChatRoomSession).empty,
             .server = .{
                 .ctx = undefined,
                 .vtable = .{
@@ -278,7 +278,7 @@ const InventoryService = struct {
         return .{
             .allocator = allocator,
             .inventories = std.AutoHashMap(u64, *PlayerInventory).init(allocator),
-            .trade_sessions = std.ArrayList(*TradeSessionServerState){},
+            .trade_sessions = std.ArrayList(*TradeSessionServerState).empty,
             .server = .{
                 .ctx = undefined,
                 .vtable = .{
@@ -325,7 +325,7 @@ const InventoryService = struct {
 
         const inv = try self.allocator.create(PlayerInventory);
         inv.* = .{
-            .slots = std.ArrayList(InventorySlotState){},
+            .slots = std.ArrayList(InventorySlotState).empty,
             .capacity = 20,
         };
         try self.inventories.put(player_id, inv);
@@ -401,7 +401,7 @@ const MatchmakingService = struct {
             .queue = std.AutoHashMap(u64, QueueEntry).init(allocator),
             .matches = std.AutoHashMap(u64, *MatchStateData).init(allocator),
             .results = std.AutoHashMap(u64, *MatchResultData).init(allocator),
-            .controllers = std.ArrayList(*MatchControllerServerState){},
+            .controllers = std.ArrayList(*MatchControllerServerState).empty,
             .server = .{
                 .ctx = undefined,
                 .vtable = .{
@@ -721,7 +721,7 @@ fn onQueryArea(
 
     const filter = parseGameWorldFilter(query);
 
-    var matched_ids = std.ArrayList(u64){};
+    var matched_ids = std.ArrayList(u64).empty;
     defer matched_ids.deinit(service.allocator);
 
     var it = service.entities.iterator();
@@ -811,7 +811,7 @@ fn onCreateRoom(
         .name = try service.allocator.dupe(u8, room_name),
         .topic = try service.allocator.dupe(u8, room_topic),
         .member_count = 0,
-        .messages = std.ArrayList(ChatMsg){},
+        .messages = std.ArrayList(ChatMsg).empty,
     };
     service.next_room_id += 1;
 
@@ -1092,7 +1092,7 @@ fn onAddItem(
     const item_level = try item.getLevel();
     const stack_size = try item.getStackSize();
 
-    var attrs = std.ArrayList(ItemAttr){};
+    var attrs = std.ArrayList(ItemAttr).empty;
     if (!item._reader.isPointerNull(2)) {
         const in_attrs = try item.getAttributes();
         var i: u32 = 0;
@@ -1179,7 +1179,7 @@ fn onStartTrade(
         .initiator_id = try initiator.getId(),
         .target_id = try target.getId(),
         .state = .Proposing,
-        .my_offer_slots = std.ArrayList(u16){},
+        .my_offer_slots = std.ArrayList(u16).empty,
     };
 
     const server_state = try service.allocator.create(TradeSessionServerState);
@@ -1222,7 +1222,7 @@ fn onFilterByRarity(
 
     const inv = try service.getOrCreateInventory(player_id);
 
-    var matches = std.ArrayList(usize){};
+    var matches = std.ArrayList(usize).empty;
     defer matches.deinit(service.allocator);
 
     for (inv.slots.items, 0..) |slot, idx| {
@@ -1245,7 +1245,7 @@ fn buildTradeOffer(
 ) !void {
     const inv = try service.getOrCreateInventory(trade.initiator_id);
 
-    var offered_indices = std.ArrayList(usize){};
+    var offered_indices = std.ArrayList(usize).empty;
     defer offered_indices.deinit(service.allocator);
 
     for (trade.my_offer_slots.items) |slot_index| {
@@ -1483,8 +1483,8 @@ fn onFindMatch(
         .id = match_id,
         .mode = try params.getMode(),
         .state = .Waiting,
-        .team_a = std.ArrayList(MatchPlayer){},
-        .team_b = std.ArrayList(MatchPlayer){},
+        .team_a = std.ArrayList(MatchPlayer).empty,
+        .team_b = std.ArrayList(MatchPlayer).empty,
         .created_at = nowMillis(),
         .ready_set = std.AutoHashMap(u64, bool).init(service.allocator),
     };
@@ -1646,7 +1646,7 @@ fn onControllerReportResult(
         .match_id = incoming_match_id,
         .winning_team = try incoming.getWinningTeam(),
         .duration = try incoming.getDuration(),
-        .player_stats = std.ArrayList(PlayerStat){},
+        .player_stats = std.ArrayList(PlayerStat).empty,
     };
 
     const stats = try incoming.getPlayerStats();
@@ -1764,8 +1764,8 @@ fn usage() void {
 }
 
 pub fn main(init: std.process.Init.Minimal) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
 
     const args = parseArgs(allocator, init.args) catch |err| switch (err) {

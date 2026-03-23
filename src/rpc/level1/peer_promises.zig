@@ -22,7 +22,7 @@ pub fn queuePendingCall(
     var entry = try pending_calls.getOrPut(key);
     const inserted = !entry.found_existing;
     if (!entry.found_existing) {
-        entry.value_ptr.* = std.ArrayList(PendingCallType){};
+        entry.value_ptr.* = std.ArrayList(PendingCallType).empty;
     }
     errdefer if (inserted and entry.value_ptr.items.len == 0) {
         _ = pending_calls.remove(key);

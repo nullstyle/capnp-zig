@@ -321,8 +321,8 @@ const SendState = struct {
     fn init(allocator: std.mem.Allocator) @This() {
         return .{
             .allocator = allocator,
-            .provided = std.ArrayList(SentProvided){},
-            .exceptions = std.ArrayList(SentException){},
+            .provided = std.ArrayList(SentProvided).empty,
+            .exceptions = std.ArrayList(SentException).empty,
         };
     }
 

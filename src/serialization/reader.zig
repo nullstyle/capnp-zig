@@ -128,7 +128,7 @@ pub const Reader = struct {
     /// segment_count is checked, so amplification from a malicious packed
     /// stream is limited to the header region.
     pub fn readPackedMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
-        var out = std.ArrayList(u8){};
+        var out = std.ArrayList(u8).empty;
         errdefer out.deinit(allocator);
 
         var total_needed: ?usize = null;

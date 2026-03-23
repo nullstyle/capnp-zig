@@ -48,7 +48,7 @@ fn expectGolden(actual: []const u8, golden_path: []const u8) !void {
 }
 
 fn normalizeLineEndings(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8){};
+    var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
 
     var i: usize = 0;

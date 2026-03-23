@@ -472,7 +472,7 @@ fn termFromWaitStatus(status: u32) std.process.Child.Term {
 const PipeReaderCtx = struct {
     fd: i32,
     allocator: Allocator,
-    buf: std.ArrayList(u8) = .{},
+    buf: std.ArrayList(u8) = .empty,
 };
 
 fn pipeReaderThread(ctx: *PipeReaderCtx) void {
@@ -643,7 +643,7 @@ fn waitForPort(port: u16, timeout_ms: i64) !bool {
 }
 
 fn composeBaseArgs(allocator: Allocator, paths: Paths) !std.ArrayList([]const u8) {
-    var args = std.ArrayList([]const u8){};
+    var args = std.ArrayList([]const u8).empty;
     try args.appendSlice(allocator, &.{
         "docker",
         "compose",
@@ -1095,7 +1095,7 @@ fn writeSummary(allocator: Allocator, io: std.Io, paths: Paths, results: []const
     }
 
     // Build summary JSON in memory
-    var content = std.ArrayList(u8){};
+    var content = std.ArrayList(u8).empty;
     defer content.deinit(allocator);
 
     try appendFmt(allocator, &content, "{{\n", .{});
@@ -1199,7 +1199,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var results = std.ArrayList(CaseResult){};
+    var results = std.ArrayList(CaseResult).empty;
     defer {
         for (results.items) |item| {
             allocator.free(item.key);
