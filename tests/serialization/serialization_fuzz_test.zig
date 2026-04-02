@@ -13,7 +13,7 @@ fn roundTrip(builder: *message.MessageBuilder) !struct { bytes: []const u8, msg:
     const bytes = try builder.toBytes();
     errdefer testing.allocator.free(bytes);
 
-    const msg = try message.Message.init(testing.allocator, bytes);
+    const msg = try message.Message.init(testing.allocator, bytes, .{});
     return .{ .bytes = bytes, .msg = msg };
 }
 
@@ -23,7 +23,7 @@ fn packedRoundTrip(builder: *message.MessageBuilder) !struct { packed_bytes: []c
     const packed_bytes = try builder.toPackedBytes();
     errdefer testing.allocator.free(packed_bytes);
 
-    const msg = try message.Message.initPacked(testing.allocator, packed_bytes);
+    const msg = try message.Message.initPacked(testing.allocator, packed_bytes, .{});
     return .{ .packed_bytes = packed_bytes, .msg = msg };
 }
 
@@ -761,10 +761,10 @@ test "fuzz packed round-trip: packed equals unpacked after decode" {
     const packed_bytes = try builder.toPackedBytes();
     defer testing.allocator.free(packed_bytes);
 
-    var unpacked_msg = try message.Message.init(testing.allocator, unpacked_bytes);
+    var unpacked_msg = try message.Message.init(testing.allocator, unpacked_bytes, .{});
     defer unpacked_msg.deinit();
 
-    var packed_msg = try message.Message.initPacked(testing.allocator, packed_bytes);
+    var packed_msg = try message.Message.initPacked(testing.allocator, packed_bytes, .{});
     defer packed_msg.deinit();
 
     // Compare root structs
@@ -1073,7 +1073,7 @@ test "fuzz systematic: PRNG-driven compound message round-trip" {
             // Re-read what the builder wrote by serializing
             const tmp_bytes = try builder.toBytes();
             defer testing.allocator.free(tmp_bytes);
-            var tmp_msg = try message.Message.init(testing.allocator, tmp_bytes);
+            var tmp_msg = try message.Message.init(testing.allocator, tmp_bytes, .{});
             defer tmp_msg.deinit();
             const tmp_root = try tmp_msg.getRootStruct();
             for (0..data_words) |w| {
@@ -1141,7 +1141,7 @@ test "fuzz systematic: PRNG-driven compound message packed round-trip" {
         const unpacked_bytes = try builder.toBytes();
         defer testing.allocator.free(unpacked_bytes);
 
-        var unpacked_msg = try message.Message.init(testing.allocator, unpacked_bytes);
+        var unpacked_msg = try message.Message.init(testing.allocator, unpacked_bytes, .{});
         defer unpacked_msg.deinit();
         const unpacked_root = try unpacked_msg.getRootStruct();
 

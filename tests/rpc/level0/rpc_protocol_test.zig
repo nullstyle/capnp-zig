@@ -178,7 +178,7 @@ test "RPC call sendResultsTo.thirdParty clones pointer payload" {
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
 
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -247,7 +247,7 @@ test "RPC call sendResultsTo conformance covers caller yourself and thirdParty" 
         try third_root.setText("conformance-third-party");
         const third_bytes = try third_builder.toBytes();
         defer allocator.free(third_bytes);
-        var third_msg = try message.Message.init(allocator, third_bytes);
+        var third_msg = try message.Message.init(allocator, third_bytes, .{});
         defer third_msg.deinit();
         const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -428,7 +428,7 @@ test "RPC resolve encodes thirdPartyHosted cap descriptor" {
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
 
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -536,7 +536,7 @@ test "RPC return acceptFromThirdParty clones pointer payload" {
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
 
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -653,7 +653,7 @@ test "RPC provide encodes and decodes" {
     try recipient_root.setText("recipient");
     const recipient_bytes = try recipient_builder.toBytes();
     defer allocator.free(recipient_bytes);
-    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
     defer recipient_msg.deinit();
     const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -692,7 +692,7 @@ test "RPC accept encodes and decodes" {
     try provision_root.setText("provision");
     const provision_bytes = try provision_builder.toBytes();
     defer allocator.free(provision_bytes);
-    var provision_msg = try message.Message.init(allocator, provision_bytes);
+    var provision_msg = try message.Message.init(allocator, provision_bytes, .{});
     defer provision_msg.deinit();
     const provision_ptr = try provision_msg.getRootAnyPointer();
 
@@ -722,7 +722,7 @@ test "RPC thirdPartyAnswer encodes and decodes" {
     try completion_root.setText("completion");
     const completion_bytes = try completion_builder.toBytes();
     defer allocator.free(completion_bytes);
-    var completion_msg = try message.Message.init(allocator, completion_bytes);
+    var completion_msg = try message.Message.init(allocator, completion_bytes, .{});
     defer completion_msg.deinit();
     const completion_ptr = try completion_msg.getRootAnyPointer();
 
@@ -751,7 +751,7 @@ test "RPC join encodes and decodes" {
     try key_part_root.setText("join-key-part");
     const key_part_bytes = try key_part_builder.toBytes();
     defer allocator.free(key_part_bytes);
-    var key_part_msg = try message.Message.init(allocator, key_part_bytes);
+    var key_part_msg = try message.Message.init(allocator, key_part_bytes, .{});
     defer key_part_msg.deinit();
     const key_part_ptr = try key_part_msg.getRootAnyPointer();
 
@@ -857,7 +857,7 @@ test "RPC call manual and generated decode agree on key fields" {
     try third_root.setText("call-third-party");
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -1199,7 +1199,7 @@ test "RPC unimplemented wraps nested message" {
     const inner_bytes = try inner_builder.finish();
     defer allocator.free(inner_bytes);
 
-    var inner_msg = try message.Message.init(allocator, inner_bytes);
+    var inner_msg = try message.Message.init(allocator, inner_bytes, .{});
     defer inner_msg.deinit();
     const inner_root = try inner_msg.getRootAnyPointer();
 

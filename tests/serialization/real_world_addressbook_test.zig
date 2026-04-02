@@ -75,7 +75,7 @@ test "Real-world: AddressBook Person - complete record" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try AddressBookPerson.Reader.init(&msg);
@@ -97,7 +97,7 @@ test "Real-world: AddressBook Person - minimum id" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try AddressBookPerson.Reader.init(&msg);
@@ -118,7 +118,7 @@ test "Real-world: AddressBook Person - maximum id" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try AddressBookPerson.Reader.init(&msg);
@@ -139,7 +139,7 @@ test "Real-world: AddressBook Person - realistic data" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try AddressBookPerson.Reader.init(&msg);
@@ -169,7 +169,7 @@ test "Real-world: AddressBook Person - multiple serializations" {
         const bytes = try msg_builder.toBytes();
         defer testing.allocator.free(bytes);
 
-        var msg = try message.Message.init(testing.allocator, bytes);
+        var msg = try message.Message.init(testing.allocator, bytes, .{});
         defer msg.deinit();
 
         const person_reader = try AddressBookPerson.Reader.init(&msg);

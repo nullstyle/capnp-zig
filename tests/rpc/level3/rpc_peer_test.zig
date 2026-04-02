@@ -51,7 +51,7 @@ const TextPointer = struct {
         try root.setText(text);
         const bytes = try builder.toBytes();
         errdefer allocator.free(bytes);
-        const msg = try message.Message.init(allocator, bytes);
+        const msg = try message.Message.init(allocator, bytes, .{});
         return .{
             .bytes = bytes,
             .msg = msg,
@@ -87,7 +87,7 @@ const JoinKeyPartPointer = struct {
         key_part_struct.writeU16(6, part_num);
         const bytes = try builder.toBytes();
         errdefer allocator.free(bytes);
-        const msg = try message.Message.init(allocator, bytes);
+        const msg = try message.Message.init(allocator, bytes, .{});
         return .{
             .bytes = bytes,
             .msg = msg,
@@ -868,7 +868,7 @@ test "peer join returns provided capability" {
     key_part_struct.writeU16(6, 0);
     const key_part_bytes = try key_part_builder.toBytes();
     defer allocator.free(key_part_bytes);
-    var key_part_msg = try message.Message.init(allocator, key_part_bytes);
+    var key_part_msg = try message.Message.init(allocator, key_part_bytes, .{});
     defer key_part_msg.deinit();
     const key_part_ptr = try key_part_msg.getRootAnyPointer();
 

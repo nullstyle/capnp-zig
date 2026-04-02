@@ -83,7 +83,7 @@ fn verifyWidgetRoot(root: message.StructReader) !void {
 
 fn verifyWidgetMessage(bytes: []const u8) !void {
     const allocator = std.testing.allocator;
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
     const root = try msg.getRootStruct();
     try verifyWidgetRoot(root);
@@ -107,7 +107,7 @@ test "Interop: pycapnp packed single-segment fixture" {
     const allocator = std.testing.allocator;
     const bytes = try readFixture(allocator, "tests/interop/fixture_single_packed.bin");
     defer allocator.free(bytes);
-    var msg = try message.Message.initPacked(allocator, bytes);
+    var msg = try message.Message.initPacked(allocator, bytes, .{});
     defer msg.deinit();
     const root = try msg.getRootStruct();
     try verifyWidgetRoot(root);
@@ -117,7 +117,7 @@ test "Interop: pycapnp packed multi-segment fixture" {
     const allocator = std.testing.allocator;
     const bytes = try readFixture(allocator, "tests/interop/fixture_far_packed.bin");
     defer allocator.free(bytes);
-    var msg = try message.Message.initPacked(allocator, bytes);
+    var msg = try message.Message.initPacked(allocator, bytes, .{});
     defer msg.deinit();
     const root = try msg.getRootStruct();
     try verifyWidgetRoot(root);

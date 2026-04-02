@@ -24,16 +24,19 @@ pub fn define(
     comptime make_far_pointer: *const fn (bool, u32, u32) u64,
 ) type {
     return struct {
+        /// Builder for a list of pointers (text, data, structs, or capabilities) within a message.
         pub const PointerListBuilder = struct {
             builder: *MessageBuilderType,
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
 
+            /// Return the number of elements in this pointer list.
             pub fn len(self: PointerListBuilder) u32 {
                 return self.element_count;
             }
 
+            /// Set the pointer at `index` to null.
             pub fn setNull(self: PointerListBuilder, index: u32) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const pointer_pos = self.elements_offset + @as(usize, index) * 8;
@@ -42,6 +45,7 @@ pub fn define(
                 std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
             }
 
+            /// Write a capability pointer at the given element index.
             pub fn setCapability(self: PointerListBuilder, index: u32, cap: CapabilityType) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const pointer_pos = self.elements_offset + @as(usize, index) * 8;
@@ -51,20 +55,24 @@ pub fn define(
                 std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
             }
 
+            /// Write a text value at the given element index.
             pub fn setText(self: PointerListBuilder, index: u32, value: []const u8) !void {
                 return self.setTextInSegment(index, value, self.segment_id);
             }
 
+            /// Write a text value at the given element index, allocating in the target segment.
             pub fn setTextInSegment(self: PointerListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const pointer_pos = self.elements_offset + @as(usize, index) * 8;
                 try self.builder.writeTextPointer(self.segment_id, pointer_pos, value, target_segment_id);
             }
 
+            /// Write a data (byte list) value at the given element index.
             pub fn setData(self: PointerListBuilder, index: u32, value: []const u8) !void {
                 return self.setDataInSegment(index, value, self.segment_id);
             }
 
+            /// Write a data (byte list) value at the given element index, allocating in the target segment.
             pub fn setDataInSegment(self: PointerListBuilder, index: u32, value: []const u8, target_segment_id: u32) !void {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 if (value.len > std.math.maxInt(u32)) return error.ElementCountTooLarge;
@@ -87,10 +95,12 @@ pub fn define(
                 std.mem.copyForwards(u8, slice, value);
             }
 
+            /// Initialize a nested struct at the given element index and return its builder.
             pub fn initStruct(self: PointerListBuilder, index: u32, data_words: u16, pointer_words: u16) !StructBuilder {
                 return self.initStructInSegment(index, data_words, pointer_words, self.segment_id);
             }
 
+            /// Initialize a nested struct at the given element index, allocating in the target segment.
             pub fn initStructInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -120,10 +130,12 @@ pub fn define(
                 return .{ .segment_id = target_segment_id, .offset = offset };
             }
 
+            /// Initialize a `u8` list at the given element index and return its builder.
             pub fn initU8List(self: PointerListBuilder, index: u32, element_count: u32) !U8ListBuilderType {
                 return self.initU8ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize a `u8` list at the given element index in the target segment.
             pub fn initU8ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -139,10 +151,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize an `i8` list at the given element index and return its builder.
             pub fn initI8List(self: PointerListBuilder, index: u32, element_count: u32) !I8ListBuilderType {
                 return self.initI8ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize an `i8` list at the given element index in the target segment.
             pub fn initI8ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -158,10 +172,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize a `u16` list at the given element index and return its builder.
             pub fn initU16List(self: PointerListBuilder, index: u32, element_count: u32) !U16ListBuilderType {
                 return self.initU16ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize a `u16` list at the given element index in the target segment.
             pub fn initU16ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -177,10 +193,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize an `i16` list at the given element index and return its builder.
             pub fn initI16List(self: PointerListBuilder, index: u32, element_count: u32) !I16ListBuilderType {
                 return self.initI16ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize an `i16` list at the given element index in the target segment.
             pub fn initI16ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -196,10 +214,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize a `u32` list at the given element index and return its builder.
             pub fn initU32List(self: PointerListBuilder, index: u32, element_count: u32) !U32ListBuilderType {
                 return self.initU32ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize a `u32` list at the given element index in the target segment.
             pub fn initU32ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -215,10 +235,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize an `i32` list at the given element index and return its builder.
             pub fn initI32List(self: PointerListBuilder, index: u32, element_count: u32) !I32ListBuilderType {
                 return self.initI32ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize an `i32` list at the given element index in the target segment.
             pub fn initI32ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -234,10 +256,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize an `f32` list at the given element index and return its builder.
             pub fn initF32List(self: PointerListBuilder, index: u32, element_count: u32) !F32ListBuilderType {
                 return self.initF32ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize an `f32` list at the given element index in the target segment.
             pub fn initF32ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -253,10 +277,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize a `u64` list at the given element index and return its builder.
             pub fn initU64List(self: PointerListBuilder, index: u32, element_count: u32) !U64ListBuilderType {
                 return self.initU64ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize a `u64` list at the given element index in the target segment.
             pub fn initU64ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -272,10 +298,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize an `i64` list at the given element index and return its builder.
             pub fn initI64List(self: PointerListBuilder, index: u32, element_count: u32) !I64ListBuilderType {
                 return self.initI64ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize an `i64` list at the given element index in the target segment.
             pub fn initI64ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -291,10 +319,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize an `f64` list at the given element index and return its builder.
             pub fn initF64List(self: PointerListBuilder, index: u32, element_count: u32) !F64ListBuilderType {
                 return self.initF64ListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize an `f64` list at the given element index in the target segment.
             pub fn initF64ListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -310,10 +340,12 @@ pub fn define(
                 };
             }
 
+            /// Initialize a boolean list at the given element index and return its builder.
             pub fn initBoolList(self: PointerListBuilder, index: u32, element_count: u32) !BoolListBuilderType {
                 return self.initBoolListInSegment(index, element_count, self.segment_id);
             }
 
+            /// Initialize a boolean list at the given element index in the target segment.
             pub fn initBoolListInSegment(
                 self: PointerListBuilder,
                 index: u32,
@@ -329,6 +361,12 @@ pub fn define(
                 };
             }
         };
+        /// Builder for writing fields into a Cap'n Proto struct within a message.
+        ///
+        /// Provides methods to write primitive values into the data section and to
+        /// initialize pointer fields (text, data, nested structs, lists). Writes to
+        /// the data section that exceed the struct's allocated size are silently
+        /// dropped per the Cap'n Proto schema evolution rules.
         pub const StructBuilder = struct {
             builder: *MessageBuilderType,
             segment_id: u32,
@@ -476,10 +514,13 @@ pub fn define(
                 self.writeU16(byte_offset, value);
             }
 
+            /// Write a NUL-terminated text pointer at the given pointer index.
             pub fn writeText(self: @This(), pointer_index: usize, text: []const u8) !void {
                 return self.writeTextInSegment(pointer_index, text, self.segment_id);
             }
 
+            /// Write a NUL-terminated text pointer at the given pointer index,
+            /// allocating the text content in the specified target segment.
             pub fn writeTextInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -494,10 +535,13 @@ pub fn define(
                 try self.builder.writeTextPointer(self.segment_id, pointer_pos, text, target_segment_id);
             }
 
+            /// Initialize a nested struct at the given pointer index and return its builder.
             pub fn initStruct(self: @This(), pointer_index: usize, data_words: u16, pointer_words: u16) !@This() {
                 return self.initStructInSegment(pointer_index, data_words, pointer_words, self.segment_id);
             }
 
+            /// Initialize a nested struct at the given pointer index, allocating
+            /// in the specified target segment, and return its builder.
             pub fn initStructInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -517,6 +561,8 @@ pub fn define(
                 return self.builder.writeStructPointer(self.segment_id, pointer_pos, data_words, pointer_words, target_segment_id);
             }
 
+            /// Return an `AnyPointerBuilder` for the pointer slot at the given index,
+            /// allowing the caller to write an arbitrary pointer value.
             pub fn getAnyPointer(self: @This(), pointer_index: usize) !AnyPointerBuilderType {
                 if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
 
@@ -552,10 +598,13 @@ pub fn define(
                 return .{ .segment_id = target_segment_id, .offset = offset };
             }
 
+            /// Write a data (byte list) pointer at the given pointer index.
             pub fn writeData(self: @This(), pointer_index: usize, data: []const u8) !void {
                 return self.writeDataInSegment(pointer_index, data, self.segment_id);
             }
 
+            /// Write a data (byte list) pointer at the given pointer index,
+            /// allocating the content in the specified target segment.
             pub fn writeDataInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -569,10 +618,14 @@ pub fn define(
                 std.mem.copyForwards(u8, slice, data);
             }
 
+            /// Write a void list pointer at the given pointer index. Void lists carry
+            /// only a count; no data is allocated.
             pub fn writeVoidList(self: @This(), pointer_index: usize, element_count: u32) !VoidListBuilderType {
                 return self.writeVoidListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Write a void list pointer at the given pointer index, targeting the
+            /// specified segment.
             pub fn writeVoidListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -593,10 +646,12 @@ pub fn define(
                 return .{ .element_count = element_count };
             }
 
+            /// Allocate a `u8` list at the given pointer index and return its builder.
             pub fn writeU8List(self: @This(), pointer_index: usize, element_count: u32) !U8ListBuilderType {
                 return self.writeU8ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate a `u8` list in the specified target segment and return its builder.
             pub fn writeU8ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -612,10 +667,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate an `i8` list at the given pointer index and return its builder.
             pub fn writeI8List(self: @This(), pointer_index: usize, element_count: u32) !I8ListBuilderType {
                 return self.writeI8ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate an `i8` list in the specified target segment and return its builder.
             pub fn writeI8ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -631,10 +688,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate a `u16` list at the given pointer index and return its builder.
             pub fn writeU16List(self: @This(), pointer_index: usize, element_count: u32) !U16ListBuilderType {
                 return self.writeU16ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate a `u16` list in the specified target segment and return its builder.
             pub fn writeU16ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -650,10 +709,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate an `i16` list at the given pointer index and return its builder.
             pub fn writeI16List(self: @This(), pointer_index: usize, element_count: u32) !I16ListBuilderType {
                 return self.writeI16ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate an `i16` list in the specified target segment and return its builder.
             pub fn writeI16ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -669,10 +730,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate a `u32` list at the given pointer index and return its builder.
             pub fn writeU32List(self: @This(), pointer_index: usize, element_count: u32) !U32ListBuilderType {
                 return self.writeU32ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate a `u32` list in the specified target segment and return its builder.
             pub fn writeU32ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -688,10 +751,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate an `i32` list at the given pointer index and return its builder.
             pub fn writeI32List(self: @This(), pointer_index: usize, element_count: u32) !I32ListBuilderType {
                 return self.writeI32ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate an `i32` list in the specified target segment and return its builder.
             pub fn writeI32ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -707,10 +772,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate an `f32` list at the given pointer index and return its builder.
             pub fn writeF32List(self: @This(), pointer_index: usize, element_count: u32) !F32ListBuilderType {
                 return self.writeF32ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate an `f32` list in the specified target segment and return its builder.
             pub fn writeF32ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -726,10 +793,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate a `u64` list at the given pointer index and return its builder.
             pub fn writeU64List(self: @This(), pointer_index: usize, element_count: u32) !U64ListBuilderType {
                 return self.writeU64ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate a `u64` list in the specified target segment and return its builder.
             pub fn writeU64ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -745,10 +814,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate an `i64` list at the given pointer index and return its builder.
             pub fn writeI64List(self: @This(), pointer_index: usize, element_count: u32) !I64ListBuilderType {
                 return self.writeI64ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate an `i64` list in the specified target segment and return its builder.
             pub fn writeI64ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -764,10 +835,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate an `f64` list at the given pointer index and return its builder.
             pub fn writeF64List(self: @This(), pointer_index: usize, element_count: u32) !F64ListBuilderType {
                 return self.writeF64ListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate an `f64` list in the specified target segment and return its builder.
             pub fn writeF64ListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -783,10 +856,12 @@ pub fn define(
                 };
             }
 
+            /// Allocate a boolean list at the given pointer index and return its builder.
             pub fn writeBoolList(self: @This(), pointer_index: usize, element_count: u32) !BoolListBuilderType {
                 return self.writeBoolListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate a boolean list in the specified target segment and return its builder.
             pub fn writeBoolListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -802,6 +877,8 @@ pub fn define(
                 };
             }
 
+            /// Allocate a struct list at the given pointer index and return its builder.
+            /// Each element has the given `data_words` and `pointer_words` layout.
             pub fn writeStructList(
                 self: @This(),
                 pointer_index: usize,
@@ -812,6 +889,7 @@ pub fn define(
                 return self.writeStructListInSegments(pointer_index, element_count, data_words, pointer_words, self.segment_id, self.segment_id);
             }
 
+            /// Allocate a struct list in the specified target segment and return its builder.
             pub fn writeStructListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -823,6 +901,9 @@ pub fn define(
                 return self.writeStructListInSegments(pointer_index, element_count, data_words, pointer_words, target_segment_id, target_segment_id);
             }
 
+            /// Allocate a struct list with explicit landing pad and content segments.
+            /// Used when the pointer, tag word, and element data must reside in
+            /// different segments (e.g. for far pointers).
             pub fn writeStructListInSegments(
                 self: @This(),
                 pointer_index: usize,
@@ -845,10 +926,12 @@ pub fn define(
                 );
             }
 
+            /// Allocate a text (pointer) list at the given pointer index and return its builder.
             pub fn writeTextList(self: @This(), pointer_index: usize, element_count: u32) !TextListBuilderType {
                 return self.writeTextListInSegments(pointer_index, element_count, self.segment_id, self.segment_id);
             }
 
+            /// Allocate a text list in the specified target segment and return its builder.
             pub fn writeTextListInSegment(
                 self: @This(),
                 pointer_index: usize,
@@ -858,6 +941,7 @@ pub fn define(
                 return self.writeTextListInSegments(pointer_index, element_count, target_segment_id, target_segment_id);
             }
 
+            /// Allocate a text list with explicit landing pad and content segments.
             pub fn writeTextListInSegments(
                 self: @This(),
                 pointer_index: usize,
@@ -934,10 +1018,13 @@ pub fn define(
                 };
             }
 
+            /// Allocate a pointer list at the given pointer index and return its builder.
+            /// Each element is a single pointer (text, data, struct, or capability).
             pub fn writePointerList(self: @This(), pointer_index: usize, element_count: u32) !PointerListBuilder {
                 return self.writePointerListInSegment(pointer_index, element_count, self.segment_id);
             }
 
+            /// Allocate a pointer list in the specified target segment and return its builder.
             pub fn writePointerListInSegment(
                 self: @This(),
                 pointer_index: usize,

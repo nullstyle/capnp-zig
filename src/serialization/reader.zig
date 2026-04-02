@@ -47,14 +47,14 @@ pub const Reader = struct {
 
     pub fn init(allocator: std.mem.Allocator, data: []const u8) !Reader {
         return .{
-            .msg = try message.Message.init(allocator, data),
+            .msg = try message.Message.initUnvalidated(allocator, data),
             .allocator = allocator,
         };
     }
 
     pub fn initPacked(allocator: std.mem.Allocator, data: []const u8) !Reader {
         return .{
-            .msg = try message.Message.initPacked(allocator, data),
+            .msg = try message.Message.initPackedUnvalidated(allocator, data),
             .allocator = allocator,
         };
     }
@@ -65,10 +65,8 @@ pub const Reader = struct {
 
     /// Read a segment-framed message from a reader and return the framed bytes.
     ///
-    /// The returned bytes can be passed to `Message.init` to obtain a reader.
-    /// Note that `Message` does not enforce a traversal limit on its own;
-    /// callers MUST invoke `Message.validate()` before reading untrusted
-    /// messages to prevent amplification attacks.
+    /// The returned bytes can be passed to `Message.init` (which validates
+    /// automatically) or `Message.initUnvalidated` to obtain a reader.
     pub fn readMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
         const segment_count_minus_one = try reader.readInt(u32, .little);
         const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;

@@ -388,7 +388,7 @@ test "connection handleRead assembles fragmented frame and dispatches once compl
 
         fn onMessage(conn: *Connection, frame: []const u8) !void {
             const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            var msg = try message.Message.init(state.allocator, frame);
+            var msg = try message.Message.initUnvalidated(state.allocator, frame);
             defer msg.deinit();
             const root = try msg.getRootStruct();
             try state.received.append(state.allocator, root.readU32(0));
@@ -443,7 +443,7 @@ test "connection handleRead dispatches coalesced frames in order" {
 
         fn onMessage(conn: *Connection, frame: []const u8) !void {
             const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            var msg = try message.Message.init(state.allocator, frame);
+            var msg = try message.Message.initUnvalidated(state.allocator, frame);
             defer msg.deinit();
             const root = try msg.getRootStruct();
             try state.received.append(state.allocator, root.readU32(0));
@@ -501,7 +501,7 @@ test "connection handleRead stops draining when message handler errors" {
 
         fn onMessage(conn: *Connection, frame: []const u8) !void {
             const state: *State = @ptrCast(@alignCast(conn.ctx.?));
-            var msg = try message.Message.init(state.allocator, frame);
+            var msg = try message.Message.initUnvalidated(state.allocator, frame);
             defer msg.deinit();
             const root = try msg.getRootStruct();
             try state.received.append(state.allocator, root.readU32(0));

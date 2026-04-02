@@ -662,6 +662,20 @@ pub fn build(b: *std.Build) void {
 
     const run_rpc_peer_cleanup_tests = b.addRunArtifact(rpc_peer_cleanup_tests);
 
+    // RPC connection failure / recovery tests
+    const rpc_connection_failure_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/level2/rpc_connection_failure_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_connection_failure_tests = b.addRunArtifact(rpc_connection_failure_tests);
+
     // RPC peer (from peer.zig) tests
     const rpc_peer_from_peer_zig_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -730,6 +744,20 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_rpc_release_and_failure_level3_tests = b.addRunArtifact(rpc_release_and_failure_level3_tests);
+
+    // RPC concurrent calls tests (level 3)
+    const rpc_concurrent_calls_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/level3/rpc_concurrent_calls_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_concurrent_calls_tests = b.addRunArtifact(rpc_concurrent_calls_tests);
 
     // RPC worker pool tests
     const rpc_worker_pool_tests = b.addTest(.{
@@ -865,6 +893,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
     test_rpc_level2_step.dependOn(&run_rpc_peer_transport_state_tests.step);
     test_rpc_level2_step.dependOn(&run_rpc_peer_cleanup_tests.step);
+    test_rpc_level2_step.dependOn(&run_rpc_connection_failure_tests.step);
     test_rpc_level2_step.dependOn(&run_rpc_worker_pool_tests.step);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run RPC level 3+ tests (advanced peer semantics)");
@@ -873,6 +902,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level3_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
     test_rpc_level3_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
     test_rpc_level3_step.dependOn(&run_rpc_release_and_failure_level3_tests.step);
+    test_rpc_level3_step.dependOn(&run_rpc_concurrent_calls_tests.step);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_level3_step);

@@ -121,7 +121,7 @@ test "Framer fuzz malformed streams does not crash" {
 
             if (maybe_frame) |frame| {
                 defer allocator.free(frame);
-                var msg = message.Message.init(allocator, frame) catch continue;
+                var msg = message.Message.init(allocator, frame, .{}) catch continue;
                 msg.deinit();
             } else {
                 break;

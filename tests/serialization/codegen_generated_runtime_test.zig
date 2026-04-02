@@ -105,7 +105,7 @@ test "Codegen generated enum list compiles and runs" {
         \\    const bytes = try builder.toBytes();
         \\    defer std.testing.allocator.free(bytes);
         \\
-        \\    var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
         \\    defer msg.deinit();
         \\
         \\    const reader = try generated.EnumListDemo.Reader.init(&msg);
@@ -144,7 +144,7 @@ test "Codegen generated default setters preserve logical values" {
         \\        const bytes = try builder.toBytes();
         \\        defer std.testing.allocator.free(bytes);
         \\
-        \\        var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\        var msg = try message.Message.init(std.testing.allocator, bytes, .{});
         \\        defer msg.deinit();
         \\
         \\        const raw_root = try msg.getRootStruct();
@@ -177,7 +177,7 @@ test "Codegen generated default setters preserve logical values" {
         \\        const bytes = try builder.toBytes();
         \\        defer std.testing.allocator.free(bytes);
         \\
-        \\        var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\        var msg = try message.Message.init(std.testing.allocator, bytes, .{});
         \\        defer msg.deinit();
         \\
         \\        const raw_root = try msg.getRootStruct();
@@ -235,7 +235,7 @@ test "Codegen generated list wrappers compile and run" {
         \\    const bytes = try builder.toBytes();
         \\    defer std.testing.allocator.free(bytes);
         \\
-        \\    var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
         \\    defer msg.deinit();
         \\
         \\    const reader = try generated.ListWrapperDemo.Reader.init(&msg);
@@ -307,7 +307,7 @@ test "Codegen generated edge schema compiles and runs" {
         \\    const bytes = try builder.toBytes();
         \\    defer std.testing.allocator.free(bytes);
         \\
-        \\    var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
         \\    defer msg.deinit();
         \\
         \\    const reader = try generated.EdgeHolder.Reader.init(&msg);
@@ -347,7 +347,7 @@ test "Codegen generated schema evolution compiles and runs" {
         \\        const bytes = try builder.toBytes();
         \\        defer std.testing.allocator.free(bytes);
         \\
-        \\        var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\        var msg = try message.Message.init(std.testing.allocator, bytes, .{});
         \\        defer msg.deinit();
         \\
         \\        const root_struct = try msg.getRootStruct();
@@ -377,7 +377,7 @@ test "Codegen generated schema evolution compiles and runs" {
         \\        const bytes = try builder.toBytes();
         \\        defer std.testing.allocator.free(bytes);
         \\
-        \\        var msg = try message.Message.init(std.testing.allocator, bytes);
+        \\        var msg = try message.Message.init(std.testing.allocator, bytes, .{});
         \\        defer msg.deinit();
         \\
         \\        const root_struct = try msg.getRootStruct();

@@ -61,7 +61,7 @@ const ValueWhich = enum(u16) {
 };
 
 pub fn parseCodeGeneratorRequest(allocator: std.mem.Allocator, bytes: []const u8) !schema.CodeGeneratorRequest {
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.initUnvalidated(allocator, bytes);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();

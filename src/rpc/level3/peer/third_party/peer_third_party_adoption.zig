@@ -496,7 +496,7 @@ test "peer_third_party_adoption captureThirdPartyCompletionForPeerFn forwards co
     const completion_payload = try completion_builder.toBytes();
     defer std.testing.allocator.free(completion_payload);
 
-    var completion_msg = try message.Message.init(std.testing.allocator, completion_payload);
+    var completion_msg = try message.Message.initUnvalidated(std.testing.allocator, completion_payload);
     defer completion_msg.deinit();
     const completion_ptr = try completion_msg.getRootAnyPointer();
 

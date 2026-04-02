@@ -435,9 +435,9 @@ fn runRandomFixture(use_packed: bool) !void {
         defer parsed.deinit();
 
         var msg = if (use_packed)
-            try message.Message.initPacked(allocator, bin_bytes)
+            try message.Message.initPacked(allocator, bin_bytes, .{})
         else
-            try message.Message.init(allocator, bin_bytes);
+            try message.Message.init(allocator, bin_bytes, .{});
         defer msg.deinit();
 
         const root = try msg.getRootStruct();

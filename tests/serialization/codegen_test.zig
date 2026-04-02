@@ -69,7 +69,7 @@ test "Generated code: Person struct round trip" {
     defer testing.allocator.free(bytes);
 
     // Deserialize
-    var msg = try Person.message_mod.Message.init(testing.allocator, bytes);
+    var msg = try Person.message_mod.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try Person.Reader.init(&msg);
@@ -147,7 +147,7 @@ test "Generated code: struct with bool fields" {
     defer testing.allocator.free(bytes);
 
     // Deserialize
-    var msg = try Config.message_mod.Message.init(testing.allocator, bytes);
+    var msg = try Config.message_mod.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const config_reader = try Config.Reader.init(&msg);
@@ -229,7 +229,7 @@ test "Generated code: struct with all integer types" {
     defer testing.allocator.free(bytes);
 
     // Deserialize
-    var msg = try Numbers.message_mod.Message.init(testing.allocator, bytes);
+    var msg = try Numbers.message_mod.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const numbers_reader = try Numbers.Reader.init(&msg);

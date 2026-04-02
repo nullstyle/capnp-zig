@@ -154,7 +154,7 @@ pub const HostPeer = struct {
     pub fn respondHostCallResults(self: *HostPeer, question_id: u32, payload_frame: []const u8) !void {
         self.peer.assertThreadAffinity();
         if (!self.pending_host_call_questions.contains(question_id)) return error.UnknownQuestion;
-        var payload_msg = try message.Message.init(self.allocator, payload_frame);
+        var payload_msg = try message.Message.initUnvalidated(self.allocator, payload_frame);
         defer payload_msg.deinit();
         const payload_any = try payload_msg.getRootAnyPointer();
 

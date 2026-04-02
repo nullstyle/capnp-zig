@@ -100,7 +100,7 @@ test "Union: circle variant" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const shape_reader = try Shape.Reader.init(&msg);
@@ -121,7 +121,7 @@ test "Union: square variant" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const shape_reader = try Shape.Reader.init(&msg);
@@ -142,7 +142,7 @@ test "Union: rectangle variant with text" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const shape_reader = try Shape.Reader.init(&msg);
@@ -169,7 +169,7 @@ test "Union: switching between variants" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const shape_reader = try Shape.Reader.init(&msg);
@@ -242,7 +242,7 @@ test "Union: simple primitive union - idle" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const status_reader = try Status.Reader.init(&msg);
@@ -259,7 +259,7 @@ test "Union: simple primitive union - running" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const status_reader = try Status.Reader.init(&msg);
@@ -277,7 +277,7 @@ test "Union: simple primitive union - error" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const status_reader = try Status.Reader.init(&msg);

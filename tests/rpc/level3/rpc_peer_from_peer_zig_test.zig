@@ -1078,7 +1078,7 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
     try third_root.setText("await-destination");
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -1347,7 +1347,7 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
     try third_root.setText("third-party-destination");
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 
@@ -1526,7 +1526,7 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
     try third_root.setText("local-third-party");
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
 
     var client_build_ctx = ClientBuildCtx{
@@ -1609,7 +1609,7 @@ test "handleReturn adopts thirdPartyAnswer when await arrives first" {
     try completion_root.setText("await-first-completion");
     const completion_bytes = try completion_builder.toBytes();
     defer allocator.free(completion_bytes);
-    var completion_msg = try message.Message.init(allocator, completion_bytes);
+    var completion_msg = try message.Message.init(allocator, completion_bytes, .{});
     defer completion_msg.deinit();
     const completion_ptr = try completion_msg.getRootAnyPointer();
 
@@ -1733,7 +1733,7 @@ test "handleReturn replays buffered thirdPartyAnswer return when await arrives l
     try completion_root.setText("answer-first-completion");
     const completion_bytes = try completion_builder.toBytes();
     defer allocator.free(completion_bytes);
-    var completion_msg = try message.Message.init(allocator, completion_bytes);
+    var completion_msg = try message.Message.init(allocator, completion_bytes, .{});
     defer completion_msg.deinit();
     const completion_ptr = try completion_msg.getRootAnyPointer();
 
@@ -1837,7 +1837,7 @@ test "thirdPartyAnswer stress race keeps pending state empty" {
     try completion_root.setText("stress-completion");
     const completion_bytes = try completion_builder.toBytes();
     defer allocator.free(completion_bytes);
-    var completion_msg = try message.Message.init(allocator, completion_bytes);
+    var completion_msg = try message.Message.init(allocator, completion_bytes, .{});
     defer completion_msg.deinit();
     const completion_ptr = try completion_msg.getRootAnyPointer();
 
@@ -1941,7 +1941,7 @@ test "peer deinit releases pending embargo and promised-call queues under load" 
         try recipient_root.setText("deinit-pending-recipient");
         const recipient_bytes = try recipient_builder.toBytes();
         defer allocator.free(recipient_bytes);
-        var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+        var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
         defer recipient_msg.deinit();
         const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -2830,7 +2830,7 @@ test "handleFrame unimplemented call converts outstanding question to exception"
     const inner_bytes = try inner_builder.finish();
     defer allocator.free(inner_bytes);
 
-    var inner_msg = try message.Message.init(allocator, inner_bytes);
+    var inner_msg = try message.Message.init(allocator, inner_bytes, .{});
     defer inner_msg.deinit();
     const inner_root = try inner_msg.getRootAnyPointer();
 
@@ -2915,7 +2915,7 @@ test "handleFrame provide stores provision without immediate return" {
     const recipient_bytes = try recipient_builder.toBytes();
     defer allocator.free(recipient_bytes);
 
-    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
     defer recipient_msg.deinit();
     const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -2994,7 +2994,7 @@ test "handleFrame duplicate provide recipient sends abort" {
     const recipient_bytes = try recipient_builder.toBytes();
     defer allocator.free(recipient_bytes);
 
-    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
     defer recipient_msg.deinit();
     const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -3092,7 +3092,7 @@ test "handleFrame accept returns provided capability" {
     const recipient_bytes = try recipient_builder.toBytes();
     defer allocator.free(recipient_bytes);
 
-    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
     defer recipient_msg.deinit();
     const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -3236,7 +3236,7 @@ test "handleFrame finish clears stored provide entry" {
     const recipient_bytes = try recipient_builder.toBytes();
     defer allocator.free(recipient_bytes);
 
-    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
     defer recipient_msg.deinit();
     const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -3337,7 +3337,7 @@ test "handleFrame join returns capability" {
     key_part_struct.writeU16(6, 0);
     const key_part_bytes = try key_part_builder.toBytes();
     defer allocator.free(key_part_bytes);
-    var key_part_msg = try message.Message.init(allocator, key_part_bytes);
+    var key_part_msg = try message.Message.init(allocator, key_part_bytes, .{});
     defer key_part_msg.deinit();
     const key_part_ptr = try key_part_msg.getRootAnyPointer();
 
@@ -3434,7 +3434,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
     key0_struct.writeU16(6, 0);
     const key0_bytes = try key0_builder.toBytes();
     defer allocator.free(key0_bytes);
-    var key0_msg = try message.Message.init(allocator, key0_bytes);
+    var key0_msg = try message.Message.init(allocator, key0_bytes, .{});
     defer key0_msg.deinit();
     const key0_ptr = try key0_msg.getRootAnyPointer();
 
@@ -3463,7 +3463,7 @@ test "handleFrame join returns exceptions when targets mismatch across parts" {
     key1_struct.writeU16(6, 1);
     const key1_bytes = try key1_builder.toBytes();
     defer allocator.free(key1_bytes);
-    var key1_msg = try message.Message.init(allocator, key1_bytes);
+    var key1_msg = try message.Message.init(allocator, key1_bytes, .{});
     defer key1_msg.deinit();
     const key1_ptr = try key1_msg.getRootAnyPointer();
 
@@ -3688,7 +3688,7 @@ fn embargoAcceptQueueOomImpl(allocator: std.mem.Allocator) !void {
     const recipient_bytes = try recipient_builder.toBytes();
     defer allocator.free(recipient_bytes);
 
-    var recipient_msg = try message.Message.init(allocator, recipient_bytes);
+    var recipient_msg = try message.Message.init(allocator, recipient_bytes, .{});
     defer recipient_msg.deinit();
     const recipient_ptr = try recipient_msg.getRootAnyPointer();
 
@@ -3747,7 +3747,7 @@ fn sendResultsToThirdPartyLocalExportOomImpl(allocator: std.mem.Allocator) !void
     try destination_root.setText("oom-send-results-third-party");
     const destination_bytes = try destination_builder.toBytes();
     defer allocator.free(destination_bytes);
-    var destination_msg = try message.Message.init(allocator, destination_bytes);
+    var destination_msg = try message.Message.init(allocator, destination_bytes, .{});
     defer destination_msg.deinit();
     const destination_ptr = try destination_msg.getRootAnyPointer();
 
@@ -3866,7 +3866,7 @@ fn acceptFromThirdPartyAwaitQueueOomImpl(allocator: std.mem.Allocator) !void {
     try completion_root.setText("oom-await-queue");
     const completion_bytes = try completion_builder.toBytes();
     defer allocator.free(completion_bytes);
-    var completion_msg = try message.Message.init(allocator, completion_bytes);
+    var completion_msg = try message.Message.init(allocator, completion_bytes, .{});
     defer completion_msg.deinit();
     const completion_ptr = try completion_msg.getRootAnyPointer();
 
@@ -3910,7 +3910,7 @@ fn forwardResolvedCallThirdPartyContextOomImpl(allocator: std.mem.Allocator) !vo
     try third_root.setText("oom-forward-context-third-party");
     const third_bytes = try third_builder.toBytes();
     defer allocator.free(third_bytes);
-    var third_msg = try message.Message.init(allocator, third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
     defer third_msg.deinit();
     const third_ptr = try third_msg.getRootAnyPointer();
 

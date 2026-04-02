@@ -212,7 +212,7 @@ test "peer_control forwarded third-party/capture helper factories use peer alloc
     defer std.testing.allocator.free(third_party_payload);
 
     const capture_any = captureAnyPointerPayloadForPeerFn(FakePeer, Hooks.capture);
-    var third_party_msg = try message.Message.init(std.testing.allocator, third_party_payload);
+    var third_party_msg = try message.Message.init(std.testing.allocator, third_party_payload, .{});
     defer third_party_msg.deinit();
     const third_party_ptr = try third_party_msg.getRootAnyPointer();
     const captured = try capture_any(&peer, third_party_ptr);

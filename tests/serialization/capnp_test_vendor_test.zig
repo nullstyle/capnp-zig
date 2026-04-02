@@ -169,7 +169,7 @@ test "capnp_test vendor suite" {
         const bytes = try capnpEvalBinary(allocator, test_name);
         defer allocator.free(bytes);
 
-        var msg = try message.Message.init(allocator, bytes);
+        var msg = try message.Message.init(allocator, bytes, .{});
         defer msg.deinit();
 
         const root = try msg.getRootStruct();

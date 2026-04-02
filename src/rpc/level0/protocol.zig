@@ -277,7 +277,7 @@ pub const DecodedMessage = struct {
     tag: MessageTag,
 
     pub fn init(allocator: std.mem.Allocator, frame: []const u8) !DecodedMessage {
-        var msg = try message.Message.init(allocator, frame);
+        var msg = try message.Message.initUnvalidated(allocator, frame);
         errdefer msg.deinit();
         const root = try msg.getRootStruct();
         const disc = root.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);

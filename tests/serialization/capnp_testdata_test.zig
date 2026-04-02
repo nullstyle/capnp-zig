@@ -76,9 +76,9 @@ test "capnp testdata: TestAllTypes fixtures" {
         defer allocator.free(bytes);
 
         var msg = if (fixture.is_packed)
-            try message.Message.initPacked(allocator, bytes)
+            try message.Message.initPacked(allocator, bytes, .{})
         else
-            try message.Message.init(allocator, bytes);
+            try message.Message.init(allocator, bytes, .{});
         defer msg.deinit();
 
         const root = try msg.getRootStruct();

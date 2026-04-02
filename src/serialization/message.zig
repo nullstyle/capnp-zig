@@ -303,13 +303,10 @@ pub const Capability = struct {
 ///
 /// The message is split into one or more segments. Reading is zero-copy:
 /// `StructReader` and list readers reference the original byte slices directly.
-/// A parsed Cap'n Proto message providing zero-copy read access to segments.
 ///
-/// **Important**: This type does not enforce a traversal limit during reads.
-/// When reading untrusted input, callers MUST call `validate()` before using
-/// `getRootStruct()` or any other reader method.  `validate()` performs a
-/// full pointer-graph walk with depth and size checks that prevent
-/// amplification attacks from malicious messages.
+/// Use `init` or `initPacked` to deserialize and validate in one step (recommended
+/// for untrusted input). Use `initUnvalidated` or `initPackedUnvalidated` to skip
+/// validation when reading trusted data or when custom validation is needed.
 ///
 /// Callers must keep the source data (or `backing_data`) alive for the lifetime
 /// of any readers obtained from this message. Call `deinit` to free the
@@ -336,17 +333,37 @@ pub const Message = struct {
         element_count: u32,
     };
 
+    /// Configurable limits for message validation.
+    ///
+    /// - `segment_count_limit`: maximum number of segments allowed in the message.
+    /// - `traversal_limit_words`: total words the validator may visit (prevents amplification attacks).
+    /// - `nesting_limit`: maximum pointer-following depth (prevents stack overflow from deep nesting).
     pub const ValidationOptions = struct {
         segment_count_limit: usize = max_segment_count,
         traversal_limit_words: usize = 8 * 1024 * 1024,
         nesting_limit: usize = 64,
     };
 
-    /// Deserialize a Cap'n Proto message from its framed wire representation.
+    /// Deserialize and validate a Cap'n Proto message from its framed wire representation.
+    ///
+    /// Parses the segment table header, slices `data` into per-segment views, and
+    /// performs a full pointer-graph validation walk to enforce traversal and nesting
+    /// limits. This is the recommended entry point for reading untrusted input.
+    ///
+    /// The caller retains ownership of `data`; this message borrows into it.
+    pub fn init(allocator: std.mem.Allocator, data: []const u8, options: ValidationOptions) !Message {
+        var msg = try initUnvalidated(allocator, data);
+        errdefer msg.deinit();
+        try msg.validate(options);
+        return msg;
+    }
+
+    /// Deserialize a Cap'n Proto message from its framed wire representation
+    /// without performing validation.
     ///
     /// Parses the segment table header and slices `data` into per-segment views.
     /// The caller retains ownership of `data`; this message borrows into it.
-    pub fn init(allocator: std.mem.Allocator, data: []const u8) !Message {
+    pub fn initUnvalidated(allocator: std.mem.Allocator, data: []const u8) !Message {
         // Read segment count
         if (data.len < 4) return error.TruncatedMessage;
         const segment_count_minus_one = std.mem.readInt(u32, data[0..4], .little);
@@ -400,15 +417,28 @@ pub const Message = struct {
         };
     }
 
-    /// Deserialize a Cap'n Proto message from packed encoding.
+    /// Deserialize and validate a Cap'n Proto message from packed encoding.
+    ///
+    /// Unpacks `packed_bytes` into standard framed format, parses segments, and
+    /// performs a full pointer-graph validation walk. The unpacked buffer is owned
+    /// by this message and freed on `deinit`.
+    pub fn initPacked(allocator: std.mem.Allocator, packed_bytes: []const u8, options: ValidationOptions) !Message {
+        var msg = try initPackedUnvalidated(allocator, packed_bytes);
+        errdefer msg.deinit();
+        try msg.validate(options);
+        return msg;
+    }
+
+    /// Deserialize a Cap'n Proto message from packed encoding without
+    /// performing validation.
     ///
     /// Unpacks `packed_bytes` into standard framed format, then parses segments.
     /// The unpacked buffer is owned by this message and freed on `deinit`.
-    pub fn initPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) !Message {
+    pub fn initPackedUnvalidated(allocator: std.mem.Allocator, packed_bytes: []const u8) !Message {
         const unpacked = try unpackPacked(allocator, packed_bytes);
         errdefer allocator.free(unpacked);
 
-        var msg = try Message.init(allocator, unpacked);
+        var msg = try Message.initUnvalidated(allocator, unpacked);
         msg.backing_data = unpacked;
         msg.segments_owned = true;
         return msg;
@@ -702,7 +732,9 @@ pub const Message = struct {
         return error.InvalidInlineCompositePointer;
     }
 
-    /// Validate the message structure against configurable traversal and nesting limits.
+    /// Walk the entire pointer graph starting from the root, enforcing traversal
+    /// and nesting limits from `options`. Returns an error if the message exceeds
+    /// the configured segment count, word traversal budget, or nesting depth.
     pub fn validate(self: *const Message, options: ValidationOptions) anyerror!void {
         if (self.segments.len == 0) return error.EmptyMessage;
         if (self.segments.len > options.segment_count_limit) return error.SegmentCountLimitExceeded;
@@ -1175,6 +1207,7 @@ pub const StructReader = struct {
         return self.readU16(byte_offset);
     }
 
+    /// Read a struct list (inline-composite encoding) from the given pointer index.
     pub fn readStructList(self: StructReader, pointer_index: usize) !StructListReader {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
@@ -1210,6 +1243,7 @@ pub const StructReader = struct {
         return self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
     }
 
+    /// Read a list of text (string) pointers from the given pointer index.
     pub fn readTextList(self: StructReader, pointer_index: usize) !TextListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 6) return error.InvalidPointer;
@@ -1222,6 +1256,7 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a list of pointers (type-erased) from the given pointer index.
     pub fn readPointerList(self: StructReader, pointer_index: usize) !PointerListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 6) return error.InvalidPointer;
@@ -1234,6 +1269,7 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a nested struct from the given pointer index.
     pub fn readStruct(self: StructReader, pointer_index: usize) !StructReader {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
@@ -1247,6 +1283,7 @@ pub const StructReader = struct {
         return self.message.resolveStructPointer(self.segment_id, absolute_pointer_pos, pointer_word);
     }
 
+    /// Read a type-erased pointer from the given pointer index.
     pub fn readAnyPointer(self: StructReader, pointer_index: usize) !AnyPointerReader {
         const pointers = self.getPointerSection();
         const pointer_offset = pointer_index * 8;
@@ -1264,11 +1301,13 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a capability index from the given pointer index.
     pub fn readCapability(self: StructReader, pointer_index: usize) !Capability {
         const any = try self.readAnyPointer(pointer_index);
         return any.getCapability();
     }
 
+    /// Read raw bytes from a data pointer at the given pointer index.
     pub fn readData(self: StructReader, pointer_index: usize) ![]const u8 {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 2) return error.InvalidPointer;
@@ -1280,6 +1319,7 @@ pub const StructReader = struct {
         return segment[list.content_offset .. list.content_offset + total_bytes];
     }
 
+    /// Read a `List(UInt8)` from the given pointer index.
     pub fn readU8List(self: StructReader, pointer_index: usize) !U8ListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 2) return error.InvalidPointer;
@@ -1306,10 +1346,12 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a `List(Int8)` from the given pointer index.
     pub fn readI8List(self: StructReader, pointer_index: usize) !I8ListReader {
         return castListReader(I8ListReader, try self.readU8List(pointer_index));
     }
 
+    /// Read a `List(UInt16)` from the given pointer index.
     pub fn readU16List(self: StructReader, pointer_index: usize) !U16ListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 3) return error.InvalidPointer;
@@ -1325,10 +1367,12 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a `List(Int16)` from the given pointer index.
     pub fn readI16List(self: StructReader, pointer_index: usize) !I16ListReader {
         return castListReader(I16ListReader, try self.readU16List(pointer_index));
     }
 
+    /// Read a `List(UInt32)` from the given pointer index.
     pub fn readU32List(self: StructReader, pointer_index: usize) !U32ListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 4) return error.InvalidPointer;
@@ -1344,14 +1388,17 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a `List(Int32)` from the given pointer index.
     pub fn readI32List(self: StructReader, pointer_index: usize) !I32ListReader {
         return castListReader(I32ListReader, try self.readU32List(pointer_index));
     }
 
+    /// Read a `List(Float32)` from the given pointer index.
     pub fn readF32List(self: StructReader, pointer_index: usize) !F32ListReader {
         return castListReader(F32ListReader, try self.readU32List(pointer_index));
     }
 
+    /// Read a `List(UInt64)` from the given pointer index.
     pub fn readU64List(self: StructReader, pointer_index: usize) !U64ListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 5) return error.InvalidPointer;
@@ -1367,14 +1414,17 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a `List(Int64)` from the given pointer index.
     pub fn readI64List(self: StructReader, pointer_index: usize) !I64ListReader {
         return castListReader(I64ListReader, try self.readU64List(pointer_index));
     }
 
+    /// Read a `List(Float64)` from the given pointer index.
     pub fn readF64List(self: StructReader, pointer_index: usize) !F64ListReader {
         return castListReader(F64ListReader, try self.readU64List(pointer_index));
     }
 
+    /// Read a `List(Bool)` from the given pointer index.
     pub fn readBoolList(self: StructReader, pointer_index: usize) !BoolListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 1) return error.InvalidPointer;
@@ -1390,6 +1440,7 @@ pub const StructReader = struct {
         };
     }
 
+    /// Read a `List(Void)` from the given pointer index.
     pub fn readVoidList(self: StructReader, pointer_index: usize) !VoidListReader {
         const list = try self.resolveListPointerAt(pointer_index);
         if (list.element_size != 0) return error.InvalidPointer;
@@ -1490,18 +1541,22 @@ pub const AnyPointerBuilder = struct {
     segment_id: u32,
     pointer_pos: usize,
 
+    /// Set this pointer to null (zero).
     pub fn setNull(self: AnyPointerBuilder) !void {
         return any_pointer_builder_module.setNull(self.builder, self.segment_id, self.pointer_pos);
     }
 
+    /// Write a text (string) value at this pointer position.
     pub fn setText(self: AnyPointerBuilder, text: []const u8) !void {
         return any_pointer_builder_module.setText(self.builder, self.segment_id, self.pointer_pos, text);
     }
 
+    /// Write a data (byte slice) value at this pointer position.
     pub fn setData(self: AnyPointerBuilder, data: []const u8) !void {
         return any_pointer_builder_module.setData(self.builder, self.segment_id, self.pointer_pos, data);
     }
 
+    /// Write a capability pointer referencing the given capability table entry.
     pub fn setCapability(self: AnyPointerBuilder, cap: Capability) !void {
         return any_pointer_builder_module.setCapability(
             self.builder,
@@ -1512,10 +1567,12 @@ pub const AnyPointerBuilder = struct {
         );
     }
 
+    /// Allocate and initialize a struct at this pointer position.
     pub fn initStruct(self: AnyPointerBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
         return self.builder.writeStructPointer(self.segment_id, self.pointer_pos, data_words, pointer_words, self.segment_id);
     }
 
+    /// Allocate and initialize a struct list (inline-composite) at this pointer position.
     pub fn initStructList(self: AnyPointerBuilder, element_count: u32, data_words: u16, pointer_words: u16) !StructListBuilder {
         return self.builder.writeStructListPointer(
             self.segment_id,
@@ -1528,6 +1585,7 @@ pub const AnyPointerBuilder = struct {
         );
     }
 
+    /// Allocate and initialize a list of pointers at this pointer position.
     pub fn initPointerList(self: AnyPointerBuilder, element_count: u32) !PointerListBuilder {
         const offset = try any_pointer_builder_module.initList(self.builder, self.segment_id, self.pointer_pos, 6, element_count);
         return .{
@@ -1551,34 +1609,42 @@ pub const AnyPointerBuilder = struct {
         };
     }
 
+    /// Initialize a `List(Void)` at this pointer position.
     pub fn initVoidList(self: AnyPointerBuilder, element_count: u32) !VoidListBuilder {
         return self.initTypedList(VoidListBuilder, 0, element_count);
     }
 
+    /// Initialize a `List(UInt8)` at this pointer position.
     pub fn initU8List(self: AnyPointerBuilder, element_count: u32) !U8ListBuilder {
         return self.initTypedList(U8ListBuilder, 2, element_count);
     }
 
+    /// Initialize a `List(UInt16)` at this pointer position.
     pub fn initU16List(self: AnyPointerBuilder, element_count: u32) !U16ListBuilder {
         return self.initTypedList(U16ListBuilder, 3, element_count);
     }
 
+    /// Initialize a `List(UInt32)` at this pointer position.
     pub fn initU32List(self: AnyPointerBuilder, element_count: u32) !U32ListBuilder {
         return self.initTypedList(U32ListBuilder, 4, element_count);
     }
 
+    /// Initialize a `List(UInt64)` at this pointer position.
     pub fn initU64List(self: AnyPointerBuilder, element_count: u32) !U64ListBuilder {
         return self.initTypedList(U64ListBuilder, 5, element_count);
     }
 
+    /// Initialize a `List(Bool)` at this pointer position.
     pub fn initBoolList(self: AnyPointerBuilder, element_count: u32) !BoolListBuilder {
         return self.initTypedList(BoolListBuilder, 1, element_count);
     }
 
+    /// Initialize a `List(Float32)` at this pointer position.
     pub fn initF32List(self: AnyPointerBuilder, element_count: u32) !F32ListBuilder {
         return self.initTypedList(F32ListBuilder, 4, element_count);
     }
 
+    /// Initialize a `List(Float64)` at this pointer position.
     pub fn initF64List(self: AnyPointerBuilder, element_count: u32) !F64ListBuilder {
         return self.initTypedList(F64ListBuilder, 5, element_count);
     }
@@ -1622,6 +1688,7 @@ pub const MessageBuilder = struct {
         return id;
     }
 
+    /// Allocate a new empty segment and return its ID.
     pub fn createSegment(self: *MessageBuilder) !u32 {
         return self.createSegmentWithCapacity(0);
     }
@@ -1657,6 +1724,7 @@ pub const MessageBuilder = struct {
         return offset;
     }
 
+    /// Allocate a struct in a specific segment, creating it if necessary.
     pub fn allocateStructInSegment(self: *MessageBuilder, segment_id: u32, data_words: u16, pointer_words: u16) !StructBuilder {
         if (self.segments.items.len == 0) {
             _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
@@ -2158,6 +2226,7 @@ pub const MessageBuilder = struct {
         }
     }
 
+    /// Stream the packed wire format directly to `writer`.
     pub fn writePackedTo(self: *MessageBuilder, writer: anytype) !void {
         const packed_bytes = try self.toPackedBytes();
         defer self.allocator.free(packed_bytes);
@@ -2165,6 +2234,7 @@ pub const MessageBuilder = struct {
     }
 };
 
+/// Builder for writing elements of a struct list (inline-composite encoding).
 pub const StructListBuilder = struct {
     builder: *MessageBuilder,
     segment_id: u32,
@@ -2173,10 +2243,12 @@ pub const StructListBuilder = struct {
     data_words: u16,
     pointer_words: u16,
 
+    /// Return the number of elements in this struct list.
     pub fn len(self: StructListBuilder) u32 {
         return self.element_count;
     }
 
+    /// Return a `StructBuilder` for the element at the given index.
     pub fn get(self: StructListBuilder, index: u32) !StructBuilder {
         if (index >= self.element_count) return error.IndexOutOfBounds;
         const stride = (@as(usize, self.data_words) + @as(usize, self.pointer_words)) * 8;
@@ -2308,7 +2380,7 @@ test "cloneAnyPointer handles null pointers" {
     const src_bytes = try src_builder.toBytes();
     defer std.testing.allocator.free(src_bytes);
 
-    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    var src_msg = try Message.init(std.testing.allocator, src_bytes, .{});
     defer src_msg.deinit();
     const src_any = try src_msg.getRootAnyPointer();
 
@@ -2320,7 +2392,7 @@ test "cloneAnyPointer handles null pointers" {
     const dest_bytes = try dest_builder.toBytes();
     defer std.testing.allocator.free(dest_bytes);
 
-    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes, .{});
     defer dest_msg.deinit();
     const dest_any = try dest_msg.getRootAnyPointer();
     try std.testing.expect(dest_any.isNull());
@@ -2335,7 +2407,7 @@ test "cloneAnyPointer clones capability pointers" {
     const src_bytes = try src_builder.toBytes();
     defer std.testing.allocator.free(src_bytes);
 
-    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    var src_msg = try Message.initUnvalidated(std.testing.allocator, src_bytes);
     defer src_msg.deinit();
     const src_any = try src_msg.getRootAnyPointer();
 
@@ -2347,7 +2419,7 @@ test "cloneAnyPointer clones capability pointers" {
     const dest_bytes = try dest_builder.toBytes();
     defer std.testing.allocator.free(dest_bytes);
 
-    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    var dest_msg = try Message.initUnvalidated(std.testing.allocator, dest_bytes);
     defer dest_msg.deinit();
     const dest_any = try dest_msg.getRootAnyPointer();
     const cap = try dest_any.getCapability();
@@ -2365,7 +2437,7 @@ test "cloneAnyPointer clones inline-composite struct lists" {
     const src_bytes = try src_builder.toBytes();
     defer std.testing.allocator.free(src_bytes);
 
-    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    var src_msg = try Message.init(std.testing.allocator, src_bytes, .{});
     defer src_msg.deinit();
     const src_any = try src_msg.getRootAnyPointer();
 
@@ -2377,7 +2449,7 @@ test "cloneAnyPointer clones inline-composite struct lists" {
     const dest_bytes = try dest_builder.toBytes();
     defer std.testing.allocator.free(dest_bytes);
 
-    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes, .{});
     defer dest_msg.deinit();
     const dest_root_struct = try dest_msg.getRootStruct();
     const dest_list = try dest_root_struct.readStructList(0);
@@ -2397,7 +2469,7 @@ test "cloneAnyPointer clones pointer lists" {
     const src_bytes = try src_builder.toBytes();
     defer std.testing.allocator.free(src_bytes);
 
-    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    var src_msg = try Message.init(std.testing.allocator, src_bytes, .{});
     defer src_msg.deinit();
     const src_any = try src_msg.getRootAnyPointer();
 
@@ -2409,7 +2481,7 @@ test "cloneAnyPointer clones pointer lists" {
     const dest_bytes = try dest_builder.toBytes();
     defer std.testing.allocator.free(dest_bytes);
 
-    var dest_msg = try Message.init(std.testing.allocator, dest_bytes);
+    var dest_msg = try Message.init(std.testing.allocator, dest_bytes, .{});
     defer dest_msg.deinit();
     const dest_any = try dest_msg.getRootAnyPointer();
     const dest_list = try dest_any.getPointerList();
@@ -2434,7 +2506,7 @@ test "cloneAnyPointer enforces recursion limit" {
     const src_bytes = try src_builder.toBytes();
     defer std.testing.allocator.free(src_bytes);
 
-    var src_msg = try Message.init(std.testing.allocator, src_bytes);
+    var src_msg = try Message.initUnvalidated(std.testing.allocator, src_bytes);
     defer src_msg.deinit();
     const src_any = try src_msg.getRootAnyPointer();
 
@@ -2451,7 +2523,7 @@ test "cloneAnyPointer rejects invalid far-pointer cycles" {
         0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // far pointer to itself
     };
 
-    var src_msg = try Message.init(std.testing.allocator, &frame);
+    var src_msg = try Message.initUnvalidated(std.testing.allocator, &frame);
     defer src_msg.deinit();
     const src_any = try src_msg.getRootAnyPointer();
 
@@ -2470,7 +2542,7 @@ test "StructReader.readBoolStrict enforces bounds" {
     const bytes = try builder.toBytes();
     defer std.testing.allocator.free(bytes);
 
-    var msg = try Message.init(std.testing.allocator, bytes);
+    var msg = try Message.init(std.testing.allocator, bytes, .{});
     defer msg.deinit();
     const reader = try msg.getRootStruct();
     try std.testing.expect(try reader.readBoolStrict(0, 0));

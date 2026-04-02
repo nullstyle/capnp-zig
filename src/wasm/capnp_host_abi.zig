@@ -1128,7 +1128,7 @@ pub export fn capnp_example_person_to_json(
         return 0;
     };
 
-    var msg = message.Message.init(allocator, frame) catch |err| {
+    var msg = message.Message.initUnvalidated(allocator, frame) catch |err| {
         setError(ERROR_SERDE_DECODE, @errorName(err));
         return 0;
     };

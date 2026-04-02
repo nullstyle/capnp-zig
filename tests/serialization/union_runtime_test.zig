@@ -11,7 +11,7 @@ const message = capnpc.message;
 fn roundTrip(builder: *message.MessageBuilder) !struct { msg: message.Message, bytes: []const u8 } {
     const bytes = try builder.toBytes();
     errdefer testing.allocator.free(bytes);
-    const msg = try message.Message.init(testing.allocator, bytes);
+    const msg = try message.Message.init(testing.allocator, bytes, .{});
     return .{ .msg = msg, .bytes = bytes };
 }
 
@@ -407,7 +407,7 @@ test "edge: discriminant survives packed encoding round-trip" {
     const packed_bytes = try builder.toPackedBytes();
     defer testing.allocator.free(packed_bytes);
 
-    var msg = try message.Message.initPacked(testing.allocator, packed_bytes);
+    var msg = try message.Message.initPacked(testing.allocator, packed_bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();

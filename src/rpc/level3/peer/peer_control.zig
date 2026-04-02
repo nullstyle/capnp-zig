@@ -933,7 +933,7 @@ pub fn setForwardedCallThirdPartyFromPayloadForPeer(
     call_builder: *protocol.CallBuilder,
     payload: []const u8,
 ) !void {
-    var msg = try message.Message.init(peer.allocator, payload);
+    var msg = try message.Message.initUnvalidated(peer.allocator, payload);
     defer msg.deinit();
     const third_party = try msg.getRootAnyPointer();
     try call_builder.setSendResultsToThirdParty(third_party);

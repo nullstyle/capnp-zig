@@ -523,7 +523,7 @@ test "peer_provide_join_orchestration capture recipient/provision helper factori
     const payload = try msg_builder.toBytes();
     defer std.testing.allocator.free(payload);
 
-    var msg = try message.Message.init(std.testing.allocator, payload);
+    var msg = try message.Message.initUnvalidated(std.testing.allocator, payload);
     defer msg.deinit();
     const ptr = try msg.getRootAnyPointer();
 

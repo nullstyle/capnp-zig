@@ -27,7 +27,7 @@ test "MessageBuilder and Message: round trip simple struct" {
     defer testing.allocator.free(bytes);
 
     // Read it back
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -48,7 +48,7 @@ test "MessageBuilder and Message: bool fields" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -72,7 +72,7 @@ test "MessageBuilder and Message: all integer types" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -92,7 +92,7 @@ test "MessageBuilder and Message: text field" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -110,7 +110,7 @@ test "MessageBuilder and Message: empty text field" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -130,7 +130,7 @@ test "MessageBuilder and Message: multiple text fields" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -152,7 +152,7 @@ test "MessageBuilder and Message: mixed data and pointer fields" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -176,7 +176,7 @@ test "Message: handle truncated message" {
     // Try to parse truncated version
     if (bytes.len > 4) {
         const truncated = bytes[0 .. bytes.len - 4];
-        const result = message.Message.init(allocator, truncated);
+        const result = message.Message.init(allocator, truncated, .{});
         try testing.expectError(error.TruncatedMessage, result);
     }
 }
@@ -192,7 +192,7 @@ test "Message: validate traversal and nesting limits" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     try msg.validate(.{});
@@ -203,7 +203,7 @@ test "Message: validate traversal and nesting limits" {
 test "Message: segment count decode limit is enforced" {
     // segment_count_minus_one = 512 => 513 segments, beyond Message.max_segment_count (512)
     const bytes = [_]u8{ 0x00, 0x02, 0x00, 0x00 };
-    try testing.expectError(error.SegmentCountLimitExceeded, message.Message.init(testing.allocator, &bytes));
+    try testing.expectError(error.SegmentCountLimitExceeded, message.Message.init(testing.allocator, &bytes, .{}));
 }
 
 test "Message: validate enforces segment count limit option" {
@@ -216,7 +216,7 @@ test "Message: validate enforces segment count limit option" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     try msg.validate(.{ .segment_count_limit = 2 });
@@ -233,7 +233,7 @@ test "Message: traversal limit boundary conditions" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     try msg.validate(.{ .traversal_limit_words = 1 });
@@ -252,7 +252,7 @@ test "Message: nesting limit boundary conditions" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     try msg.validate(.{ .nesting_limit = 3 });
@@ -269,7 +269,7 @@ test "StructReader: out of bounds access returns zero" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -343,7 +343,7 @@ test "Message: negative list pointer offset" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -378,7 +378,7 @@ test "Message: far pointer root struct in another segment" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -418,7 +418,7 @@ test "Message: far pointer list in another segment" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -457,7 +457,7 @@ test "Message: double-far pointer root struct" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -476,7 +476,7 @@ test "MessageBuilder: writeText across segments emits far pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -498,7 +498,7 @@ test "MessageBuilder: inline composite list in same segment" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -524,7 +524,7 @@ test "MessageBuilder: inline composite list with far pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -552,7 +552,7 @@ test "MessageBuilder: inline composite list with double-far pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -575,7 +575,7 @@ test "MessageBuilder: text list in same segment" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -599,7 +599,7 @@ test "MessageBuilder: text list with far pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -624,7 +624,7 @@ test "MessageBuilder: text list with double-far pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -647,7 +647,7 @@ test "Message: cloneAnyPointer clones text list behind far pointer" {
     const src_bytes = try src_builder.toBytes();
     defer testing.allocator.free(src_bytes);
 
-    var src_msg = try message.Message.init(testing.allocator, src_bytes);
+    var src_msg = try message.Message.init(testing.allocator, src_bytes, .{});
     defer src_msg.deinit();
 
     const src_root = try src_msg.getRootStruct();
@@ -663,7 +663,7 @@ test "Message: cloneAnyPointer clones text list behind far pointer" {
     const dest_bytes = try dest_builder.toBytes();
     defer testing.allocator.free(dest_bytes);
 
-    var dest_msg = try message.Message.init(testing.allocator, dest_bytes);
+    var dest_msg = try message.Message.init(testing.allocator, dest_bytes, .{});
     defer dest_msg.deinit();
 
     const dest_any = try dest_msg.getRootAnyPointer();
@@ -687,7 +687,7 @@ test "Message: cloneAnyPointer clones text list behind double-far pointer" {
     const src_bytes = try src_builder.toBytes();
     defer testing.allocator.free(src_bytes);
 
-    var src_msg = try message.Message.init(testing.allocator, src_bytes);
+    var src_msg = try message.Message.init(testing.allocator, src_bytes, .{});
     defer src_msg.deinit();
 
     const src_root = try src_msg.getRootStruct();
@@ -703,7 +703,7 @@ test "Message: cloneAnyPointer clones text list behind double-far pointer" {
     const dest_bytes = try dest_builder.toBytes();
     defer testing.allocator.free(dest_bytes);
 
-    var dest_msg = try message.Message.init(testing.allocator, dest_bytes);
+    var dest_msg = try message.Message.init(testing.allocator, dest_bytes, .{});
     defer dest_msg.deinit();
 
     const dest_any = try dest_msg.getRootAnyPointer();
@@ -727,7 +727,7 @@ test "MessageBuilder: text list elements stored in other segment" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -752,7 +752,7 @@ test "MessageBuilder: pointer list with struct and text" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -804,7 +804,7 @@ test "MessageBuilder: primitive lists and list-of-lists" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -864,7 +864,7 @@ test "MessageBuilder: primitive list with far pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -886,7 +886,7 @@ test "MessageBuilder and Message: capability pointer" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -910,7 +910,7 @@ test "MessageBuilder and Message: capability pointer list" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -932,7 +932,7 @@ test "MessageBuilder: packed bytes roundtrip" {
     const packed_bytes = try builder.toPackedBytes();
     defer testing.allocator.free(packed_bytes);
 
-    var msg = try message.Message.initPacked(testing.allocator, packed_bytes);
+    var msg = try message.Message.initPacked(testing.allocator, packed_bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -951,7 +951,7 @@ test "AnyPointer: set and read text" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -964,7 +964,7 @@ test "Message: malformed segment count header reports InvalidSegmentCount" {
         0xff, 0xff, 0xff, 0xff, // segment_count_minus_one (overflow)
         0x00, 0x00, 0x00, 0x00, // first segment size (unused)
     };
-    try testing.expectError(error.InvalidSegmentCount, message.Message.init(testing.allocator, &bytes));
+    try testing.expectError(error.InvalidSegmentCount, message.Message.init(testing.allocator, &bytes, .{}));
 }
 
 test "MessageBuilder: struct list rejects oversized element count" {
@@ -990,7 +990,7 @@ test "Message: invalid double-far landing pointer reports InvalidFarPointer" {
     std.mem.writeInt(u64, bytes[24..32], 0, .little);
     std.mem.writeInt(u64, bytes[32..40], 0, .little);
 
-    var msg = try message.Message.init(testing.allocator, &bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, &bytes);
     defer msg.deinit();
 
     try testing.expectError(error.InvalidFarPointer, msg.getRootStruct());
@@ -1010,7 +1010,7 @@ test "Message: inline composite overflow in expected words is rejected" {
     const tag_word: u64 = (@as(u64, 65_536) << 2) | (@as(u64, 1) << 32) | (@as(u64, 65_535) << 48);
     std.mem.writeInt(u64, bytes[16..24], tag_word, .little);
 
-    var msg = try message.Message.init(testing.allocator, &bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, &bytes);
     defer msg.deinit();
 
     const root = try msg.getRootAnyPointer();
@@ -1047,7 +1047,7 @@ test "Message: double-far inline composite overflow is rejected" {
     const tag_word: u64 = (@as(u64, 65_536) << 2) | (@as(u64, 1) << 32) | (@as(u64, 65_535) << 48);
     std.mem.writeInt(u64, mutated[landing_offset + 8 ..][0..8], tag_word, .little);
 
-    var msg = try message.Message.init(testing.allocator, mutated);
+    var msg = try message.Message.initUnvalidated(testing.allocator, mutated);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1065,7 +1065,7 @@ test "Message: fuzz malformed buffers do not crash decode" {
         defer testing.allocator.free(bytes);
         random.bytes(bytes);
 
-        var msg = message.Message.init(testing.allocator, bytes) catch continue;
+        var msg = message.Message.initUnvalidated(testing.allocator, bytes) catch continue;
         defer msg.deinit();
 
         _ = msg.getRootStruct() catch {};
@@ -1084,7 +1084,7 @@ test "Message: fuzz malformed packed buffers do not crash decode" {
         defer testing.allocator.free(bytes);
         random.bytes(bytes);
 
-        var msg = message.Message.initPacked(testing.allocator, bytes) catch continue;
+        var msg = message.Message.initPackedUnvalidated(testing.allocator, bytes) catch continue;
         defer msg.deinit();
 
         _ = msg.getRootStruct() catch {};
@@ -1135,7 +1135,7 @@ test "Message: packed format adversarial edge cases do not crash" {
     };
 
     for (cases) |packed_bytes| {
-        var msg = message.Message.initPacked(testing.allocator, packed_bytes) catch continue;
+        var msg = message.Message.initPackedUnvalidated(testing.allocator, packed_bytes) catch continue;
         defer msg.deinit();
 
         _ = msg.getRootStruct() catch {};
@@ -1153,7 +1153,7 @@ test "readTextStrict: valid UTF-8 passes" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1171,7 +1171,7 @@ test "readTextStrict: empty text passes" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1188,7 +1188,7 @@ test "readTextStrict: null pointer returns empty string" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1210,7 +1210,7 @@ test "TextListReader.getStrict: valid UTF-8 succeeds" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1244,7 +1244,7 @@ test "TextListReader.getStrict: invalid UTF-8 returns error" {
     const pos = std.mem.indexOf(u8, mutated, needle) orelse return error.TestSetupFailed;
     mutated[pos] = 0xFF;
 
-    var msg = try message.Message.init(testing.allocator, mutated);
+    var msg = try message.Message.init(testing.allocator, mutated, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1275,7 +1275,7 @@ test "PointerListReader.getTextStrict: valid UTF-8 succeeds" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1310,7 +1310,7 @@ test "PointerListReader.getTextStrict: invalid UTF-8 returns error" {
     const pos = std.mem.indexOf(u8, mutated, needle) orelse return error.TestSetupFailed;
     mutated[pos] = 0xFE;
 
-    var msg = try message.Message.init(testing.allocator, mutated);
+    var msg = try message.Message.init(testing.allocator, mutated, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1388,7 +1388,7 @@ test "Message: far pointer to inline-composite list (raw bytes)" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1450,7 +1450,7 @@ test "Message: double-far pointer Layout A inline-composite list (raw bytes)" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1520,7 +1520,7 @@ test "Message: double-far pointer Layout B inline-composite list (raw bytes)" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1582,7 +1582,7 @@ test "Message: double-far pointer Layout B with multi-word struct elements" {
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -1653,7 +1653,7 @@ test "Message: far pointer inline-composite list at nonzero offset in target seg
     const bytes = try framed.toOwnedSlice(allocator);
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();

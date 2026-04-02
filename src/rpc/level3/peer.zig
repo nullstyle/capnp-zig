@@ -451,11 +451,18 @@ pub const Peer = struct {
         );
     }
 
+    /// Detach the connection without closing it. The transport is unbound
+    /// but the underlying connection remains open for potential reuse.
     pub fn detachConnection(self: *Peer) void {
         self.assertThreadAffinity();
         self.detachTransport();
     }
 
+    /// Attach raw transport callbacks (send, close, isClosing) to this peer.
+    ///
+    /// Unlike `attachConnection`, this does not wrap a typed connection object;
+    /// the caller provides each callback individually. Panics if a transport
+    /// is already attached.
     pub fn attachTransport(
         self: *Peer,
         ctx: *anyopaque,
@@ -483,26 +490,32 @@ pub const Peer = struct {
         );
     }
 
+    /// Detach the transport without closing it, clearing all transport callbacks.
     pub fn detachTransport(self: *Peer) void {
         self.assertThreadAffinity();
         peer_transport_state.detachTransportForPeer(Peer, self);
     }
 
+    /// Return whether a transport is currently attached to this peer.
     pub fn hasAttachedTransport(self: *const Peer) bool {
         self.assertThreadAffinity();
         return peer_transport_state.hasAttachedTransportForPeer(Peer, self);
     }
 
+    /// Close the attached transport, signaling the remote peer.
     pub fn closeAttachedTransport(self: *Peer) void {
         self.assertThreadAffinity();
         peer_transport_state.closeAttachedTransportForPeer(Peer, self);
     }
 
+    /// Return whether the attached transport is currently in the process of closing.
     pub fn isAttachedTransportClosing(self: *const Peer) bool {
         self.assertThreadAffinity();
         return peer_transport_state.isAttachedTransportClosingForPeer(Peer, self);
     }
 
+    /// Detach and return the owned connection, cast to `ConnPtr`.
+    /// Returns `null` if no transport is attached or the context type does not match.
     pub fn takeAttachedConnection(self: *Peer, comptime ConnPtr: type) ?ConnPtr {
         self.assertThreadAffinity();
         return peer_transport_state.takeAttachedConnectionForPeer(
@@ -513,6 +526,8 @@ pub const Peer = struct {
         );
     }
 
+    /// Return the attached connection cast to `ConnPtr` without detaching it.
+    /// Returns `null` if no transport is attached.
     pub fn getAttachedConnection(self: *const Peer, comptime ConnPtr: type) ?ConnPtr {
         self.assertThreadAffinity();
         return peer_transport_state.getAttachedConnectionForPeer(
@@ -652,17 +667,21 @@ pub const Peer = struct {
         }
     }
 
+    /// Set a hook to intercept all outbound frames before they reach the transport.
+    /// Pass `null` to clear a previously installed override.
     pub fn setSendFrameOverride(self: *Peer, ctx: ?*anyopaque, callback: ?SendFrameOverride) void {
         self.assertThreadAffinity();
         self.send_frame_ctx = ctx;
         self.send_frame_override = callback;
     }
 
+    /// Return the message tag of the most recently processed inbound message, or `null` if none.
     pub fn getLastInboundTag(self: *const Peer) ?protocol.MessageTag {
         self.assertThreadAffinity();
         return self.last_inbound_tag;
     }
 
+    /// Return the reason string from the last remote Abort message, or `null` if none received.
     pub fn getLastRemoteAbortReason(self: *const Peer) ?[]const u8 {
         self.assertThreadAffinity();
         return self.last_remote_abort_reason;
@@ -856,6 +875,8 @@ pub const Peer = struct {
         );
     }
 
+    /// Send a call to a resolved (non-promise) capability. Dispatches to the
+    /// appropriate path based on the resolved cap type (imported, exported, or promised).
     pub fn sendCallResolved(
         self: *Peer,
         target: cap_table.ResolvedCap,
@@ -1182,6 +1203,8 @@ pub const Peer = struct {
         try self.recordResolvedAnswer(answer_id, copy);
     }
 
+    /// Send a pre-built return frame, tracking outbound cap refs and recording
+    /// the resolved answer for later PromisedAnswer resolution.
     pub fn sendPrebuiltReturnFrame(self: *Peer, ret: protocol.Return, frame: []const u8) !void {
         self.assertThreadAffinity();
         var rollback_outbound_refs = true;
@@ -1417,6 +1440,8 @@ pub const Peer = struct {
         );
     }
 
+    /// Send a Release message on behalf of a host integration, bypassing the
+    /// peer's own import tracking.
     pub fn sendReleaseForHost(self: *Peer, import_id: u32, count: u32) !void {
         self.assertThreadAffinity();
         try peer_outbound_control.sendReleaseViaSendFrame(
@@ -1428,6 +1453,8 @@ pub const Peer = struct {
         );
     }
 
+    /// Send a Finish message on behalf of a host integration, with explicit
+    /// control over `releaseResultCaps` and `requireEarlyCancellation` flags.
     pub fn sendFinishForHost(
         self: *Peer,
         question_id: u32,
@@ -1702,7 +1729,7 @@ pub const Peer = struct {
     }
 
     fn sendUnimplementedForFrame(self: *Peer, frame: []const u8) !void {
-        var msg = try message.Message.init(self.allocator, frame);
+        var msg = try message.Message.initUnvalidated(self.allocator, frame);
         defer msg.deinit();
         const root = try msg.getRootAnyPointer();
         try self.sendUnimplemented(root);

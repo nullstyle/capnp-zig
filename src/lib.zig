@@ -25,6 +25,8 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
+/// Cap'n Proto RPC runtime: connection management, capability tables,
+/// message framing, and the level-based peer protocol implementation.
 pub const rpc = @import("rpc/mod.zig");
 
 test {

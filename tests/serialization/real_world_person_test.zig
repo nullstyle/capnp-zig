@@ -64,7 +64,7 @@ test "Real-world: Person schema - basic fields" {
     defer testing.allocator.free(bytes);
 
     // Deserialize
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try Person.Reader.init(&msg);
@@ -88,7 +88,7 @@ test "Real-world: Person schema - empty strings" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try Person.Reader.init(&msg);
@@ -112,7 +112,7 @@ test "Real-world: Person schema - long strings" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try Person.Reader.init(&msg);
@@ -133,7 +133,7 @@ test "Real-world: Person schema - special characters" {
     const bytes = try msg_builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try Person.Reader.init(&msg);

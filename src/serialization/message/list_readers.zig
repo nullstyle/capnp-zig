@@ -49,10 +49,12 @@ pub fn PrimitiveListBuilder(comptime T: type, comptime MessageBuilderType: type)
         elements_offset: usize,
         element_count: u32,
 
+        /// Return the number of elements in this list.
         pub fn len(self: @This()) u32 {
             return self.element_count;
         }
 
+        /// Set the value at the given index.
         pub fn set(self: @This(), index: u32, value: T) !void {
             if (index >= self.element_count) return error.IndexOutOfBounds;
             const offset = self.elements_offset + @as(usize, index) * byte_size;

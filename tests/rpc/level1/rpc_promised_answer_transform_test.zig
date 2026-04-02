@@ -44,7 +44,7 @@ test "promised answer getPointerField resolves to cap table entry" {
     const transform_bytes = try transform_builder.toBytes();
     defer allocator.free(transform_bytes);
 
-    var transform_msg = try message.Message.init(allocator, transform_bytes);
+    var transform_msg = try message.Message.init(allocator, transform_bytes, .{});
     defer transform_msg.deinit();
 
     const transform_root = try transform_msg.getRootStruct();
@@ -97,7 +97,7 @@ test "promised answer getPointerField resolves senderPromise to exported cap" {
     const transform_bytes = try transform_builder.toBytes();
     defer allocator.free(transform_bytes);
 
-    var transform_msg = try message.Message.init(allocator, transform_bytes);
+    var transform_msg = try message.Message.init(allocator, transform_bytes, .{});
     defer transform_msg.deinit();
 
     const transform_root = try transform_msg.getRootStruct();
@@ -154,7 +154,7 @@ test "promised answer getPointerField resolves receiverAnswer to promised cap" {
     const transform_bytes = try transform_builder.toBytes();
     defer allocator.free(transform_bytes);
 
-    var transform_msg = try message.Message.init(allocator, transform_bytes);
+    var transform_msg = try message.Message.init(allocator, transform_bytes, .{});
     defer transform_msg.deinit();
 
     const transform_root = try transform_msg.getRootStruct();

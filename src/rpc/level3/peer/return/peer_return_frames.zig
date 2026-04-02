@@ -50,7 +50,7 @@ pub fn buildReturnAcceptFromThirdPartyFrame(
 
     var ret = try builder.beginReturn(answer_id, .awaitFromThirdParty);
     if (await_payload) |payload| {
-        var await_msg = try message.Message.init(allocator, payload);
+        var await_msg = try message.Message.initUnvalidated(allocator, payload);
         defer await_msg.deinit();
         const await_ptr = try await_msg.getRootAnyPointer();
         try ret.setAcceptFromThirdParty(await_ptr);

@@ -116,7 +116,7 @@ test "Schema validation and canonicalization (TestAllTypes)" {
     const bytes = try compare.readFileAlloc(allocator, "tests/capnp_testdata/testdata/binary");
     defer allocator.free(bytes);
 
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     try schema_validation.validateMessage(&msg, request.nodes, root_node, .{});
