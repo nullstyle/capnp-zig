@@ -162,10 +162,8 @@ test "Interop: Zig -> pycapnp round trip" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const python_path = ".venv/bin/python";
     const script_path = "tests/interop/verify_pycapnp.py";
 
-    std.Io.Dir.cwd().access(io, python_path, .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, script_path, .{}) catch return error.SkipZigTest;
 
     var builder = message.MessageBuilder.init(allocator);
@@ -242,7 +240,11 @@ test "Interop: Zig -> pycapnp round trip" {
 
     const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
-            python_path,
+            "mise",
+            "x",
+            "--",
+            "uv",
+            "run",
             script_path,
             abs_path,
         },
@@ -263,10 +265,8 @@ test "Interop: Zig -> pycapnp packed round trip" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const python_path = ".venv/bin/python";
     const script_path = "tests/interop/verify_pycapnp.py";
 
-    std.Io.Dir.cwd().access(io, python_path, .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, script_path, .{}) catch return error.SkipZigTest;
 
     var builder = message.MessageBuilder.init(allocator);
@@ -343,7 +343,11 @@ test "Interop: Zig -> pycapnp packed round trip" {
 
     const result = std.process.run(allocator, io, .{
         .argv = &[_][]const u8{
-            python_path,
+            "mise",
+            "x",
+            "--",
+            "uv",
+            "run",
             script_path,
             "--packed",
             abs_path,
@@ -365,10 +369,8 @@ fn runRandomFixture(use_packed: bool) !void {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const python_path = ".venv/bin/python";
     const script_path = "tests/interop/generate_random_fixture.py";
 
-    std.Io.Dir.cwd().access(io, python_path, .{}) catch return error.SkipZigTest;
     std.Io.Dir.cwd().access(io, script_path, .{}) catch return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
@@ -391,7 +393,11 @@ fn runRandomFixture(use_packed: bool) !void {
 
         var argv = std.ArrayList([]const u8).empty;
         defer argv.deinit(allocator);
-        try argv.append(allocator, python_path);
+        try argv.append(allocator, "mise");
+        try argv.append(allocator, "x");
+        try argv.append(allocator, "--");
+        try argv.append(allocator, "uv");
+        try argv.append(allocator, "run");
         try argv.append(allocator, script_path);
         try argv.append(allocator, "--seed");
         const seed_str = try std.fmt.allocPrint(allocator, "{d}", .{seed});

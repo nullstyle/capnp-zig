@@ -1,3 +1,8 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["pycapnp"]
+# ///
+
 from __future__ import annotations
 
 import argparse

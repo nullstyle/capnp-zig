@@ -2,4 +2,5 @@
 act = "latest"
 go = "1.26.0"
 just = "latest"
+uv = "latest"
 zig = "master"
