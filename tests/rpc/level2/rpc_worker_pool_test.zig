@@ -33,6 +33,7 @@ test "WorkerPool: init and deinit with concurrency=1" {
     var dummy_ctx: u8 = 0;
     var pool = try WorkerPool.init(
         allocator,
+        std.testing.io,
         .{ .ip4 = .loopback(0) },
         @ptrCast(&dummy_ctx),
         onAcceptNoop,
@@ -46,6 +47,7 @@ test "WorkerPool: init and deinit with concurrency=4" {
     var dummy_ctx: u8 = 0;
     var pool = try WorkerPool.init(
         allocator,
+        std.testing.io,
         .{ .ip4 = .loopback(0) },
         @ptrCast(&dummy_ctx),
         onAcceptNoop,
@@ -59,6 +61,7 @@ test "WorkerPool: concurrency=0 returns error" {
     var dummy_ctx: u8 = 0;
     try std.testing.expectError(error.InvalidConcurrency, WorkerPool.init(
         allocator,
+        std.testing.io,
         .{ .ip4 = .loopback(0) },
         @ptrCast(&dummy_ctx),
         onAcceptNoop,
@@ -71,6 +74,7 @@ test "WorkerPool: single worker run and immediate shutdown" {
     var dummy_ctx: u8 = 0;
     var pool = try WorkerPool.init(
         allocator,
+        std.testing.io,
         .{ .ip4 = .loopback(0) },
         @ptrCast(&dummy_ctx),
         onAcceptNoop,
@@ -88,6 +92,7 @@ test "WorkerPool: multi-worker run and immediate shutdown" {
     var dummy_ctx: u8 = 0;
     var pool = try WorkerPool.init(
         allocator,
+        std.testing.io,
         .{ .ip4 = .loopback(0) },
         @ptrCast(&dummy_ctx),
         onAcceptNoop,
@@ -187,6 +192,7 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     var counter = AcceptCounter{};
     var pool = try WorkerPool.init(
         allocator,
+        std.testing.io,
         .{ .ip4 = .loopback(0) },
         @ptrCast(&counter),
         AcceptCounter.onAccept,
@@ -195,7 +201,7 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     defer pool.deinit();
 
     // Retrieve the actual bound port from the shared listen fd.
-    const port = try posix_helpers.getSockPort(pool.listen_fd);
+    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
 
     // Run pool in a background thread.
     const pool_thread = try std.Thread.spawn(.{}, struct {

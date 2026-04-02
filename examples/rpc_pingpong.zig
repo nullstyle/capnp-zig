@@ -133,24 +133,24 @@ fn onBootstrap(
 // Client thread: connect, bootstrap, run
 // ---------------------------------------------------------------------------
 
-fn clientThread(state: *ClientState, address: std.Io.net.IpAddress) void {
+fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) void {
     const allocator = std.heap.page_allocator;
 
-    const fd = rawTcpConnect(address) catch |err| {
+    const fd = rawTcpConnect(address, io) catch |err| {
         state.err = err;
         state.done = true;
         return;
     };
 
     const conn = allocator.create(rpc.connection.Connection) catch {
-        rpc.runtime.closeFd(fd);
+        rpc.runtime.closeFd(io, fd);
         state.err = error.OutOfMemory;
         state.done = true;
         return;
     };
-    conn.* = rpc.connection.Connection.init(allocator, fd, .{}) catch |err| {
+    conn.* = rpc.connection.Connection.init(allocator, io, fd, .{}) catch |err| {
         allocator.destroy(conn);
-        rpc.runtime.closeFd(fd);
+        rpc.runtime.closeFd(io, fd);
         state.err = err;
         state.done = true;
         return;
@@ -179,8 +179,8 @@ fn clientThread(state: *ClientState, address: std.Io.net.IpAddress) void {
 // main
 // ---------------------------------------------------------------------------
 
-pub fn main(init: std.process.Init.Minimal) !void {
-    _ = init;
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -189,7 +189,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var listener = rpc.runtime.Listener.initFd(
         allocator,
-        try rpc.runtime.createListenSocket(address, 1, false),
+        io,
+        (try rpc.runtime.createListenSocket(io, address, 1, false)).socket.handle,
         .{},
     );
     defer listener.close();
@@ -202,7 +203,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const server_thread = try std.Thread.spawn(.{}, serverThread, .{ &listener, &server });
 
     var state = ClientState{};
-    const client_thread = try std.Thread.spawn(.{}, clientThread, .{ &state, address });
+    const client_thread = try std.Thread.spawn(.{}, clientThread, .{ &state, address, io });
     client_thread.join();
     server_thread.join();
 
@@ -229,34 +230,7 @@ fn parseIp4Address(host: []const u8, port: u16) std.Io.net.IpAddress {
     return .{ .ip4 = .{ .bytes = bytes, .port = port } };
 }
 
-fn rawTcpConnect(addr: std.Io.net.IpAddress) !std.posix.fd_t {
-    const builtin = @import("builtin");
-    const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
-    const family: c_uint = switch (addr) {
-        .ip4 => std.posix.AF.INET,
-        .ip6 => std.posix.AF.INET6,
-    };
-    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
-    const fd_rc = std.posix.system.socket(family, flags, 0);
-    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
-    const fd: std.posix.fd_t = @intCast(fd_rc);
-    errdefer rpc.runtime.closeFd(fd);
-
-    if (socket_cloexec_unsupported) {
-        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
-    }
-
-    const storage = rpc.runtime.ipAddressToSockaddr(addr);
-    while (true) {
-        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
-            .SUCCESS => return fd,
-            .INTR => continue,
-            .CONNREFUSED => return error.ConnectionRefused,
-            .CONNRESET => return error.ConnectionResetByPeer,
-            .NETUNREACH => return error.NetworkUnreachable,
-            .HOSTUNREACH => return error.HostUnreachable,
-            .TIMEDOUT => return error.Timeout,
-            else => return error.ConnectFailed,
-        }
-    }
+fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
+    const stream = try std.Io.net.IpAddress.connect(&addr, io, .{ .mode = .stream });
+    return stream.socket.handle;
 }

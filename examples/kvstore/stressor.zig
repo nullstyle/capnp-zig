@@ -208,8 +208,7 @@ fn printSummary(stressor: *KvStoreStressor) void {
     const end_ns = if (stressor.end_ns != 0) stressor.end_ns else nanoTimestamp();
     const elapsed_ns = if (end_ns <= stressor.start_ns or stressor.start_ns == 0) 0 else end_ns - stressor.start_ns;
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-    const ops_sec = if (elapsed_ns == 0) 0 else
-        @as(f64, @floatFromInt(stressor.operations_completed)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
+    const ops_sec = if (elapsed_ns == 0) 0 else @as(f64, @floatFromInt(stressor.operations_completed)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
     const avg_latency_ns = if (stressor.operations_completed == 0) 0 else stressor.total_latency_ns / stressor.operations_completed;
     const min_latency_ns = if (stressor.operations_completed == 0) @as(i128, 0) else stressor.min_latency_ns;
 
@@ -448,21 +447,21 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
     }
 }
 
-fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress) void {
-    const fd = rawTcpConnect(address) catch |err| {
+fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress, io: std.Io) void {
+    const fd = rawTcpConnect(address, io) catch |err| {
         fail(stressor, err, null);
         return;
     };
 
     const conn = stressor.allocator.create(rpc.connection.Connection) catch {
-        rpc.runtime.closeFd(fd);
+        rpc.runtime.closeFd(io, fd);
         fail(stressor, error.OutOfMemory, null);
         return;
     };
 
-    conn.* = rpc.connection.Connection.init(stressor.allocator, fd, .{}) catch |err| {
+    conn.* = rpc.connection.Connection.init(stressor.allocator, io, fd, .{}) catch |err| {
         stressor.allocator.destroy(conn);
-        rpc.runtime.closeFd(fd);
+        rpc.runtime.closeFd(io, fd);
         fail(stressor, err, null);
         return;
     };
@@ -487,12 +486,13 @@ fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress) void 
     conn.run();
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -523,7 +523,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer g_stressor = null;
 
     const address = try parseIp4Address(args.host, args.port);
-    const conn_thread = try std.Thread.spawn(.{}, connThreadFn, .{ &stressor, address });
+    const conn_thread = try std.Thread.spawn(.{}, connThreadFn, .{ &stressor, address, io });
 
     conn_thread.join();
 
@@ -549,36 +549,9 @@ fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
     return .{ .ip4 = .{ .bytes = bytes, .port = port } };
 }
 
-fn rawTcpConnect(addr: std.Io.net.IpAddress) !std.posix.fd_t {
-    const builtin = @import("builtin");
-    const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
-    const family: c_uint = switch (addr) {
-        .ip4 => std.posix.AF.INET,
-        .ip6 => std.posix.AF.INET6,
-    };
-    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
-    const fd_rc = std.posix.system.socket(family, flags, 0);
-    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
-    const fd: std.posix.fd_t = @intCast(fd_rc);
-    errdefer rpc.runtime.closeFd(fd);
-
-    if (socket_cloexec_unsupported) {
-        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
-    }
-
-    const storage = rpc.runtime.ipAddressToSockaddr(addr);
-    while (true) {
-        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
-            .SUCCESS => return fd,
-            .INTR => continue,
-            .CONNREFUSED => return error.ConnectionRefused,
-            .CONNRESET => return error.ConnectionResetByPeer,
-            .NETUNREACH => return error.NetworkUnreachable,
-            .HOSTUNREACH => return error.HostUnreachable,
-            .TIMEDOUT => return error.Timeout,
-            else => return error.ConnectFailed,
-        }
-    }
+fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
+    const stream = try std.Io.net.IpAddress.connect(&addr, io, .{ .mode = .stream });
+    return stream.socket.handle;
 }
 
 fn nanoTimestamp() i128 {

@@ -326,36 +326,9 @@ fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
     return .{ .ip4 = .{ .bytes = bytes, .port = port } };
 }
 
-fn rawTcpConnect(addr: std.Io.net.IpAddress) !std.posix.fd_t {
-    const builtin = @import("builtin");
-    const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
-    const family: c_uint = switch (addr) {
-        .ip4 => std.posix.AF.INET,
-        .ip6 => std.posix.AF.INET6,
-    };
-    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
-    const fd_rc = std.posix.system.socket(family, flags, 0);
-    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
-    const fd: std.posix.fd_t = @intCast(fd_rc);
-    errdefer rpc.runtime.closeFd(fd);
-
-    if (socket_cloexec_unsupported) {
-        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
-    }
-
-    const storage = rpc.runtime.ipAddressToSockaddr(addr);
-    while (true) {
-        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
-            .SUCCESS => return fd,
-            .INTR => continue,
-            .CONNREFUSED => return error.ConnectionRefused,
-            .CONNRESET => return error.ConnectionResetByPeer,
-            .NETUNREACH => return error.NetworkUnreachable,
-            .HOSTUNREACH => return error.HostUnreachable,
-            .TIMEDOUT => return error.Timeout,
-            else => return error.ConnectFailed,
-        }
-    }
+fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
+    const stream = try std.Io.net.IpAddress.connect(&addr, io, .{ .mode = .stream });
+    return stream.socket.handle;
 }
 
 fn usage() void {
@@ -364,12 +337,13 @@ fn usage() void {
     , .{});
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -394,12 +368,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer g_client_app = null;
 
     const address = try parseIp4Address(args.host, args.port);
-    const fd = try rawTcpConnect(address);
+    const fd = try rawTcpConnect(address, io);
 
     const conn = try allocator.create(rpc.connection.Connection);
-    conn.* = rpc.connection.Connection.init(allocator, fd, .{}) catch |err| {
+    conn.* = rpc.connection.Connection.init(allocator, io, fd, .{}) catch |err| {
         allocator.destroy(conn);
-        rpc.runtime.closeFd(fd);
+        rpc.runtime.closeFd(io, fd);
         return err;
     };
     app.conn = conn;

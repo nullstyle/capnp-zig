@@ -1326,12 +1326,13 @@ fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
     return .{ .ip4 = .{ .bytes = bytes, .port = port } };
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -1360,6 +1361,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var pool = try rpc.worker_pool.WorkerPool.init(
         allocator,
+        io,
         address,
         &svc,
         onAccept,

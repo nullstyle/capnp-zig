@@ -33,6 +33,7 @@ const message = @import("../../serialization/message.zig");
 /// release both. The `Connection` does **not** own the `ctx` pointer.
 pub const Connection = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     transport: transport_mod.Transport,
     framer: framing.Framer,
     /// Opaque context pointer passed to `start()`. Must remain valid until
@@ -89,12 +90,14 @@ pub const Connection = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
+        io: std.Io,
         fd: std.posix.fd_t,
         options: Options,
     ) !Connection {
         return .{
             .allocator = allocator,
-            .transport = try transport_mod.Transport.init(allocator, fd, options.read_buffer_size),
+            .io = io,
+            .transport = try transport_mod.Transport.init(allocator, io, fd, options.read_buffer_size),
             .framer = framing.Framer.init(allocator),
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
@@ -148,8 +151,8 @@ pub const Connection = struct {
         self.on_close = null;
         self.on_wake = null;
         if (self.wake_fds) |fds| {
-            runtime_helpers.closeFd(fds[0]);
-            runtime_helpers.closeFd(fds[1]);
+            runtime_helpers.closeFd(self.io, fds[0]);
+            runtime_helpers.closeFd(self.io, fds[1]);
             self.wake_fds = null;
         }
         self.transport.deinit();

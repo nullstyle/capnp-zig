@@ -1763,12 +1763,13 @@ fn usage() void {
     , .{});
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator, init.args) catch |err| switch (err) {
+    const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => {
             usage();
             return;
@@ -1793,6 +1794,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var pool = try rpc.worker_pool.WorkerPool.init(
         allocator,
+        io,
         address,
         &app,
         onAccept,

@@ -21,8 +21,9 @@ const net = std.Io.net;
 /// the peer inside the callback.
 pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     workers: []Worker,
-    listen_fd: std.posix.fd_t,
+    server: net.Server,
     ctx: *anyopaque,
     on_accept: AcceptFn,
     conn_options: Connection.Options,
@@ -50,6 +51,7 @@ pub const WorkerPool = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
+        io: std.Io,
         addr: net.IpAddress,
         ctx: *anyopaque,
         on_accept: AcceptFn,
@@ -58,8 +60,8 @@ pub const WorkerPool = struct {
         const concurrency: u32 = config.concurrency orelse @intCast(std.Thread.getCpuCount() catch 1);
         if (concurrency == 0) return error.InvalidConcurrency;
 
-        const listen_fd = try runtime_helpers.createListenSocket(addr, config.listen_backlog, false);
-        errdefer runtime_helpers.closeFd(listen_fd);
+        const server = try runtime_helpers.createListenSocket(io, addr, config.listen_backlog, false);
+        errdefer runtime_helpers.closeFd(io, server.socket.handle);
 
         const workers = try allocator.alloc(Worker, concurrency);
         errdefer allocator.free(workers);
@@ -70,8 +72,9 @@ pub const WorkerPool = struct {
 
         return .{
             .allocator = allocator,
+            .io = io,
             .workers = workers,
-            .listen_fd = listen_fd,
+            .server = server,
             .ctx = ctx,
             .on_accept = on_accept,
             .conn_options = config.connection_options,
@@ -87,7 +90,7 @@ pub const WorkerPool = struct {
         errdefer {
             self.should_stop.store(true, .release);
             if (!self.fd_closed.swap(true, .acq_rel)) {
-                closeListenFd(self.listen_fd);
+                closeListenFd(self.io, self.server.socket.handle);
             }
             for (self.workers[1..][0..spawned]) |*w| {
                 if (w.thread) |t| t.join();
@@ -115,13 +118,13 @@ pub const WorkerPool = struct {
     pub fn shutdown(self: *WorkerPool) void {
         self.should_stop.store(true, .release);
         if (!self.fd_closed.swap(true, .acq_rel)) {
-            closeListenFd(self.listen_fd);
+            closeListenFd(self.io, self.server.socket.handle);
         }
     }
 
     pub fn deinit(self: *WorkerPool) void {
         if (!self.fd_closed.swap(true, .acq_rel)) {
-            closeListenFd(self.listen_fd);
+            closeListenFd(self.io, self.server.socket.handle);
         }
         // Join any worker threads that are still running. Normally run()
         // joins all threads before returning, but deinit must be safe if
@@ -138,7 +141,8 @@ pub const WorkerPool = struct {
     fn workerMain(pool: *WorkerPool, worker_index: u32) void {
         var listener = Listener.initFd(
             pool.allocator,
-            pool.listen_fd,
+            pool.io,
+            pool.server.socket.handle,
             pool.conn_options,
         );
 
@@ -171,21 +175,8 @@ pub const WorkerPool = struct {
         }
     }
 
-    fn closeListenFd(fd: std.posix.fd_t) void {
-        if (builtin.target.os.tag == .windows) {
-            runtime_helpers.closeFd(fd);
-            return;
-        }
-
-        // Shutdown the listen socket first. On Linux, close() from another
-        // thread does NOT wake a thread blocked in accept() on the same fd.
-        // shutdown(RDWR) delivers an event that unblocks accept().
-        _ = std.posix.system.shutdown(fd, std.posix.SHUT.RDWR);
-
-        // Treat BADF as already-closed and ignore EINTR per POSIX close rules.
-        switch (std.posix.errno(std.posix.system.close(fd))) {
-            .SUCCESS, .INTR, .BADF => {},
-            else => {},
-        }
+    fn closeListenFd(io: std.Io, fd: net.Socket.Handle) void {
+        io.vtable.netShutdown(io.userdata, fd, .both) catch {};
+        runtime_helpers.closeFd(io, fd);
     }
 };
