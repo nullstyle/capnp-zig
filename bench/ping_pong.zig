@@ -127,7 +127,7 @@ fn runPingPong(
 
     const ping_bytes = try ping_builder.toBytes();
 
-    var ping_message = try message.Message.init(ping_arena.allocator(), ping_bytes);
+    var ping_message = try message.Message.init(ping_arena.allocator(), ping_bytes, .{});
     defer ping_message.deinit();
 
     const ping_reader = try ping_message.getRootStruct();
@@ -153,7 +153,7 @@ fn runPingPong(
 
     const pong_bytes = try pong_builder.toBytes();
 
-    var pong_message = try message.Message.init(pong_arena.allocator(), pong_bytes);
+    var pong_message = try message.Message.init(pong_arena.allocator(), pong_bytes, .{});
     defer pong_message.deinit();
 
     const pong_reader = try pong_message.getRootStruct();

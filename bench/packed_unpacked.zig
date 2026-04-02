@@ -177,7 +177,7 @@ fn doPack(allocator: std.mem.Allocator, builder: *message.MessageBuilder) !u64 {
 }
 
 fn doUnpack(allocator: std.mem.Allocator, packed_bytes: []const u8) !u64 {
-    var msg = try message.Message.initPacked(allocator, packed_bytes);
+    var msg = try message.Message.initPacked(allocator, packed_bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -199,7 +199,7 @@ fn doUnpack(allocator: std.mem.Allocator, packed_bytes: []const u8) !u64 {
 
 fn doRoundTrip(allocator: std.mem.Allocator, builder: *message.MessageBuilder) !u64 {
     const packed_bytes = try builder.toPackedBytes();
-    var msg = try message.Message.initPacked(allocator, packed_bytes);
+    var msg = try message.Message.initPacked(allocator, packed_bytes, .{});
     allocator.free(packed_bytes);
     defer msg.deinit();
 
