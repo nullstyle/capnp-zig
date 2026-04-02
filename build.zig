@@ -1,5 +1,26 @@
 const std = @import("std");
 
+/// Create a test step that imports capnpc-zig and return its run step.
+fn addLibTest(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_module: *std.Build.Module,
+) *std.Build.Step {
+    const t = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+    return &b.addRunArtifact(t).step;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -262,516 +283,46 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
-    // Message tests
-    const message_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/message_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_message_tests = b.addRunArtifact(message_tests);
-
-    // Serialization fuzz/property-based tests
-    const serialization_fuzz_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/serialization_fuzz_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_serialization_fuzz_tests = b.addRunArtifact(serialization_fuzz_tests);
-
-    // Code generation tests
-    const codegen_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_tests = b.addRunArtifact(codegen_tests);
-
-    const codegen_defaults_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_defaults_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_defaults_tests = b.addRunArtifact(codegen_defaults_tests);
-
-    const codegen_annotations_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_annotations_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_annotations_tests = b.addRunArtifact(codegen_annotations_tests);
-
-    const codegen_rpc_nested_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_rpc_nested_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_rpc_nested_tests = b.addRunArtifact(codegen_rpc_nested_tests);
-
-    const codegen_streaming_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_streaming_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_streaming_tests = b.addRunArtifact(codegen_streaming_tests);
-
-    const codegen_generated_runtime_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_generated_runtime_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_generated_runtime_tests = b.addRunArtifact(codegen_generated_runtime_tests);
-
-    // Integration tests
-    const integration_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/integration_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_integration_tests = b.addRunArtifact(integration_tests);
-
-    // Interop tests
-    const interop_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/interop_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_interop_tests = b.addRunArtifact(interop_tests);
-
-    const interop_roundtrip_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/interop_roundtrip_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_interop_roundtrip_tests = b.addRunArtifact(interop_roundtrip_tests);
-
-    // Real-world Person tests
-    const real_world_person_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/real_world_person_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_real_world_person_tests = b.addRunArtifact(real_world_person_tests);
-
-    // Real-world AddressBook tests
-    const real_world_addressbook_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/real_world_addressbook_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_real_world_addressbook_tests = b.addRunArtifact(real_world_addressbook_tests);
-
-    // Union tests
-    const union_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/union_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_union_tests = b.addRunArtifact(union_tests);
-
-    // Codegen union/group tests
-    const codegen_union_group_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_union_group_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_union_group_tests = b.addRunArtifact(codegen_union_group_tests);
-
-    // Cap'n Proto official testdata fixtures
-    const capnp_testdata_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/capnp_testdata_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_capnp_testdata_tests = b.addRunArtifact(capnp_testdata_tests);
-
-    // capnp_test vendor fixtures
-    const capnp_test_vendor_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/capnp_test_vendor_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_capnp_test_vendor_tests = b.addRunArtifact(capnp_test_vendor_tests);
-
-    // Schema validation + canonicalization tests
-    const schema_validation_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/schema_validation_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_schema_validation_tests = b.addRunArtifact(schema_validation_tests);
-
-    // RPC framing tests
-    const rpc_framing_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level0/rpc_framing_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_framing_tests = b.addRunArtifact(rpc_framing_tests);
-
-    // RPC cap table encoding tests
-    const rpc_cap_table_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level0/rpc_cap_table_encode_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_cap_table_tests = b.addRunArtifact(rpc_cap_table_tests);
-
-    // RPC release and failure injection tests (level 0)
-    const rpc_release_and_failure_level0_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level0/rpc_release_and_failure_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_release_and_failure_level0_tests = b.addRunArtifact(rpc_release_and_failure_level0_tests);
-
-    // RPC promised answer transform tests
-    const rpc_promised_answer_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level1/rpc_promised_answer_transform_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_promised_answer_tests = b.addRunArtifact(rpc_promised_answer_tests);
-
-    // RPC protocol/cap table tests
-    const rpc_protocol_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level0/rpc_protocol_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_protocol_tests = b.addRunArtifact(rpc_protocol_tests);
-
-    // RPC peer behavior tests
-    const rpc_peer_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level3/rpc_peer_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_peer_tests = b.addRunArtifact(rpc_peer_tests);
-
-    // RPC host peer wrapper tests
-    const rpc_host_peer_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level2/rpc_host_peer_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_host_peer_tests = b.addRunArtifact(rpc_host_peer_tests);
-
-    // RPC return send helper tests
-    const rpc_peer_return_send_helpers_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level1/rpc_peer_return_send_helpers_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_peer_return_send_helpers_tests = b.addRunArtifact(rpc_peer_return_send_helpers_tests);
-
-    // RPC transport callback adapter tests
-    const rpc_peer_transport_callbacks_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level2/rpc_peer_transport_callbacks_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_peer_transport_callbacks_tests = b.addRunArtifact(rpc_peer_transport_callbacks_tests);
-
-    // RPC transport state helper tests
-    const rpc_peer_transport_state_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level2/rpc_peer_transport_state_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_peer_transport_state_tests = b.addRunArtifact(rpc_peer_transport_state_tests);
-
-    // RPC peer cleanup helper tests
-    const rpc_peer_cleanup_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level2/rpc_peer_cleanup_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_peer_cleanup_tests = b.addRunArtifact(rpc_peer_cleanup_tests);
-
-    // RPC connection failure / recovery tests
-    const rpc_connection_failure_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level2/rpc_connection_failure_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_connection_failure_tests = b.addRunArtifact(rpc_connection_failure_tests);
-
-    // RPC peer (from peer.zig) tests
-    const rpc_peer_from_peer_zig_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level3/rpc_peer_from_peer_zig_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-    const run_rpc_peer_from_peer_zig_tests = b.addRunArtifact(rpc_peer_from_peer_zig_tests);
-
-    // Union runtime tests (low-level union discriminant round-trips)
-    const union_runtime_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/union_runtime_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_union_runtime_tests = b.addRunArtifact(union_runtime_tests);
-
-    // Codegen golden-file snapshot tests
-    const codegen_golden_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/serialization/codegen_golden_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_codegen_golden_tests = b.addRunArtifact(codegen_golden_tests);
-
-    // RPC peer_control (from peer_control.zig) tests
-    const rpc_peer_control_from_peer_control_zig_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level3/rpc_peer_control_from_peer_control_zig_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_peer_control_from_peer_control_zig_tests = b.addRunArtifact(rpc_peer_control_from_peer_control_zig_tests);
-
-    // RPC release and failure injection tests (level 3)
-    const rpc_release_and_failure_level3_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level3/rpc_release_and_failure_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_release_and_failure_level3_tests = b.addRunArtifact(rpc_release_and_failure_level3_tests);
-
-    // RPC concurrent calls tests (level 3)
-    const rpc_concurrent_calls_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level3/rpc_concurrent_calls_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_concurrent_calls_tests = b.addRunArtifact(rpc_concurrent_calls_tests);
-
-    // RPC worker pool tests
-    const rpc_worker_pool_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/rpc/level2/rpc_worker_pool_test.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "capnpc-zig", .module = lib_module },
-            },
-        }),
-    });
-
-    const run_rpc_worker_pool_tests = b.addRunArtifact(rpc_worker_pool_tests);
+    // Serialization tests
+    const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
+    const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
+    const run_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, optimize, lib_module);
+    const run_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, optimize, lib_module);
+    const run_codegen_annotations_tests = addLibTest(b, "tests/serialization/codegen_annotations_test.zig", target, optimize, lib_module);
+    const run_codegen_rpc_nested_tests = addLibTest(b, "tests/serialization/codegen_rpc_nested_test.zig", target, optimize, lib_module);
+    const run_codegen_streaming_tests = addLibTest(b, "tests/serialization/codegen_streaming_test.zig", target, optimize, lib_module);
+    const run_codegen_generated_runtime_tests = addLibTest(b, "tests/serialization/codegen_generated_runtime_test.zig", target, optimize, lib_module);
+    const run_integration_tests = addLibTest(b, "tests/serialization/integration_test.zig", target, optimize, lib_module);
+    const run_interop_tests = addLibTest(b, "tests/serialization/interop_test.zig", target, optimize, lib_module);
+    const run_interop_roundtrip_tests = addLibTest(b, "tests/serialization/interop_roundtrip_test.zig", target, optimize, lib_module);
+    const run_real_world_person_tests = addLibTest(b, "tests/serialization/real_world_person_test.zig", target, optimize, lib_module);
+    const run_real_world_addressbook_tests = addLibTest(b, "tests/serialization/real_world_addressbook_test.zig", target, optimize, lib_module);
+    const run_union_tests = addLibTest(b, "tests/serialization/union_test.zig", target, optimize, lib_module);
+    const run_union_runtime_tests = addLibTest(b, "tests/serialization/union_runtime_test.zig", target, optimize, lib_module);
+    const run_codegen_union_group_tests = addLibTest(b, "tests/serialization/codegen_union_group_test.zig", target, optimize, lib_module);
+    const run_codegen_golden_tests = addLibTest(b, "tests/serialization/codegen_golden_test.zig", target, optimize, lib_module);
+    const run_capnp_testdata_tests = addLibTest(b, "tests/serialization/capnp_testdata_test.zig", target, optimize, lib_module);
+    const run_capnp_test_vendor_tests = addLibTest(b, "tests/serialization/capnp_test_vendor_test.zig", target, optimize, lib_module);
+    const run_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, optimize, lib_module);
+
+    // RPC tests (level 0–3)
+    const run_rpc_framing_tests = addLibTest(b, "tests/rpc/level0/rpc_framing_test.zig", target, optimize, lib_module);
+    const run_rpc_cap_table_tests = addLibTest(b, "tests/rpc/level0/rpc_cap_table_encode_test.zig", target, optimize, lib_module);
+    const run_rpc_release_and_failure_level0_tests = addLibTest(b, "tests/rpc/level0/rpc_release_and_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_protocol_tests = addLibTest(b, "tests/rpc/level0/rpc_protocol_test.zig", target, optimize, lib_module);
+    const run_rpc_promised_answer_tests = addLibTest(b, "tests/rpc/level1/rpc_promised_answer_transform_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_return_send_helpers_tests = addLibTest(b, "tests/rpc/level1/rpc_peer_return_send_helpers_test.zig", target, optimize, lib_module);
+    const run_rpc_host_peer_tests = addLibTest(b, "tests/rpc/level2/rpc_host_peer_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_transport_callbacks_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_transport_callbacks_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_transport_state_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_transport_state_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_cleanup_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_cleanup_test.zig", target, optimize, lib_module);
+    const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/level2/rpc_worker_pool_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_control_from_peer_control_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_control_from_peer_control_zig_test.zig", target, optimize, lib_module);
+    const run_rpc_release_and_failure_level3_tests = addLibTest(b, "tests/rpc/level3/rpc_release_and_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/level3/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
 
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
@@ -810,66 +361,66 @@ pub fn build(b: *std.Build) void {
 
     // Individual test steps
     const test_message_step = b.step("test-message", "Run message serialization tests");
-    test_message_step.dependOn(&run_message_tests.step);
-    test_message_step.dependOn(&run_serialization_fuzz_tests.step);
+    test_message_step.dependOn(run_message_tests);
+    test_message_step.dependOn(run_serialization_fuzz_tests);
 
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");
-    test_codegen_step.dependOn(&run_codegen_tests.step);
-    test_codegen_step.dependOn(&run_codegen_defaults_tests.step);
-    test_codegen_step.dependOn(&run_codegen_annotations_tests.step);
-    test_codegen_step.dependOn(&run_codegen_rpc_nested_tests.step);
-    test_codegen_step.dependOn(&run_codegen_streaming_tests.step);
-    test_codegen_step.dependOn(&run_codegen_generated_runtime_tests.step);
-    test_codegen_step.dependOn(&run_codegen_union_group_tests.step);
-    test_codegen_step.dependOn(&run_codegen_golden_tests.step);
+    test_codegen_step.dependOn(run_codegen_tests);
+    test_codegen_step.dependOn(run_codegen_defaults_tests);
+    test_codegen_step.dependOn(run_codegen_annotations_tests);
+    test_codegen_step.dependOn(run_codegen_rpc_nested_tests);
+    test_codegen_step.dependOn(run_codegen_streaming_tests);
+    test_codegen_step.dependOn(run_codegen_generated_runtime_tests);
+    test_codegen_step.dependOn(run_codegen_union_group_tests);
+    test_codegen_step.dependOn(run_codegen_golden_tests);
 
     const test_integration_step = b.step("test-integration", "Run integration tests");
-    test_integration_step.dependOn(&run_integration_tests.step);
+    test_integration_step.dependOn(run_integration_tests);
 
     const test_interop_step = b.step("test-interop", "Run interop tests");
-    test_interop_step.dependOn(&run_interop_tests.step);
-    test_interop_step.dependOn(&run_interop_roundtrip_tests.step);
+    test_interop_step.dependOn(run_interop_tests);
+    test_interop_step.dependOn(run_interop_roundtrip_tests);
 
     const test_real_world_step = b.step("test-real-world", "Run real-world schema tests");
-    test_real_world_step.dependOn(&run_real_world_person_tests.step);
-    test_real_world_step.dependOn(&run_real_world_addressbook_tests.step);
+    test_real_world_step.dependOn(run_real_world_person_tests);
+    test_real_world_step.dependOn(run_real_world_addressbook_tests);
 
     const test_union_step = b.step("test-union", "Run union tests");
-    test_union_step.dependOn(&run_union_tests.step);
-    test_union_step.dependOn(&run_union_runtime_tests.step);
+    test_union_step.dependOn(run_union_tests);
+    test_union_step.dependOn(run_union_runtime_tests);
 
     const test_capnp_testdata_step = b.step("test-capnp-testdata", "Run Cap'n Proto official testdata fixtures");
-    test_capnp_testdata_step.dependOn(&run_capnp_testdata_tests.step);
+    test_capnp_testdata_step.dependOn(run_capnp_testdata_tests);
 
     const test_capnp_test_vendor_step = b.step("test-capnp-test-vendor", "Run capnp_test vendor fixtures");
-    test_capnp_test_vendor_step.dependOn(&run_capnp_test_vendor_tests.step);
+    test_capnp_test_vendor_step.dependOn(run_capnp_test_vendor_tests);
 
     const test_schema_validation_step = b.step("test-schema-validation", "Run schema validation + canonicalization tests");
-    test_schema_validation_step.dependOn(&run_schema_validation_tests.step);
+    test_schema_validation_step.dependOn(run_schema_validation_tests);
 
     const test_serialization_step = b.step("test-serialization", "Run serialization-oriented tests");
     test_serialization_step.dependOn(&run_main_tests.step);
     test_serialization_step.dependOn(&run_lib_tests.step);
-    test_serialization_step.dependOn(&run_message_tests.step);
-    test_serialization_step.dependOn(&run_serialization_fuzz_tests.step);
-    test_serialization_step.dependOn(&run_codegen_tests.step);
-    test_serialization_step.dependOn(&run_codegen_defaults_tests.step);
-    test_serialization_step.dependOn(&run_codegen_annotations_tests.step);
-    test_serialization_step.dependOn(&run_codegen_rpc_nested_tests.step);
-    test_serialization_step.dependOn(&run_codegen_streaming_tests.step);
-    test_serialization_step.dependOn(&run_codegen_generated_runtime_tests.step);
-    test_serialization_step.dependOn(&run_integration_tests.step);
-    test_serialization_step.dependOn(&run_interop_tests.step);
-    test_serialization_step.dependOn(&run_interop_roundtrip_tests.step);
-    test_serialization_step.dependOn(&run_real_world_person_tests.step);
-    test_serialization_step.dependOn(&run_real_world_addressbook_tests.step);
-    test_serialization_step.dependOn(&run_union_tests.step);
-    test_serialization_step.dependOn(&run_union_runtime_tests.step);
-    test_serialization_step.dependOn(&run_codegen_union_group_tests.step);
-    test_serialization_step.dependOn(&run_codegen_golden_tests.step);
-    test_serialization_step.dependOn(&run_capnp_testdata_tests.step);
-    test_serialization_step.dependOn(&run_capnp_test_vendor_tests.step);
-    test_serialization_step.dependOn(&run_schema_validation_tests.step);
+    test_serialization_step.dependOn(run_message_tests);
+    test_serialization_step.dependOn(run_serialization_fuzz_tests);
+    test_serialization_step.dependOn(run_codegen_tests);
+    test_serialization_step.dependOn(run_codegen_defaults_tests);
+    test_serialization_step.dependOn(run_codegen_annotations_tests);
+    test_serialization_step.dependOn(run_codegen_rpc_nested_tests);
+    test_serialization_step.dependOn(run_codegen_streaming_tests);
+    test_serialization_step.dependOn(run_codegen_generated_runtime_tests);
+    test_serialization_step.dependOn(run_integration_tests);
+    test_serialization_step.dependOn(run_interop_tests);
+    test_serialization_step.dependOn(run_interop_roundtrip_tests);
+    test_serialization_step.dependOn(run_real_world_person_tests);
+    test_serialization_step.dependOn(run_real_world_addressbook_tests);
+    test_serialization_step.dependOn(run_union_tests);
+    test_serialization_step.dependOn(run_union_runtime_tests);
+    test_serialization_step.dependOn(run_codegen_union_group_tests);
+    test_serialization_step.dependOn(run_codegen_golden_tests);
+    test_serialization_step.dependOn(run_capnp_testdata_tests);
+    test_serialization_step.dependOn(run_capnp_test_vendor_tests);
+    test_serialization_step.dependOn(run_schema_validation_tests);
 
     // Cumulative RPC levels:
     // - level0: framing/protocol/cap-table encoding
@@ -877,32 +428,32 @@ pub fn build(b: *std.Build) void {
     // - level2: runtime plumbing and transport integration
     // - level3: advanced peer semantics (provide/accept/join/third-party/disembargo)
     const test_rpc_level0_step = b.step("test-rpc-level0", "Run RPC level 0 tests (framing/protocol/cap-table)");
-    test_rpc_level0_step.dependOn(&run_rpc_framing_tests.step);
-    test_rpc_level0_step.dependOn(&run_rpc_protocol_tests.step);
-    test_rpc_level0_step.dependOn(&run_rpc_cap_table_tests.step);
-    test_rpc_level0_step.dependOn(&run_rpc_release_and_failure_level0_tests.step);
+    test_rpc_level0_step.dependOn(run_rpc_framing_tests);
+    test_rpc_level0_step.dependOn(run_rpc_protocol_tests);
+    test_rpc_level0_step.dependOn(run_rpc_cap_table_tests);
+    test_rpc_level0_step.dependOn(run_rpc_release_and_failure_level0_tests);
 
     const test_rpc_level1_step = b.step("test-rpc-level1", "Run RPC level 1 tests (promises/pipelining)");
     test_rpc_level1_step.dependOn(test_rpc_level0_step);
-    test_rpc_level1_step.dependOn(&run_rpc_promised_answer_tests.step);
-    test_rpc_level1_step.dependOn(&run_rpc_peer_return_send_helpers_tests.step);
+    test_rpc_level1_step.dependOn(run_rpc_promised_answer_tests);
+    test_rpc_level1_step.dependOn(run_rpc_peer_return_send_helpers_tests);
 
     const test_rpc_level2_step = b.step("test-rpc-level2", "Run RPC level 2 tests (runtime plumbing)");
     test_rpc_level2_step.dependOn(test_rpc_level1_step);
-    test_rpc_level2_step.dependOn(&run_rpc_host_peer_tests.step);
-    test_rpc_level2_step.dependOn(&run_rpc_peer_transport_callbacks_tests.step);
-    test_rpc_level2_step.dependOn(&run_rpc_peer_transport_state_tests.step);
-    test_rpc_level2_step.dependOn(&run_rpc_peer_cleanup_tests.step);
-    test_rpc_level2_step.dependOn(&run_rpc_connection_failure_tests.step);
-    test_rpc_level2_step.dependOn(&run_rpc_worker_pool_tests.step);
+    test_rpc_level2_step.dependOn(run_rpc_host_peer_tests);
+    test_rpc_level2_step.dependOn(run_rpc_peer_transport_callbacks_tests);
+    test_rpc_level2_step.dependOn(run_rpc_peer_transport_state_tests);
+    test_rpc_level2_step.dependOn(run_rpc_peer_cleanup_tests);
+    test_rpc_level2_step.dependOn(run_rpc_connection_failure_tests);
+    test_rpc_level2_step.dependOn(run_rpc_worker_pool_tests);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run RPC level 3+ tests (advanced peer semantics)");
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
-    test_rpc_level3_step.dependOn(&run_rpc_peer_tests.step);
-    test_rpc_level3_step.dependOn(&run_rpc_peer_from_peer_zig_tests.step);
-    test_rpc_level3_step.dependOn(&run_rpc_peer_control_from_peer_control_zig_tests.step);
-    test_rpc_level3_step.dependOn(&run_rpc_release_and_failure_level3_tests.step);
-    test_rpc_level3_step.dependOn(&run_rpc_concurrent_calls_tests.step);
+    test_rpc_level3_step.dependOn(run_rpc_peer_tests);
+    test_rpc_level3_step.dependOn(run_rpc_peer_from_peer_zig_tests);
+    test_rpc_level3_step.dependOn(run_rpc_peer_control_from_peer_control_zig_tests);
+    test_rpc_level3_step.dependOn(run_rpc_release_and_failure_level3_tests);
+    test_rpc_level3_step.dependOn(run_rpc_concurrent_calls_tests);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_level3_step);
