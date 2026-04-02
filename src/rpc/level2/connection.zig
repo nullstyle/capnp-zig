@@ -206,34 +206,40 @@ pub const Connection = struct {
         while (!self.transport.isClosing()) {
             // If wake support is enabled, use poll() to wait on both
             // the socket and the wake pipe.
-            if (self.wake_fds) |wfds| {
-                var fds = [2]std.posix.pollfd{
-                    .{ .fd = self.transport.fd, .events = std.posix.POLL.IN, .revents = 0 },
-                    .{ .fd = wfds[0], .events = std.posix.POLL.IN, .revents = 0 },
-                };
-                while (true) {
-                    const rc = std.posix.system.poll(@ptrCast(&fds), 2, -1);
-                    if (rc > 0) break;
-                    if (std.posix.errno(rc) == .INTR) continue;
-                    break;
-                }
-                // Drain wake pipe and invoke callback.
-                if (fds[1].revents & std.posix.POLL.IN != 0) {
-                    var drain_buf: [64]u8 = undefined;
-                    _ = std.posix.system.read(wfds[0], &drain_buf, drain_buf.len);
-                    if (self.on_wake) |cb| cb(self);
-                }
-                // POLLNVAL means the fd is invalid — break out of the run loop.
-                if (fds[0].revents & std.posix.POLL.NVAL != 0) {
-                    log.debug("poll NVAL on socket fd, exiting run loop", .{});
-                    break;
-                }
-                // If socket has no data, loop back (might have been woken only).
-                if (fds[0].revents & std.posix.POLL.IN == 0 and
-                    fds[0].revents & std.posix.POLL.HUP == 0 and
-                    fds[0].revents & std.posix.POLL.ERR == 0)
-                {
-                    continue;
+            // Wake/poll support is only available on POSIX platforms;
+            // enableWake() is a no-op on Windows/freestanding so wake_fds
+            // is always null there, but we still need a comptime guard to
+            // avoid referencing std.posix.pollfd which doesn't exist on Windows.
+            if (comptime builtin.target.os.tag != .windows and builtin.target.os.tag != .freestanding) {
+                if (self.wake_fds) |wfds| {
+                    var fds = [2]std.posix.pollfd{
+                        .{ .fd = self.transport.fd, .events = std.posix.POLL.IN, .revents = 0 },
+                        .{ .fd = wfds[0], .events = std.posix.POLL.IN, .revents = 0 },
+                    };
+                    while (true) {
+                        const rc = std.posix.system.poll(@ptrCast(&fds), 2, -1);
+                        if (rc > 0) break;
+                        if (std.posix.errno(rc) == .INTR) continue;
+                        break;
+                    }
+                    // Drain wake pipe and invoke callback.
+                    if (fds[1].revents & std.posix.POLL.IN != 0) {
+                        var drain_buf: [64]u8 = undefined;
+                        _ = std.posix.system.read(wfds[0], &drain_buf, drain_buf.len);
+                        if (self.on_wake) |cb| cb(self);
+                    }
+                    // POLLNVAL means the fd is invalid — break out of the run loop.
+                    if (fds[0].revents & std.posix.POLL.NVAL != 0) {
+                        log.debug("poll NVAL on socket fd, exiting run loop", .{});
+                        break;
+                    }
+                    // If socket has no data, loop back (might have been woken only).
+                    if (fds[0].revents & std.posix.POLL.IN == 0 and
+                        fds[0].revents & std.posix.POLL.HUP == 0 and
+                        fds[0].revents & std.posix.POLL.ERR == 0)
+                    {
+                        continue;
+                    }
                 }
             }
 
