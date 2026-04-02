@@ -10,11 +10,14 @@ test "peer_transport_state attach/detach toggles transport presence" {
     const IsClosingFn = *const fn (*anyopaque) bool;
 
     const State = struct {
-        transport_ctx: ?*anyopaque = null,
-        transport_start: ?StartFn = null,
-        transport_send: ?SendFn = null,
-        transport_close: ?CloseFn = null,
-        transport_is_closing: ?IsClosingFn = null,
+        transport: Transport = .{},
+        const Transport = struct {
+            ctx: ?*anyopaque = null,
+            start: ?StartFn = null,
+            send: ?SendFn = null,
+            close: ?CloseFn = null,
+            is_closing: ?IsClosingFn = null,
+        };
     };
 
     const Hooks = struct {
@@ -72,11 +75,14 @@ test "peer_transport_state close/isClosing dispatches through registered callbac
         closing: bool = false,
     };
     const State = struct {
-        transport_ctx: ?*anyopaque = null,
-        transport_start: ?StartFn = null,
-        transport_send: ?SendFn = null,
-        transport_close: ?CloseFn = null,
-        transport_is_closing: ?IsClosingFn = null,
+        transport: Transport = .{},
+        const Transport = struct {
+            ctx: ?*anyopaque = null,
+            start: ?StartFn = null,
+            send: ?SendFn = null,
+            close: ?CloseFn = null,
+            is_closing: ?IsClosingFn = null,
+        };
     };
 
     const Hooks = struct {
@@ -123,11 +129,14 @@ test "peer_transport_state get/take attached connection returns typed pointer an
 
     const Conn = struct { id: u32 };
     const State = struct {
-        transport_ctx: ?*anyopaque = null,
-        transport_start: ?StartFn = null,
-        transport_send: ?SendFn = null,
-        transport_close: ?CloseFn = null,
-        transport_is_closing: ?IsClosingFn = null,
+        transport: Transport = .{},
+        const Transport = struct {
+            ctx: ?*anyopaque = null,
+            start: ?StartFn = null,
+            send: ?SendFn = null,
+            close: ?CloseFn = null,
+            is_closing: ?IsClosingFn = null,
+        };
     };
     const Hooks = struct {
         fn detach(state: *State) void {
@@ -137,7 +146,7 @@ test "peer_transport_state get/take attached connection returns typed pointer an
 
     var conn = Conn{ .id = 42 };
     var state = State{
-        .transport_ctx = @ptrCast(&conn),
+        .transport = .{ .ctx = @ptrCast(&conn) },
     };
 
     const attached = transport_state.getAttachedConnectionForPeer(State, *Conn, &state) orelse return error.MissingConn;
@@ -145,5 +154,5 @@ test "peer_transport_state get/take attached connection returns typed pointer an
 
     const taken = transport_state.takeAttachedConnectionForPeer(State, *Conn, &state, Hooks.detach) orelse return error.MissingConn;
     try std.testing.expectEqual(@as(u32, 42), taken.id);
-    try std.testing.expect(state.transport_ctx == null);
+    try std.testing.expect(state.transport.ctx == null);
 }

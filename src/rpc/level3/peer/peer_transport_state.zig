@@ -11,34 +11,30 @@ pub fn attachTransportForPeer(
     close_fn: ?TransportCloseFn,
     is_closing: ?TransportIsClosingFn,
 ) void {
-    peer.transport_ctx = ctx;
-    peer.transport_start = start_fn;
-    peer.transport_send = send_fn;
-    peer.transport_close = close_fn;
-    peer.transport_is_closing = is_closing;
+    peer.transport.ctx = ctx;
+    peer.transport.start = start_fn;
+    peer.transport.send = send_fn;
+    peer.transport.close = close_fn;
+    peer.transport.is_closing = is_closing;
 }
 
 pub fn detachTransportForPeer(comptime PeerType: type, peer: *PeerType) void {
-    peer.transport_ctx = null;
-    peer.transport_start = null;
-    peer.transport_send = null;
-    peer.transport_close = null;
-    peer.transport_is_closing = null;
+    peer.transport = .{};
 }
 
 pub fn hasAttachedTransportForPeer(comptime PeerType: type, peer: *const PeerType) bool {
-    return peer.transport_ctx != null and peer.transport_send != null;
+    return peer.transport.ctx != null and peer.transport.send != null;
 }
 
 pub fn closeAttachedTransportForPeer(comptime PeerType: type, peer: *PeerType) void {
-    if (peer.transport_ctx) |ctx| {
-        if (peer.transport_close) |close| close(ctx);
+    if (peer.transport.ctx) |ctx| {
+        if (peer.transport.close) |close| close(ctx);
     }
 }
 
 pub fn isAttachedTransportClosingForPeer(comptime PeerType: type, peer: *const PeerType) bool {
-    if (peer.transport_ctx) |ctx| {
-        if (peer.transport_is_closing) |is_closing| return is_closing(ctx);
+    if (peer.transport.ctx) |ctx| {
+        if (peer.transport.is_closing) |is_closing| return is_closing(ctx);
     }
     return false;
 }
@@ -48,7 +44,7 @@ pub fn getAttachedConnectionForPeer(
     comptime ConnPtr: type,
     peer: *const PeerType,
 ) ?ConnPtr {
-    const ctx = peer.transport_ctx orelse return null;
+    const ctx = peer.transport.ctx orelse return null;
     return @ptrCast(@alignCast(ctx));
 }
 

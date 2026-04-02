@@ -87,7 +87,7 @@ test "peer shutdown callback and transport close fire when questions drain" {
         }
         fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
         fn onShutdown(peer: *Peer) void {
-            const state: *Self = castCtx(*Self, peer.transport_ctx.?);
+            const state: *Self = castCtx(*Self, peer.transport.ctx.?);
             state.shutdown_calls += 1;
         }
     };
@@ -135,7 +135,7 @@ test "peer shutdown callback fires immediately with no outstanding questions" {
             return state.transport_closing;
         }
         fn onShutdown(peer: *Peer) void {
-            const state: *Self = castCtx(*Self, peer.transport_ctx.?);
+            const state: *Self = castCtx(*Self, peer.transport.ctx.?);
             state.shutdown_calls += 1;
         }
     };

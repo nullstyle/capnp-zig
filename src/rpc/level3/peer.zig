@@ -217,18 +217,26 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
 ///   that PromisedAnswer references can be resolved.
 /// * `pending_promises` entries are drained (replayed or errored) when the
 ///   corresponding answer resolves, never left dangling.
+/// Grouped transport callback bindings. Set/cleared atomically by
+/// `Peer.attachTransport` / `Peer.detachTransport`.
+pub const TransportBinding = struct {
+    /// Opaque pointer to the attached transport/connection. Must remain
+    /// valid from `attachTransport` until `detachTransport` or `deinit`.
+    ctx: ?*anyopaque = null,
+    start: ?TransportStartFn = null,
+    send: ?TransportSendFn = null,
+    close: ?TransportCloseFn = null,
+    is_closing: ?TransportIsClosingFn = null,
+};
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
 
     // -- Transport binding --------------------------------------------------
 
-    /// Opaque pointer to the attached transport/connection. Must remain
-    /// valid from `attachTransport` until `detachTransport` or `deinit`.
-    transport_ctx: ?*anyopaque = null,
-    transport_start: ?TransportStartFn = null,
-    transport_send: ?TransportSendFn = null,
-    transport_close: ?TransportCloseFn = null,
-    transport_is_closing: ?TransportIsClosingFn = null,
+    /// Attached transport callbacks. Set/cleared atomically by
+    /// `attachTransport` / `detachTransport`.
+    transport: TransportBinding = .{},
 
     // -- Capability bookkeeping ---------------------------------------------
 
@@ -633,7 +641,7 @@ pub const Peer = struct {
     fn releaseAllImports(self: *Peer) void {
         // If neither a send-frame override nor the transport send function is
         // available, the connection is already gone -- skip sending.
-        if (self.send_frame_override == null and self.transport_send == null) {
+        if (self.send_frame_override == null and self.transport.send == null) {
             log.debug("releaseAllImports: transport not attached, skipping release messages", .{});
             return;
         }
@@ -661,8 +669,8 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         self.on_error = on_error;
         self.on_close = on_close;
-        if (self.transport_start) |start_fn| {
-            const ctx = self.transport_ctx orelse return;
+        if (self.transport.start) |start_fn| {
+            const ctx = self.transport.ctx orelse return;
             start_fn(ctx, self);
         }
     }
@@ -770,10 +778,10 @@ pub const Peer = struct {
 
     fn completeShutdown(self: *Peer) void {
         self.assertThreadAffinity();
-        if (self.transport_ctx) |transport_ctx| {
+        if (self.transport.ctx) |transport_ctx| {
             // Close transport if attached and not already closing.
-            if (self.transport_close) |close_fn| {
-                if (self.transport_is_closing) |is_closing_fn| {
+            if (self.transport.close) |close_fn| {
+                if (self.transport.is_closing) |is_closing_fn| {
                     if (!is_closing_fn(transport_ctx)) {
                         close_fn(transport_ctx);
                     }
@@ -1487,11 +1495,11 @@ pub const Peer = struct {
             try cb(ctx, frame);
             return;
         }
-        const send = self.transport_send orelse {
+        const send = self.transport.send orelse {
             log.debug("cannot send frame: transport not attached", .{});
             return error.TransportNotAttached;
         };
-        const ctx = self.transport_ctx orelse {
+        const ctx = self.transport.ctx orelse {
             log.debug("cannot send frame: transport not attached", .{});
             return error.TransportNotAttached;
         };
