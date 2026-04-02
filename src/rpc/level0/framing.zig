@@ -65,8 +65,14 @@ pub const Framer = struct {
         if (self.buffer.items.len < 4) return;
 
         const segment_count_minus_one = std.mem.readInt(u32, self.buffer.items[0..4], .little);
-        const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidFrame;
-        if (segment_count > max_segment_count) return error.InvalidFrame;
+        const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch {
+            log.debug("InvalidFrame: segment_count overflow (raw={})", .{segment_count_minus_one});
+            return error.InvalidFrame;
+        };
+        if (segment_count > max_segment_count) {
+            log.debug("InvalidFrame: segment_count {} exceeds limit {}", .{ segment_count, max_segment_count });
+            return error.InvalidFrame;
+        }
         const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidFrame;
         const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
         const header_words_no_padding = std.math.add(usize, 1, segment_count_usize) catch return error.InvalidFrame;

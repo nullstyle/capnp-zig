@@ -4,6 +4,7 @@
 /// in `rpc.capnp`. Reader structs decode fields from `StructReader`; builder
 /// structs write fields into a `MessageBuilder`.
 const std = @import("std");
+const log = std.log.scoped(.rpc_protocol);
 const message = @import("../../serialization/message.zig");
 const rpc_capnp = @import("../gen/capnp/rpc.zig");
 
@@ -42,7 +43,10 @@ pub const CapDescriptor = struct {
 
     pub fn fromReader(reader: message.StructReader) !CapDescriptor {
         const tag_value = reader.readUnionDiscriminant(CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.enums.fromInt(CapDescriptorTag, tag_value) orelse return error.InvalidDiscriminant;
+        const tag = std.enums.fromInt(CapDescriptorTag, tag_value) orelse {
+            log.warn("InvalidDiscriminant: CapDescriptor tag value {} is not a valid variant", .{tag_value});
+            return error.InvalidDiscriminant;
+        };
         var id: ?u32 = null;
         var promised_answer: ?PromisedAnswer = null;
         var third_party: ?ThirdPartyCapDescriptor = null;
@@ -281,7 +285,10 @@ pub const DecodedMessage = struct {
         errdefer msg.deinit();
         const root = try msg.getRootStruct();
         const disc = root.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);
-        const tag = std.enums.fromInt(MessageTag, disc) orelse return error.InvalidMessageTag;
+        const tag = std.enums.fromInt(MessageTag, disc) orelse {
+            log.warn("InvalidMessageTag: discriminant value {} is not a valid RPC message type", .{disc});
+            return error.InvalidMessageTag;
+        };
         return .{ .msg = msg, .tag = tag };
     }
 
