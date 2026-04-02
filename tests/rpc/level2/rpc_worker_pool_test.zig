@@ -109,74 +109,79 @@ const AcceptCounter = struct {
     }
 };
 
-/// Helper: create a raw TCP connection to addr, return the fd.
-fn rawTcpConnect(addr: net.IpAddress) !std.posix.fd_t {
-    const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
-    const family: c_uint = switch (addr) {
-        .ip4 => std.posix.AF.INET,
-        .ip6 => std.posix.AF.INET6,
-    };
-    const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
-    const fd_rc = std.posix.system.socket(family, flags, 0);
-    if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
-    const fd: std.posix.fd_t = @intCast(fd_rc);
-    errdefer closeFd(fd);
+// POSIX-only helpers and integration test — guarded because std.posix
+// socket/getsockname APIs do not compile on Windows.
+const posix_helpers = if (builtin.target.os.tag != .windows) struct {
+    /// Helper: create a raw TCP connection to addr, return the fd.
+    fn rawTcpConnect(addr: net.IpAddress) !std.posix.fd_t {
+        const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
+        const family: c_uint = switch (addr) {
+            .ip4 => std.posix.AF.INET,
+            .ip6 => std.posix.AF.INET6,
+        };
+        const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
+        const fd_rc = std.posix.system.socket(family, flags, 0);
+        if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
+        const fd: std.posix.fd_t = @intCast(fd_rc);
+        errdefer closeFd(fd);
 
-    if (socket_cloexec_unsupported) {
-        _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
-    }
+        if (socket_cloexec_unsupported) {
+            _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
+        }
 
-    const storage = ipAddressToSockaddr(addr);
-    while (true) {
-        switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
-            .SUCCESS => return fd,
-            .INTR => continue,
-            .CONNREFUSED => return error.ConnectionRefused,
-            .CONNRESET => return error.ConnectionResetByPeer,
-            .NETUNREACH => return error.NetworkUnreachable,
-            .HOSTUNREACH => return error.HostUnreachable,
-            .TIMEDOUT => return error.Timeout,
-            else => return error.ConnectFailed,
+        const storage = ipAddressToSockaddr(addr);
+        while (true) {
+            switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
+                .SUCCESS => return fd,
+                .INTR => continue,
+                .CONNREFUSED => return error.ConnectionRefused,
+                .CONNRESET => return error.ConnectionResetByPeer,
+                .NETUNREACH => return error.NetworkUnreachable,
+                .HOSTUNREACH => return error.HostUnreachable,
+                .TIMEDOUT => return error.Timeout,
+                else => return error.ConnectFailed,
+            }
         }
     }
-}
 
-fn sleepMs(ms: u64) void {
-    const ts = std.posix.timespec{
-        .sec = @intCast(ms / 1000),
-        .nsec = @intCast((ms % 1000) * 1_000_000),
-    };
-    _ = std.posix.system.nanosleep(&ts, null);
-}
-
-fn closeFd(fd: std.posix.fd_t) void {
-    switch (std.posix.errno(std.posix.system.close(fd))) {
-        .SUCCESS, .INTR, .BADF => {},
-        else => {},
+    fn sleepMs(ms: u64) void {
+        const ts = std.posix.timespec{
+            .sec = @intCast(ms / 1000),
+            .nsec = @intCast((ms % 1000) * 1_000_000),
+        };
+        _ = std.posix.system.nanosleep(&ts, null);
     }
-}
 
-const SockAddrStorage = capnpc.rpc.runtime.SockAddrStorage;
-const ipAddressToSockaddr = capnpc.rpc.runtime.ipAddressToSockaddr;
+    fn closeFd(fd: std.posix.fd_t) void {
+        switch (std.posix.errno(std.posix.system.close(fd))) {
+            .SUCCESS, .INTR, .BADF => {},
+            else => {},
+        }
+    }
 
-fn getSockPort(fd: std.posix.fd_t) !u16 {
-    var storage: std.posix.sockaddr.storage = undefined;
-    var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
-    if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&storage), &addr_len)) != .SUCCESS) {
-        return error.GetSockNameFailed;
+    const SockAddrStorage = capnpc.rpc.runtime.SockAddrStorage;
+    const ipAddressToSockaddr = capnpc.rpc.runtime.ipAddressToSockaddr;
+
+    fn getSockPort(fd: std.posix.fd_t) !u16 {
+        var storage: std.posix.sockaddr.storage = undefined;
+        var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
+        if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&storage), &addr_len)) != .SUCCESS) {
+            return error.GetSockNameFailed;
+        }
+        const sa: *const std.posix.sockaddr = @ptrCast(&storage);
+        if (sa.family == std.posix.AF.INET) {
+            const sa_in: *const std.posix.sockaddr.in = @ptrCast(@alignCast(sa));
+            return std.mem.bigToNative(u16, sa_in.port);
+        } else if (sa.family == std.posix.AF.INET6) {
+            const sa_in6: *const std.posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
+            return std.mem.bigToNative(u16, sa_in6.port);
+        }
+        return error.UnsupportedAddressFamily;
     }
-    const sa: *const std.posix.sockaddr = @ptrCast(&storage);
-    if (sa.family == std.posix.AF.INET) {
-        const sa_in: *const std.posix.sockaddr.in = @ptrCast(@alignCast(sa));
-        return std.mem.bigToNative(u16, sa_in.port);
-    } else if (sa.family == std.posix.AF.INET6) {
-        const sa_in6: *const std.posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
-        return std.mem.bigToNative(u16, sa_in6.port);
-    }
-    return error.UnsupportedAddressFamily;
-}
+} else struct {};
 
 test "WorkerPool: single worker accepts connection then shuts down" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = AcceptCounter{};
@@ -190,7 +195,7 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     defer pool.deinit();
 
     // Retrieve the actual bound port from the shared listen fd.
-    const port = try getSockPort(pool.listen_fd);
+    const port = try posix_helpers.getSockPort(pool.listen_fd);
 
     // Run pool in a background thread.
     const pool_thread = try std.Thread.spawn(.{}, struct {
@@ -206,13 +211,13 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     // Use iteration counter (~200 * 10ms = 2s timeout).
     var attempts: u32 = 0;
     while (counter.count.load(.acquire) == 0 and attempts < 200) : (attempts += 1) {
-        const client_fd = rawTcpConnect(connect_addr) catch |err| {
+        const client_fd = posix_helpers.rawTcpConnect(connect_addr) catch |err| {
             switch (err) {
                 error.ConnectionRefused,
                 error.ConnectionResetByPeer,
                 error.NetworkUnreachable,
                 => {
-                    sleepMs(10);
+                    posix_helpers.sleepMs(10);
                     continue;
                 },
                 else => {
@@ -222,8 +227,8 @@ test "WorkerPool: single worker accepts connection then shuts down" {
                 },
             }
         };
-        closeFd(client_fd);
-        sleepMs(10);
+        posix_helpers.closeFd(client_fd);
+        posix_helpers.sleepMs(10);
     }
 
     pool.shutdown();
