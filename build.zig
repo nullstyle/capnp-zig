@@ -25,6 +25,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const nullq_dep = b.dependency("nullq", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const nullq_module = nullq_dep.module("nullq");
+
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
         .root_source_file = b.path("src/lib.zig"),
@@ -33,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{},
     });
     lib_module.addImport("capnpc-zig", lib_module);
+    lib_module.addImport("nullq", nullq_module);
 
     const core_module = b.addModule("capnpc-zig-core", .{
         .root_source_file = b.path("src/lib_core.zig"),
@@ -104,14 +111,17 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the plugin");
     run_step.dependOn(&run_cmd.step);
 
+    const docs_module = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{},
+    });
+    docs_module.addImport("capnpc-zig", docs_module);
+    docs_module.addImport("nullq", nullq_module);
     const docs_obj = b.addObject(.{
         .name = "capnpc-zig-docs",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{},
-        }),
+        .root_module = docs_module,
     });
     const install_docs = b.addInstallDirectory(.{
         .source_dir = docs_obj.getEmittedDocs(),
@@ -277,7 +287,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/lib.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{},
+            .imports = &.{
+                .{ .name = "nullq", .module = nullq_module },
+            },
         }),
     });
 
@@ -318,6 +330,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_cleanup_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_cleanup_test.zig", target, optimize, lib_module);
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/level2/rpc_worker_pool_test.zig", target, optimize, lib_module);
+    const run_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/level2/rpc_quic_transport_test.zig", target, optimize, lib_module);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
     const run_rpc_peer_control_from_peer_control_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_control_from_peer_control_zig_test.zig", target, optimize, lib_module);
@@ -446,6 +459,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(run_rpc_peer_cleanup_tests);
     test_rpc_level2_step.dependOn(run_rpc_connection_failure_tests);
     test_rpc_level2_step.dependOn(run_rpc_worker_pool_tests);
+    test_rpc_level2_step.dependOn(run_rpc_quic_transport_tests);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run RPC level 3+ tests (advanced peer semantics)");
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
