@@ -111,6 +111,11 @@ Progress in this tranche:
   from word traversal so zero-width struct lists cannot bypass resource limits.
 - Code generation now preflights generated Zig symbol scopes and fails with
   `error.DuplicateGeneratedName` before emitting colliding declarations.
+- Code generation now enforces `CodegenBudget` limits for schema node/import/
+  field counts, name/default bytes, schema-manifest bytes, and generated output
+  bytes, with writer-side checks before output buffer growth.
+- `capnpc-zig` now creates nested output directories through a no-follow
+  component walk and rejects symlinked parent or final output components.
 - WASM host ABI defaults now cap peers and outstanding allocation count/bytes,
   strict pointer validation can require tracked allocation ranges, output slots
   are prevalidated before writes, and example Person serde validates frames,
@@ -119,6 +124,9 @@ Progress in this tranche:
   paths and build policy files, with reviewed one-for-one allowlist entries
   for existing unsafe-pattern exceptions. `just hardening`, `just ci`, and CI
   run the same gate.
+- `zig build test-resource-budgets` and `zig build test-oom` now provide
+  named resource/OOM regression gates, with matching `just` recipes and CI
+  hardening-job coverage.
 
 ## Findings
 

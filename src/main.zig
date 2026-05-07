@@ -10,6 +10,7 @@ const RunOptions = struct {
     emit_schema_manifest: bool = true,
     api_profile: Generator.ApiProfile = .full,
     shape_sharing: bool = false,
+    codegen_budget: Generator.CodegenBudget = .{},
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -44,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
     generator.setEmitSchemaManifest(options.emit_schema_manifest);
     generator.setApiProfile(options.api_profile);
     generator.setShapeSharing(options.shape_sharing);
+    generator.setCodegenBudget(options.codegen_budget);
 
     // Generate code for each requested file
     for (request.requested_files) |requested_file| {
@@ -119,6 +121,7 @@ fn applyEnvRunOptions(environ_map: *const std.process.Environ.Map, options: *Run
     if (getEnvBoolOption(environ_map, "CAPNPC_ZIG_SHAPE_SHARING")) |shape_sharing| {
         options.shape_sharing = shape_sharing;
     }
+    applyEnvBudgetOptions(environ_map, &options.codegen_budget);
 }
 
 fn getEnvBoolOption(environ_map: *const std.process.Environ.Map, name: []const u8) ?bool {
@@ -162,6 +165,43 @@ fn applyOptionToken(token: []const u8, options: *RunOptions) void {
     } else if (isManifestOption(token)) {
         options.emit_schema_manifest = true;
     }
+    applyBudgetOptionToken(token, &options.codegen_budget);
+}
+
+fn applyEnvBudgetOptions(environ_map: *const std.process.Environ.Map, budget: *Generator.CodegenBudget) void {
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_NODES")) |value| budget.max_nodes = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_IMPORTS")) |value| budget.max_imports = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_FIELDS")) |value| budget.max_fields = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_NAME_BYTES")) |value| budget.max_name_bytes = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_DEFAULT_BYTES")) |value| budget.max_default_bytes = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_SCHEMA_MANIFEST_BYTES")) |value| budget.max_manifest_bytes = value;
+    if (getEnvUsizeOption(environ_map, "CAPNPC_ZIG_MAX_CODEGEN_OUTPUT_BYTES")) |value| budget.max_output_bytes = value;
+}
+
+fn applyBudgetOptionToken(token: []const u8, budget: *Generator.CodegenBudget) void {
+    if (parseUsizeAssignment(token, "max-codegen-nodes=")) |value| budget.max_nodes = value;
+    if (parseUsizeAssignment(token, "max-codegen-imports=")) |value| budget.max_imports = value;
+    if (parseUsizeAssignment(token, "max-codegen-fields=")) |value| budget.max_fields = value;
+    if (parseUsizeAssignment(token, "max-codegen-name-bytes=")) |value| budget.max_name_bytes = value;
+    if (parseUsizeAssignment(token, "max-codegen-default-bytes=")) |value| budget.max_default_bytes = value;
+    if (parseUsizeAssignment(token, "max-schema-manifest-bytes=")) |value| budget.max_manifest_bytes = value;
+    if (parseUsizeAssignment(token, "max-codegen-output-bytes=")) |value| budget.max_output_bytes = value;
+    if (parseUsizeAssignment(token, "max-output-bytes=")) |value| budget.max_output_bytes = value;
+}
+
+fn getEnvUsizeOption(environ_map: *const std.process.Environ.Map, name: []const u8) ?usize {
+    const value = environ_map.get(name) orelse return null;
+    return parseUsizeToken(value);
+}
+
+fn parseUsizeAssignment(token: []const u8, prefix: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, token, prefix)) return null;
+    return parseUsizeToken(token[prefix.len..]);
+}
+
+fn parseUsizeToken(value: []const u8) ?usize {
+    if (value.len == 0) return null;
+    return std.fmt.parseUnsigned(usize, value, 10) catch null;
 }
 
 fn isVerboseOption(arg: []const u8) bool {
@@ -280,15 +320,69 @@ fn getOutputFilename(allocator: std.mem.Allocator, input_filename: []const u8) !
     return std.fmt.allocPrint(allocator, "{s}.zig", .{input_filename});
 }
 
+const OutputParentDir = struct {
+    dir: std.Io.Dir,
+    owns_dir: bool,
+
+    fn deinit(self: OutputParentDir, io: std.Io) void {
+        if (self.owns_dir) self.dir.close(io);
+    }
+};
+
 fn createOutputFileInDir(dir: std.Io.Dir, io: std.Io, output_filename: []const u8) !std.Io.File {
     try validateRelativeSchemaPath(output_filename);
 
-    if (std.fs.path.dirname(output_filename)) |parent_dir| {
-        if (parent_dir.len != 0 and !std.mem.eql(u8, parent_dir, ".")) {
-            try dir.createDirPath(io, parent_dir);
-        }
+    const parent = try createOutputParentDirNoFollow(dir, io, std.fs.path.dirname(output_filename));
+    defer parent.deinit(io);
+
+    const basename = std.fs.path.basename(output_filename);
+    try rejectSymlinkComponent(parent.dir, io, basename);
+    return parent.dir.createFile(io, basename, .{ .resolve_beneath = true });
+}
+
+fn createOutputParentDirNoFollow(
+    dir: std.Io.Dir,
+    io: std.Io,
+    parent_path: ?[]const u8,
+) !OutputParentDir {
+    const path = parent_path orelse return .{ .dir = dir, .owns_dir = false };
+    if (path.len == 0 or std.mem.eql(u8, path, ".")) return .{ .dir = dir, .owns_dir = false };
+
+    var current = dir;
+    var owns_current = false;
+    errdefer if (owns_current) current.close(io);
+
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        current.createDir(io, component, .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => |e| return e,
+        };
+        try rejectSymlinkComponent(current, io, component);
+
+        const next = current.openDir(io, component, .{
+            .access_sub_paths = true,
+            .follow_symlinks = false,
+        }) catch |err| switch (err) {
+            error.NotDir => return error.NotDir,
+            else => |e| return e,
+        };
+
+        if (owns_current) current.close(io);
+        current = next;
+        owns_current = true;
     }
-    return dir.createFile(io, output_filename, .{});
+
+    return .{ .dir = current, .owns_dir = owns_current };
+}
+
+fn rejectSymlinkComponent(dir: std.Io.Dir, io: std.Io, component: []const u8) !void {
+    var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    _ = dir.readLink(io, component, &target_buf) catch |err| switch (err) {
+        error.NotLink, error.FileNotFound => return,
+        else => |e| return e,
+    };
+    return error.OutputPathSymlink;
 }
 
 test "main tests" {
@@ -395,6 +489,13 @@ test "parseRunOptions disables shape sharing explicitly" {
     try std.testing.expect(!options.shape_sharing);
 }
 
+test "parseRunOptions applies codegen budget tokens" {
+    const argv = [_][]const u8{ "capnpc-zig", "out,max-codegen-output-bytes=4096,max-codegen-fields=12" };
+    const options = parseRunOptions(argv[0..]);
+    try std.testing.expectEqual(@as(usize, 4096), options.codegen_budget.max_output_bytes);
+    try std.testing.expectEqual(@as(usize, 12), options.codegen_budget.max_fields);
+}
+
 test "parseBoolToken accepts common true values" {
     try std.testing.expectEqual(@as(?bool, true), parseBoolToken("1"));
     try std.testing.expectEqual(@as(?bool, true), parseBoolToken("true"));
@@ -452,6 +553,38 @@ test "createOutputFileInDir rejects traversal output paths" {
     defer tmp.cleanup();
 
     try std.testing.expectError(error.InvalidSchemaPath, createOutputFileInDir(tmp.dir, io, "../escape.zig"));
+}
+
+test "createOutputFileInDir rejects symlink parent components" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "target", .default_dir);
+    tmp.dir.symLink(io, "target", "capnp", .{ .is_directory = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => |e| return e,
+    };
+
+    try std.testing.expectError(error.OutputPathSymlink, createOutputFileInDir(tmp.dir, io, "capnp/generated.zig"));
+}
+
+test "createOutputFileInDir rejects symlink final output" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(io, "capnp", .default_dir);
+    tmp.dir.symLink(io, "../escape.zig", "capnp/generated.zig", .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied => return error.SkipZigTest,
+        else => |e| return e,
+    };
+
+    try std.testing.expectError(error.OutputPathSymlink, createOutputFileInDir(tmp.dir, io, "capnp/generated.zig"));
 }
 
 test "readCodeGeneratorRequestInput enforces size limit" {

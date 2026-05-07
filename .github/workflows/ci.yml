@@ -60,6 +60,12 @@ jobs:
       - name: Run hardening gate
         run: zig build hardening
 
+      - name: Run resource-budget regression tests
+        run: zig build test-resource-budgets --summary all
+
+      - name: Run OOM regression tests
+        run: zig build test-oom --summary all
+
   e2e-zig:
     name: Zig e2e interop
     runs-on: ubuntu-latest

@@ -505,6 +505,26 @@ pub fn build(b: *std.Build) void {
     const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
     test_wasm_host_step.dependOn(&run_wasm_host_abi_tests.step);
 
+    const test_resource_budgets_step = b.step("test-resource-budgets", "Run resource budget regression tests");
+    test_resource_budgets_step.dependOn(&run_main_tests.step);
+    test_resource_budgets_step.dependOn(run_message_tests);
+    test_resource_budgets_step.dependOn(run_serialization_fuzz_tests);
+    test_resource_budgets_step.dependOn(run_codegen_tests);
+    test_resource_budgets_step.dependOn(run_schema_validation_tests);
+    test_resource_budgets_step.dependOn(run_rpc_framing_tests);
+    test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
+    test_resource_budgets_step.dependOn(run_rpc_quic_transport_tests);
+    test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
+
+    const test_oom_step = b.step("test-oom", "Run OOM and failing allocator regression tests");
+    test_oom_step.dependOn(&run_main_tests.step);
+    test_oom_step.dependOn(run_message_tests);
+    test_oom_step.dependOn(run_codegen_tests);
+    test_oom_step.dependOn(run_codegen_defaults_tests);
+    test_oom_step.dependOn(run_rpc_framing_tests);
+    test_oom_step.dependOn(run_rpc_connection_failure_tests);
+    test_oom_step.dependOn(&run_wasm_host_abi_tests.step);
+
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
     test_lib_step.dependOn(&run_lib_tests.step);
 
@@ -513,6 +533,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_serialization_step);
     test_step.dependOn(test_rpc_step);
     test_step.dependOn(test_wasm_host_step);
+    test_step.dependOn(test_resource_budgets_step);
+    test_step.dependOn(test_oom_step);
 
     // Check step (compile visible user-facing targets without running them).
     const check_step = b.step("check", "Check for compilation errors");

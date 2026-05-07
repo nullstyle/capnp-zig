@@ -22,6 +22,14 @@ test-serialization:
 test-rpc:
     zig build test-rpc --summary all
 
+# Run resource-budget regression tests
+test-resource-budgets:
+    zig build test-resource-budgets --summary all
+
+# Run OOM/failing-allocator regression tests
+test-oom:
+    zig build test-oom --summary all
+
 # Run Cap'n Proto RPC level 0 tests (framing/protocol/cap-table)
 test-rpc-level0:
     zig build test-rpc-level0 --summary all
@@ -61,6 +69,8 @@ e2e-scaffold:
 # CI gate (unit + interop e2e)
 ci:
     zig build hardening
+    zig build test-resource-budgets --summary all
+    zig build test-oom --summary all
     just src/rpc/check-rpc
     zig build test --summary all
     just e2e-zig
