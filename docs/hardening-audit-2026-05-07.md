@@ -102,6 +102,9 @@ Progress in this tranche:
   non-null pointers, rejects invalid `Value` union tags, rejects non-empty
   zero-width struct lists in schema-specific lists, and uses strict Text
   validation for schema names and default text.
+- Validated message init now enforces a total segment-word budget across
+  referenced and unreferenced segments, and detailed malformed-message parser
+  diagnostics are quiet by default behind an explicit compile-time opt-in.
 - HostPeer now has finite outbound defaults and redacts/caps/sanitizes external
   exception reasons by default, including prebuilt exception return frames.
 - Message validation now charges inline-composite element counts separately

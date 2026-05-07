@@ -9,6 +9,15 @@ const struct_builder_module = @import("message/struct_builder.zig");
 const clone_any_pointer_module = @import("message/clone_any_pointer.zig");
 const typed_list_helpers_module = @import("message/typed_list_helpers.zig");
 
+const parse_diagnostics_enabled = if (@hasField(std.Options, "capnp_message_parse_diagnostics"))
+    std.options.capnp_message_parse_diagnostics
+else
+    false;
+
+inline fn parseDiagnostic(comptime fmt: []const u8, args: anytype) void {
+    if (parse_diagnostics_enabled) log.warn(fmt, args);
+}
+
 fn decodeOffsetWords(pointer_word: u64) i32 {
     // Cap'n Proto stores a 30-bit signed offset in words (two's complement).
     const raw: u32 = @truncate((pointer_word >> 2) & 0x3FFFFFFF);
@@ -407,11 +416,13 @@ pub const Message = struct {
     /// Configurable limits for message validation.
     ///
     /// - `segment_count_limit`: maximum number of segments allowed in the message.
+    /// - `total_segment_words_limit`: maximum total words across all segments, including unreferenced segments.
     /// - `traversal_limit_words`: total words the validator may visit (prevents amplification attacks).
     /// - `inline_composite_element_limit`: total inline-composite struct-list elements the validator may visit.
     /// - `nesting_limit`: maximum pointer-following depth (prevents stack overflow from deep nesting).
     pub const ValidationOptions = struct {
         segment_count_limit: usize = max_segment_count,
+        total_segment_words_limit: usize = max_total_words,
         traversal_limit_words: usize = 8 * 1024 * 1024,
         inline_composite_element_limit: usize = max_total_words,
         nesting_limit: usize = 64,
@@ -448,6 +459,7 @@ pub const Message = struct {
     pub fn init(allocator: std.mem.Allocator, data: []const u8, options: ValidationOptions) !Message {
         var msg = try initUnvalidated(allocator, data);
         errdefer msg.deinit();
+        try msg.validateTotalSegmentWords(options.total_segment_words_limit);
         try msg.validate(options);
         return msg;
     }
@@ -460,12 +472,12 @@ pub const Message = struct {
     pub fn initUnvalidated(allocator: std.mem.Allocator, data: []const u8) !Message {
         // Read segment count
         if (data.len < 4) {
-            log.warn("TruncatedMessage: data too short for header ({} bytes)", .{data.len});
+            parseDiagnostic("TruncatedMessage: data too short for header ({} bytes)", .{data.len});
             return error.TruncatedMessage;
         }
         const segment_count_minus_one = std.mem.readInt(u32, data[0..4], .little);
         const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch {
-            log.warn("InvalidSegmentCount: raw segment_count_minus_one={}", .{segment_count_minus_one});
+            parseDiagnostic("InvalidSegmentCount: raw segment_count_minus_one={}", .{segment_count_minus_one});
             return error.InvalidSegmentCount;
         };
         const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
@@ -475,7 +487,7 @@ pub const Message = struct {
         const header_words = std.math.add(usize, header_words_no_padding, padding_words) catch return error.InvalidMessageSize;
         const header_bytes = std.math.mul(usize, header_words, 4) catch return error.InvalidMessageSize;
         if (header_bytes > data.len) {
-            log.warn("TruncatedMessage: header requires {} bytes but data has {} bytes (segments={})", .{ header_bytes, data.len, segment_count });
+            parseDiagnostic("TruncatedMessage: header requires {} bytes but data has {} bytes (segments={})", .{ header_bytes, data.len, segment_count });
             return error.TruncatedMessage;
         }
 
@@ -506,7 +518,7 @@ pub const Message = struct {
             const size_bytes = std.math.mul(usize, size_words_usize, 8) catch return error.InvalidMessageSize;
             const end = std.math.add(usize, offset, size_bytes) catch return error.TruncatedMessage;
             if (end > data.len) {
-                log.warn("TruncatedMessage: segment {} needs {} bytes at offset {} but data has {} bytes", .{ i, size_bytes, offset, data.len });
+                parseDiagnostic("TruncatedMessage: segment {} needs {} bytes at offset {} but data has {} bytes", .{ i, size_bytes, offset, data.len });
                 return error.TruncatedMessage;
             }
             segments[i] = data[offset..end];
@@ -529,6 +541,7 @@ pub const Message = struct {
     pub fn initPacked(allocator: std.mem.Allocator, packed_bytes: []const u8, options: ValidationOptions) !Message {
         var msg = try initPackedUnvalidated(allocator, packed_bytes);
         errdefer msg.deinit();
+        try msg.validateTotalSegmentWords(options.total_segment_words_limit);
         try msg.validate(options);
         return msg;
     }
@@ -564,6 +577,15 @@ pub const Message = struct {
         const segment = self.segments[segment_id];
         try bounds.checkBounds(segment, byte_offset, 8);
         return std.mem.readInt(u64, segment[byte_offset..][0..8], .little);
+    }
+
+    fn validateTotalSegmentWords(self: *const Message, total_words_limit: usize) !void {
+        var total_words: usize = 0;
+        for (self.segments) |segment| {
+            const words = segment.len / 8;
+            total_words = std.math.add(usize, total_words, words) catch return error.InvalidMessageSize;
+            if (total_words > total_words_limit) return error.MessageTooLarge;
+        }
     }
 
     /// Resolve a far pointer's landing pad: validate the segment ID, compute
@@ -625,12 +647,12 @@ pub const Message = struct {
 
         const landing_type = @as(u2, @truncate(landing_word & 0x3));
         if (landing_type != 2) {
-            log.warn("InvalidFarPointer: resolve double-far landing type {} (expected 2) at segment={} offset={}", .{ landing_type, far.segment_id, pad.landing_pos });
+            parseDiagnostic("InvalidFarPointer: resolve double-far landing type {} (expected 2) at segment={} offset={}", .{ landing_type, far.segment_id, pad.landing_pos });
             return error.InvalidFarPointer;
         }
         const landing_far = decodeFarPointer(landing_word);
         if (landing_far.landing_pad_is_double) {
-            log.warn("InvalidFarPointer: resolve nested double-far at segment={} offset={}", .{ far.segment_id, pad.landing_pos });
+            parseDiagnostic("InvalidFarPointer: resolve nested double-far at segment={} offset={}", .{ far.segment_id, pad.landing_pos });
             return error.InvalidFarPointer;
         }
         if (landing_far.segment_id >= self.segments.len) return error.InvalidSegmentId;
@@ -648,13 +670,13 @@ pub const Message = struct {
         const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
         if (resolved.segment_id >= self.segments.len) return error.InvalidSegmentId;
         if (resolved.pointer_word == 0) {
-            log.warn("InvalidRootPointer: null pointer at segment={} pos={}", .{ segment_id, pointer_pos });
+            parseDiagnostic("InvalidRootPointer: null pointer at segment={} pos={}", .{ segment_id, pointer_pos });
             return error.InvalidRootPointer;
         }
 
         const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
         if (pointer_type != 0) {
-            log.warn("InvalidRootPointer: expected struct pointer (type 0) but got type {} at segment={} pos={}", .{ pointer_type, resolved.segment_id, resolved.pointer_pos });
+            parseDiagnostic("InvalidRootPointer: expected struct pointer (type 0) but got type {} at segment={} pos={}", .{ pointer_type, resolved.segment_id, resolved.pointer_pos });
             return error.InvalidRootPointer;
         }
 
@@ -672,7 +694,7 @@ pub const Message = struct {
         const segment = self.segments[resolved.segment_id];
         const total_bytes = (@as(usize, data_size) + @as(usize, pointer_count)) * 8;
         bounds.checkBounds(segment, struct_offset, total_bytes) catch {
-            log.warn("TruncatedMessage: struct needs {} bytes at offset {} but segment {} has {} bytes (data_words={} pointer_words={})", .{ total_bytes, struct_offset, resolved.segment_id, segment.len, data_size, pointer_count });
+            parseDiagnostic("TruncatedMessage: struct needs {} bytes at offset {} but segment {} has {} bytes (data_words={} pointer_words={})", .{ total_bytes, struct_offset, resolved.segment_id, segment.len, data_size, pointer_count });
             return error.TruncatedMessage;
         };
 
@@ -692,7 +714,7 @@ pub const Message = struct {
 
         const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
         if (pointer_type != 1) {
-            log.warn("InvalidPointer: expected list pointer (type 1) but got type {} at segment={} pos={}", .{ pointer_type, resolved.segment_id, resolved.pointer_pos });
+            parseDiagnostic("InvalidPointer: expected list pointer (type 1) but got type {} at segment={} pos={}", .{ pointer_type, resolved.segment_id, resolved.pointer_pos });
             return error.InvalidPointer;
         }
 
@@ -933,12 +955,12 @@ pub const Message = struct {
 
         const landing_type = @as(u2, @truncate(landing_word & 0x3));
         if (landing_type != 2) {
-            log.warn("InvalidFarPointer: double-far landing pad type {} (expected 2) at segment={} offset={}", .{ landing_type, far.segment_id, pad.landing_pos });
+            parseDiagnostic("InvalidFarPointer: double-far landing pad type {} (expected 2) at segment={} offset={}", .{ landing_type, far.segment_id, pad.landing_pos });
             return error.InvalidFarPointer;
         }
         const landing_far = decodeFarPointer(landing_word);
         if (landing_far.landing_pad_is_double) {
-            log.warn("InvalidFarPointer: nested double-far at segment={} offset={}", .{ far.segment_id, pad.landing_pos });
+            parseDiagnostic("InvalidFarPointer: nested double-far at segment={} offset={}", .{ far.segment_id, pad.landing_pos });
             return error.InvalidFarPointer;
         }
         if (landing_far.segment_id >= self.segments.len) return error.InvalidSegmentId;
@@ -951,7 +973,7 @@ pub const Message = struct {
         if (tag_type == 1) {
             return self.validateListPointer(landing_far.segment_id, 0, tag_word, elements_offset, remaining_words, remaining_inline_composite_elements, nesting);
         }
-        log.warn("InvalidFarPointer: unexpected tag type {} in double-far at target segment={} offset={}", .{ tag_type, landing_far.segment_id, elements_offset });
+        parseDiagnostic("InvalidFarPointer: unexpected tag type {} in double-far at target segment={} offset={}", .{ tag_type, landing_far.segment_id, elements_offset });
         return error.InvalidFarPointer;
     }
 
@@ -980,11 +1002,11 @@ pub const Message = struct {
         const total_words = @as(usize, data_size) + @as(usize, pointer_count);
         const total_bytes = try wordsToBytes(total_words);
         if (struct_offset > segment.len) {
-            log.warn("OutOfBounds: struct offset {} exceeds segment {} length {} (data_words={} pointer_words={})", .{ struct_offset, segment_id, segment.len, data_size, pointer_count });
+            parseDiagnostic("OutOfBounds: struct offset {} exceeds segment {} length {} (data_words={} pointer_words={})", .{ struct_offset, segment_id, segment.len, data_size, pointer_count });
             return error.OutOfBounds;
         }
         if (total_bytes > segment.len - struct_offset) {
-            log.warn("OutOfBounds: struct needs {} bytes at offset {} but segment {} has {} bytes remaining (data_words={} pointer_words={})", .{ total_bytes, struct_offset, segment_id, segment.len - struct_offset, data_size, pointer_count });
+            parseDiagnostic("OutOfBounds: struct needs {} bytes at offset {} but segment {} has {} bytes remaining (data_words={} pointer_words={})", .{ total_bytes, struct_offset, segment_id, segment.len - struct_offset, data_size, pointer_count });
             return error.OutOfBounds;
         }
 
@@ -1071,11 +1093,11 @@ pub const Message = struct {
         const segment = self.segments[segment_id];
         const total_bytes = try listContentBytes(element_size, element_count);
         if (content_offset > segment.len) {
-            log.warn("OutOfBounds: list offset {} exceeds segment {} length {} (element_size={} count={})", .{ content_offset, segment_id, segment.len, element_size, element_count });
+            parseDiagnostic("OutOfBounds: list offset {} exceeds segment {} length {} (element_size={} count={})", .{ content_offset, segment_id, segment.len, element_size, element_count });
             return error.OutOfBounds;
         }
         if (total_bytes > segment.len - content_offset) {
-            log.warn("OutOfBounds: list needs {} bytes at offset {} but segment {} has {} bytes remaining (element_size={} count={})", .{ total_bytes, content_offset, segment_id, segment.len - content_offset, element_size, element_count });
+            parseDiagnostic("OutOfBounds: list needs {} bytes at offset {} but segment {} has {} bytes remaining (element_size={} count={})", .{ total_bytes, content_offset, segment_id, segment.len - content_offset, element_size, element_count });
             return error.OutOfBounds;
         }
 

@@ -440,6 +440,37 @@ test "Message: zero-width inline-composite list consumes element budget" {
     try testing.expectError(error.TraversalLimitExceeded, message.Message.init(allocator, bytes, .{}));
 }
 
+test "Message: init caps total segment words including unreferenced segments" {
+    const allocator = testing.allocator;
+
+    var segment0: [8]u8 = @splat(0);
+    std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 0), .little);
+    var unreferenced_segment: [4 * 8]u8 = @splat(0);
+
+    var framed = std.ArrayList(u8).empty;
+    defer framed.deinit(allocator);
+
+    var header: [16]u8 = @splat(0);
+    std.mem.writeInt(u32, header[0..4], 1, .little); // two segments
+    std.mem.writeInt(u32, header[4..8], 1, .little); // root segment
+    std.mem.writeInt(u32, header[8..12], 4, .little); // unreferenced segment
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &unreferenced_segment);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    try testing.expectError(error.MessageTooLarge, message.Message.init(allocator, bytes, .{
+        .total_segment_words_limit = 4,
+    }));
+
+    var msg = try message.Message.init(allocator, bytes, .{
+        .total_segment_words_limit = 5,
+    });
+    defer msg.deinit();
+}
+
 test "Message: far pointer root struct in another segment" {
     const allocator = testing.allocator;
 
