@@ -416,6 +416,30 @@ test "Message: negative list pointer offset" {
     try testing.expectEqualStrings("hi", try root.readText(0));
 }
 
+test "Message: zero-width inline-composite list consumes element budget" {
+    const allocator = testing.allocator;
+    const element_count = message.Message.max_total_words + 1;
+
+    var segment: [3 * 8]u8 = @splat(0);
+    std.mem.writeInt(u64, segment[0..8], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, segment[8..16], makeListPointer(0, 7, 0), .little);
+    std.mem.writeInt(u64, segment[16..24], makeStructPointer(@intCast(element_count), 0, 0), .little);
+
+    var framed = std.ArrayList(u8).empty;
+    defer framed.deinit(allocator);
+
+    var header: [8]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 0, .little);
+    std.mem.writeInt(u32, header[4..8], 3, .little);
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment);
+
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    try testing.expectError(error.TraversalLimitExceeded, message.Message.init(allocator, bytes, .{}));
+}
+
 test "Message: far pointer root struct in another segment" {
     const allocator = testing.allocator;
 

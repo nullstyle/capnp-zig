@@ -9,17 +9,37 @@ pub const HostPeer = struct {
     const MAX_CAPTURED_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
     pub const Limits = struct {
+        pub const default_outbound_count_limit: usize = 1024;
+        pub const default_outbound_bytes_limit: usize = MAX_CAPTURED_FRAME_BYTES;
         pub const default_host_call_count_limit: usize = 1024;
         pub const default_host_call_bytes_limit: usize = MAX_CAPTURED_FRAME_BYTES;
 
         // A zero value means "unlimited".
-        outbound_count_limit: usize = 0,
+        outbound_count_limit: usize = default_outbound_count_limit,
         // A zero value means "unlimited".
-        outbound_bytes_limit: usize = 0,
+        outbound_bytes_limit: usize = default_outbound_bytes_limit,
         // A zero value means "unlimited".
         host_call_count_limit: usize = default_host_call_count_limit,
         // A zero value means "unlimited".
         host_call_bytes_limit: usize = default_host_call_bytes_limit,
+    };
+
+    pub const ErrorDisclosurePolicy = struct {
+        pub const default_generic_reason = "host call failed";
+        pub const default_max_reason_bytes: usize = 256;
+
+        reveal_details: bool = false,
+        max_reason_bytes: usize = default_max_reason_bytes,
+        generic_reason: []const u8 = default_generic_reason,
+    };
+
+    const SanitizedReason = struct {
+        bytes: []const u8,
+        owned: ?[]u8 = null,
+
+        fn deinit(self: SanitizedReason, allocator: std.mem.Allocator) void {
+            if (self.owned) |owned| allocator.free(owned);
+        }
     };
 
     pub const HostCall = struct {
@@ -35,6 +55,7 @@ pub const HostPeer = struct {
     outgoing: std.ArrayList([]u8),
     outgoing_bytes: usize = 0,
     limits: Limits = .{},
+    error_disclosure: ErrorDisclosurePolicy = .{},
     host_calls: std.ArrayList(HostCall),
     host_call_bytes: usize = 0,
     pending_host_call_questions: std.AutoHashMap(u32, void),
@@ -117,6 +138,16 @@ pub const HostPeer = struct {
         return self.limits;
     }
 
+    pub fn setErrorDisclosurePolicy(self: *HostPeer, policy: ErrorDisclosurePolicy) void {
+        self.peer.assertThreadAffinity();
+        self.error_disclosure = policy;
+    }
+
+    pub fn getErrorDisclosurePolicy(self: *const HostPeer) ErrorDisclosurePolicy {
+        self.peer.assertThreadAffinity();
+        return self.error_disclosure;
+    }
+
     pub fn enableHostCallBridge(self: *HostPeer) !void {
         self.peer.assertThreadAffinity();
         if (self.host_bridge_enabled) return;
@@ -163,7 +194,7 @@ pub const HostPeer = struct {
     pub fn respondHostCallException(self: *HostPeer, question_id: u32, reason: []const u8) !void {
         self.peer.assertThreadAffinity();
         if (!self.pending_host_call_questions.contains(question_id)) return error.UnknownQuestion;
-        try self.peer.sendReturnException(question_id, reason);
+        try self.sendSanitizedReturnException(question_id, false, false, reason);
         _ = self.pending_host_call_questions.remove(question_id);
     }
 
@@ -204,7 +235,17 @@ pub const HostPeer = struct {
         try validateHostCallReturnSemantics(ret);
         if (!self.pending_host_call_questions.contains(ret.answer_id)) return error.UnknownQuestion;
 
-        try self.peer.sendPrebuiltReturnFrame(ret, return_frame);
+        if (ret.tag == .exception) {
+            const ex = ret.exception orelse return error.InvalidReturnSemantics;
+            try self.sendSanitizedReturnException(
+                ret.answer_id,
+                ret.release_param_caps,
+                ret.no_finish_needed,
+                ex.reason,
+            );
+        } else {
+            try self.peer.sendPrebuiltReturnFrame(ret, return_frame);
+        }
         _ = self.pending_host_call_questions.remove(ret.answer_id);
     }
 
@@ -286,22 +327,126 @@ pub const HostPeer = struct {
             log.debug("outgoing queue count limit exceeded", .{});
             return error.OutgoingQueueLimitExceeded;
         }
-        if (self.limits.outbound_bytes_limit != 0) {
-            const next = std.math.add(usize, self.outgoing_bytes, frame.len) catch {
-                log.debug("outgoing bytes limit exceeded", .{});
-                return error.OutgoingBytesLimitExceeded;
-            };
-            if (next > self.limits.outbound_bytes_limit) {
-                log.debug("outgoing bytes limit exceeded", .{});
-                return error.OutgoingBytesLimitExceeded;
+
+        try self.ensureOutgoingByteBudget(frame.len);
+        const owned = try self.copyOutgoingFrame(frame);
+        errdefer self.outgoing_allocator.free(owned);
+        try self.ensureOutgoingByteBudget(owned.len);
+
+        try self.outgoing.append(self.allocator, owned);
+        self.outgoing_bytes += owned.len;
+    }
+
+    fn ensureOutgoingByteBudget(self: *HostPeer, added_len: usize) !void {
+        if (self.limits.outbound_bytes_limit == 0) return;
+        const next = std.math.add(usize, self.outgoing_bytes, added_len) catch {
+            log.debug("outgoing bytes limit exceeded", .{});
+            return error.OutgoingBytesLimitExceeded;
+        };
+        if (next > self.limits.outbound_bytes_limit) {
+            log.debug("outgoing bytes limit exceeded", .{});
+            return error.OutgoingBytesLimitExceeded;
+        }
+    }
+
+    fn sendSanitizedReturnException(
+        self: *HostPeer,
+        answer_id: u32,
+        release_param_caps: bool,
+        no_finish_needed: bool,
+        reason: []const u8,
+    ) !void {
+        const sanitized = try self.sanitizeExternalReason(reason);
+        defer sanitized.deinit(self.allocator);
+
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+
+        var ret_builder = try builder.beginReturn(answer_id, .exception);
+        ret_builder.setReleaseParamCaps(release_param_caps);
+        ret_builder.setNoFinishNeeded(no_finish_needed);
+        try ret_builder.setException(sanitized.bytes);
+
+        const bytes = try builder.finish();
+        defer self.allocator.free(bytes);
+
+        const ret = protocol.Return{
+            .answer_id = answer_id,
+            .release_param_caps = release_param_caps,
+            .no_finish_needed = no_finish_needed,
+            .tag = .exception,
+            .results = null,
+            .exception = .{
+                .reason = sanitized.bytes,
+                .trace = "",
+                .type_value = 0,
+            },
+            .take_from_other_question = null,
+        };
+        try self.peer.sendPrebuiltReturnFrame(ret, bytes);
+    }
+
+    fn copyOutgoingFrame(self: *HostPeer, frame: []const u8) ![]u8 {
+        if (try self.sanitizedReturnExceptionFrame(frame)) |sanitized| return sanitized;
+
+        const owned = try self.outgoing_allocator.alloc(u8, frame.len);
+        std.mem.copyForwards(u8, owned, frame);
+        return owned;
+    }
+
+    fn sanitizedReturnExceptionFrame(self: *HostPeer, frame: []const u8) !?[]u8 {
+        var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return null,
+        };
+        defer decoded.deinit();
+
+        if (decoded.tag != .@"return") return null;
+        const ret = decoded.asReturn() catch return null;
+        if (ret.tag != .exception) return null;
+        const ex = ret.exception orelse return null;
+
+        const sanitized = try self.sanitizeExternalReason(ex.reason);
+        defer sanitized.deinit(self.allocator);
+
+        var builder = protocol.MessageBuilder.init(self.outgoing_allocator);
+        defer builder.deinit();
+
+        var ret_builder = try builder.beginReturn(ret.answer_id, .exception);
+        ret_builder.setReleaseParamCaps(ret.release_param_caps);
+        ret_builder.setNoFinishNeeded(ret.no_finish_needed);
+        try ret_builder.setException(sanitized.bytes);
+
+        return @constCast(try builder.finish());
+    }
+
+    fn sanitizeExternalReason(self: *HostPeer, reason: []const u8) !SanitizedReason {
+        const policy = self.error_disclosure;
+        const source = if (policy.reveal_details) reason else policy.generic_reason;
+        const len = @min(source.len, policy.max_reason_bytes);
+        var needs_copy = source.len > len;
+
+        for (source[0..len]) |byte| {
+            if (!isSafeReasonByte(byte)) {
+                needs_copy = true;
+                break;
             }
         }
 
-        const owned = try self.outgoing_allocator.alloc(u8, frame.len);
-        errdefer self.outgoing_allocator.free(owned);
-        std.mem.copyForwards(u8, owned, frame);
-        try self.outgoing.append(self.allocator, owned);
-        self.outgoing_bytes += frame.len;
+        if (!needs_copy) {
+            return .{ .bytes = source[0..len] };
+        }
+
+        const owned = try self.allocator.alloc(u8, len);
+        for (source[0..len], 0..) |byte, i| {
+            owned[i] = if (isSafeReasonByte(byte)) byte else ' ';
+        }
+
+        return .{ .bytes = owned, .owned = owned };
+    }
+
+    fn isSafeReasonByte(byte: u8) bool {
+        return byte >= 0x20 and byte != 0x7f;
     }
 
     fn validateHostCallReturnSemantics(ret: protocol.Return) !void {

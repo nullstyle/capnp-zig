@@ -9,6 +9,64 @@ fn toAbiPtr(ptr: anytype) abi.AbiPtr {
     return @intCast(@intFromPtr(ptr));
 }
 
+const AbiBuffer = struct {
+    ptr: abi.AbiPtr,
+    len: u32,
+
+    fn slice(self: AbiBuffer) []u8 {
+        const bytes: [*]u8 = @ptrFromInt(@as(usize, @intCast(self.ptr)));
+        return bytes[0..self.len];
+    }
+
+    fn constSlice(self: AbiBuffer) []const u8 {
+        const bytes: [*]const u8 = @ptrFromInt(@as(usize, @intCast(self.ptr)));
+        return bytes[0..self.len];
+    }
+
+    fn free(self: AbiBuffer) void {
+        abi.capnp_buf_free(self.ptr, self.len);
+    }
+};
+
+const PersonJson = struct {
+    name: []const u8,
+    age: u32,
+    email: []const u8,
+};
+
+const defaultHostErrorReason = "host call failed";
+
+fn allocAbiBuffer(len: u32) !AbiBuffer {
+    const ptr = abi.capnp_alloc(len);
+    if (ptr == 0) return error.AbiAllocationFailed;
+    return .{ .ptr = ptr, .len = len };
+}
+
+fn allocAbiBytes(bytes: []const u8) !AbiBuffer {
+    if (bytes.len > std.math.maxInt(u32)) return error.InputTooLarge;
+    const buf = try allocAbiBuffer(@intCast(bytes.len));
+    errdefer buf.free();
+    std.mem.copyForwards(u8, buf.slice(), bytes);
+    return buf;
+}
+
+fn readAbiInt(comptime T: type, ptr: abi.AbiPtr) T {
+    const bytes: [*]const u8 = @ptrFromInt(@as(usize, @intCast(ptr)));
+    return std.mem.readInt(T, bytes[0..@sizeOf(T)], .little);
+}
+
+fn buildPersonFrame(allocator: std.mem.Allocator, name: []const u8, age: u32, email: []const u8) ![]const u8 {
+    var builder = capnpc.message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var person = try builder.allocateStruct(1, 2);
+    try person.writeText(0, name);
+    person.writeU32(0, age);
+    try person.writeText(1, email);
+
+    return builder.toBytes();
+}
+
 fn hasP0BExports(comptime ModuleType: type) bool {
     return @hasDecl(ModuleType, "capnp_wasm_abi_min_version") and
         @hasDecl(ModuleType, "capnp_wasm_abi_max_version") and
@@ -442,14 +500,13 @@ test "host call raw return frame accepts exception" {
 
     const outbound = try popOutFrameCopy(std.testing.allocator, server);
     defer std.testing.allocator.free(outbound);
-    try std.testing.expectEqualSlices(u8, return_frame, outbound);
 
     var decoded = try protocol.DecodedMessage.init(std.testing.allocator, outbound);
     defer decoded.deinit();
     const ret = try decoded.asReturn();
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
     const ex = ret.exception orelse return error.MissingException;
-    try std.testing.expectEqualStrings(reason, ex.reason);
+    try std.testing.expectEqualStrings(defaultHostErrorReason, ex.reason);
 }
 
 test "host call raw return frame rejects non-Return frames" {
@@ -723,6 +780,118 @@ test "capnp_shutdown releases tracked allocations" {
     try std.testing.expectEqual(@as(u32, 12), abi.capnp_last_error_code());
 }
 
+test "capnp_alloc enforces default outstanding byte limit before allocating" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    try std.testing.expectEqual(@as(abi.AbiPtr, 0), abi.capnp_alloc(std.math.maxInt(u32)));
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_last_error_code());
+}
+
+test "capnp_alloc enforces default outstanding allocation count limit" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    const limit = abi.testingDefaultMaxOutstandingAllocations();
+    const ptrs = try std.testing.allocator.alloc(abi.AbiPtr, limit);
+    defer std.testing.allocator.free(ptrs);
+
+    for (ptrs) |*ptr| {
+        ptr.* = abi.capnp_alloc(0);
+        try std.testing.expect(ptr.* != 0);
+    }
+
+    try std.testing.expectEqual(@as(abi.AbiPtr, 0), abi.capnp_alloc(0));
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_last_error_code());
+
+    for (ptrs) |ptr| {
+        abi.capnp_free(ptr, 0);
+    }
+}
+
+test "strict pointer validation rejects untracked input and wrong tracked length" {
+    abi.capnp_shutdown();
+    abi.testingSetStrictPointerValidation(true);
+    defer {
+        abi.testingSetStrictPointerValidation(false);
+        abi.capnp_shutdown();
+    }
+
+    const peer = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(peer);
+    try std.testing.expect(peer != 0);
+
+    var local = [_]u8{ 0, 0, 0, 0 };
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_push_frame(
+        peer,
+        toAbiPtr(&local),
+        @intCast(local.len),
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+
+    const tracked = try allocAbiBytes(&local);
+    defer tracked.free();
+
+    abi.capnp_clear_error();
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_push_frame(
+        peer,
+        tracked.ptr,
+        tracked.len + 1,
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+}
+
+test "strict pointer validation checks output slots before writes" {
+    abi.capnp_shutdown();
+    abi.testingSetStrictPointerValidation(true);
+    defer {
+        abi.testingSetStrictPointerValidation(false);
+        abi.capnp_shutdown();
+    }
+
+    var stack_code: u32 = 123;
+    var stack_msg_ptr: abi.AbiPtr = 456;
+    var stack_msg_len: u32 = 789;
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_push_frame(9999, 0, 0));
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_error_take(
+        toAbiPtr(&stack_code),
+        toAbiPtr(&stack_msg_ptr),
+        toAbiPtr(&stack_msg_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+    try std.testing.expectEqual(@as(u32, 123), stack_code);
+    try std.testing.expectEqual(@as(abi.AbiPtr, 456), stack_msg_ptr);
+    try std.testing.expectEqual(@as(u32, 789), stack_msg_len);
+
+    const code_slot = try allocAbiBuffer(@sizeOf(u32));
+    defer code_slot.free();
+    const msg_ptr_slot = try allocAbiBuffer(@sizeOf(abi.AbiPtr));
+    defer msg_ptr_slot.free();
+    const msg_len_slot = try allocAbiBuffer(@sizeOf(u32));
+    defer msg_len_slot.free();
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_push_frame(9999, 0, 0));
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_error_take(
+        code_slot.ptr,
+        msg_ptr_slot.ptr,
+        msg_len_slot.ptr,
+    ));
+    try std.testing.expectEqual(@as(u32, 3), readAbiInt(u32, code_slot.ptr));
+    try std.testing.expect(readAbiInt(abi.AbiPtr, msg_ptr_slot.ptr) != 0);
+    try std.testing.expect(readAbiInt(u32, msg_len_slot.ptr) > 0);
+
+    const too_small = try allocAbiBuffer(1);
+    defer too_small.free();
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_push_frame(9999, 0, 0));
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_error_take(
+        too_small.ptr,
+        msg_ptr_slot.ptr,
+        msg_len_slot.ptr,
+    ));
+    try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+}
+
 test "peer outbound introspection and limits exports work" {
     abi.capnp_clear_error();
     defer abi.capnp_clear_error();
@@ -734,6 +903,16 @@ test "peer outbound introspection and limits exports work" {
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_count(peer));
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_outbound_bytes(peer));
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_has_uncommitted_pop(peer));
+
+    var default_limit_count: u32 = 0;
+    var default_limit_bytes: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_get_limits(
+        peer,
+        toAbiPtr(&default_limit_count),
+        toAbiPtr(&default_limit_bytes),
+    ));
+    try std.testing.expect(default_limit_count > 0);
+    try std.testing.expect(default_limit_bytes > 0);
 
     try std.testing.expectEqual(@as(u32, 1), abi.capnp_peer_set_limits(peer, 3, 4096));
     var limit_count: u32 = 0;
@@ -854,7 +1033,7 @@ test "host call bridge exports can pop inbound calls and send exception response
     const ret = try decoded_ret.asReturn();
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
     const ex = ret.exception orelse return error.MissingException;
-    try std.testing.expectEqualStrings(reason, ex.reason);
+    try std.testing.expectEqualStrings(defaultHostErrorReason, ex.reason);
 }
 
 test "host call frame release export supports repeated pop/free cycles" {
@@ -952,7 +1131,7 @@ test "host call frame release export supports repeated pop/free cycles" {
         const ret = try decoded_ret.asReturn();
         try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
         const ex = ret.exception orelse return error.MissingException;
-        try std.testing.expectEqualStrings(reason, ex.reason);
+        try std.testing.expectEqualStrings(defaultHostErrorReason, ex.reason);
     }
 }
 
@@ -1170,6 +1349,134 @@ test "schema manifest export validates output pointers" {
     var out_ptr: abi.AbiPtr = 0;
     try std.testing.expectEqual(@as(u32, 0), abi.capnp_schema_manifest_json(toAbiPtr(&out_ptr), 0));
     try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+}
+
+test "example person serde round trips bounded JSON and frames" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    const input_json =
+        \\{"name":"Ada Lovelace","age":36,"email":"ada@example.test"}
+    ;
+    const json_in = try allocAbiBytes(input_json);
+    defer json_in.free();
+
+    var frame_ptr: abi.AbiPtr = 0;
+    var frame_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_example_person_from_json(
+        json_in.ptr,
+        json_in.len,
+        toAbiPtr(&frame_ptr),
+        toAbiPtr(&frame_len),
+    ));
+    defer abi.capnp_buf_free(frame_ptr, frame_len);
+    try std.testing.expect(frame_ptr != 0);
+    try std.testing.expect(frame_len > 0);
+
+    var json_out_ptr: abi.AbiPtr = 0;
+    var json_out_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_example_person_to_json(
+        frame_ptr,
+        frame_len,
+        toAbiPtr(&json_out_ptr),
+        toAbiPtr(&json_out_len),
+    ));
+    defer abi.capnp_buf_free(json_out_ptr, json_out_len);
+
+    const json_out = AbiBuffer{ .ptr = json_out_ptr, .len = json_out_len };
+    var parsed = try std.json.parseFromSlice(PersonJson, std.testing.allocator, json_out.constSlice(), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("Ada Lovelace", parsed.value.name);
+    try std.testing.expectEqual(@as(u32, 36), parsed.value.age);
+    try std.testing.expectEqualStrings("ada@example.test", parsed.value.email);
+}
+
+test "example person serde rejects oversized JSON before pointer read" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    var out_ptr: abi.AbiPtr = 0;
+    var out_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_example_person_from_json(
+        1,
+        std.math.maxInt(u32),
+        toAbiPtr(&out_ptr),
+        toAbiPtr(&out_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 7), abi.capnp_last_error_code());
+}
+
+test "example person serde rejects oversized input text" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    const text_len = abi.testingExampleMaxTextBytes() + 1;
+    var json = std.ArrayList(u8).empty;
+    defer json.deinit(std.testing.allocator);
+    try json.appendSlice(std.testing.allocator, "{\"name\":\"");
+    try json.appendNTimes(std.testing.allocator, 'a', text_len);
+    try json.appendSlice(std.testing.allocator, "\",\"age\":1,\"email\":\"a@example.test\"}");
+
+    const json_in = try allocAbiBytes(json.items);
+    defer json_in.free();
+
+    var out_ptr: abi.AbiPtr = 0;
+    var out_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_example_person_from_json(
+        json_in.ptr,
+        json_in.len,
+        toAbiPtr(&out_ptr),
+        toAbiPtr(&out_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 7), abi.capnp_last_error_code());
+}
+
+test "example person serde rejects oversized frame before pointer read" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    var out_ptr: abi.AbiPtr = 0;
+    var out_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_example_person_to_json(
+        1,
+        std.math.maxInt(u32),
+        toAbiPtr(&out_ptr),
+        toAbiPtr(&out_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 8), abi.capnp_last_error_code());
+}
+
+test "example person serde validates frames and caps output text" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const malformed = [_]u8{ 0, 0, 0, 0 };
+    var out_ptr: abi.AbiPtr = 0;
+    var out_len: u32 = 0;
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_example_person_to_json(
+        toAbiPtr(&malformed),
+        @intCast(malformed.len),
+        toAbiPtr(&out_ptr),
+        toAbiPtr(&out_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 8), abi.capnp_last_error_code());
+
+    const text_len = abi.testingExampleMaxTextBytes() + 1;
+    const name = try std.testing.allocator.alloc(u8, text_len);
+    defer std.testing.allocator.free(name);
+    @memset(name, 'b');
+
+    const frame = try buildPersonFrame(std.testing.allocator, name, 9, "b@example.test");
+    defer std.testing.allocator.free(frame);
+
+    abi.capnp_clear_error();
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_example_person_to_json(
+        toAbiPtr(frame.ptr),
+        @intCast(frame.len),
+        toAbiPtr(&out_ptr),
+        toAbiPtr(&out_len),
+    ));
+    try std.testing.expectEqual(@as(u32, 8), abi.capnp_last_error_code());
 }
 
 test "wasm host ABI supports peer reinit after free" {

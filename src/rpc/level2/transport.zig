@@ -66,6 +66,7 @@ pub const Transport = struct {
         cond: std.Io.Condition = .init,
         items: std.ArrayListUnmanaged([]u8) = .empty,
         queued_bytes: usize = 0,
+        in_flight_bytes: usize = 0,
         max_items: usize = default_max_queued_items,
         max_bytes: usize = default_max_queued_bytes,
         closed: bool = false,
@@ -83,7 +84,8 @@ pub const Transport = struct {
             if (self.items.items.len >= self.max_items) {
                 return error.WriteQueueFull;
             }
-            if (bytes.len > self.max_bytes or self.queued_bytes > self.max_bytes - bytes.len) {
+            const accounted_bytes = self.queued_bytes + self.in_flight_bytes;
+            if (bytes.len > self.max_bytes or accounted_bytes > self.max_bytes - bytes.len) {
                 return error.WriteQueueBytesExceeded;
             }
 
@@ -108,9 +110,19 @@ pub const Transport = struct {
             if (self.items.items.len == 0) return null;
 
             const result = self.items;
+            for (result.items) |item| {
+                self.in_flight_bytes += item.len;
+            }
             self.items = .empty;
             self.queued_bytes = 0;
             return result;
+        }
+
+        /// Release byte budget for a batch after the writer has freed it.
+        fn releaseBatchBytes(self: *WriteQueue, io: std.Io, batch_bytes: usize) void {
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
+            self.in_flight_bytes -= batch_bytes;
         }
 
         /// Mark the queue as closed and wake the writer thread.
@@ -136,6 +148,7 @@ pub const Transport = struct {
             // this reset.
             self.items = .empty;
             self.queued_bytes = 0;
+            self.in_flight_bytes = 0;
         }
     };
 
@@ -251,6 +264,11 @@ pub const Transport = struct {
     fn writerLoop(self: *Transport) void {
         while (true) {
             var batch = self.write_queue.waitForBatch(self.io) orelse break;
+            var batch_bytes: usize = 0;
+            for (batch.items) |item| {
+                batch_bytes += item.len;
+            }
+            defer self.write_queue.releaseBatchBytes(self.io, batch_bytes);
             defer batch.deinit(self.allocator);
 
             var write_failed = false;

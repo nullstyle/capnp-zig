@@ -53,6 +53,40 @@ pub const Generator = struct {
     shape_sharing: bool = false,
     shape_share_map: std.StringHashMap([]const u8),
 
+    const GeneratedNameScope = struct {
+        allocator: std.mem.Allocator,
+        names: std.ArrayList([]const u8) = .empty,
+
+        fn init(allocator: std.mem.Allocator) GeneratedNameScope {
+            return .{ .allocator = allocator };
+        }
+
+        fn deinit(self: *GeneratedNameScope) void {
+            for (self.names.items) |name| {
+                self.allocator.free(name);
+            }
+            self.names.deinit(self.allocator);
+        }
+
+        fn addOwned(self: *GeneratedNameScope, name: []const u8) !void {
+            errdefer self.allocator.free(name);
+            for (self.names.items) |existing| {
+                if (std.mem.eql(u8, existing, name)) return error.DuplicateGeneratedName;
+            }
+            try self.names.append(self.allocator, name);
+        }
+
+        fn addCopy(self: *GeneratedNameScope, name: []const u8) !void {
+            const owned = try self.allocator.dupe(u8, name);
+            try self.addOwned(owned);
+        }
+
+        fn addPrint(self: *GeneratedNameScope, comptime fmt: []const u8, args: anytype) !void {
+            const name = try std.fmt.allocPrint(self.allocator, fmt, args);
+            try self.addOwned(name);
+        }
+    };
+
     /// Build a generator from the full set of schema nodes, indexing them by ID.
     pub fn init(allocator: std.mem.Allocator, nodes: []const schema.Node) !Generator {
         var node_map = std.AutoHashMap(schema.Id, usize).init(allocator);
@@ -146,6 +180,7 @@ pub const Generator = struct {
 
         const file_node = self.getNode(requested_file.id) orelse return error.FileNodeNotFound;
         const needs_rpc = try self.fileNeedsRpc(file_node);
+        try self.validateGeneratedNames(file_node, needs_rpc);
 
         // Register import module aliases up-front so cross-file type resolution
         // works while generating declarations.
@@ -428,6 +463,457 @@ pub const Generator = struct {
                 }
             }
         }
+    }
+
+    fn validateGeneratedNames(self: *Generator, file_node: *const schema.Node, needs_rpc: bool) !void {
+        var generated = std.AutoHashMap(schema.Id, void).init(self.allocator);
+        defer generated.deinit();
+
+        var file_scope = GeneratedNameScope.init(self.allocator);
+        defer file_scope.deinit();
+        try file_scope.addCopy("std");
+        try file_scope.addCopy("capnpc");
+        try file_scope.addCopy("message");
+        try file_scope.addCopy("schema");
+        if (needs_rpc) try file_scope.addCopy("rpc");
+        if (self.emit_schema_manifest) {
+            try file_scope.addCopy("CAPNP_SCHEMA_MANIFEST_JSON");
+            try file_scope.addCopy("capnpSchemaManifestJson");
+        }
+
+        for (file_node.nested_nodes) |nested| {
+            try self.validateGeneratedNodeRecursive(nested.id, &generated, &file_scope);
+        }
+    }
+
+    fn validateGeneratedNodeRecursive(
+        self: *Generator,
+        id: schema.Id,
+        generated: *std.AutoHashMap(schema.Id, void),
+        file_scope: *GeneratedNameScope,
+    ) !void {
+        if (generated.contains(id)) return;
+        const node = self.getNode(id) orelse return;
+        try generated.put(id, {});
+
+        if (node.kind == .@"struct") {
+            if (node.struct_node) |struct_node| {
+                for (struct_node.fields) |field| {
+                    if (field.group) |group| {
+                        try generated.put(group.type_id, {});
+                    }
+                }
+            }
+        }
+
+        try self.validateNodeGeneratedNames(node, file_scope);
+
+        for (node.nested_nodes) |nested| {
+            try self.validateGeneratedNodeRecursive(nested.id, generated, file_scope);
+        }
+
+        if (node.kind == .interface) {
+            const iface = node.interface_node orelse return;
+            for (iface.methods) |method| {
+                try self.validateGeneratedNodeRecursive(method.param_struct_type, generated, file_scope);
+                try self.validateGeneratedNodeRecursive(method.result_struct_type, generated, file_scope);
+            }
+            for (iface.superclasses) |parent_id| {
+                const parent_node = self.getNode(parent_id) orelse continue;
+                const parent_iface = parent_node.interface_node orelse continue;
+                for (parent_iface.methods) |method| {
+                    try self.validateGeneratedNodeRecursive(method.param_struct_type, generated, file_scope);
+                    try self.validateGeneratedNodeRecursive(method.result_struct_type, generated, file_scope);
+                }
+            }
+        }
+    }
+
+    fn validateNodeGeneratedNames(
+        self: *Generator,
+        node: *const schema.Node,
+        file_scope: *GeneratedNameScope,
+    ) !void {
+        switch (node.kind) {
+            .@"struct" => {
+                const name = try self.allocTypeDeclName(node);
+                try file_scope.addOwned(name);
+                try self.validateStructGeneratedNames(node);
+            },
+            .@"enum" => {
+                const name = try self.allocTypeDeclName(node);
+                try file_scope.addOwned(name);
+                try self.validateEnumGeneratedNames(node);
+            },
+            .interface => {
+                const name = try self.allocTypeDeclName(node);
+                try file_scope.addOwned(name);
+                try self.validateInterfaceGeneratedNames(node);
+            },
+            .@"const", .annotation => {
+                const name = try self.allocValueDeclName(node);
+                try file_scope.addOwned(name);
+            },
+            .file => {},
+        }
+    }
+
+    const StructListHelperUsage = struct {
+        enum_list: bool = false,
+        struct_list: bool = false,
+        data_list: bool = false,
+        capability_list: bool = false,
+    };
+
+    fn validateStructGeneratedNames(self: *Generator, node: *const schema.Node) !void {
+        const struct_info = node.struct_node orelse return error.InvalidStructNode;
+
+        var struct_scope = GeneratedNameScope.init(self.allocator);
+        defer struct_scope.deinit();
+        try struct_scope.addCopy("Reader");
+        try struct_scope.addCopy("Builder");
+
+        const usage = try self.collectStructListHelperUsage(struct_info.fields);
+        if (usage.enum_list) {
+            try struct_scope.addCopy("EnumListReader");
+            try struct_scope.addCopy("EnumListBuilder");
+        }
+        if (usage.struct_list) {
+            try struct_scope.addCopy("StructListReader");
+            try struct_scope.addCopy("StructListBuilder");
+        }
+        if (usage.data_list) {
+            try struct_scope.addCopy("DataListReader");
+            try struct_scope.addCopy("DataListBuilder");
+        }
+        if (usage.capability_list) {
+            try struct_scope.addCopy("CapabilityListReader");
+            try struct_scope.addCopy("CapabilityListBuilder");
+        }
+
+        if (struct_info.discriminant_count > 0) {
+            try struct_scope.addCopy("WhichTag");
+        }
+
+        for (struct_info.fields) |field| {
+            const group = field.group orelse continue;
+            const group_node = self.getNode(group.type_id) orelse continue;
+            const group_name = try self.allocTypeDeclName(group_node);
+            try struct_scope.addOwned(group_name);
+            try self.validateStructGeneratedNames(group_node);
+        }
+
+        try self.validateStructReaderNames(struct_info);
+        try self.validateStructBuilderNames(struct_info);
+        if (struct_info.discriminant_count > 0) {
+            try self.validateUnionTagNames(struct_info.fields);
+        }
+    }
+
+    fn collectStructListHelperUsage(self: *Generator, fields: []const schema.Field) !StructListHelperUsage {
+        var usage = StructListHelperUsage{};
+        try self.collectStructListHelperUsageFromFields(fields, &usage);
+        return usage;
+    }
+
+    fn collectStructListHelperUsageFromFields(
+        self: *Generator,
+        fields: []const schema.Field,
+        usage: *StructListHelperUsage,
+    ) !void {
+        for (fields) |field| {
+            if (field.group) |group| {
+                const group_node = self.getNode(group.type_id) orelse continue;
+                const group_struct_info = group_node.struct_node orelse continue;
+                try self.collectStructListHelperUsageFromFields(group_struct_info.fields, usage);
+            }
+
+            const slot = field.slot orelse continue;
+            if (slot.type != .list) continue;
+            switch (slot.type.list.element_type.*) {
+                .@"enum" => |enum_info| {
+                    const enum_node = self.getNode(enum_info.type_id) orelse continue;
+                    if (enum_node.kind == .@"enum") usage.enum_list = true;
+                },
+                .@"struct" => |struct_info| {
+                    const struct_node = self.getNode(struct_info.type_id) orelse continue;
+                    if (struct_node.kind == .@"struct") usage.struct_list = true;
+                },
+                .data => usage.data_list = true,
+                .interface => usage.capability_list = true,
+                else => {},
+            }
+        }
+    }
+
+    fn validateStructReaderNames(self: *Generator, struct_info: schema.StructNode) !void {
+        var scope = GeneratedNameScope.init(self.allocator);
+        defer scope.deinit();
+
+        try scope.addCopy("_reader");
+        try scope.addCopy("wrap");
+        if (self.api_profile == .full) try scope.addCopy("init");
+        if (struct_info.discriminant_count > 0) try scope.addCopy("which");
+
+        for (struct_info.fields) |field| {
+            if (field.group == null and field.slot == null) continue;
+
+            const cap_name = try self.allocFieldCapName(field.name);
+            defer self.allocator.free(cap_name);
+
+            try scope.addPrint("get{s}", .{cap_name});
+
+            if (field.slot) |slot| {
+                if (self.defaultPointerBytes(slot.default_value)) |_| {
+                    const default_name = try self.allocDefaultConstName(field.name);
+                    defer self.allocator.free(default_name);
+                    try scope.addPrint("{s}_bytes", .{default_name});
+                    try scope.addPrint("{s}_segments", .{default_name});
+                    try scope.addPrint("{s}_message", .{default_name});
+                    try scope.addCopy(default_name);
+                }
+
+                if (slot.type == .interface) {
+                    try scope.addPrint("resolve{s}", .{cap_name});
+                } else if (slot.type == .list and slot.type.list.element_type.* == .interface) {
+                    try scope.addPrint("resolve{s}", .{cap_name});
+                }
+            }
+        }
+    }
+
+    fn validateStructBuilderNames(self: *Generator, struct_info: schema.StructNode) !void {
+        var scope = GeneratedNameScope.init(self.allocator);
+        defer scope.deinit();
+
+        try scope.addCopy("_builder");
+        try scope.addCopy("wrap");
+        if (self.api_profile == .full) try scope.addCopy("init");
+
+        for (struct_info.fields) |field| {
+            const cap_name = try self.allocFieldCapName(field.name);
+            defer self.allocator.free(cap_name);
+
+            if (field.group != null) {
+                if (field.discriminant_value != 0xFFFF and struct_info.discriminant_count > 0) {
+                    try scope.addPrint("init{s}", .{cap_name});
+                } else {
+                    try scope.addPrint("get{s}", .{cap_name});
+                }
+                continue;
+            }
+
+            const slot = field.slot orelse continue;
+            switch (slot.type) {
+                .list, .@"struct" => try scope.addPrint("init{s}", .{cap_name}),
+                .any_pointer => {
+                    try scope.addPrint("init{s}", .{cap_name});
+                    try scope.addPrint("set{s}Null", .{cap_name});
+                    try scope.addPrint("set{s}Text", .{cap_name});
+                    try scope.addPrint("set{s}Data", .{cap_name});
+                    try scope.addPrint("set{s}Capability", .{cap_name});
+                },
+                .interface => {
+                    try scope.addPrint("init{s}", .{cap_name});
+                    try scope.addPrint("clear{s}", .{cap_name});
+                    try scope.addPrint("set{s}Capability", .{cap_name});
+                    try scope.addPrint("set{s}Server", .{cap_name});
+                    try scope.addPrint("set{s}Client", .{cap_name});
+                },
+                else => try scope.addPrint("set{s}", .{cap_name}),
+            }
+        }
+    }
+
+    fn validateUnionTagNames(self: *Generator, fields: []const schema.Field) !void {
+        var scope = GeneratedNameScope.init(self.allocator);
+        defer scope.deinit();
+
+        for (fields) |field| {
+            if (field.discriminant_value == 0xFFFF) continue;
+            const tag_name = try self.allocEscapedTypeIdentifier(field.name);
+            try scope.addOwned(tag_name);
+        }
+    }
+
+    fn validateEnumGeneratedNames(self: *Generator, node: *const schema.Node) !void {
+        const enum_info = node.enum_node orelse return error.InvalidEnumNode;
+
+        var scope = GeneratedNameScope.init(self.allocator);
+        defer scope.deinit();
+
+        for (enum_info.enumerants) |enumerant| {
+            const name = try self.allocEscapedTypeIdentifier(enumerant.name);
+            try scope.addOwned(name);
+        }
+    }
+
+    fn validateInterfaceGeneratedNames(self: *Generator, node: *const schema.Node) !void {
+        const interface_info = node.interface_node orelse return error.InvalidInterfaceNode;
+
+        var interface_scope = GeneratedNameScope.init(self.allocator);
+        defer interface_scope.deinit();
+
+        try interface_scope.addCopy("interface_id");
+        try interface_scope.addCopy("Method");
+        try interface_scope.addCopy("Client");
+        if (self.interfaceHasStreamingMethods(interface_info)) {
+            try interface_scope.addCopy("StreamClient");
+        }
+        try interface_scope.addCopy("PipelinedClient");
+        try interface_scope.addCopy("BootstrapResponse");
+        try interface_scope.addCopy("BootstrapCallback");
+        try interface_scope.addCopy("BootstrapContext");
+        try interface_scope.addCopy("Server");
+        try interface_scope.addCopy("VTable");
+        try interface_scope.addCopy("bootstrapReturn");
+        try interface_scope.addCopy("bootstrap");
+        try interface_scope.addCopy("exportServer");
+        try interface_scope.addCopy("setBootstrap");
+        try interface_scope.addCopy("onCall");
+
+        var method_enum_scope = GeneratedNameScope.init(self.allocator);
+        defer method_enum_scope.deinit();
+
+        var client_scope = GeneratedNameScope.init(self.allocator);
+        defer client_scope.deinit();
+        try client_scope.addCopy("peer");
+        try client_scope.addCopy("cap_id");
+        try client_scope.addCopy("init");
+        try client_scope.addCopy("fromBootstrap");
+
+        var pipelined_scope = GeneratedNameScope.init(self.allocator);
+        defer pipelined_scope.deinit();
+        try pipelined_scope.addCopy("peer");
+        try pipelined_scope.addCopy("question_id");
+        try pipelined_scope.addCopy("pointer_index");
+
+        var stream_scope = GeneratedNameScope.init(self.allocator);
+        defer stream_scope.deinit();
+        if (self.interfaceHasStreamingMethods(interface_info)) {
+            try stream_scope.addCopy("client");
+            try stream_scope.addCopy("stream");
+            try stream_scope.addCopy("init");
+            try stream_scope.addCopy("waitStreaming");
+        }
+
+        var vtable_scope = GeneratedNameScope.init(self.allocator);
+        defer vtable_scope.deinit();
+
+        for (interface_info.methods) |method| {
+            const method_name = try self.allocEscapedTypeIdentifier(method.name);
+            try interface_scope.addOwned(method_name);
+
+            const enum_name = try self.allocEscapedTypeIdentifier(method.name);
+            try method_enum_scope.addOwned(enum_name);
+
+            const call_name = try self.allocMethodCallName(method.name);
+            defer self.allocator.free(call_name);
+            try client_scope.addCopy(call_name);
+            try pipelined_scope.addCopy(call_name);
+            if (self.interfaceHasStreamingMethods(interface_info)) {
+                try stream_scope.addCopy(call_name);
+            }
+
+            if (try self.methodHasInterfaceResultFields(method)) {
+                const pipeline_name = try self.allocMethodPipelineName(method.name);
+                try interface_scope.addOwned(pipeline_name);
+                try self.validatePipelineGeneratedNames(method);
+                try client_scope.addPrint("{s}Pipelined", .{call_name});
+            }
+
+            const field_name = try self.allocMethodVTableFieldName(method.name);
+            defer self.allocator.free(field_name);
+            try vtable_scope.addCopy(field_name);
+            if (!method.isStreaming()) {
+                try vtable_scope.addPrint("{s}_deferred", .{field_name});
+            }
+        }
+    }
+
+    fn validatePipelineGeneratedNames(self: *Generator, method: schema.Method) !void {
+        const result_node = self.getNode(method.result_struct_type) orelse return;
+        const result_struct = result_node.struct_node orelse return;
+
+        var scope = GeneratedNameScope.init(self.allocator);
+        defer scope.deinit();
+        try scope.addCopy("peer");
+        try scope.addCopy("question_id");
+
+        for (result_struct.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .interface) continue;
+            const field_name = try types.identToZigTypeName(self.allocator, field.name);
+            defer self.allocator.free(field_name);
+            try scope.addPrint("get{s}", .{field_name});
+        }
+    }
+
+    fn interfaceHasStreamingMethods(self: *Generator, interface_info: schema.InterfaceNode) bool {
+        _ = self;
+        for (interface_info.methods) |method| {
+            if (method.isStreaming()) return true;
+        }
+        return false;
+    }
+
+    fn methodHasInterfaceResultFields(self: *Generator, method: schema.Method) !bool {
+        const result_node = self.getNode(method.result_struct_type) orelse return false;
+        const result_struct = result_node.struct_node orelse return false;
+        for (result_struct.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type == .interface) return true;
+        }
+        return false;
+    }
+
+    fn allocEscapedTypeIdentifier(self: *Generator, name: []const u8) ![]const u8 {
+        const zig_name = try self.toZigIdentifier(name);
+        defer self.allocator.free(zig_name);
+        return types.escapeZigKeyword(self.allocator, zig_name);
+    }
+
+    fn allocFieldCapName(self: *Generator, name: []const u8) ![]const u8 {
+        const zig_name = try types.identToZigValueName(self.allocator, name);
+        defer self.allocator.free(zig_name);
+        return self.capitalizeFirst(zig_name);
+    }
+
+    fn allocDefaultConstName(self: *Generator, field_name: []const u8) ![]const u8 {
+        const zig_name = try types.identToZigValueName(self.allocator, field_name);
+        defer self.allocator.free(zig_name);
+        return std.fmt.allocPrint(self.allocator, "_default_{s}", .{zig_name});
+    }
+
+    fn allocMethodCallName(self: *Generator, method_name: []const u8) ![]const u8 {
+        const zig_name = try self.toZigIdentifier(method_name);
+        defer self.allocator.free(zig_name);
+        return std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
+    }
+
+    fn allocMethodPipelineName(self: *Generator, method_name: []const u8) ![]const u8 {
+        const method_name_zig = try self.allocEscapedTypeIdentifier(method_name);
+        defer self.allocator.free(method_name_zig);
+        return std.fmt.allocPrint(self.allocator, "{s}Pipeline", .{method_name_zig});
+    }
+
+    fn allocMethodVTableFieldName(self: *Generator, method_name: []const u8) ![]const u8 {
+        const zig_name = try self.toZigIdentifier(method_name);
+        defer self.allocator.free(zig_name);
+        const method_field = try self.lowerFirst(zig_name);
+        defer self.allocator.free(method_field);
+        return types.escapeZigKeyword(self.allocator, method_field);
+    }
+
+    fn defaultPointerBytes(self: *Generator, value: ?schema.Value) ?[]const u8 {
+        _ = self;
+        const v = value orelse return null;
+        return switch (v) {
+            .list => |info| info.message_bytes,
+            .@"struct" => |info| info.message_bytes,
+            .any_pointer => |info| info.message_bytes,
+            else => null,
+        };
     }
 
     fn fileNeedsRpc(self: *Generator, file_node: *const schema.Node) !bool {
@@ -1441,6 +1927,14 @@ pub const Generator = struct {
         return result;
     }
 
+    fn capitalizeFirst(self: *Generator, name: []const u8) ![]const u8 {
+        if (name.len == 0) return try self.allocator.dupe(u8, name);
+        var result = try self.allocator.alloc(u8, name.len);
+        result[0] = std.ascii.toUpper(name[0]);
+        @memcpy(result[1..], name[1..]);
+        return result;
+    }
+
     /// Convert Cap'n Proto identifier to Zig type name (PascalCase)
     fn toZigIdentifier(self: *Generator, name: []const u8) ![]const u8 {
         return types.identToZigTypeName(self.allocator, name);
@@ -1934,6 +2428,69 @@ pub const Generator = struct {
 // Inline unit tests for pure helper functions
 // ---------------------------------------------------------------------------
 
+fn testFileNode(id: schema.Id, filename: []const u8, nested_nodes: []schema.Node.NestedNode) schema.Node {
+    return .{
+        .id = id,
+        .display_name = filename,
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested_nodes,
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+}
+
+fn testStructNode(
+    id: schema.Id,
+    scope_id: schema.Id,
+    name: []const u8,
+    fields: []schema.Field,
+    nested_nodes: []schema.Node.NestedNode,
+) schema.Node {
+    return .{
+        .id = id,
+        .display_name = name,
+        .display_name_prefix_length = 0,
+        .scope_id = scope_id,
+        .nested_nodes = nested_nodes,
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+}
+
+fn testUint32Field(name: []const u8, offset: u32) schema.Field {
+    return .{
+        .name = name,
+        .code_order = @intCast(offset),
+        .annotations = &[_]schema.AnnotationUse{},
+        .discriminant_value = 0xFFFF,
+        .slot = .{
+            .offset = offset,
+            .type = .uint32,
+            .default_value = null,
+        },
+        .group = null,
+    };
+}
+
 test "Generator.toSnakeCaseLower converts camelCase" {
     const alloc = std.testing.allocator;
     var gen = Generator.init(alloc, &.{}) catch unreachable;
@@ -2145,6 +2702,103 @@ test "Generator.uniqueImportModuleName escapes keywords and disambiguates collis
     const r4 = try gen.uniqueImportModuleName("nested/error.capnp", &used);
     defer alloc.free(r4);
     try std.testing.expectEqualStrings("error_2", r4);
+}
+
+test "Generator.generateFile rejects duplicate file scope generated names" {
+    const alloc = std.testing.allocator;
+
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "foo", .id = 2 },
+        .{ .name = "Foo", .id = 3 },
+    };
+    const root_file = testFileNode(1, "root.capnp", root_nested[0..]);
+    const node_a = testStructNode(2, 1, "foo", &[_]schema.Field{}, &[_]schema.Node.NestedNode{});
+    const node_b = testStructNode(3, 1, "Foo", &[_]schema.Field{}, &[_]schema.Node.NestedNode{});
+    const nodes = [_]schema.Node{ root_file, node_a, node_b };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    try std.testing.expectError(error.DuplicateGeneratedName, gen.generateFile(requested));
+}
+
+test "Generator.generateFile rejects duplicate struct field generated names" {
+    const alloc = std.testing.allocator;
+
+    var fields = [_]schema.Field{
+        testUint32Field("foo_bar", 0),
+        testUint32Field("foo$bar", 1),
+    };
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Root", .id = 2 },
+    };
+    const root_file = testFileNode(1, "root.capnp", root_nested[0..]);
+    const root_struct = testStructNode(2, 1, "Root", fields[0..], &[_]schema.Node.NestedNode{});
+    const nodes = [_]schema.Node{ root_file, root_struct };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    try std.testing.expectError(error.DuplicateGeneratedName, gen.generateFile(requested));
+}
+
+test "Generator.generateFile rejects duplicate enum enumerant generated names" {
+    const alloc = std.testing.allocator;
+
+    var enumerants = [_]schema.Enumerant{
+        .{
+            .name = "foo_bar",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+        },
+        .{
+            .name = "foo$bar",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+        },
+    };
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Choice", .id = 2 },
+    };
+    const root_file = testFileNode(1, "root.capnp", root_nested[0..]);
+    const enum_node = schema.Node{
+        .id = 2,
+        .display_name = "Choice",
+        .display_name_prefix_length = 0,
+        .scope_id = 1,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"enum",
+        .struct_node = null,
+        .enum_node = .{ .enumerants = enumerants[0..] },
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+    const nodes = [_]schema.Node{ root_file, enum_node };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    try std.testing.expectError(error.DuplicateGeneratedName, gen.generateFile(requested));
 }
 
 test "Generator.generateFile emits unique escaped import aliases" {

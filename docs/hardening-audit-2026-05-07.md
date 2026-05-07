@@ -24,8 +24,10 @@ the most exposed RPC and transport paths:
 - [x] Validate inbound `receiverHosted` capability IDs against live exports.
 - [x] Cap promised-answer transform length during parse/resolve.
 - [ ] Add peer and host bridge count/byte budgets for pending input-driven state.
-      Host bridge queue budgets and streaming in-flight guards are complete;
-      broader `PeerLimits` for all pending maps remain.
+      Host bridge queue budgets, finite WASM/HostPeer defaults, streaming
+      in-flight guards, and initial `PeerLimits` for high-pressure level3
+      maps are complete; provide/join/third-party await/adoption maps and
+      abort reason length remain.
 - [x] Reject duplicate active inbound question IDs.
 - [x] Reject over-release before mutating export tables.
 - [ ] Fix failure atomicity in Return, third-party handoff, resolve/embargo, and return-routing paths.
@@ -37,6 +39,8 @@ the most exposed RPC and transport paths:
 - [x] Enforce framer and send-queue byte budgets before append/copy allocation.
 - [x] Expose QUIC production hardening controls from `ServerOptions`.
 - [ ] Add focused regression tests and the first hardening gates.
+      Regression coverage is broadening across RPC, serialization, codegen,
+      HostPeer, and WASM; static unsafe-pattern and build-policy gates remain.
 
 Progress in this tranche:
 
@@ -74,6 +78,23 @@ Progress in this tranche:
   the resolved cap on sender-loopback send or resolved-import store failure.
   Resolved-import storage now rejects duplicate resolves before mutating the
   existing resolution or pending embargo entry.
+- `PeerLimits` now bound outbound questions, active inbound questions, queued
+  promised-call count/bytes, resolved answers/imports, pending embargoes,
+  loopback/send-results routing, pending third-party return count/bytes, and
+  embargoed Accept count/bucket/key bytes.
+- TCP writer-owned batches now continue counting against the outbound byte
+  budget until the writer frees them, and terminal frame errors mark the
+  connection closing before invoking error callbacks.
+- HostPeer now has finite outbound defaults and redacts/caps/sanitizes external
+  exception reasons by default, including prebuilt exception return frames.
+- Message validation now charges inline-composite element counts separately
+  from word traversal so zero-width struct lists cannot bypass resource limits.
+- Code generation now preflights generated Zig symbol scopes and fails with
+  `error.DuplicateGeneratedName` before emitting colliding declarations.
+- WASM host ABI defaults now cap peers and outstanding allocation count/bytes,
+  strict pointer validation can require tracked allocation ranges, output slots
+  are prevalidated before writes, and example Person serde validates frames,
+  UTF-8 text, JSON size, frame size, and traversal limits.
 
 ## Findings
 

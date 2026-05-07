@@ -500,6 +500,79 @@ test "transport enqueueWrite rejects queued byte overflow" {
     try std.testing.expectError(error.WriteQueueBytesExceeded, transport.enqueueWrite("abc"));
 }
 
+test "transport enqueueWrite counts writer-owned bytes against byte budget" {
+    const allocator = std.testing.allocator;
+    const net = std.Io.net;
+
+    const BlockingIo = struct {
+        const State = struct {
+            entered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+            release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        };
+
+        var active_state: ?*State = null;
+
+        fn netWrite(
+            _: ?*anyopaque,
+            _: net.Socket.Handle,
+            _: []const u8,
+            data: []const []const u8,
+            _: usize,
+        ) net.Stream.Writer.Error!usize {
+            const state = active_state.?;
+            state.entered.store(true, .release);
+            while (!state.release.load(.acquire)) {
+                std.Thread.yield() catch {};
+            }
+
+            var len: usize = 0;
+            for (data) |chunk| {
+                len += chunk.len;
+            }
+            return len;
+        }
+
+        fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
+
+        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {}
+    };
+
+    var state = BlockingIo.State{};
+    BlockingIo.active_state = &state;
+    defer BlockingIo.active_state = null;
+
+    var vtable = std.testing.io.vtable.*;
+    vtable.netWrite = BlockingIo.netWrite;
+    vtable.netShutdown = BlockingIo.netShutdown;
+    vtable.netClose = BlockingIo.netClose;
+    const io = std.Io{
+        .userdata = std.testing.io.userdata,
+        .vtable = &vtable,
+    };
+
+    var transport = try Transport.initWithOptions(allocator, io, 0, .{
+        .read_buffer_size = 64,
+        .write_queue_max_items = 8,
+        .write_queue_max_bytes = 4,
+    });
+    defer transport.deinit();
+    defer state.release.store(true, .release);
+
+    try transport.startWriter();
+    try transport.enqueueWrite("abcd");
+
+    for (0..10_000) |_| {
+        if (state.entered.load(.acquire)) break;
+        std.Thread.yield() catch {};
+    }
+    try std.testing.expect(state.entered.load(.acquire));
+
+    try std.testing.expectError(error.WriteQueueBytesExceeded, transport.enqueueWrite("x"));
+
+    state.release.store(true, .release);
+    transport.stopWriter();
+}
+
 test "transport stopWriter shuts down before joining idle writer" {
     if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -569,7 +642,7 @@ test "connection run treats malformed frame as terminal after on_error" {
     try std.testing.expectEqual(@as(usize, 0), state.message_count);
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
-    try std.testing.expect(!state.closing_seen_in_error);
+    try std.testing.expect(state.closing_seen_in_error);
     try std.testing.expect(conn.transport.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.close_count);
 }

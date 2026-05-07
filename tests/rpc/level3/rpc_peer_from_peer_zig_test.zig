@@ -24,6 +24,126 @@ test "peer initDetached starts without attached transport" {
     try std.testing.expect(!peer.hasAttachedTransport());
 }
 
+test "peer limits bound outbound question allocation" {
+    const Noop = struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    var peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_outbound_questions = 0,
+    });
+    defer peer.deinit();
+
+    var send_ctx: u8 = 0;
+    peer.setSendFrameOverride(&send_ctx, Noop.send);
+    var callback_ctx: u8 = 0;
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer.sendBootstrap(&callback_ctx, Noop.onReturn),
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+}
+
+test "peer limits bound active inbound questions before tracking" {
+    var peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_active_inbound_questions = 0,
+    });
+    defer peer.deinit();
+
+    var builder = protocol.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var call_builder = try builder.beginCall(7, 0xAB, 1);
+    try call_builder.setTargetImportedCap(0);
+    _ = try call_builder.initCapTableTyped(0);
+    const frame = try builder.finish();
+    defer std.testing.allocator.free(frame);
+
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
+    defer decoded.deinit();
+    const call = try decoded.asCall();
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.handleCall(&peer, frame, call),
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.active_inbound_questions.count());
+}
+
+test "peer limits bound queued promised calls by count and bytes" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetachedWithLimits(allocator, .{
+        .max_pending_queued_calls = 1,
+        .max_pending_queued_call_bytes = 4,
+    });
+    defer peer.deinit();
+
+    const inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 10, &[_]u8{ 1, 2, 3, 4 }, inbound);
+
+    var over_count = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.queuePromisedCall(&peer, 11, &[_]u8{1}, over_count),
+    );
+    over_count.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_promises.count());
+
+    var byte_peer = Peer.initDetachedWithLimits(allocator, .{
+        .max_pending_queued_calls = 2,
+        .max_pending_queued_call_bytes = 3,
+    });
+    defer byte_peer.deinit();
+
+    var over_bytes = try cap_table.InboundCapTable.init(allocator, null, &byte_peer.caps);
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.queuePromisedCall(&byte_peer, 12, &[_]u8{ 1, 2, 3, 4 }, over_bytes),
+    );
+    over_bytes.deinit();
+    try std.testing.expectEqual(@as(usize, 0), byte_peer.pending_promises.count());
+}
+
+test "peer limits bound resolve and embargo state" {
+    var peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_resolved_imports = 0,
+        .max_pending_embargoes = 0,
+    });
+    defer peer.deinit();
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.storeResolvedImport(&peer, 1, .none, null, false),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.rememberPendingEmbargo(&peer, 2, 1),
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.resolved_imports.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_embargoes.count());
+}
+
+test "peer limits bound pending third-party returns and embargoed accepts" {
+    var peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_pending_third_party_returns = 0,
+        .max_pending_accepts = 0,
+    });
+    defer peer.deinit();
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.bufferPendingThirdPartyReturn(&peer, 0x4000_0001, &[_]u8{1}),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.queueEmbargoedAccept(&peer, 3, 4, "embargo"),
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_returns.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_accept_embargo_by_question.count());
+}
+
 test "peer detached sendFrame requires override or attached transport" {
     var peer = Peer.initDetached(std.testing.allocator);
     defer peer.deinit();

@@ -408,10 +408,12 @@ pub const Message = struct {
     ///
     /// - `segment_count_limit`: maximum number of segments allowed in the message.
     /// - `traversal_limit_words`: total words the validator may visit (prevents amplification attacks).
+    /// - `inline_composite_element_limit`: total inline-composite struct-list elements the validator may visit.
     /// - `nesting_limit`: maximum pointer-following depth (prevents stack overflow from deep nesting).
     pub const ValidationOptions = struct {
         segment_count_limit: usize = max_segment_count,
         traversal_limit_words: usize = 8 * 1024 * 1024,
+        inline_composite_element_limit: usize = max_total_words,
         nesting_limit: usize = 64,
     };
 
@@ -868,8 +870,9 @@ pub const Message = struct {
         if (segment.len < 8) return error.TruncatedMessage;
 
         const root_pointer = std.mem.readInt(u64, segment[0..8], .little);
-        var remaining = options.traversal_limit_words;
-        try self.validatePointer(0, 0, root_pointer, &remaining, options.nesting_limit);
+        var remaining_words = options.traversal_limit_words;
+        var remaining_inline_composite_elements = options.inline_composite_element_limit;
+        try self.validatePointer(0, 0, root_pointer, &remaining_words, &remaining_inline_composite_elements, options.nesting_limit);
     }
 
     fn consumeWords(remaining: *usize, words: usize) !void {
@@ -877,12 +880,18 @@ pub const Message = struct {
         remaining.* -= words;
     }
 
+    fn consumeInlineCompositeElements(remaining: *usize, elements: usize) !void {
+        if (elements > remaining.*) return error.TraversalLimitExceeded;
+        remaining.* -= elements;
+    }
+
     fn validatePointer(
         self: *const Message,
         segment_id: u32,
         pointer_pos: usize,
         pointer_word: u64,
-        remaining: *usize,
+        remaining_words: *usize,
+        remaining_inline_composite_elements: *usize,
         nesting: usize,
     ) anyerror!void {
         if (pointer_word == 0) return;
@@ -891,9 +900,9 @@ pub const Message = struct {
 
         const pointer_type = @as(u2, @truncate(pointer_word & 0x3));
         switch (pointer_type) {
-            0 => try self.validateStructPointer(segment_id, pointer_pos, pointer_word, null, remaining, nesting - 1),
-            1 => try self.validateListPointer(segment_id, pointer_pos, pointer_word, null, remaining, nesting - 1),
-            2 => try self.validateFarPointer(segment_id, pointer_pos, pointer_word, remaining, nesting - 1),
+            0 => try self.validateStructPointer(segment_id, pointer_pos, pointer_word, null, remaining_words, remaining_inline_composite_elements, nesting - 1),
+            1 => try self.validateListPointer(segment_id, pointer_pos, pointer_word, null, remaining_words, remaining_inline_composite_elements, nesting - 1),
+            2 => try self.validateFarPointer(segment_id, pointer_pos, pointer_word, remaining_words, remaining_inline_composite_elements, nesting - 1),
             3 => {
                 _ = try decodeCapabilityPointer(pointer_word);
             },
@@ -905,7 +914,8 @@ pub const Message = struct {
         segment_id: u32,
         pointer_pos: usize,
         pointer_word: u64,
-        remaining: *usize,
+        remaining_words: *usize,
+        remaining_inline_composite_elements: *usize,
         nesting: usize,
     ) anyerror!void {
         _ = segment_id;
@@ -915,7 +925,7 @@ pub const Message = struct {
 
         if (!far.landing_pad_is_double) {
             const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
-            return self.validatePointer(far.segment_id, pad.landing_pos, landing_word, remaining, nesting);
+            return self.validatePointer(far.segment_id, pad.landing_pos, landing_word, remaining_words, remaining_inline_composite_elements, nesting);
         }
 
         const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
@@ -936,10 +946,10 @@ pub const Message = struct {
         const elements_offset = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words));
         const tag_type = @as(u2, @truncate(tag_word & 0x3));
         if (tag_type == 0) {
-            return self.validateInlineCompositeTag(landing_far.segment_id, elements_offset, tag_word, remaining, nesting);
+            return self.validateInlineCompositeTag(landing_far.segment_id, elements_offset, tag_word, remaining_words, remaining_inline_composite_elements, nesting);
         }
         if (tag_type == 1) {
-            return self.validateListPointer(landing_far.segment_id, 0, tag_word, elements_offset, remaining, nesting);
+            return self.validateListPointer(landing_far.segment_id, 0, tag_word, elements_offset, remaining_words, remaining_inline_composite_elements, nesting);
         }
         log.warn("InvalidFarPointer: unexpected tag type {} in double-far at target segment={} offset={}", .{ tag_type, landing_far.segment_id, elements_offset });
         return error.InvalidFarPointer;
@@ -951,7 +961,8 @@ pub const Message = struct {
         pointer_pos: usize,
         pointer_word: u64,
         content_override: ?usize,
-        remaining: *usize,
+        remaining_words: *usize,
+        remaining_inline_composite_elements: *usize,
         nesting: usize,
     ) anyerror!void {
         const data_size = @as(u16, @truncate((pointer_word >> 32) & 0xFFFF));
@@ -977,7 +988,7 @@ pub const Message = struct {
             return error.OutOfBounds;
         }
 
-        try consumeWords(remaining, total_words);
+        try consumeWords(remaining_words, total_words);
 
         if (pointer_count == 0) return;
         const pointer_section_offset = try checkedAddUsize(struct_offset, try wordsToBytes(@as(usize, data_size)));
@@ -985,7 +996,7 @@ pub const Message = struct {
         while (idx < pointer_count) : (idx += 1) {
             const ptr_pos = try checkedAddUsize(pointer_section_offset, try pointerIndexByteOffset(idx));
             const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
-            try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
+            try self.validatePointer(segment_id, ptr_pos, word, remaining_words, remaining_inline_composite_elements, nesting);
         }
     }
 
@@ -995,12 +1006,13 @@ pub const Message = struct {
         pointer_pos: usize,
         pointer_word: u64,
         content_override: ?usize,
-        remaining: *usize,
+        remaining_words: *usize,
+        remaining_inline_composite_elements: *usize,
         nesting: usize,
     ) anyerror!void {
         const element_size = @as(u3, @truncate((pointer_word >> 32) & 0x7));
         if (element_size == 7 and content_override == null) {
-            return self.validateInlineCompositeList(segment_id, pointer_pos, pointer_word, remaining, nesting);
+            return self.validateInlineCompositeList(segment_id, pointer_pos, pointer_word, remaining_words, remaining_inline_composite_elements, nesting);
         }
         if (element_size == 7 and content_override != null) {
             // Layout B double-far inline-composite list: the list pointer (pointer_word)
@@ -1028,7 +1040,8 @@ pub const Message = struct {
             if (elements_offset > segment.len) return error.OutOfBounds;
             if (total_bytes > segment.len - elements_offset) return error.OutOfBounds;
 
-            try consumeWords(remaining, @as(usize, word_count));
+            try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, element_count));
+            try consumeWords(remaining_words, @as(usize, word_count));
 
             if (pointer_words == 0 or element_count == 0) return;
             const element_stride = try wordsToBytes(@as(usize, data_words) + @as(usize, pointer_words));
@@ -1040,7 +1053,7 @@ pub const Message = struct {
                 while (ptr_index < pointer_words) : (ptr_index += 1) {
                     const ptr_pos = try checkedAddUsize(pointer_section, try pointerIndexByteOffset(@as(usize, ptr_index)));
                     const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
-                    try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
+                    try self.validatePointer(segment_id, ptr_pos, word, remaining_words, remaining_inline_composite_elements, nesting);
                 }
             }
             return;
@@ -1067,14 +1080,14 @@ pub const Message = struct {
         }
 
         const total_words = try listContentWords(element_size, element_count);
-        try consumeWords(remaining, total_words);
+        try consumeWords(remaining_words, total_words);
 
         if (element_size != 6 or element_count == 0) return;
         var index: u32 = 0;
         while (index < element_count) : (index += 1) {
             const ptr_pos = try checkedAddUsize(content_offset, try pointerIndexByteOffset(@as(usize, index)));
             const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
-            try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
+            try self.validatePointer(segment_id, ptr_pos, word, remaining_words, remaining_inline_composite_elements, nesting);
         }
     }
 
@@ -1083,12 +1096,14 @@ pub const Message = struct {
         segment_id: u32,
         pointer_pos: usize,
         pointer_word: u64,
-        remaining: *usize,
+        remaining_words: *usize,
+        remaining_inline_composite_elements: *usize,
         nesting: usize,
     ) anyerror!void {
         const list = try self.resolveInlineCompositeList(segment_id, pointer_pos, pointer_word);
         const word_count = @as(u32, @truncate(pointer_word >> 35));
-        try consumeWords(remaining, @as(usize, word_count));
+        try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, list.element_count));
+        try consumeWords(remaining_words, @as(usize, word_count));
 
         if (list.pointer_words == 0 or list.element_count == 0) return;
 
@@ -1103,7 +1118,7 @@ pub const Message = struct {
             while (ptr_index < list.pointer_words) : (ptr_index += 1) {
                 const ptr_pos = pointer_section + @as(usize, ptr_index) * 8;
                 const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
-                try self.validatePointer(list.segment_id, ptr_pos, word, remaining, nesting);
+                try self.validatePointer(list.segment_id, ptr_pos, word, remaining_words, remaining_inline_composite_elements, nesting);
             }
         }
     }
@@ -1113,7 +1128,8 @@ pub const Message = struct {
         segment_id: u32,
         elements_offset: usize,
         tag_word: u64,
-        remaining: *usize,
+        remaining_words: *usize,
+        remaining_inline_composite_elements: *usize,
         nesting: usize,
     ) anyerror!void {
         const element_count_signed = decodeOffsetWords(tag_word);
@@ -1132,7 +1148,8 @@ pub const Message = struct {
         if (elements_offset > segment.len) return error.OutOfBounds;
         if (total_bytes > segment.len - elements_offset) return error.OutOfBounds;
 
-        try consumeWords(remaining, total_words);
+        try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, element_count));
+        try consumeWords(remaining_words, total_words);
 
         if (pointer_words == 0 or element_count == 0) return;
         const element_stride = @as(usize, words_per_element) * 8;
@@ -1144,7 +1161,7 @@ pub const Message = struct {
             while (ptr_index < pointer_words) : (ptr_index += 1) {
                 const ptr_pos = pointer_section + @as(usize, ptr_index) * 8;
                 const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
-                try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
+                try self.validatePointer(segment_id, ptr_pos, word, remaining_words, remaining_inline_composite_elements, nesting);
             }
         }
     }

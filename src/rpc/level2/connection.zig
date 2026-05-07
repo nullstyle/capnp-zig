@@ -368,6 +368,7 @@ pub const Connection = struct {
     }
 
     fn invokeTerminalError(self: *Connection, err: anyerror) void {
+        self.transport.shutdown();
         const on_error = self.on_error;
         if (on_error) |cb| {
             self.invokeErrorCallback(cb, err);

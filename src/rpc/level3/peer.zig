@@ -81,6 +81,27 @@ const ResolvedImport = struct {
     embargoed: bool = false,
 };
 
+pub const PeerLimits = struct {
+    max_outbound_questions: usize = 4096,
+    max_active_inbound_questions: usize = 4096,
+    max_resolved_answers: usize = 4096,
+    max_pending_promises: usize = 4096,
+    max_pending_export_promises: usize = 4096,
+    max_pending_queued_calls: usize = 8192,
+    max_pending_queued_call_bytes: usize = 16 * 1024 * 1024,
+    max_resolved_imports: usize = 4096,
+    max_pending_embargoes: usize = 4096,
+    max_loopback_questions: usize = 4096,
+    max_send_results_to_yourself: usize = 4096,
+    max_send_results_to_third_party: usize = 4096,
+    max_send_results_to_third_party_bytes: usize = 1024 * 1024,
+    max_pending_third_party_returns: usize = 4096,
+    max_pending_third_party_return_bytes: usize = 16 * 1024 * 1024,
+    max_pending_accepts: usize = 4096,
+    max_pending_accept_embargo_buckets: usize = 4096,
+    max_pending_accept_embargo_bytes: usize = 1024 * 1024,
+};
+
 const QuestionDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
 
 const Question = struct {
@@ -221,6 +242,7 @@ pub const TransportIsClosingFn = TransportBinding.IsClosingFn;
 
 pub const Peer = struct {
     allocator: std.mem.Allocator,
+    limits: PeerLimits,
 
     // -- Transport binding --------------------------------------------------
 
@@ -373,8 +395,14 @@ pub const Peer = struct {
     /// Useful for WASM, unit tests, or manual frame injection via
     /// `handleFrame` and `setSendFrameOverride`.
     pub fn initDetached(allocator: std.mem.Allocator) Peer {
+        return initDetachedWithLimits(allocator, .{});
+    }
+
+    /// Create a peer without an attached transport and with explicit limits.
+    pub fn initDetachedWithLimits(allocator: std.mem.Allocator, limits: PeerLimits) Peer {
         return .{
             .allocator = allocator,
+            .limits = limits,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
@@ -401,6 +429,13 @@ pub const Peer = struct {
             .send_results_to_yourself = std.AutoHashMap(u32, void).init(allocator),
             .send_results_to_third_party = std.AutoHashMap(u32, ?[]u8).init(allocator),
         };
+    }
+
+    /// Replace peer resource limits. Existing state is not evicted; future
+    /// insertions fail until usage is back under the configured limits.
+    pub fn setLimits(self: *Peer, limits: PeerLimits) void {
+        self.assertThreadAffinity();
+        self.limits = limits;
     }
 
     /// Bind a typed connection to this peer, wiring up transport callbacks.
@@ -660,6 +695,87 @@ pub const Peer = struct {
         return self.last_remote_abort_reason;
     }
 
+    const PendingQueuedCallStats = struct {
+        calls: usize = 0,
+        bytes: usize = 0,
+    };
+
+    fn saturatingAdd(a: usize, b: usize) usize {
+        return std.math.add(usize, a, b) catch std.math.maxInt(usize);
+    }
+
+    fn ensureCountLimit(found_existing: bool, current_count: usize, max_count: usize) !void {
+        if (!found_existing and current_count >= max_count) return error.PeerLimitExceeded;
+    }
+
+    fn ensureByteLimit(current_bytes: usize, added_bytes: usize, max_bytes: usize) !void {
+        if (current_bytes > max_bytes) return error.PeerLimitExceeded;
+        if (added_bytes > max_bytes - current_bytes) return error.PeerLimitExceeded;
+    }
+
+    fn addPendingQueuedCallStats(stats: *PendingQueuedCallStats, list: *const std.ArrayList(PendingCall)) void {
+        for (list.items) |pending| {
+            stats.calls = saturatingAdd(stats.calls, 1);
+            stats.bytes = saturatingAdd(stats.bytes, pending.frame.len);
+        }
+    }
+
+    fn pendingQueuedCallStats(self: *const Peer) PendingQueuedCallStats {
+        var stats = PendingQueuedCallStats{};
+        var pending_it = self.pending_promises.valueIterator();
+        while (pending_it.next()) |list| addPendingQueuedCallStats(&stats, list);
+        var pending_export_it = self.pending_export_promises.valueIterator();
+        while (pending_export_it.next()) |list| addPendingQueuedCallStats(&stats, list);
+        return stats;
+    }
+
+    fn ensurePendingQueuedCallBudget(
+        self: *const Peer,
+        pending_map: *const std.AutoHashMap(u32, std.ArrayList(PendingCall)),
+        key: u32,
+        frame_len: usize,
+        max_buckets: usize,
+    ) !void {
+        try ensureCountLimit(pending_map.contains(key), pending_map.count(), max_buckets);
+
+        const stats = self.pendingQueuedCallStats();
+        if (stats.calls >= self.limits.max_pending_queued_calls) return error.PeerLimitExceeded;
+        try ensureByteLimit(stats.bytes, frame_len, self.limits.max_pending_queued_call_bytes);
+    }
+
+    fn optionalPayloadBytes(payload: ?[]u8) usize {
+        return if (payload) |bytes| bytes.len else 0;
+    }
+
+    fn sendResultsToThirdPartyBytesExcluding(self: *const Peer, answer_id: u32) usize {
+        var total: usize = 0;
+        var it = self.send_results_to_third_party.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* == answer_id) continue;
+            total = saturatingAdd(total, optionalPayloadBytes(entry.value_ptr.*));
+        }
+        return total;
+    }
+
+    fn pendingThirdPartyReturnBytesExcluding(self: *const Peer, answer_id: u32) usize {
+        var total: usize = 0;
+        var it = self.pending_third_party_returns.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* == answer_id) continue;
+            total = saturatingAdd(total, entry.value_ptr.*.len);
+        }
+        return total;
+    }
+
+    fn pendingAcceptEmbargoKeyBytes(self: *const Peer) usize {
+        var total: usize = 0;
+        var it = self.pending_accepts_by_embargo.iterator();
+        while (it.next()) |entry| {
+            total = saturatingAdd(total, entry.key_ptr.*.len);
+        }
+        return total;
+    }
+
     /// Register a local capability for export and return its export ID.
     pub fn addExport(self: *Peer, exported: Export) !u32 {
         self.assertThreadAffinity();
@@ -883,28 +999,31 @@ pub const Peer = struct {
                 Peer.sendBuilder,
             ),
             .promised => |promised| self.sendCallPromised(promised, interface_id, method_id, ctx, build, on_return),
-            .exported => |cap| peer_call_sender.sendCallToExport(
-                Peer,
-                Question,
-                CallBuildFn,
-                QuestionCallback,
-                self.allocator,
-                &self.caps,
-                self,
-                onOutboundCap,
-                rollbackOutboundCap,
-                self,
-                &self.questions,
-                &self.loopback_questions,
-                cap.id,
-                interface_id,
-                method_id,
-                ctx,
-                build,
-                on_return,
-                Peer.allocateQuestion,
-                Peer.handleFrame,
-            ),
+            .exported => |cap| blk: {
+                try ensureCountLimit(false, self.loopback_questions.count(), self.limits.max_loopback_questions);
+                break :blk peer_call_sender.sendCallToExport(
+                    Peer,
+                    Question,
+                    CallBuildFn,
+                    QuestionCallback,
+                    self.allocator,
+                    &self.caps,
+                    self,
+                    onOutboundCap,
+                    rollbackOutboundCap,
+                    self,
+                    &self.questions,
+                    &self.loopback_questions,
+                    cap.id,
+                    interface_id,
+                    method_id,
+                    ctx,
+                    build,
+                    on_return,
+                    Peer.allocateQuestion,
+                    Peer.handleFrame,
+                );
+            },
             .none => error.CapabilityUnavailable,
         };
     }
@@ -1329,11 +1448,9 @@ pub const Peer = struct {
     }
 
     fn clearSendResultsToThirdParty(self: *Peer, answer_id: u32) void {
-        peer_return_send_helpers.clearSendResultsToThirdPartyForPeer(
-            Peer,
-            self,
-            answer_id,
-        );
+        if (self.send_results_to_third_party.fetchRemove(answer_id)) |entry| {
+            if (entry.value) |payload| self.allocator.free(payload);
+        }
     }
 
     fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
@@ -1375,6 +1492,11 @@ pub const Peer = struct {
     }
 
     fn noteSendResultsToYourself(self: *Peer, answer_id: u32) !void {
+        try ensureCountLimit(
+            self.send_results_to_yourself.contains(answer_id),
+            self.send_results_to_yourself.count(),
+            self.limits.max_send_results_to_yourself,
+        );
         try peer_return_send_helpers.noteSendResultsToYourselfForPeer(
             Peer,
             self,
@@ -1388,13 +1510,27 @@ pub const Peer = struct {
         answer_id: u32,
         ptr: ?message.AnyPointerReader,
     ) !void {
-        try peer_return_send_helpers.noteSendResultsToThirdPartyForPeer(
-            Peer,
-            self,
-            answer_id,
-            ptr,
-            captureAnyPointerPayload,
+        _ = self.send_results_to_yourself.remove(answer_id);
+
+        const payload = try captureAnyPointerPayload(self.allocator, ptr);
+        errdefer if (payload) |bytes| self.allocator.free(bytes);
+
+        try ensureCountLimit(
+            self.send_results_to_third_party.contains(answer_id),
+            self.send_results_to_third_party.count(),
+            self.limits.max_send_results_to_third_party,
         );
+        try ensureByteLimit(
+            self.sendResultsToThirdPartyBytesExcluding(answer_id),
+            optionalPayloadBytes(payload),
+            self.limits.max_send_results_to_third_party_bytes,
+        );
+
+        const entry = try self.send_results_to_third_party.getOrPut(answer_id);
+        if (entry.found_existing) {
+            if (entry.value_ptr.*) |existing| self.allocator.free(existing);
+        }
+        entry.value_ptr.* = payload;
     }
 
     /// Release references to an imported capability, sending a Release message
@@ -1535,6 +1671,11 @@ pub const Peer = struct {
         embargo_id: ?u32,
         embargoed: bool,
     ) !void {
+        try ensureCountLimit(
+            self.resolved_imports.contains(promise_id),
+            self.resolved_imports.count(),
+            self.limits.max_resolved_imports,
+        );
         try peer_cap_lifecycle.storeResolvedImport(
             Peer,
             ResolvedImport,
@@ -1550,6 +1691,15 @@ pub const Peer = struct {
         );
     }
 
+    fn rememberPendingEmbargo(self: *Peer, embargo_id: u32, promise_id: u32) !void {
+        try ensureCountLimit(
+            self.pending_embargoes.contains(embargo_id),
+            self.pending_embargoes.count(),
+            self.limits.max_pending_embargoes,
+        );
+        try peer_control.rememberPendingEmbargoForPeer(Peer, self, embargo_id, promise_id);
+    }
+
     fn releaseResolvedImport(self: *Peer, promise_id: u32) anyerror!void {
         try peer_cap_lifecycle.releaseResolvedImport(
             Peer,
@@ -1560,6 +1710,32 @@ pub const Peer = struct {
             &self.pending_embargoes,
             promise_id,
             Peer.releaseResolvedCap,
+        );
+    }
+
+    fn bufferPendingThirdPartyReturn(self: *Peer, answer_id: u32, frame: []const u8) !void {
+        try ensureCountLimit(
+            self.pending_third_party_returns.contains(answer_id),
+            self.pending_third_party_returns.count(),
+            self.limits.max_pending_third_party_returns,
+        );
+        try ensureByteLimit(
+            self.pendingThirdPartyReturnBytesExcluding(answer_id),
+            frame.len,
+            self.limits.max_pending_third_party_return_bytes,
+        );
+        try peer_third_party_returns.bufferPendingReturnForPeer(Peer, self, answer_id, frame);
+    }
+
+    fn handleMissingReturnQuestion(self: *Peer, frame: []const u8, answer_id: u32) !void {
+        try peer_control.handleMissingReturnQuestion(
+            Peer,
+            self,
+            frame,
+            answer_id,
+            peer_control.isThirdPartyAnswerId,
+            peer_third_party_returns.hasPendingReturnForPeerFn(Peer),
+            Peer.bufferPendingThirdPartyReturn,
         );
     }
 
@@ -1597,6 +1773,7 @@ pub const Peer = struct {
     }
 
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        try ensureCountLimit(false, self.questions.count(), self.limits.max_outbound_questions);
         return peer_question_state.allocateQuestion(
             Question,
             &self.questions,
@@ -1846,7 +2023,7 @@ pub const Peer = struct {
             .resolve_cap_descriptor = peer_control.resolveCapDescriptorForPeerFn(Peer),
             .release_resolved_cap = releaseResolvedCap,
             .alloc_embargo_id = peer_control.allocateEmbargoIdForPeerFn(Peer),
-            .remember_pending_embargo = peer_control.rememberPendingEmbargoForPeerFn(Peer),
+            .remember_pending_embargo = Peer.rememberPendingEmbargo,
             .forget_pending_embargo = peer_control.forgetPendingEmbargoForPeerFn(Peer),
             .send_disembargo_sender_loopback = peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             .store_resolved_import = storeResolvedImport,
@@ -1899,6 +2076,40 @@ pub const Peer = struct {
         };
     }
 
+    fn queueEmbargoedAccept(
+        self: *Peer,
+        answer_id: u32,
+        provided_question_id: u32,
+        embargo: []const u8,
+    ) !void {
+        try ensureCountLimit(
+            self.pending_accept_embargo_by_question.contains(answer_id),
+            self.pending_accept_embargo_by_question.count(),
+            self.limits.max_pending_accepts,
+        );
+        if (!self.pending_accepts_by_embargo.contains(embargo)) {
+            try ensureCountLimit(
+                false,
+                self.pending_accepts_by_embargo.count(),
+                self.limits.max_pending_accept_embargo_buckets,
+            );
+            try ensureByteLimit(
+                self.pendingAcceptEmbargoKeyBytes(),
+                embargo.len,
+                self.limits.max_pending_accept_embargo_bytes,
+            );
+        }
+
+        try peer_embargo_accepts.queueEmbargoedAcceptForPeer(
+            Peer,
+            PendingEmbargoedAccept,
+            self,
+            answer_id,
+            provided_question_id,
+            embargo,
+        );
+    }
+
     fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
         try peer_provide_join_orchestration.handleProvide(
             Peer,
@@ -1939,7 +2150,7 @@ pub const Peer = struct {
                 peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
             peer_control.freeOwnedFrameForPeerFn(Peer),
-            peer_embargo_accepts.queueEmbargoedAcceptForPeerFn(Peer, PendingEmbargoedAccept),
+            Peer.queueEmbargoedAccept,
             Peer.sendReturnProvidedTarget,
             Peer.sendReturnException,
         );
@@ -2041,6 +2252,7 @@ pub const Peer = struct {
             return error.DuplicateQuestionId;
         }
 
+        try ensureCountLimit(false, self.active_inbound_questions.count(), self.limits.max_active_inbound_questions);
         try self.active_inbound_questions.put(call.question_id, {});
         errdefer _ = self.active_inbound_questions.remove(call.question_id);
 
@@ -2115,6 +2327,11 @@ pub const Peer = struct {
     }
 
     fn recordResolvedAnswer(self: *Peer, question_id: u32, frame: []u8) !void {
+        try ensureCountLimit(
+            self.resolved_answers.contains(question_id),
+            self.resolved_answers.count(),
+            self.limits.max_resolved_answers,
+        );
         try peer_promises.recordResolvedAnswer(
             Peer,
             ResolvedAnswer,
@@ -2135,6 +2352,12 @@ pub const Peer = struct {
     }
 
     fn queuePromisedCall(self: *Peer, question_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
+        try self.ensurePendingQueuedCallBudget(
+            &self.pending_promises,
+            question_id,
+            frame.len,
+            self.limits.max_pending_promises,
+        );
         try peer_promises.queuePendingCall(
             PendingCall,
             cap_table.InboundCapTable,
@@ -2147,6 +2370,12 @@ pub const Peer = struct {
     }
 
     fn queuePromiseExportCall(self: *Peer, export_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
+        try self.ensurePendingQueuedCallBudget(
+            &self.pending_export_promises,
+            export_id,
+            frame.len,
+            self.limits.max_pending_export_promises,
+        );
         try peer_promises.queuePendingCall(
             PendingCall,
             cap_table.InboundCapTable,
@@ -2211,7 +2440,7 @@ pub const Peer = struct {
             peer_return_orchestration.getQuestionForPeerFn(Peer, Question),
             peer_return_orchestration.removeQuestionForReturnForPeerFn(Peer),
             peer_return_orchestration.completeQuestionRemovalForPeerFn(Peer),
-            peer_return_orchestration.handleMissingReturnQuestionForPeerFn(Peer),
+            Peer.handleMissingReturnQuestion,
             peer_return_orchestration.initInboundCapsForPeerFn(Peer, cap_table.InboundCapTable),
             peer_return_orchestration.deinitInboundCapsForTypeFn(cap_table.InboundCapTable),
             peer_third_party_adoption.handleReturnAcceptFromThirdPartyForPeerFn(
@@ -2330,6 +2559,42 @@ pub const Peer = struct {
 
         pub fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
             return Peer.handleCall(self, frame, call);
+        }
+
+        pub fn queuePromisedCall(
+            self: *Peer,
+            question_id: u32,
+            frame: []const u8,
+            inbound_caps: cap_table.InboundCapTable,
+        ) !void {
+            return Peer.queuePromisedCall(self, question_id, frame, inbound_caps);
+        }
+
+        pub fn rememberPendingEmbargo(self: *Peer, embargo_id: u32, promise_id: u32) !void {
+            return Peer.rememberPendingEmbargo(self, embargo_id, promise_id);
+        }
+
+        pub fn storeResolvedImport(
+            self: *Peer,
+            promise_id: u32,
+            cap: ?cap_table.ResolvedCap,
+            embargo_id: ?u32,
+            embargoed: bool,
+        ) !void {
+            return Peer.storeResolvedImport(self, promise_id, cap, embargo_id, embargoed);
+        }
+
+        pub fn bufferPendingThirdPartyReturn(self: *Peer, answer_id: u32, frame: []const u8) !void {
+            return Peer.bufferPendingThirdPartyReturn(self, answer_id, frame);
+        }
+
+        pub fn queueEmbargoedAccept(
+            self: *Peer,
+            answer_id: u32,
+            provided_question_id: u32,
+            embargo: []const u8,
+        ) !void {
+            return Peer.queueEmbargoedAccept(self, answer_id, provided_question_id, embargo);
         }
     };
 };

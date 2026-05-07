@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const capnpc_mod = @import("capnpc-zig");
 const request_reader = capnpc_mod.request;
+const message = capnpc_mod.message;
 
 // This test file will test the generated code from example schemas
 // We'll create a simple Person struct and test its serialization
@@ -22,6 +23,14 @@ fn makeStructPointer(offset_words: i32, data_words: u16, pointer_words: u16) u64
     return pointer;
 }
 
+fn makeListPointer(offset_words: i32, element_size: u3, element_count: u32) u64 {
+    var pointer: u64 = 1;
+    pointer |= @as(u64, encodeOffsetWords(offset_words)) << 2;
+    pointer |= @as(u64, element_size) << 32;
+    pointer |= @as(u64, element_count) << 35;
+    return pointer;
+}
+
 fn makeRecursiveCodeGeneratorRequestBytes(allocator: std.mem.Allocator) ![]u8 {
     const bytes = try allocator.alloc(u8, 24);
     @memset(bytes, 0);
@@ -34,11 +43,33 @@ fn makeRecursiveCodeGeneratorRequestBytes(allocator: std.mem.Allocator) ![]u8 {
     return bytes;
 }
 
+fn makeZeroWidthNodeListRequestBytes(allocator: std.mem.Allocator) ![]u8 {
+    const bytes = try allocator.alloc(u8, 32);
+    @memset(bytes, 0);
+
+    const element_count = message.Message.max_total_words + 1;
+
+    std.mem.writeInt(u32, bytes[0..4], 0, .little); // segment count - 1
+    std.mem.writeInt(u32, bytes[4..8], 3, .little); // segment size in words
+    std.mem.writeInt(u64, bytes[8..16], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, bytes[16..24], makeListPointer(0, 7, 0), .little);
+    std.mem.writeInt(u64, bytes[24..32], makeStructPointer(@intCast(element_count), 0, 0), .little);
+
+    return bytes;
+}
+
 test "CodeGeneratorRequest parser validates traversal before reading schema" {
     const bytes = try makeRecursiveCodeGeneratorRequestBytes(testing.allocator);
     defer testing.allocator.free(bytes);
 
     try testing.expectError(error.NestingLimitExceeded, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
+
+test "CodeGeneratorRequest parser rejects huge zero-width node lists" {
+    const bytes = try makeZeroWidthNodeListRequestBytes(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.TraversalLimitExceeded, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
 }
 
 test "Generated code: Person struct round trip" {

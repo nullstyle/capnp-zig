@@ -103,6 +103,22 @@ const ERROR_HOST_CALL: u32 = 10;
 const ERROR_PEER_CONTROL: u32 = 11;
 const ERROR_INVALID_FREE: u32 = 12;
 
+const DEFAULT_MAX_PEERS: usize = 128;
+const DEFAULT_MAX_OUTSTANDING_ALLOCATIONS: usize = 1024;
+const DEFAULT_MAX_OUTSTANDING_ALLOCATION_BYTES: usize = 32 * 1024 * 1024;
+const PEER_OUTGOING_SCRATCH_BYTES: usize = 1024 * 1024;
+const DEFAULT_PEER_OUTBOUND_COUNT_LIMIT: usize = 1024;
+const DEFAULT_PEER_OUTBOUND_BYTES_LIMIT: usize = PEER_OUTGOING_SCRATCH_BYTES;
+
+const EXAMPLE_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const EXAMPLE_MAX_JSON_BYTES: usize = 1024 * 1024;
+const EXAMPLE_MAX_TEXT_BYTES: usize = 64 * 1024;
+const EXAMPLE_SERDE_VALIDATION_OPTIONS: message.Message.ValidationOptions = .{
+    .segment_count_limit = 16,
+    .traversal_limit_words = EXAMPLE_MAX_FRAME_BYTES / 8,
+    .nesting_limit = 16,
+};
+
 const PersonJson = struct {
     name: []const u8,
     age: u32,
@@ -110,7 +126,7 @@ const PersonJson = struct {
 };
 
 const PeerState = struct {
-    const OUTGOING_SCRATCH_BYTES: usize = 1024 * 1024;
+    const OUTGOING_SCRATCH_BYTES: usize = PEER_OUTGOING_SCRATCH_BYTES;
 
     outgoing_storage: [OUTGOING_SCRATCH_BYTES]u8 = undefined,
     outgoing_fba: std.heap.FixedBufferAllocator = undefined,
@@ -125,6 +141,10 @@ const PeerState = struct {
         self.host = HostPeer.initWithOutgoingAllocator(allocator, self.outgoing_fba.allocator());
         errdefer self.host.deinit();
         errdefer self.outstanding_host_call_frames.deinit();
+        self.host.setLimits(.{
+            .outbound_count_limit = DEFAULT_PEER_OUTBOUND_COUNT_LIMIT,
+            .outbound_bytes_limit = DEFAULT_PEER_OUTBOUND_BYTES_LIMIT,
+        });
         // The WASM ABI's global mutex serializes all access, so thread
         // affinity checking is redundant. Disable it so that peers created
         // on one thread can be used from another without a debug panic.
@@ -179,6 +199,8 @@ const AllocationRecord = struct {
 var peers = std.AutoHashMapUnmanaged(u32, *PeerState){};
 var next_peer_id: u32 = 1;
 var outstanding_allocs = std.AutoHashMapUnmanaged(usize, AllocationRecord){};
+var outstanding_alloc_bytes: usize = 0;
+var strict_pointer_validation: bool = builtin.target.cpu.arch == .wasm32;
 
 // NOTE: Error state is global (one error at a time). Callers must check return values
 // and drain errors via capnp_error_take immediately after each ABI call.
@@ -207,16 +229,75 @@ fn getPeerState(handle: u32) ?*PeerState {
     return peers.get(handle);
 }
 
+fn checkOutstandingAllocationBudget(alloc_size: usize) !void {
+    if (outstanding_allocs.count() >= DEFAULT_MAX_OUTSTANDING_ALLOCATIONS) {
+        return error.AllocationCountLimitExceeded;
+    }
+    const next_bytes = std.math.add(usize, outstanding_alloc_bytes, alloc_size) catch {
+        return error.AllocationBytesLimitExceeded;
+    };
+    if (next_bytes > DEFAULT_MAX_OUTSTANDING_ALLOCATION_BYTES) {
+        return error.AllocationBytesLimitExceeded;
+    }
+}
+
 fn trackAllocation(ptr_addr: usize, requested_len: u32, alloc_size: usize) !void {
+    if (outstanding_allocs.contains(ptr_addr)) return error.DuplicateAllocation;
+    try checkOutstandingAllocationBudget(alloc_size);
     try outstanding_allocs.put(allocator, ptr_addr, .{
         .requested_len = requested_len,
         .alloc_size = alloc_size,
     });
+    outstanding_alloc_bytes += alloc_size;
+}
+
+fn untrackAllocation(ptr_addr: usize) ?AllocationRecord {
+    const removed = outstanding_allocs.fetchRemove(ptr_addr) orelse return null;
+    if (outstanding_alloc_bytes >= removed.value.alloc_size) {
+        outstanding_alloc_bytes -= removed.value.alloc_size;
+    } else {
+        outstanding_alloc_bytes = 0;
+    }
+    return removed.value;
 }
 
 fn trackBuffer(bytes: []const u8) !void {
     const requested_len = std.math.cast(u32, bytes.len) orelse return error.LengthOverflow;
     try trackAllocation(@intFromPtr(bytes.ptr), requested_len, bytes.len);
+}
+
+fn trackedAllocationContainsRange(start: usize, len: usize) bool {
+    const end = std.math.add(usize, start, len) catch return false;
+    var it = outstanding_allocs.iterator();
+    while (it.next()) |entry| {
+        const alloc_start = entry.key_ptr.*;
+        const alloc_len: usize = @intCast(entry.value_ptr.requested_len);
+        const alloc_end = std.math.add(usize, alloc_start, alloc_len) catch continue;
+        if (start >= alloc_start and end <= alloc_end) return true;
+    }
+    return false;
+}
+
+fn validateAbiRange(ptr: AbiPtr, len: usize) !void {
+    if (len == 0) return;
+    if (ptr == 0) return error.NullPointer;
+
+    const start: usize = @intCast(ptr);
+    _ = std.math.add(usize, start, len) catch return error.LengthOverflow;
+
+    if (strict_pointer_validation and !trackedAllocationContainsRange(start, len)) {
+        return error.UnknownAllocation;
+    }
+}
+
+fn validateOutBufferPointers(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr) !void {
+    try validateAbiRange(out_ptr_ptr, @sizeOf(AbiPtr));
+    try validateAbiRange(out_len_ptr, @sizeOf(u32));
+}
+
+fn validateExampleText(text: []const u8) !void {
+    if (text.len > EXAMPLE_MAX_TEXT_BYTES) return error.TextTooLong;
+    if (!std.unicode.utf8ValidateSlice(text)) return error.InvalidUtf8;
 }
 
 fn setHostCallReturnFrameError(err: anyerror) void {
@@ -235,7 +316,7 @@ fn ptrToAbi(ptr: usize) !AbiPtr {
 
 fn asSlice(ptr: AbiPtr, len: u32) ![]const u8 {
     if (len == 0) return &.{};
-    if (ptr == 0) return error.NullPointer;
+    try validateAbiRange(ptr, @intCast(len));
     const start: usize = @intCast(ptr);
     const len_usize: usize = @intCast(len);
     const end = std.math.add(usize, start, len_usize) catch return error.LengthOverflow;
@@ -245,25 +326,25 @@ fn asSlice(ptr: AbiPtr, len: u32) ![]const u8 {
 }
 
 fn writeU32(ptr: AbiPtr, value: u32) !void {
-    if (ptr == 0) return error.NullPointer;
+    try validateAbiRange(ptr, @sizeOf(u32));
     const out: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
 fn writeU16(ptr: AbiPtr, value: u16) !void {
-    if (ptr == 0) return error.NullPointer;
+    try validateAbiRange(ptr, @sizeOf(u16));
     const out: *align(1) u16 = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
 fn writeU64(ptr: AbiPtr, value: u64) !void {
-    if (ptr == 0) return error.NullPointer;
+    try validateAbiRange(ptr, @sizeOf(u64));
     const out: *align(1) u64 = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
 
 fn writeAbiPtr(ptr: AbiPtr, value: AbiPtr) !void {
-    if (ptr == 0) return error.NullPointer;
+    try validateAbiRange(ptr, @sizeOf(AbiPtr));
     const out: *align(1) AbiPtr = @ptrFromInt(@as(usize, @intCast(ptr)));
     out.* = value;
 }
@@ -280,7 +361,7 @@ fn allocatePeerId() ?u32 {
 }
 
 fn writeOutBuffer(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPtr, bytes: []const u8) !void {
-    if (out_ptr_ptr == 0 or out_len_ptr == 0) return error.NullPointer;
+    try validateOutBufferPointers(out_ptr_ptr, out_len_ptr);
     if (bytes.len > std.math.maxInt(u32)) return error.LengthOverflow;
     const out_ptr: AbiPtr = if (bytes.len == 0) 0 else try ptrToAbi(@intFromPtr(bytes.ptr));
     try writeAbiPtr(out_ptr_ptr, out_ptr);
@@ -305,6 +386,25 @@ pub export fn capnp_wasm_abi_version() u32 {
     return ABI_VERSION;
 }
 
+pub fn testingSetStrictPointerValidation(enabled: bool) void {
+    if (!builtin.is_test) {
+        return;
+    }
+
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    strict_pointer_validation = enabled;
+}
+
+pub fn testingDefaultMaxOutstandingAllocations() usize {
+    return DEFAULT_MAX_OUTSTANDING_ALLOCATIONS;
+}
+
+pub fn testingExampleMaxTextBytes() usize {
+    return EXAMPLE_MAX_TEXT_BYTES;
+}
+
 /// Allocate `len` bytes from the module allocator.
 /// Thread-safe on native targets (mutex-protected).
 /// On wasm32, single-threaded by WASM spec.
@@ -314,6 +414,10 @@ pub export fn capnp_alloc(len: u32) AbiPtr {
 
     clearErrorState();
     const size: usize = if (len == 0) 1 else @as(usize, len);
+    checkOutstandingAllocationBudget(size) catch |err| {
+        setError(ERROR_ALLOC, @errorName(err));
+        return 0;
+    };
     const mem = allocator.alloc(u8, size) catch {
         setError(ERROR_ALLOC, "capnp_alloc out of memory");
         return 0;
@@ -350,7 +454,7 @@ pub export fn capnp_free(ptr: AbiPtr, len: u32) void {
         setError(ERROR_INVALID_FREE, "capnp_free: length mismatch");
         return;
     }
-    _ = outstanding_allocs.remove(ptr_addr);
+    _ = untrackAllocation(ptr_addr);
     const mem: [*]u8 = @ptrFromInt(ptr_addr);
     allocator.free(mem[0..tracked.alloc_size]);
 }
@@ -430,9 +534,20 @@ pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, ou
         return 0;
     }
 
-    // Verify each pointer is usable by checking alignment/validity upfront.
-    // writeU32 and writeAbiPtr only fail on null, which is already checked
-    // above. Collect all values before writing anything.
+    validateAbiRange(out_code_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_msg_ptr_ptr, @sizeOf(AbiPtr)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_msg_len_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+
+    // Collect all values before writing anything.
     const code = last_error_code;
     const len = last_error_len;
     const msg_ptr: AbiPtr = if (code == 0 or len == 0)
@@ -443,11 +558,18 @@ pub export fn capnp_error_take(out_code_ptr: AbiPtr, out_msg_ptr_ptr: AbiPtr, ou
             return 0;
         };
 
-    // All validation passed — perform writes. These cannot fail because
-    // null pointers were rejected above.
-    writeU32(out_code_ptr, code) catch unreachable;
-    writeAbiPtr(out_msg_ptr_ptr, msg_ptr) catch unreachable;
-    writeU32(out_msg_len_ptr, len) catch unreachable;
+    writeU32(out_code_ptr, code) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    writeAbiPtr(out_msg_ptr_ptr, msg_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    writeU32(out_msg_len_ptr, len) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
 
     clearErrorState();
     return if (code == 0) 0 else 1;
@@ -460,6 +582,11 @@ pub export fn capnp_peer_new() u32 {
     defer global_mutex.unlock();
 
     clearErrorState();
+
+    if (peers.count() >= DEFAULT_MAX_PEERS) {
+        setError(ERROR_PEER_CREATE, "peer limit exceeded");
+        return 0;
+    }
 
     const id = allocatePeerId() orelse {
         setError(ERROR_PEER_CREATE, "no available peer ids");
@@ -545,6 +672,10 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
         setError(ERROR_INVALID_ARG, "output pointer is null");
         return 0;
     }
+    validateOutBufferPointers(out_ptr_ptr, out_len_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
 
     if (state.last_popped != null) {
         setError(ERROR_PEER_POP, "previous frame not committed; call capnp_peer_pop_commit first");
@@ -552,9 +683,14 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
     }
 
     const frame = state.host.popOutgoingFrame() orelse {
-        // unreachable: null pointers rejected above
-        writeAbiPtr(out_ptr_ptr, 0) catch unreachable;
-        writeU32(out_len_ptr, 0) catch unreachable;
+        writeAbiPtr(out_ptr_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        writeU32(out_len_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
         state.resetScratchIfIdle();
         return 0;
     };
@@ -664,6 +800,10 @@ pub export fn capnp_peer_set_bootstrap_stub_with_id(
         setError(ERROR_INVALID_ARG, "output pointer is null");
         return 0;
     }
+    validateAbiRange(out_export_id_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
 
     if (state.bootstrap_stub_export_id == null) {
         const export_id = state.host.peer.setBootstrap(.{
@@ -774,6 +914,14 @@ pub export fn capnp_peer_get_limits(
         setError(ERROR_INVALID_ARG, "output pointer is null");
         return 0;
     }
+    validateAbiRange(out_count_limit_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_bytes_limit_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
 
     const limits = state.host.getLimits();
     writeU32(out_count_limit_ptr, clampU32(limits.outbound_count_limit)) catch {
@@ -818,14 +966,48 @@ pub export fn capnp_peer_pop_host_call(
         setError(ERROR_INVALID_ARG, "output pointer is null");
         return 0;
     }
+    validateAbiRange(out_question_id_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_interface_id_ptr, @sizeOf(u64)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_method_id_ptr, @sizeOf(u16)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_frame_ptr_ptr, @sizeOf(AbiPtr)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    validateAbiRange(out_frame_len_ptr, @sizeOf(u32)) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
 
     const call = state.host.popHostCall() orelse {
-        // unreachable: null pointers rejected above
-        writeU32(out_question_id_ptr, 0) catch unreachable;
-        writeU64(out_interface_id_ptr, 0) catch unreachable;
-        writeU16(out_method_id_ptr, 0) catch unreachable;
-        writeAbiPtr(out_frame_ptr_ptr, 0) catch unreachable;
-        writeU32(out_frame_len_ptr, 0) catch unreachable;
+        writeU32(out_question_id_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        writeU64(out_interface_id_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        writeU16(out_method_id_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        writeAbiPtr(out_frame_ptr_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
+        writeU32(out_frame_len_ptr, 0) catch |err| {
+            setError(ERROR_INVALID_ARG, @errorName(err));
+            return 0;
+        };
         return 0;
     };
 
@@ -1106,6 +1288,11 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
 
     clearErrorState();
 
+    validateOutBufferPointers(out_ptr_ptr, out_len_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+
     const manifest = schemaManifestJsonBytes();
     const copy = allocator.alloc(u8, manifest.len) catch {
         setError(ERROR_ALLOC, "schema manifest allocation failed");
@@ -1120,7 +1307,7 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
     };
 
     writeOutBuffer(out_ptr_ptr, out_len_ptr, copy) catch |err| {
-        _ = outstanding_allocs.remove(@intFromPtr(copy.ptr));
+        _ = untrackAllocation(@intFromPtr(copy.ptr));
         allocator.free(copy);
         setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
@@ -1141,12 +1328,21 @@ pub export fn capnp_example_person_to_json(
 
     clearErrorState();
 
+    validateOutBufferPointers(out_json_ptr_ptr, out_json_len_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    if (@as(usize, frame_len) > EXAMPLE_MAX_FRAME_BYTES) {
+        setError(ERROR_SERDE_DECODE, "person frame exceeds ABI limit");
+        return 0;
+    }
+
     const frame = asSlice(frame_ptr, frame_len) catch {
         setError(ERROR_INVALID_ARG, "invalid frame pointer");
         return 0;
     };
 
-    var msg = message.Message.initUnvalidated(allocator, frame) catch |err| {
+    var msg = message.Message.init(allocator, frame, EXAMPLE_SERDE_VALIDATION_OPTIONS) catch |err| {
         setError(ERROR_SERDE_DECODE, @errorName(err));
         return 0;
     };
@@ -1157,7 +1353,11 @@ pub export fn capnp_example_person_to_json(
         return 0;
     };
 
-    const name = reader.getName() catch |err| {
+    const name = reader._reader.readTextStrict(0) catch |err| {
+        setError(ERROR_SERDE_DECODE, @errorName(err));
+        return 0;
+    };
+    validateExampleText(name) catch |err| {
         setError(ERROR_SERDE_DECODE, @errorName(err));
         return 0;
     };
@@ -1165,7 +1365,11 @@ pub export fn capnp_example_person_to_json(
         setError(ERROR_SERDE_DECODE, @errorName(err));
         return 0;
     };
-    const email = reader.getEmail() catch |err| {
+    const email = reader._reader.readTextStrict(1) catch |err| {
+        setError(ERROR_SERDE_DECODE, @errorName(err));
+        return 0;
+    };
+    validateExampleText(email) catch |err| {
         setError(ERROR_SERDE_DECODE, @errorName(err));
         return 0;
     };
@@ -1178,6 +1382,11 @@ pub export fn capnp_example_person_to_json(
         setError(ERROR_SERDE_DECODE, @errorName(err));
         return 0;
     };
+    if (json_bytes.len > EXAMPLE_MAX_JSON_BYTES) {
+        allocator.free(json_bytes);
+        setError(ERROR_SERDE_DECODE, "person json exceeds ABI limit");
+        return 0;
+    }
 
     trackBuffer(json_bytes) catch {
         allocator.free(json_bytes);
@@ -1186,7 +1395,7 @@ pub export fn capnp_example_person_to_json(
     };
 
     writeOutBuffer(out_json_ptr_ptr, out_json_len_ptr, json_bytes) catch |err| {
-        _ = outstanding_allocs.remove(@intFromPtr(json_bytes.ptr));
+        _ = untrackAllocation(@intFromPtr(json_bytes.ptr));
         allocator.free(json_bytes);
         setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
@@ -1208,6 +1417,15 @@ pub export fn capnp_example_person_from_json(
 
     clearErrorState();
 
+    validateOutBufferPointers(out_frame_ptr_ptr, out_frame_len_ptr) catch |err| {
+        setError(ERROR_INVALID_ARG, @errorName(err));
+        return 0;
+    };
+    if (@as(usize, json_len) > EXAMPLE_MAX_JSON_BYTES) {
+        setError(ERROR_SERDE_ENCODE, "person json exceeds ABI limit");
+        return 0;
+    }
+
     const json_bytes = asSlice(json_ptr, json_len) catch {
         setError(ERROR_INVALID_ARG, "invalid json pointer");
         return 0;
@@ -1218,6 +1436,14 @@ pub export fn capnp_example_person_from_json(
         return 0;
     };
     defer parsed.deinit();
+    validateExampleText(parsed.value.name) catch |err| {
+        setError(ERROR_SERDE_ENCODE, @errorName(err));
+        return 0;
+    };
+    validateExampleText(parsed.value.email) catch |err| {
+        setError(ERROR_SERDE_ENCODE, @errorName(err));
+        return 0;
+    };
 
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -1244,6 +1470,11 @@ pub export fn capnp_example_person_from_json(
         setError(ERROR_SERDE_ENCODE, @errorName(err));
         return 0;
     };
+    if (frame.len > EXAMPLE_MAX_FRAME_BYTES) {
+        allocator.free(frame);
+        setError(ERROR_SERDE_ENCODE, "person frame exceeds ABI limit");
+        return 0;
+    }
 
     trackBuffer(frame) catch {
         allocator.free(frame);
@@ -1252,7 +1483,7 @@ pub export fn capnp_example_person_from_json(
     };
 
     writeOutBuffer(out_frame_ptr_ptr, out_frame_len_ptr, frame) catch |err| {
-        _ = outstanding_allocs.remove(@intFromPtr(frame.ptr));
+        _ = untrackAllocation(@intFromPtr(frame.ptr));
         allocator.free(frame);
         setError(ERROR_INVALID_ARG, @errorName(err));
         return 0;
@@ -1290,4 +1521,5 @@ pub export fn capnp_shutdown() void {
     }
     outstanding_allocs.deinit(allocator);
     outstanding_allocs = .{};
+    outstanding_alloc_bytes = 0;
 }
