@@ -2,13 +2,13 @@ const std = @import("std");
 const cap_table = @import("../level0/cap_table.zig");
 const message = @import("../../serialization/message.zig");
 const protocol = @import("../level0/protocol.zig");
-const cap_pointer = @import("../common/cap_pointer.zig");
+const capability_remap = message.capability_remap;
 
-const buildMessageView = cap_pointer.buildMessageView;
-const writePointerWord = cap_pointer.writePointerWord;
-const max_traversal_depth = cap_pointer.max_traversal_depth;
-const capabilityPointerWord = cap_pointer.makeCapabilityPointer;
-const decodeCapabilityPointerWord = cap_pointer.decodeCapabilityPointer;
+const buildMessageView = capability_remap.buildMessageView;
+const writePointerWord = capability_remap.writePointerWord;
+const max_traversal_depth = capability_remap.max_traversal_depth;
+const capabilityPointerWord = capability_remap.makeCapabilityPointer;
+const decodeCapabilityPointerWord = capability_remap.decodeCapabilityPointer;
 
 pub fn clonePayloadWithRemappedCaps(
     comptime PeerType: type,

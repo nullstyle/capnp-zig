@@ -1,3 +1,9 @@
+const transport_binding = @import("../../common/transport_binding.zig");
+
+fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
+    return @ptrCast(@alignCast(ctx));
+}
+
 pub fn peerFromConnection(
     comptime PeerType: type,
     comptime ConnPtr: type,
@@ -17,6 +23,49 @@ pub fn onConnectionMessageFor(
             try handle_frame(peer, frame);
         }
     }.call;
+}
+
+pub fn bindingForConnection(
+    comptime PeerType: type,
+    comptime ConnPtr: type,
+    conn: ConnPtr,
+    comptime handle_frame: *const fn (*PeerType, []const u8) anyerror!void,
+    comptime notify_error: *const fn (*PeerType, anyerror) void,
+    comptime notify_close: *const fn (*PeerType) void,
+) transport_binding.Binding(PeerType) {
+    const Binding = transport_binding.Binding(PeerType);
+    return Binding.init(
+        conn,
+        struct {
+            fn call(ctx: *anyopaque, peer: *PeerType) void {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                typed.start(
+                    peer,
+                    onConnectionMessageFor(PeerType, ConnPtr, handle_frame),
+                    onConnectionErrorFor(PeerType, ConnPtr, notify_error),
+                    onConnectionCloseFor(PeerType, ConnPtr, notify_close),
+                );
+            }
+        }.call,
+        struct {
+            fn call(ctx: *anyopaque, frame: []const u8) anyerror!void {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                try typed.sendFrame(frame);
+            }
+        }.call,
+        struct {
+            fn call(ctx: *anyopaque) void {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                typed.close();
+            }
+        }.call,
+        struct {
+            fn call(ctx: *anyopaque) bool {
+                const typed: ConnPtr = castCtx(ConnPtr, ctx);
+                return typed.isClosing();
+            }
+        }.call,
+    );
 }
 
 pub fn onConnectionErrorFor(

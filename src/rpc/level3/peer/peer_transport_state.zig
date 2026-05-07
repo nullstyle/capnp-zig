@@ -23,16 +23,25 @@ pub fn detachTransportForPeer(comptime PeerType: type, peer: *PeerType) void {
 }
 
 pub fn hasAttachedTransportForPeer(comptime PeerType: type, peer: *const PeerType) bool {
+    const Transport = @TypeOf(peer.transport);
+    if (@hasDecl(Transport, "isAttached")) return peer.transport.isAttached();
     return peer.transport.ctx != null and peer.transport.send != null;
 }
 
 pub fn closeAttachedTransportForPeer(comptime PeerType: type, peer: *PeerType) void {
+    const Transport = @TypeOf(peer.transport);
+    if (@hasDecl(Transport, "closeIfPresent")) {
+        peer.transport.closeIfPresent();
+        return;
+    }
     if (peer.transport.ctx) |ctx| {
         if (peer.transport.close) |close| close(ctx);
     }
 }
 
 pub fn isAttachedTransportClosingForPeer(comptime PeerType: type, peer: *const PeerType) bool {
+    const Transport = @TypeOf(peer.transport);
+    if (@hasDecl(Transport, "isClosing")) return peer.transport.isClosing();
     if (peer.transport.ctx) |ctx| {
         if (peer.transport.is_closing) |is_closing| return is_closing(ctx);
     }

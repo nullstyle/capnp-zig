@@ -2488,6 +2488,23 @@ pub const cloneAnyPointer = clone_defs.cloneAnyPointer;
 /// CapabilityListReader/Builder.
 pub const typed_list_helpers = typed_list_helpers_module.define(@This());
 
+/// Helpers for viewing and rewriting capability pointer words in-place.
+pub const capability_remap = @import("message/capability_remap.zig").define(@This());
+
+test "capability remap pointer word roundtrip" {
+    const cap_id: u32 = 12345;
+    const word = capability_remap.makeCapabilityPointer(cap_id);
+    try std.testing.expectEqual(@as(u64, 3 | (@as(u64, cap_id) << 32)), word);
+    try std.testing.expectEqual(cap_id, try capability_remap.decodeCapabilityPointer(word));
+}
+
+test "capability remap rejects invalid pointer words" {
+    try std.testing.expectError(error.InvalidPointer, capability_remap.decodeCapabilityPointer(0));
+    try std.testing.expectError(error.InvalidPointer, capability_remap.decodeCapabilityPointer(1));
+    try std.testing.expectError(error.InvalidPointer, capability_remap.decodeCapabilityPointer(2));
+    try std.testing.expectError(error.InvalidPointer, capability_remap.decodeCapabilityPointer((@as(u64, 1) << 2) | 3));
+}
+
 test {
     _ = bounds;
 }

@@ -4,13 +4,13 @@ const message = @import("../../serialization/message.zig");
 const bounds = @import("../../serialization/message/bounds.zig");
 const protocol = @import("protocol.zig");
 const promise_pipeline = @import("../common/promise_pipeline.zig");
-const cap_pointer = @import("../common/cap_pointer.zig");
+const capability_remap = message.capability_remap;
 
-const makeCapabilityPointer = cap_pointer.makeCapabilityPointer;
-const decodeCapabilityPointer = cap_pointer.decodeCapabilityPointer;
-const buildMessageView = cap_pointer.buildMessageView;
-const writePointerWord = cap_pointer.writePointerWord;
-const max_traversal_depth = cap_pointer.max_traversal_depth;
+const makeCapabilityPointer = capability_remap.makeCapabilityPointer;
+const decodeCapabilityPointer = capability_remap.decodeCapabilityPointer;
+const buildMessageView = capability_remap.buildMessageView;
+const writePointerWord = capability_remap.writePointerWord;
+const max_traversal_depth = capability_remap.max_traversal_depth;
 
 /// An exported (local) capability referenced by ID.
 pub const ExportCap = struct {

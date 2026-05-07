@@ -30,6 +30,7 @@ const peer_transport_state = @import("peer/peer_transport_state.zig");
 const peer_question_state = @import("peer/peer_question_state.zig");
 const peer_cleanup = @import("peer/peer_cleanup.zig");
 const peer_state_types = @import("peer/peer_state_types.zig");
+const transport_binding = @import("../common/transport_binding.zig");
 
 /// Callback invoked to populate a `CallBuilder` before sending an outbound call.
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
@@ -41,14 +42,6 @@ pub const CallHandler = *const fn (ctx: *anyopaque, peer: *Peer, call: protocol.
 pub const QuestionCallback = *const fn (ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void;
 /// Optional override for outbound frame delivery (used in testing).
 pub const SendFrameOverride = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
-/// Transport callback: start listening for inbound frames.
-pub const TransportStartFn = *const fn (ctx: *anyopaque, peer: *Peer) void;
-/// Transport callback: send a framed message to the remote peer.
-pub const TransportSendFn = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
-/// Transport callback: close the underlying connection.
-pub const TransportCloseFn = *const fn (ctx: *anyopaque) void;
-/// Transport callback: check if the connection is in the process of closing.
-pub const TransportIsClosingFn = *const fn (ctx: *anyopaque) bool;
 
 /// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
@@ -143,7 +136,7 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
 /// ## Peer lifecycle (state machine)
 ///
 /// ```text
-///   +------------+     attachConnection / attachTransport     +----------+
+///   +------------+ attachConnection / attachTransportBinding  +----------+
 ///   |  Detached  | ----------------------------------------> | Attached |
 ///   | (no I/O)   | <---------------------------------------- | (idle)   |
 ///   +------------+     detachConnection / detachTransport     +----------+
@@ -166,7 +159,8 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
 ///   frames can still be injected manually via `handleFrame` and sent
 ///   through a `setSendFrameOverride` callback.
 /// * **Attached** -- A transport (typically a `Connection`) has been bound
-///   via `attachConnection`/`attachTransport`, but `start()` has not been
+///   via `attachConnection`, `attachTransport`, or `attachTransportBinding`,
+///   but `start()` has not been
 ///   called yet. No I/O occurs.
 /// * **Active** -- After `start()`, the transport begins reading inbound
 ///   frames and the peer processes them. Outbound calls, returns, and
@@ -218,16 +212,12 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
 /// * `pending_promises` entries are drained (replayed or errored) when the
 ///   corresponding answer resolves, never left dangling.
 /// Grouped transport callback bindings. Set/cleared atomically by
-/// `Peer.attachTransport` / `Peer.detachTransport`.
-pub const TransportBinding = struct {
-    /// Opaque pointer to the attached transport/connection. Must remain
-    /// valid from `attachTransport` until `detachTransport` or `deinit`.
-    ctx: ?*anyopaque = null,
-    start: ?TransportStartFn = null,
-    send: ?TransportSendFn = null,
-    close: ?TransportCloseFn = null,
-    is_closing: ?TransportIsClosingFn = null,
-};
+/// `Peer.attachTransportBinding` / `Peer.detachTransport`.
+pub const TransportBinding = transport_binding.Binding(Peer);
+pub const TransportStartFn = TransportBinding.StartFn;
+pub const TransportSendFn = TransportBinding.SendFn;
+pub const TransportCloseFn = TransportBinding.CloseFn;
+pub const TransportIsClosingFn = TransportBinding.IsClosingFn;
 
 pub const Peer = struct {
     allocator: std.mem.Allocator,
@@ -235,7 +225,7 @@ pub const Peer = struct {
     // -- Transport binding --------------------------------------------------
 
     /// Attached transport callbacks. Set/cleared atomically by
-    /// `attachTransport` / `detachTransport`.
+    /// `attachTransportBinding` / `detachTransport`.
     transport: TransportBinding = .{},
 
     // -- Capability bookkeeping ---------------------------------------------
@@ -425,37 +415,15 @@ pub const Peer = struct {
             if (info != .pointer) @compileError("attachConnection expects a pointer type");
         }
 
-        self.attachTransport(
-            conn,
-            struct {
-                fn call(ctx: *anyopaque, peer: *Peer) void {
-                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
-                    typed.start(
-                        peer,
-                        peer_transport_callbacks.onConnectionMessageFor(Peer, ConnPtr, Peer.handleFrame),
-                        peer_transport_callbacks.onConnectionErrorFor(Peer, ConnPtr, onConnectionError),
-                        peer_transport_callbacks.onConnectionCloseFor(Peer, ConnPtr, onConnectionClose),
-                    );
-                }
-            }.call,
-            struct {
-                fn call(ctx: *anyopaque, frame: []const u8) anyerror!void {
-                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
-                    try typed.sendFrame(frame);
-                }
-            }.call,
-            struct {
-                fn call(ctx: *anyopaque) void {
-                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
-                    typed.close();
-                }
-            }.call,
-            struct {
-                fn call(ctx: *anyopaque) bool {
-                    const typed: ConnPtr = castCtx(ConnPtr, ctx);
-                    return typed.isClosing();
-                }
-            }.call,
+        self.attachTransportBinding(
+            peer_transport_callbacks.bindingForConnection(
+                Peer,
+                ConnPtr,
+                conn,
+                Peer.handleFrame,
+                onConnectionError,
+                onConnectionClose,
+            ),
         );
     }
 
@@ -479,23 +447,19 @@ pub const Peer = struct {
         close_fn: ?TransportCloseFn,
         is_closing: ?TransportIsClosingFn,
     ) void {
+        self.attachTransportBinding(.init(ctx, start_fn, send_fn, close_fn, is_closing));
+    }
+
+    /// Attach a named transport binding to this peer.
+    ///
+    /// This is the preferred boundary for new transports: adapt the transport
+    /// into a `TransportBinding`, then attach the binding here.
+    pub fn attachTransportBinding(self: *Peer, binding: TransportBinding) void {
         self.assertThreadAffinity();
         if (self.hasAttachedTransport()) {
-            @panic("attachTransport called while a transport is already attached; call detachTransport first");
+            @panic("attachTransportBinding called while a transport is already attached; call detachTransport first");
         }
-        peer_transport_state.attachTransportForPeer(
-            Peer,
-            TransportStartFn,
-            TransportSendFn,
-            TransportCloseFn,
-            TransportIsClosingFn,
-            self,
-            ctx,
-            start_fn,
-            send_fn,
-            close_fn,
-            is_closing,
-        );
+        self.transport = binding;
     }
 
     /// Detach the transport without closing it, clearing all transport callbacks.
@@ -669,10 +633,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         self.on_error = on_error;
         self.on_close = on_close;
-        if (self.transport.start) |start_fn| {
-            const ctx = self.transport.ctx orelse return;
-            start_fn(ctx, self);
-        }
+        self.transport.startIfPresent(self);
     }
 
     /// Set a hook to intercept all outbound frames before they reach the transport.
@@ -1495,15 +1456,12 @@ pub const Peer = struct {
             try cb(ctx, frame);
             return;
         }
-        const send = self.transport.send orelse {
-            log.debug("cannot send frame: transport not attached", .{});
-            return error.TransportNotAttached;
+        self.transport.sendFrame(frame) catch |err| {
+            if (err == error.TransportNotAttached) {
+                log.debug("cannot send frame: transport not attached", .{});
+            }
+            return err;
         };
-        const ctx = self.transport.ctx orelse {
-            log.debug("cannot send frame: transport not attached", .{});
-            return error.TransportNotAttached;
-        };
-        try send(ctx, frame);
     }
 
     fn onOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
