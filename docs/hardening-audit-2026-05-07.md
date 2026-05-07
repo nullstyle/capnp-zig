@@ -33,7 +33,7 @@ the most exposed RPC and transport paths:
       queuing, and outbound return-routing clear-after-send are complete;
       inbound Return question removal and resolve/embargo rollback remain.
 - [x] Enforce framer and send-queue byte budgets before append/copy allocation.
-- [ ] Expose QUIC production hardening controls from `ServerOptions`.
+- [x] Expose QUIC production hardening controls from `ServerOptions`.
 - [ ] Add focused regression tests and the first hardening gates.
 
 Progress in this tranche:
@@ -58,6 +58,10 @@ Progress in this tranche:
   frame has been sent successfully.
 - Embargoed Accept queuing now rejects duplicate answer IDs before mutating
   either lookup map.
+- QUIC `ServerOptions` now exposes nullq Retry/NEW_TOKEN keys, source and
+  listener rate limits, per-connection memory caps, 0-RTT controls, close
+  reason redaction, and log/qlog hooks; a production hardening preset and
+  config propagation regressions cover the translation into `nullq.Server.Config`.
 - Third-party pending-await and pending-answer adoption now leave pending state
   intact if the adopter fails.
 
