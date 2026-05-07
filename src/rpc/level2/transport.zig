@@ -33,7 +33,7 @@ pub const Transport = struct {
     fd: net.Socket.Handle,
     read_buf: []u8,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    fd_closed: bool = false,
+    fd_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     // Write queue for concurrent write support
     write_queue: WriteQueue = .{},
@@ -178,8 +178,7 @@ pub const Transport = struct {
     /// socket if not already closed.
     pub fn deinit(self: *Transport) void {
         self.stopWriter();
-        if (!self.fd_closed) {
-            self.fd_closed = true;
+        if (!self.fd_closed.swap(true, .acq_rel)) {
             self.close_requested.store(true, .release);
             ioClose(self.io, self.fd);
         }
@@ -279,7 +278,7 @@ pub const Transport = struct {
     pub fn shutdown(self: *Transport) void {
         self.close_requested.store(true, .release);
         self.write_queue.close(self.io);
-        if (!self.fd_closed) {
+        if (!self.fd_closed.load(.acquire)) {
             ioShutdown(self.io, self.fd);
         }
     }
@@ -465,6 +464,17 @@ test "transport shutdown then deinit does not double-close" {
     var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
     transport.shutdown();
     transport.deinit(); // should close fd and free buffer without error
+}
+
+test "transport shutdown after deinit observes closed fd guard" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const pair = try createSocketPair();
+    defer ioClose(std.testing.io, pair[0][1]);
+
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    transport.deinit();
+    transport.shutdown();
+    try std.testing.expect(transport.isClosing());
 }
 
 test "transport enqueue write delivers data to peer" {

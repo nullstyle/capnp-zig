@@ -171,9 +171,14 @@ const BootstrapStubHandler = struct {
 
 var bootstrap_stub_ctx: u8 = 0;
 
+const AllocationRecord = struct {
+    requested_len: u32,
+    alloc_size: usize,
+};
+
 var peers = std.AutoHashMapUnmanaged(u32, *PeerState){};
 var next_peer_id: u32 = 1;
-var outstanding_allocs = std.AutoHashMapUnmanaged(usize, usize){};
+var outstanding_allocs = std.AutoHashMapUnmanaged(usize, AllocationRecord){};
 
 // NOTE: Error state is global (one error at a time). Callers must check return values
 // and drain errors via capnp_error_take immediately after each ABI call.
@@ -200,6 +205,18 @@ fn setError(code: u32, msg: []const u8) void {
 
 fn getPeerState(handle: u32) ?*PeerState {
     return peers.get(handle);
+}
+
+fn trackAllocation(ptr_addr: usize, requested_len: u32, alloc_size: usize) !void {
+    try outstanding_allocs.put(allocator, ptr_addr, .{
+        .requested_len = requested_len,
+        .alloc_size = alloc_size,
+    });
+}
+
+fn trackBuffer(bytes: []const u8) !void {
+    const requested_len = std.math.cast(u32, bytes.len) orelse return error.LengthOverflow;
+    try trackAllocation(@intFromPtr(bytes.ptr), requested_len, bytes.len);
 }
 
 fn setHostCallReturnFrameError(err: anyerror) void {
@@ -307,7 +324,7 @@ pub export fn capnp_alloc(len: u32) AbiPtr {
         setError(ERROR_ALLOC, "capnp_alloc pointer overflow");
         return 0;
     };
-    outstanding_allocs.put(allocator, ptr_addr, size) catch {
+    trackAllocation(ptr_addr, len, size) catch {
         allocator.free(mem);
         setError(ERROR_ALLOC, "capnp_alloc tracking failed");
         return 0;
@@ -321,20 +338,21 @@ pub export fn capnp_free(ptr: AbiPtr, len: u32) void {
     global_mutex.lock();
     defer global_mutex.unlock();
 
+    clearErrorState();
+
     if (ptr == 0) return;
-    const size: usize = if (len == 0) 1 else @as(usize, len);
     const ptr_addr: usize = @intCast(ptr);
-    const tracked_size = outstanding_allocs.get(ptr_addr) orelse {
+    const tracked = outstanding_allocs.get(ptr_addr) orelse {
         setError(ERROR_INVALID_FREE, "capnp_free: unknown allocation");
         return;
     };
-    if (tracked_size != size) {
+    if (tracked.requested_len != len) {
         setError(ERROR_INVALID_FREE, "capnp_free: length mismatch");
         return;
     }
     _ = outstanding_allocs.remove(ptr_addr);
     const mem: [*]u8 = @ptrFromInt(ptr_addr);
-    allocator.free(mem[0..size]);
+    allocator.free(mem[0..tracked.alloc_size]);
 }
 
 /// Free a buffer returned by an ABI function (alias for capnp_free).
@@ -1095,7 +1113,7 @@ pub export fn capnp_schema_manifest_json(out_ptr_ptr: AbiPtr, out_len_ptr: AbiPt
     };
     std.mem.copyForwards(u8, copy, manifest);
 
-    outstanding_allocs.put(allocator, @intFromPtr(copy.ptr), copy.len) catch {
+    trackBuffer(copy) catch {
         allocator.free(copy);
         setError(ERROR_ALLOC, "schema manifest tracking failed");
         return 0;
@@ -1161,7 +1179,7 @@ pub export fn capnp_example_person_to_json(
         return 0;
     };
 
-    outstanding_allocs.put(allocator, @intFromPtr(json_bytes.ptr), json_bytes.len) catch {
+    trackBuffer(json_bytes) catch {
         allocator.free(json_bytes);
         setError(ERROR_ALLOC, "person json tracking failed");
         return 0;
@@ -1227,7 +1245,7 @@ pub export fn capnp_example_person_from_json(
         return 0;
     };
 
-    outstanding_allocs.put(allocator, @intFromPtr(frame.ptr), frame.len) catch {
+    trackBuffer(frame) catch {
         allocator.free(frame);
         setError(ERROR_ALLOC, "person frame tracking failed");
         return 0;
@@ -1268,7 +1286,7 @@ pub export fn capnp_shutdown() void {
     var alloc_it = outstanding_allocs.iterator();
     while (alloc_it.next()) |entry| {
         const mem: [*]u8 = @ptrFromInt(entry.key_ptr.*);
-        allocator.free(mem[0..entry.value_ptr.*]);
+        allocator.free(mem[0..entry.value_ptr.alloc_size]);
     }
     outstanding_allocs.deinit(allocator);
     outstanding_allocs = .{};

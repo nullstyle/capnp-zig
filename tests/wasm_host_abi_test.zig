@@ -668,6 +668,61 @@ test "capnp_error_take validates output pointers" {
     try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
 }
 
+test "capnp_free validates tracked allocation identity and length" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    const ptr = abi.capnp_alloc(4);
+    try std.testing.expect(ptr != 0);
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_last_error_code());
+
+    abi.capnp_free(ptr, 8);
+    try std.testing.expectEqual(@as(u32, 12), abi.capnp_last_error_code());
+
+    abi.capnp_free(ptr, 4);
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_last_error_code());
+
+    abi.capnp_free(ptr, 4);
+    try std.testing.expectEqual(@as(u32, 12), abi.capnp_last_error_code());
+}
+
+test "capnp_free rejects arbitrary pointers without calling allocator.free" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    var local = [_]u8{ 1, 2, 3, 4 };
+    abi.capnp_free(toAbiPtr(&local), @intCast(local.len));
+    try std.testing.expectEqual(@as(u32, 12), abi.capnp_last_error_code());
+}
+
+test "capnp_free handles zero-length allocations through tracked size" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    const ptr = abi.capnp_alloc(0);
+    try std.testing.expect(ptr != 0);
+
+    abi.capnp_free(ptr, 1);
+    try std.testing.expectEqual(@as(u32, 12), abi.capnp_last_error_code());
+
+    abi.capnp_free(ptr, 0);
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_last_error_code());
+}
+
+test "capnp_shutdown releases tracked allocations" {
+    abi.capnp_shutdown();
+    defer abi.capnp_shutdown();
+
+    const ptr = abi.capnp_alloc(16);
+    try std.testing.expect(ptr != 0);
+
+    abi.capnp_shutdown();
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_last_error_code());
+
+    abi.capnp_free(ptr, 16);
+    try std.testing.expectEqual(@as(u32, 12), abi.capnp_last_error_code());
+}
+
 test "peer outbound introspection and limits exports work" {
     abi.capnp_clear_error();
     defer abi.capnp_clear_error();
