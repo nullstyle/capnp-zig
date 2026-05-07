@@ -30,8 +30,9 @@ the most exposed RPC and transport paths:
 - [x] Reject over-release before mutating export tables.
 - [ ] Fix failure atomicity in Return, third-party handoff, resolve/embargo, and return-routing paths.
       Third-party pending-await/answer adoption, duplicate embargoed Accept
-      queuing, and outbound return-routing clear-after-send are complete;
-      inbound Return question removal and resolve/embargo rollback remain.
+      queuing, outbound return-routing clear-after-send, and inbound Return
+      cap validation before question removal are complete; callback/auto-finish
+      restoration and resolve/embargo rollback remain.
 - [x] Enforce framer and send-queue byte budgets before append/copy allocation.
 - [x] Expose QUIC production hardening controls from `ServerOptions`.
 - [ ] Add focused regression tests and the first hardening gates.
@@ -64,6 +65,10 @@ Progress in this tranche:
   config propagation regressions cover the translation into `nullq.Server.Config`.
 - Third-party pending-await and pending-answer adoption now leave pending state
   intact if the adopter fails.
+- Inbound Return handling now validates inbound caps before removing the
+  waiting question and only runs shutdown completion after the Return is fully
+  handled; malformed cap tables and inbound-cap setup failures no longer erase
+  the live question.
 
 ## Findings
 

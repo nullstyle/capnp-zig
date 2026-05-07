@@ -5,14 +5,45 @@ const peer_control = @import("../peer_control.zig");
 const peer_return_dispatch = @import("peer_return_dispatch.zig");
 const peer_third_party_returns = @import("../third_party/peer_third_party_returns.zig");
 
-pub fn fetchRemoveQuestionForPeer(
+pub fn getQuestionForPeer(
     comptime PeerType: type,
     comptime QuestionType: type,
     peer: *PeerType,
     answer_id: u32,
 ) ?QuestionType {
-    const entry = peer.questions.fetchRemove(answer_id) orelse return null;
+    return peer.questions.get(answer_id);
+}
 
+pub fn getQuestionForPeerFn(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+) *const fn (*PeerType, u32) ?QuestionType {
+    return struct {
+        fn call(peer: *PeerType, answer_id: u32) ?QuestionType {
+            return getQuestionForPeer(PeerType, QuestionType, peer, answer_id);
+        }
+    }.call;
+}
+
+pub fn removeQuestionForReturnForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    answer_id: u32,
+) bool {
+    return peer.questions.remove(answer_id);
+}
+
+pub fn removeQuestionForReturnForPeerFn(
+    comptime PeerType: type,
+) *const fn (*PeerType, u32) bool {
+    return struct {
+        fn call(peer: *PeerType, answer_id: u32) bool {
+            return removeQuestionForReturnForPeer(PeerType, peer, answer_id);
+        }
+    }.call;
+}
+
+pub fn completeQuestionRemovalForPeer(comptime PeerType: type, peer: *PeerType) void {
     // Mirror the shutdown-completion check from Peer.removeQuestion() so that
     // graceful shutdown can complete when the last in-flight question is answered.
     if (@hasField(PeerType, "is_shutting_down") and @hasDecl(PeerType, "completeShutdown")) {
@@ -20,17 +51,14 @@ pub fn fetchRemoveQuestionForPeer(
             peer.completeShutdown();
         }
     }
-
-    return entry.value;
 }
 
-pub fn fetchRemoveQuestionForPeerFn(
+pub fn completeQuestionRemovalForPeerFn(
     comptime PeerType: type,
-    comptime QuestionType: type,
-) *const fn (*PeerType, u32) ?QuestionType {
+) *const fn (*PeerType) void {
     return struct {
-        fn call(peer: *PeerType, answer_id: u32) ?QuestionType {
-            return fetchRemoveQuestionForPeer(PeerType, QuestionType, peer, answer_id);
+        fn call(peer: *PeerType) void {
+            completeQuestionRemovalForPeer(PeerType, peer);
         }
     }.call;
 }
@@ -156,7 +184,9 @@ pub fn handleReturn(
     peer: *PeerType,
     frame: []const u8,
     ret: protocol.Return,
-    fetch_remove_question: *const fn (*PeerType, u32) ?QuestionType,
+    get_question: *const fn (*PeerType, u32) ?QuestionType,
+    remove_question_for_return: *const fn (*PeerType, u32) bool,
+    complete_question_removal: *const fn (*PeerType) void,
     handle_missing_return_question: *const fn (*PeerType, []const u8, u32) anyerror!void,
     init_inbound_caps: *const fn (*PeerType, protocol.Return) anyerror!InboundCapsType,
     deinit_inbound_caps: *const fn (*InboundCapsType) void,
@@ -164,15 +194,15 @@ pub fn handleReturn(
     maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
     handle_return_regular: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void,
 ) anyerror!void {
-    // Return delivery is two-phase: first locate and remove the waiting question, then
-    // build inbound caps scoped to this return for callback dispatch and cleanup.
-    const question = fetch_remove_question(peer, ret.answer_id) orelse {
+    const question = get_question(peer, ret.answer_id) orelse {
         try handle_missing_return_question(peer, frame, ret.answer_id);
         return;
     };
 
     var inbound_caps = try init_inbound_caps(peer, ret);
     defer deinit_inbound_caps(&inbound_caps);
+
+    if (!remove_question_for_return(peer, ret.answer_id)) return error.UnknownQuestion;
 
     if (ret.tag == .awaitFromThirdParty) {
         // acceptFromThirdParty adopts a different question path and still needs the same
@@ -185,10 +215,12 @@ pub fn handleReturn(
             &inbound_caps,
         );
         try maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
+        complete_question_removal(peer);
         return;
     }
 
     try handle_return_regular(peer, question, ret, &inbound_caps);
+    complete_question_removal(peer);
 }
 
 test "peer_return_orchestration handles missing question via callback" {
@@ -199,10 +231,21 @@ test "peer_return_orchestration handles missing question via callback" {
     };
     const Inbound = struct { state: *State };
     const Hooks = struct {
-        fn fetchQuestion(state: *State, answer_id: u32) ?Question {
+        fn getQuestion(state: *State, answer_id: u32) ?Question {
             _ = state;
             _ = answer_id;
             return null;
+        }
+
+        fn removeQuestion(state: *State, answer_id: u32) bool {
+            _ = state;
+            _ = answer_id;
+            unreachable;
+        }
+
+        fn completeRemoval(state: *State) void {
+            _ = state;
+            unreachable;
         }
 
         fn handleMissing(state: *State, frame: []const u8, answer_id: u32) !void {
@@ -263,7 +306,9 @@ test "peer_return_orchestration handles missing question via callback" {
         &state,
         &.{},
         ret,
-        Hooks.fetchQuestion,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
         Hooks.deinitInbound,
@@ -282,16 +327,28 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
         missing_calls: usize = 0,
         init_calls: usize = 0,
         deinit_calls: usize = 0,
+        remove_calls: usize = 0,
+        complete_calls: usize = 0,
         accept_calls: usize = 0,
         finish_calls: usize = 0,
         regular_calls: usize = 0,
     };
     const Inbound = struct { state: *State };
     const Hooks = struct {
-        fn fetchQuestion(state: *State, answer_id: u32) ?Question {
+        fn getQuestion(state: *State, answer_id: u32) ?Question {
             _ = answer_id;
             state.fetch_calls += 1;
             return .{ .marker = 9 };
+        }
+
+        fn removeQuestion(state: *State, answer_id: u32) bool {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.remove_calls += 1;
+            return true;
+        }
+
+        fn completeRemoval(state: *State) void {
+            state.complete_calls += 1;
         }
 
         fn handleMissing(state: *State, frame: []const u8, answer_id: u32) !void {
@@ -353,7 +410,9 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
         &state,
         &.{},
         ret,
-        Hooks.fetchQuestion,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
         Hooks.deinitInbound,
@@ -365,6 +424,8 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
     try std.testing.expectEqual(@as(usize, 0), state.missing_calls);
     try std.testing.expectEqual(@as(usize, 1), state.init_calls);
     try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.complete_calls);
     try std.testing.expectEqual(@as(usize, 0), state.accept_calls);
     try std.testing.expectEqual(@as(usize, 0), state.finish_calls);
     try std.testing.expectEqual(@as(usize, 1), state.regular_calls);
@@ -376,16 +437,28 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
         fetch_calls: usize = 0,
         init_calls: usize = 0,
         deinit_calls: usize = 0,
+        remove_calls: usize = 0,
+        complete_calls: usize = 0,
         accept_calls: usize = 0,
         finish_calls: usize = 0,
         regular_calls: usize = 0,
     };
     const Inbound = struct { state: *State };
     const Hooks = struct {
-        fn fetchQuestion(state: *State, answer_id: u32) ?Question {
+        fn getQuestion(state: *State, answer_id: u32) ?Question {
             _ = answer_id;
             state.fetch_calls += 1;
             return .{ .marker = 9 };
+        }
+
+        fn removeQuestion(state: *State, answer_id: u32) bool {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.remove_calls += 1;
+            return true;
+        }
+
+        fn completeRemoval(state: *State) void {
+            state.complete_calls += 1;
         }
 
         fn handleMissing(state: *State, frame: []const u8, answer_id: u32) !void {
@@ -445,7 +518,9 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
         &state,
         &.{},
         ret,
-        Hooks.fetchQuestion,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
         Hooks.deinitInbound,
@@ -456,15 +531,230 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
     try std.testing.expectEqual(@as(usize, 1), state.fetch_calls);
     try std.testing.expectEqual(@as(usize, 1), state.init_calls);
     try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.complete_calls);
     try std.testing.expectEqual(@as(usize, 1), state.accept_calls);
     try std.testing.expectEqual(@as(usize, 1), state.finish_calls);
     try std.testing.expectEqual(@as(usize, 0), state.regular_calls);
 }
 
-test "peer_return_orchestration fetchRemoveQuestionForPeerFn removes and returns question" {
+test "peer_return_orchestration init failure does not remove question" {
+    const Question = struct { marker: u32 };
+    const State = struct {
+        get_calls: usize = 0,
+        init_calls: usize = 0,
+        remove_calls: usize = 0,
+        complete_calls: usize = 0,
+    };
+    const Inbound = struct {};
+    const Hooks = struct {
+        fn getQuestion(state: *State, answer_id: u32) ?Question {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.get_calls += 1;
+            return .{ .marker = 9 };
+        }
+
+        fn removeQuestion(state: *State, answer_id: u32) bool {
+            _ = answer_id;
+            state.remove_calls += 1;
+            return true;
+        }
+
+        fn completeRemoval(state: *State) void {
+            state.complete_calls += 1;
+        }
+
+        fn handleMissing(state: *State, frame: []const u8, answer_id: u32) !void {
+            _ = state;
+            _ = frame;
+            _ = answer_id;
+            return error.TestUnexpectedResult;
+        }
+
+        fn initInbound(state: *State, ret: protocol.Return) !Inbound {
+            _ = ret;
+            state.init_calls += 1;
+            return error.TestExpectedError;
+        }
+
+        fn deinitInbound(inbound: *Inbound) void {
+            _ = inbound;
+            unreachable;
+        }
+
+        fn handleAccept(state: *State, answer_id: u32, question: Question, await_ptr: ?message.AnyPointerReader, inbound: *const Inbound) !void {
+            _ = state;
+            _ = answer_id;
+            _ = question;
+            _ = await_ptr;
+            _ = inbound;
+            return error.TestUnexpectedResult;
+        }
+
+        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) !void {
+            _ = state;
+            _ = question;
+            _ = answer_id;
+            _ = no_finish_needed;
+            return error.TestUnexpectedResult;
+        }
+
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+            _ = state;
+            _ = question;
+            _ = ret;
+            _ = inbound;
+            return error.TestUnexpectedResult;
+        }
+    };
+
+    var state = State{};
+    const ret = protocol.Return{
+        .answer_id = 3,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .canceled,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = null,
+    };
+    try std.testing.expectError(error.TestExpectedError, handleReturn(
+        State,
+        Question,
+        Inbound,
+        &state,
+        &.{},
+        ret,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.completeRemoval,
+        Hooks.handleMissing,
+        Hooks.initInbound,
+        Hooks.deinitInbound,
+        Hooks.handleAccept,
+        Hooks.maybeFinish,
+        Hooks.handleRegular,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), state.get_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.init_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.complete_calls);
+}
+
+test "peer_return_orchestration handler failure does not complete removal" {
+    const Question = struct { marker: u32 };
+    const State = struct {
+        get_calls: usize = 0,
+        init_calls: usize = 0,
+        deinit_calls: usize = 0,
+        remove_calls: usize = 0,
+        complete_calls: usize = 0,
+        regular_calls: usize = 0,
+    };
+    const Inbound = struct { state: *State };
+    const Hooks = struct {
+        fn getQuestion(state: *State, answer_id: u32) ?Question {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.get_calls += 1;
+            return .{ .marker = 9 };
+        }
+
+        fn removeQuestion(state: *State, answer_id: u32) bool {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.remove_calls += 1;
+            return true;
+        }
+
+        fn completeRemoval(state: *State) void {
+            state.complete_calls += 1;
+        }
+
+        fn handleMissing(state: *State, frame: []const u8, answer_id: u32) !void {
+            _ = state;
+            _ = frame;
+            _ = answer_id;
+            return error.TestUnexpectedResult;
+        }
+
+        fn initInbound(state: *State, ret: protocol.Return) !Inbound {
+            _ = ret;
+            state.init_calls += 1;
+            return .{ .state = state };
+        }
+
+        fn deinitInbound(inbound: *Inbound) void {
+            inbound.state.deinit_calls += 1;
+        }
+
+        fn handleAccept(state: *State, answer_id: u32, question: Question, await_ptr: ?message.AnyPointerReader, inbound: *const Inbound) !void {
+            _ = state;
+            _ = answer_id;
+            _ = question;
+            _ = await_ptr;
+            _ = inbound;
+            return error.TestUnexpectedResult;
+        }
+
+        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) !void {
+            _ = state;
+            _ = question;
+            _ = answer_id;
+            _ = no_finish_needed;
+            return error.TestUnexpectedResult;
+        }
+
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+            _ = inbound;
+            try std.testing.expectEqual(@as(u32, 9), question.marker);
+            try std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag);
+            state.regular_calls += 1;
+            return error.OutOfMemory;
+        }
+    };
+
+    var state = State{};
+    const ret = protocol.Return{
+        .answer_id = 3,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .canceled,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = null,
+    };
+    try std.testing.expectError(error.OutOfMemory, handleReturn(
+        State,
+        Question,
+        Inbound,
+        &state,
+        &.{},
+        ret,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.completeRemoval,
+        Hooks.handleMissing,
+        Hooks.initInbound,
+        Hooks.deinitInbound,
+        Hooks.handleAccept,
+        Hooks.maybeFinish,
+        Hooks.handleRegular,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), state.get_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.init_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.complete_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.regular_calls);
+}
+
+test "peer_return_orchestration staged question helpers get remove and complete" {
     const Question = struct { marker: u32 };
     const FakePeer = struct {
         questions: std.AutoHashMap(u32, Question),
+        is_shutting_down: bool = false,
+        shutdown_complete_calls: usize = 0,
 
         fn init(allocator: std.mem.Allocator) @This() {
             return .{
@@ -475,16 +765,30 @@ test "peer_return_orchestration fetchRemoveQuestionForPeerFn removes and returns
         fn deinit(self: *@This()) void {
             self.questions.deinit();
         }
+
+        fn completeShutdown(self: *@This()) void {
+            self.shutdown_complete_calls += 1;
+        }
     };
 
     var peer = FakePeer.init(std.testing.allocator);
     defer peer.deinit();
     try peer.questions.put(44, .{ .marker = 9 });
 
-    const fetch = fetchRemoveQuestionForPeerFn(FakePeer, Question);
-    const question = fetch(&peer, 44) orelse return error.TestExpectedEqual;
+    const get = getQuestionForPeerFn(FakePeer, Question);
+    const remove = removeQuestionForReturnForPeerFn(FakePeer);
+    const complete = completeQuestionRemovalForPeerFn(FakePeer);
+
+    const question = get(&peer, 44) orelse return error.TestExpectedEqual;
     try std.testing.expectEqual(@as(u32, 9), question.marker);
-    try std.testing.expectEqual(@as(?Question, null), fetch(&peer, 44));
+    try std.testing.expect(remove(&peer, 44));
+    try std.testing.expectEqual(@as(?Question, null), get(&peer, 44));
+
+    try peer.questions.put(44, question);
+    try std.testing.expect(remove(&peer, 44));
+    peer.is_shutting_down = true;
+    complete(&peer);
+    try std.testing.expectEqual(@as(usize, 1), peer.shutdown_complete_calls);
 }
 
 test "peer_return_orchestration inbound caps helper factories initialize and deinitialize" {
