@@ -6,16 +6,28 @@ pub const Framer = struct {
     /// may want to lower this for untrusted peers.
     pub const max_frame_words: usize = 8 * 1024 * 1024;
     pub const max_segment_count: u32 = 512;
+    pub const max_header_bytes: usize = (1 + @as(usize, max_segment_count) + 1) * 4;
+    pub const default_max_buffered_bytes: usize = max_header_bytes + max_frame_words * 8;
+
+    pub const Options = struct {
+        max_buffered_bytes: usize = default_max_buffered_bytes,
+    };
 
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8),
     expected_total: ?usize = null,
+    max_buffered_bytes: usize = default_max_buffered_bytes,
 
     pub fn init(allocator: std.mem.Allocator) Framer {
+        return initWithOptions(allocator, .{});
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, options: Options) Framer {
         return .{
             .allocator = allocator,
             .buffer = std.ArrayList(u8).empty,
             .expected_total = null,
+            .max_buffered_bytes = options.max_buffered_bytes,
         };
     }
 
@@ -26,6 +38,7 @@ pub const Framer = struct {
 
     pub fn push(self: *Framer, data: []const u8) !void {
         if (data.len == 0) return;
+        try self.ensureAppendBudget(data.len);
         try self.buffer.appendSlice(self.allocator, data);
     }
 
@@ -97,5 +110,10 @@ pub const Framer = struct {
         const body_bytes = std.math.mul(usize, total_words, 8) catch return error.InvalidFrame;
         const total_bytes = std.math.add(usize, header_bytes, body_bytes) catch return error.InvalidFrame;
         self.expected_total = total_bytes;
+    }
+
+    fn ensureAppendBudget(self: *const Framer, data_len: usize) !void {
+        const next = std.math.add(usize, self.buffer.items.len, data_len) catch return error.FrameTooLarge;
+        if (next > self.max_buffered_bytes) return error.FrameTooLarge;
     }
 };

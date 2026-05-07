@@ -87,6 +87,30 @@ test "Framer rejects oversized frame claims" {
     try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
 }
 
+test "Framer rejects buffered byte budget before append" {
+    var framer = Framer.initWithOptions(std.testing.allocator, .{
+        .max_buffered_bytes = 4,
+    });
+    defer framer.deinit();
+
+    try framer.push(&[_]u8{ 1, 2, 3, 4 });
+    try std.testing.expectEqual(@as(usize, 4), framer.bufferedBytes());
+
+    try std.testing.expectError(error.FrameTooLarge, framer.push(&[_]u8{5}));
+    try std.testing.expectEqual(@as(usize, 4), framer.bufferedBytes());
+}
+
+test "Framer budget rejection does not allocate" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var framer = Framer.initWithOptions(failing.allocator(), .{
+        .max_buffered_bytes = 0,
+    });
+    defer framer.deinit();
+
+    try std.testing.expectError(error.FrameTooLarge, framer.push(&[_]u8{1}));
+    try std.testing.expectEqual(@as(usize, 0), framer.bufferedBytes());
+}
+
 test "Framer fuzz malformed streams does not crash" {
     const allocator = std.testing.allocator;
 

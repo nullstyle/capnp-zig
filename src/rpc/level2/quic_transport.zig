@@ -280,16 +280,27 @@ const OutboundQueue = struct {
 /// baseline stream. The payload itself is still one complete Cap'n Proto RPC
 /// message encoded by the existing peer/protocol layer.
 pub const LengthDelimitedFramer = struct {
+    pub const Options = struct {
+        max_message_bytes: usize,
+        max_buffered_bytes: ?usize = null,
+    };
+
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8),
     expected_len: ?usize = null,
     max_message_bytes: usize,
+    max_buffered_bytes: usize,
 
     pub fn init(allocator: std.mem.Allocator, max_message_bytes: usize) LengthDelimitedFramer {
+        return initWithOptions(allocator, .{ .max_message_bytes = max_message_bytes });
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, options: Options) LengthDelimitedFramer {
         return .{
             .allocator = allocator,
             .buffer = .empty,
-            .max_message_bytes = max_message_bytes,
+            .max_message_bytes = options.max_message_bytes,
+            .max_buffered_bytes = options.max_buffered_bytes orelse length_prefix_bytes + options.max_message_bytes,
         };
     }
 
@@ -300,6 +311,7 @@ pub const LengthDelimitedFramer = struct {
 
     pub fn push(self: *LengthDelimitedFramer, data: []const u8) !void {
         if (data.len == 0) return;
+        try self.ensureAppendBudget(data.len);
         try self.buffer.appendSlice(self.allocator, data);
     }
 
@@ -335,6 +347,11 @@ pub const LengthDelimitedFramer = struct {
         const len: usize = @intCast(raw_len);
         if (len > self.max_message_bytes) return error.FrameTooLarge;
         self.expected_len = len;
+    }
+
+    fn ensureAppendBudget(self: *const LengthDelimitedFramer, data_len: usize) !void {
+        const next = std.math.add(usize, self.buffer.items.len, data_len) catch return error.FrameTooLarge;
+        if (next > self.max_buffered_bytes) return error.FrameTooLarge;
     }
 };
 
@@ -921,6 +938,32 @@ test "LengthDelimitedFramer rejects oversized frames" {
     std.mem.writeInt(u32, bytes[0..4], 3, .little);
     try framer.push(&bytes);
     try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
+}
+
+test "LengthDelimitedFramer rejects buffered byte budget before append" {
+    var framer = LengthDelimitedFramer.initWithOptions(std.testing.allocator, .{
+        .max_message_bytes = 1024,
+        .max_buffered_bytes = 4,
+    });
+    defer framer.deinit();
+
+    try framer.push(&[_]u8{ 1, 2, 3, 4 });
+    try std.testing.expectEqual(@as(usize, 4), framer.buffer.items.len);
+
+    try std.testing.expectError(error.FrameTooLarge, framer.push(&[_]u8{5}));
+    try std.testing.expectEqual(@as(usize, 4), framer.buffer.items.len);
+}
+
+test "LengthDelimitedFramer budget rejection does not allocate" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var framer = LengthDelimitedFramer.initWithOptions(failing.allocator(), .{
+        .max_message_bytes = 1024,
+        .max_buffered_bytes = 0,
+    });
+    defer framer.deinit();
+
+    try std.testing.expectError(error.FrameTooLarge, framer.push(&[_]u8{1}));
+    try std.testing.expectEqual(@as(usize, 0), framer.buffer.items.len);
 }
 
 test "QUIC dispatch treats malformed frames as terminal" {

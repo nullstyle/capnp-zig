@@ -32,7 +32,7 @@ the most exposed RPC and transport paths:
       Third-party pending-await/answer adoption, duplicate embargoed Accept
       queuing, and outbound return-routing clear-after-send are complete;
       inbound Return question removal and resolve/embargo rollback remain.
-- [ ] Enforce framer and send-queue byte budgets before append/copy allocation.
+- [x] Enforce framer and send-queue byte budgets before append/copy allocation.
 - [ ] Expose QUIC production hardening controls from `ServerOptions`.
 - [ ] Add focused regression tests and the first hardening gates.
 
@@ -45,6 +45,9 @@ Progress in this tranche:
 - Peer Release over-counts now return `error.ReleaseCountExceeded` before mutating export state.
 - Peers now track active inbound question IDs and reject duplicate calls while the first call is still unresolved.
 - TCP and QUIC outbound queues now check configured queue bounds before copying frames into owned queue allocations.
+- TCP and QUIC inbound framers now enforce aggregate buffered-byte budgets before
+  appending incoming chunks, with failing-allocator regressions proving budget
+  rejection does not allocate.
 - The cumulative RPC level3 and serialization message suites pass with the new regressions.
 - Host-call bridge queues now enforce default count and byte limits before copying
   inbound frames, and expose pending host-call byte accounting.
