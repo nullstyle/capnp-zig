@@ -10,6 +10,10 @@ release:
 test:
     zig build test --summary all
 
+# Run static hardening gates
+hardening:
+    zig build hardening
+
 # Run serialization-focused tests (message/codegen/schema/interop)
 test-serialization:
     zig build test-serialization --summary all
@@ -56,6 +60,7 @@ e2e-scaffold:
 
 # CI gate (unit + interop e2e)
 ci:
+    zig build hardening
     just src/rpc/check-rpc
     zig build test --summary all
     just e2e-zig

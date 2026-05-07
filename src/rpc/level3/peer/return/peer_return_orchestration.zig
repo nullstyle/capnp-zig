@@ -43,6 +43,27 @@ pub fn removeQuestionForReturnForPeerFn(
     }.call;
 }
 
+pub fn restoreQuestionForReturnForPeer(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+    peer: *PeerType,
+    answer_id: u32,
+    question: QuestionType,
+) void {
+    peer.questions.putAssumeCapacity(answer_id, question);
+}
+
+pub fn restoreQuestionForReturnForPeerFn(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+) *const fn (*PeerType, u32, QuestionType) void {
+    return struct {
+        fn call(peer: *PeerType, answer_id: u32, question: QuestionType) void {
+            restoreQuestionForReturnForPeer(PeerType, QuestionType, peer, answer_id, question);
+        }
+    }.call;
+}
+
 pub fn completeQuestionRemovalForPeer(comptime PeerType: type, peer: *PeerType) void {
     // Mirror the shutdown-completion check from Peer.removeQuestion() so that
     // graceful shutdown can complete when the last in-flight question is answered.
@@ -96,6 +117,13 @@ pub fn deinitInboundCapsForTypeFn(comptime InboundCapsType: type) *const fn (*In
     }.call;
 }
 
+fn shouldRestoreQuestionOnReturnError(comptime QuestionType: type, question: QuestionType) bool {
+    if (@hasField(QuestionType, "restore_on_return_error")) {
+        return question.restore_on_return_error;
+    }
+    return true;
+}
+
 pub fn handleMissingReturnQuestionForPeer(
     comptime PeerType: type,
     peer: *PeerType,
@@ -141,6 +169,7 @@ pub fn handleReturnRegularForPeer(
         ret,
         inbound_caps,
         peer_return_dispatch.takeAdoptedAnswerOriginalForPeerFn(PeerType),
+        peer_return_dispatch.restoreAdoptedAnswerOriginalForPeerFn(PeerType),
         peer_return_dispatch.dispatchQuestionReturnForPeerFn(PeerType, QuestionType, InboundCapsType),
         peer_return_dispatch.releaseInboundCapsForPeerFn(PeerType, InboundCapsType, release_inbound_caps_mut),
         peer_return_dispatch.reportNonfatalErrorForPeerFn(PeerType),
@@ -186,6 +215,7 @@ pub fn handleReturn(
     ret: protocol.Return,
     get_question: *const fn (*PeerType, u32) ?QuestionType,
     remove_question_for_return: *const fn (*PeerType, u32) bool,
+    restore_question_for_return: *const fn (*PeerType, u32, QuestionType) void,
     complete_question_removal: *const fn (*PeerType) void,
     handle_missing_return_question: *const fn (*PeerType, []const u8, u32) anyerror!void,
     init_inbound_caps: *const fn (*PeerType, protocol.Return) anyerror!InboundCapsType,
@@ -203,6 +233,14 @@ pub fn handleReturn(
     defer deinit_inbound_caps(&inbound_caps);
 
     if (!remove_question_for_return(peer, ret.answer_id)) return error.UnknownQuestion;
+    var restore_question = true;
+    errdefer if (restore_question) {
+        if (shouldRestoreQuestionOnReturnError(QuestionType, question)) {
+            restore_question_for_return(peer, ret.answer_id, question);
+        } else {
+            complete_question_removal(peer);
+        }
+    };
 
     if (ret.tag == .awaitFromThirdParty) {
         // acceptFromThirdParty adopts a different question path and still needs the same
@@ -214,12 +252,14 @@ pub fn handleReturn(
             ret.accept_from_third_party,
             &inbound_caps,
         );
+        restore_question = false;
+        defer complete_question_removal(peer);
         try maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
-        complete_question_removal(peer);
         return;
     }
 
     try handle_return_regular(peer, question, ret, &inbound_caps);
+    restore_question = false;
     complete_question_removal(peer);
 }
 
@@ -240,6 +280,13 @@ test "peer_return_orchestration handles missing question via callback" {
         fn removeQuestion(state: *State, answer_id: u32) bool {
             _ = state;
             _ = answer_id;
+            unreachable;
+        }
+
+        fn restoreQuestion(state: *State, answer_id: u32, question: Question) void {
+            _ = state;
+            _ = answer_id;
+            _ = question;
             unreachable;
         }
 
@@ -308,6 +355,7 @@ test "peer_return_orchestration handles missing question via callback" {
         ret,
         Hooks.getQuestion,
         Hooks.removeQuestion,
+        Hooks.restoreQuestion,
         Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
@@ -328,6 +376,7 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
         init_calls: usize = 0,
         deinit_calls: usize = 0,
         remove_calls: usize = 0,
+        restore_calls: usize = 0,
         complete_calls: usize = 0,
         accept_calls: usize = 0,
         finish_calls: usize = 0,
@@ -345,6 +394,12 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
             std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
             state.remove_calls += 1;
             return true;
+        }
+
+        fn restoreQuestion(state: *State, answer_id: u32, question: Question) void {
+            _ = question;
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.restore_calls += 1;
         }
 
         fn completeRemoval(state: *State) void {
@@ -412,6 +467,7 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
         ret,
         Hooks.getQuestion,
         Hooks.removeQuestion,
+        Hooks.restoreQuestion,
         Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
@@ -425,6 +481,7 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
     try std.testing.expectEqual(@as(usize, 1), state.init_calls);
     try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
     try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.restore_calls);
     try std.testing.expectEqual(@as(usize, 1), state.complete_calls);
     try std.testing.expectEqual(@as(usize, 0), state.accept_calls);
     try std.testing.expectEqual(@as(usize, 0), state.finish_calls);
@@ -438,6 +495,7 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
         init_calls: usize = 0,
         deinit_calls: usize = 0,
         remove_calls: usize = 0,
+        restore_calls: usize = 0,
         complete_calls: usize = 0,
         accept_calls: usize = 0,
         finish_calls: usize = 0,
@@ -455,6 +513,12 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
             std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
             state.remove_calls += 1;
             return true;
+        }
+
+        fn restoreQuestion(state: *State, answer_id: u32, question: Question) void {
+            _ = question;
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.restore_calls += 1;
         }
 
         fn completeRemoval(state: *State) void {
@@ -520,6 +584,7 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
         ret,
         Hooks.getQuestion,
         Hooks.removeQuestion,
+        Hooks.restoreQuestion,
         Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
@@ -532,6 +597,7 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
     try std.testing.expectEqual(@as(usize, 1), state.init_calls);
     try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
     try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.restore_calls);
     try std.testing.expectEqual(@as(usize, 1), state.complete_calls);
     try std.testing.expectEqual(@as(usize, 1), state.accept_calls);
     try std.testing.expectEqual(@as(usize, 1), state.finish_calls);
@@ -558,6 +624,13 @@ test "peer_return_orchestration init failure does not remove question" {
             _ = answer_id;
             state.remove_calls += 1;
             return true;
+        }
+
+        fn restoreQuestion(state: *State, answer_id: u32, question: Question) void {
+            _ = state;
+            _ = answer_id;
+            _ = question;
+            unreachable;
         }
 
         fn completeRemoval(state: *State) void {
@@ -627,6 +700,7 @@ test "peer_return_orchestration init failure does not remove question" {
         ret,
         Hooks.getQuestion,
         Hooks.removeQuestion,
+        Hooks.restoreQuestion,
         Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
@@ -642,13 +716,15 @@ test "peer_return_orchestration init failure does not remove question" {
     try std.testing.expectEqual(@as(usize, 0), state.complete_calls);
 }
 
-test "peer_return_orchestration handler failure does not complete removal" {
+test "peer_return_orchestration handler failure restores question and does not complete removal" {
     const Question = struct { marker: u32 };
     const State = struct {
         get_calls: usize = 0,
         init_calls: usize = 0,
         deinit_calls: usize = 0,
         remove_calls: usize = 0,
+        restore_calls: usize = 0,
+        restored_marker: u32 = 0,
         complete_calls: usize = 0,
         regular_calls: usize = 0,
     };
@@ -664,6 +740,12 @@ test "peer_return_orchestration handler failure does not complete removal" {
             std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
             state.remove_calls += 1;
             return true;
+        }
+
+        fn restoreQuestion(state: *State, answer_id: u32, question: Question) void {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.restore_calls += 1;
+            state.restored_marker = question.marker;
         }
 
         fn completeRemoval(state: *State) void {
@@ -732,6 +814,7 @@ test "peer_return_orchestration handler failure does not complete removal" {
         ret,
         Hooks.getQuestion,
         Hooks.removeQuestion,
+        Hooks.restoreQuestion,
         Hooks.completeRemoval,
         Hooks.handleMissing,
         Hooks.initInbound,
@@ -745,8 +828,121 @@ test "peer_return_orchestration handler failure does not complete removal" {
     try std.testing.expectEqual(@as(usize, 1), state.init_calls);
     try std.testing.expectEqual(@as(usize, 1), state.deinit_calls);
     try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.restore_calls);
+    try std.testing.expectEqual(@as(u32, 9), state.restored_marker);
     try std.testing.expectEqual(@as(usize, 0), state.complete_calls);
     try std.testing.expectEqual(@as(usize, 1), state.regular_calls);
+}
+
+test "peer_return_orchestration handler failure completes one-shot question removal" {
+    const Question = struct {
+        marker: u32,
+        restore_on_return_error: bool = false,
+    };
+    const State = struct {
+        get_calls: usize = 0,
+        remove_calls: usize = 0,
+        restore_calls: usize = 0,
+        complete_calls: usize = 0,
+    };
+    const Inbound = struct {};
+    const Hooks = struct {
+        fn getQuestion(state: *State, answer_id: u32) ?Question {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.get_calls += 1;
+            return .{ .marker = 9 };
+        }
+
+        fn removeQuestion(state: *State, answer_id: u32) bool {
+            std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
+            state.remove_calls += 1;
+            return true;
+        }
+
+        fn restoreQuestion(state: *State, answer_id: u32, question: Question) void {
+            _ = answer_id;
+            _ = question;
+            state.restore_calls += 1;
+        }
+
+        fn completeRemoval(state: *State) void {
+            state.complete_calls += 1;
+        }
+
+        fn handleMissing(state: *State, frame: []const u8, answer_id: u32) !void {
+            _ = state;
+            _ = frame;
+            _ = answer_id;
+            return error.TestUnexpectedResult;
+        }
+
+        fn initInbound(_: *State, ret: protocol.Return) !Inbound {
+            _ = ret;
+            return .{};
+        }
+
+        fn deinitInbound(inbound: *Inbound) void {
+            _ = inbound;
+        }
+
+        fn handleAccept(state: *State, answer_id: u32, question: Question, await_ptr: ?message.AnyPointerReader, inbound: *const Inbound) !void {
+            _ = state;
+            _ = answer_id;
+            _ = question;
+            _ = await_ptr;
+            _ = inbound;
+            return error.TestUnexpectedResult;
+        }
+
+        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) !void {
+            _ = state;
+            _ = question;
+            _ = answer_id;
+            _ = no_finish_needed;
+        }
+
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
+            _ = state;
+            _ = inbound;
+            try std.testing.expectEqual(@as(u32, 9), question.marker);
+            try std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag);
+            return error.OutOfMemory;
+        }
+    };
+
+    var state = State{};
+    const ret = protocol.Return{
+        .answer_id = 3,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .canceled,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = null,
+    };
+    try std.testing.expectError(error.OutOfMemory, handleReturn(
+        State,
+        Question,
+        Inbound,
+        &state,
+        &.{},
+        ret,
+        Hooks.getQuestion,
+        Hooks.removeQuestion,
+        Hooks.restoreQuestion,
+        Hooks.completeRemoval,
+        Hooks.handleMissing,
+        Hooks.initInbound,
+        Hooks.deinitInbound,
+        Hooks.handleAccept,
+        Hooks.maybeFinish,
+        Hooks.handleRegular,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), state.get_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.remove_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.restore_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.complete_calls);
 }
 
 test "peer_return_orchestration staged question helpers get remove and complete" {

@@ -144,6 +144,78 @@ test "peer limits bound pending third-party returns and embargoed accepts" {
     try std.testing.expectEqual(@as(usize, 0), peer.pending_accept_embargo_by_question.count());
 }
 
+test "peer limits bound provide join third-party maps and abort reason" {
+    var peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_active_provides = 0,
+        .max_pending_joins = 0,
+        .max_pending_join_questions = 0,
+        .max_pending_third_party_awaits = 0,
+        .max_pending_third_party_answers = 0,
+        .max_adopted_third_party_answers = 0,
+        .max_remote_abort_reason_bytes = 4,
+    });
+    defer peer.deinit();
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensureProvideBudget(&peer, 1, "recipient"),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensureJoinBudget(&peer, 7, 2, 0, 2),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensurePendingThirdPartyAwaitBudget(&peer, "completion"),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensurePendingThirdPartyAnswerBudget(&peer, "completion"),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensureThirdPartyAdoptionBudget(&peer, 0x4000_0001),
+    );
+
+    var abort_builder = protocol.MessageBuilder.init(std.testing.allocator);
+    defer abort_builder.deinit();
+    try abort_builder.buildAbort("abcdef");
+    const abort_frame = try abort_builder.finish();
+    defer std.testing.allocator.free(abort_frame);
+
+    try std.testing.expectError(error.RemoteAbort, peer.handleFrame(abort_frame));
+    try std.testing.expectEqualStrings("abcd", peer.getLastRemoteAbortReason().?);
+}
+
+test "peer limits bound provide and third-party key byte budgets" {
+    var provide_peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_active_provides = 8,
+        .max_active_provide_key_bytes = 3,
+    });
+    defer provide_peer.deinit();
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensureProvideBudget(&provide_peer, 1, "four"),
+    );
+
+    var third_party_peer = Peer.initDetachedWithLimits(std.testing.allocator, .{
+        .max_pending_third_party_awaits = 8,
+        .max_pending_third_party_answers = 8,
+        .max_pending_third_party_completion_bytes = 3,
+    });
+    defer third_party_peer.deinit();
+
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensurePendingThirdPartyAwaitBudget(&third_party_peer, "four"),
+    );
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer_test_hooks.ensurePendingThirdPartyAnswerBudget(&third_party_peer, "four"),
+    );
+}
+
 test "peer detached sendFrame requires override or attached transport" {
     var peer = Peer.initDetached(std.testing.allocator);
     defer peer.deinit();

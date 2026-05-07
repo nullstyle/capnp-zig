@@ -19,6 +19,7 @@ pub fn adoptThirdPartyAnswer(
     adopted_answers: *std.AutoHashMap(u32, u32),
     pending_returns: *std.AutoHashMap(u32, []u8),
     send_abort: *const fn (*PeerType, []const u8) anyerror!void,
+    ensure_adoption_budget: *const fn (*PeerType, u32) anyerror!void,
     free_frame: *const fn (*PeerType, []u8) void,
     handle_pending_return_frame: *const fn (*PeerType, []const u8) anyerror!void,
 ) !void {
@@ -30,6 +31,8 @@ pub fn adoptThirdPartyAnswer(
         try send_abort(peer, "duplicate thirdPartyAnswer answerId");
         return error.DuplicateThirdPartyAnswerId;
     }
+
+    try ensure_adoption_budget(peer, adopted_answer_id);
 
     try questions.put(adopted_answer_id, question);
     errdefer _ = questions.remove(adopted_answer_id);
@@ -54,6 +57,7 @@ pub fn handleThirdPartyAnswer(
     capture_completion: *const fn (*PeerType, protocol.ThirdPartyAnswer) anyerror!?[]u8,
     free_payload: *const fn (*PeerType, []u8) void,
     send_abort: *const fn (*PeerType, []const u8) anyerror!void,
+    ensure_pending_answer_budget: *const fn (*PeerType, []const u8) anyerror!void,
     adopt_pending_await: *const fn (*PeerType, u32, PendingAwaitType) anyerror!void,
 ) !void {
     if (!isThirdPartyAnswerId(third_party_answer.answer_id)) {
@@ -93,6 +97,8 @@ pub fn handleThirdPartyAnswer(
         try send_abort(peer, "conflicting thirdPartyAnswer completion");
         return error.ConflictingThirdPartyAnswer;
     }
+
+    try ensure_pending_answer_budget(peer, completion_key);
 
     try peer_third_party_pending.putPendingAnswer(
         pending_answers,
@@ -174,6 +180,7 @@ pub fn handleReturnAcceptFromThirdParty(
     capture_completion_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
     free_payload: *const fn (*PeerType, []u8) void,
     send_abort: *const fn (*PeerType, []const u8) anyerror!void,
+    ensure_pending_await_budget: *const fn (*PeerType, []const u8) anyerror!void,
     adopt_third_party_answer: *const fn (*PeerType, u32, u32, QuestionType) anyerror!void,
     make_pending_await: *const fn (u32, QuestionType) PendingAwaitType,
 ) !void {
@@ -196,6 +203,7 @@ pub fn handleReturnAcceptFromThirdParty(
         owns_completion_key = false;
     } else {
         const pending_await = make_pending_await(answer_id, question);
+        try ensure_pending_await_budget(peer, completion_key);
         try peer_third_party_pending.putPendingAwait(
             PendingAwaitType,
             pending_awaits,
@@ -214,6 +222,7 @@ pub fn handleReturnAcceptFromThirdPartyForPeerFn(
     comptime capture_completion_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
     comptime free_payload: *const fn (*PeerType, []u8) void,
     comptime send_abort: *const fn (*PeerType, []const u8) anyerror!void,
+    comptime ensure_pending_await_budget: *const fn (*PeerType, []const u8) anyerror!void,
     comptime adopt_third_party_answer: *const fn (*PeerType, u32, u32, QuestionType) anyerror!void,
 ) *const fn (*PeerType, u32, QuestionType, ?message.AnyPointerReader, *const InboundCapsType) anyerror!void {
     return struct {
@@ -246,6 +255,7 @@ pub fn handleReturnAcceptFromThirdPartyForPeerFn(
                 capture_completion_payload,
                 free_payload,
                 send_abort,
+                ensure_pending_await_budget,
                 adopt_third_party_answer,
                 makePendingAwait,
             );
@@ -265,6 +275,10 @@ test "peer_third_party_adoption adoptThirdPartyAnswer records adoption and repla
             _ = reason;
             state.abort_calls += 1;
             return error.TestUnexpectedResult;
+        }
+
+        fn ensureAdoptionBudget(_: *State, adopted_answer_id: u32) !void {
+            _ = adopted_answer_id;
         }
 
         fn freeFrame(state: *State, frame: []u8) void {
@@ -307,6 +321,7 @@ test "peer_third_party_adoption adoptThirdPartyAnswer records adoption and repla
         &adopted_answers,
         &pending_returns,
         Hooks.sendAbort,
+        Hooks.ensureAdoptionBudget,
         Hooks.freeFrame,
         Hooks.replay,
     );
@@ -342,6 +357,10 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdParty adopts pending 
         fn sendAbort(_: *State, reason: []const u8) !void {
             _ = reason;
             return error.TestUnexpectedResult;
+        }
+
+        fn ensureAwaitBudget(_: *State, completion_key: []const u8) !void {
+            _ = completion_key;
         }
 
         fn adopt(state: *State, question_id: u32, adopted_answer_id: u32, question: u32) !void {
@@ -387,6 +406,7 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdParty adopts pending 
         Hooks.capture,
         Hooks.freePayload,
         Hooks.sendAbort,
+        Hooks.ensureAwaitBudget,
         Hooks.adopt,
         Hooks.makePending,
     );
@@ -419,6 +439,10 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdParty preserves pendi
         fn sendAbort(_: *State, reason: []const u8) !void {
             _ = reason;
             return error.TestUnexpectedResult;
+        }
+
+        fn ensureAwaitBudget(_: *State, completion_key: []const u8) !void {
+            _ = completion_key;
         }
 
         fn adopt(state: *State, question_id: u32, adopted_answer_id: u32, question: u32) !void {
@@ -466,6 +490,7 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdParty preserves pendi
         Hooks.capture,
         Hooks.freePayload,
         Hooks.sendAbort,
+        Hooks.ensureAwaitBudget,
         Hooks.adopt,
         Hooks.makePending,
     ));
@@ -499,6 +524,10 @@ test "peer_third_party_adoption handleThirdPartyAnswer adopts pending await" {
         fn sendAbort(_: *State, reason: []const u8) !void {
             _ = reason;
             return error.TestUnexpectedResult;
+        }
+
+        fn ensureAnswerBudget(_: *State, completion_key: []const u8) !void {
+            _ = completion_key;
         }
 
         fn adopt(state: *State, adopted_answer_id: u32, pending: PendingAwait) !void {
@@ -543,6 +572,7 @@ test "peer_third_party_adoption handleThirdPartyAnswer adopts pending await" {
         Hooks.capture,
         Hooks.freePayload,
         Hooks.sendAbort,
+        Hooks.ensureAnswerBudget,
         Hooks.adopt,
     );
 
@@ -677,6 +707,11 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdPartyForPeerFn adopts
             return error.TestUnexpectedResult;
         }
 
+        fn ensurePendingAwaitBudget(self: *@This(), completion_key: []const u8) !void {
+            _ = self;
+            _ = completion_key;
+        }
+
         fn adoptThirdPartyAnswer(
             self: *@This(),
             question_id: u32,
@@ -703,6 +738,7 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdPartyForPeerFn adopts
         FakePeer.captureCompletionPayload,
         FakePeer.freePayload,
         FakePeer.sendAbort,
+        FakePeer.ensurePendingAwaitBudget,
         FakePeer.adoptThirdPartyAnswer,
     );
 

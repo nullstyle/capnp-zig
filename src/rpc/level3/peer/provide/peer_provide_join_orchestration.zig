@@ -57,6 +57,7 @@ pub fn handleProvide(
     capture_recipient: *const fn (*PeerType, protocol.Provide) anyerror!?[]u8,
     free_payload: *const fn (*PeerType, []u8) void,
     send_abort: *const fn (*PeerType, []const u8) anyerror!void,
+    ensure_provide_budget: *const fn (*PeerType, u32, []const u8) anyerror!void,
     resolve_target: *const fn (*PeerType, protocol.MessageTarget) anyerror!cap_table.ResolvedCap,
     make_target: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!ProvideTargetType,
     deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
@@ -77,6 +78,8 @@ pub fn handleProvide(
         try send_abort(peer, "duplicate provide recipient");
         return error.DuplicateProvideRecipient;
     }
+
+    try ensure_provide_budget(peer, provide.question_id, key_bytes);
 
     const resolved = resolve_target(peer, provide.target) catch |err| {
         try send_abort(peer, @errorName(err));
@@ -174,6 +177,7 @@ pub fn handleJoin(
     make_target: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!ProvideTargetType,
     deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
     init_join_state: *const fn (std.mem.Allocator, u16) JoinStateType,
+    ensure_join_budget: *const fn (*PeerType, JoinKeyPartType, u32) anyerror!void,
     complete_join: *const fn (*PeerType, u32) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
@@ -196,6 +200,21 @@ pub fn handleJoin(
         try send_return_exception(peer, join.question_id, @errorName(err));
         return;
     };
+
+    if (pending_joins.getPtr(join_key_part.join_id)) |join_state| {
+        if (join_state.part_count != join_key_part.part_count) {
+            deinit_target(&target, allocator);
+            try send_return_exception(peer, join.question_id, "join partCount mismatch");
+            return;
+        }
+        if (join_state.parts.contains(join_key_part.part_num)) {
+            deinit_target(&target, allocator);
+            try send_return_exception(peer, join.question_id, "duplicate join part");
+            return;
+        }
+    }
+
+    try ensure_join_budget(peer, join_key_part, join.question_id);
 
     const outcome = peer_join_state.insertJoinPart(
         JoinKeyPartType,
@@ -254,6 +273,11 @@ test "peer_provide_join_orchestration handleProvide rejects duplicate question i
             state.abort_calls += 1;
         }
 
+        fn ensureBudget(_: *State, question_id: u32, recipient_key: []const u8) !void {
+            _ = question_id;
+            _ = recipient_key;
+        }
+
         fn resolveTarget(_: *State, target: protocol.MessageTarget) !cap_table.ResolvedCap {
             _ = target;
             return .{ .exported = .{ .id = 1 } };
@@ -308,6 +332,7 @@ test "peer_provide_join_orchestration handleProvide rejects duplicate question i
             Hooks.capture,
             Hooks.freePayload,
             Hooks.sendAbort,
+            Hooks.ensureBudget,
             Hooks.resolveTarget,
             Hooks.makeTarget,
             Hooks.deinitTarget,
@@ -448,6 +473,11 @@ test "peer_provide_join_orchestration handleJoin rejects duplicate join question
             return JoinState.init(allocator, part_count);
         }
 
+        fn ensureJoinBudget(_: *State, join_key_part: JoinKeyPart, question_id: u32) !void {
+            _ = join_key_part;
+            _ = question_id;
+        }
+
         fn completeJoin(_: *State, join_id: u32) !void {
             _ = join_id;
             return error.TestUnexpectedResult;
@@ -497,6 +527,7 @@ test "peer_provide_join_orchestration handleJoin rejects duplicate join question
             Hooks.makeTarget,
             Hooks.deinitTarget,
             Hooks.initJoinState,
+            Hooks.ensureJoinBudget,
             Hooks.completeJoin,
             Hooks.sendReturnException,
         ),

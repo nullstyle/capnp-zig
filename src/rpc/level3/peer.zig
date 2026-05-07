@@ -100,6 +100,15 @@ pub const PeerLimits = struct {
     max_pending_accepts: usize = 4096,
     max_pending_accept_embargo_buckets: usize = 4096,
     max_pending_accept_embargo_bytes: usize = 1024 * 1024,
+    max_active_provides: usize = 4096,
+    max_active_provide_key_bytes: usize = 1024 * 1024,
+    max_pending_joins: usize = 4096,
+    max_pending_join_questions: usize = 4096,
+    max_pending_third_party_awaits: usize = 4096,
+    max_pending_third_party_answers: usize = 4096,
+    max_pending_third_party_completion_bytes: usize = 1024 * 1024,
+    max_adopted_third_party_answers: usize = 4096,
+    max_remote_abort_reason_bytes: usize = 4096,
 };
 
 const QuestionDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
@@ -110,6 +119,7 @@ const Question = struct {
     deinit_ctx: ?QuestionDeinitCtxFn = null,
     is_loopback: bool = false,
     suppress_auto_finish: bool = false,
+    restore_on_return_error: bool = true,
 };
 
 const PendingThirdPartyAwait = struct {
@@ -776,6 +786,94 @@ pub const Peer = struct {
         return total;
     }
 
+    fn activeProvideKeyBytes(self: *const Peer) usize {
+        var total: usize = 0;
+        var it = self.provides_by_question.valueIterator();
+        while (it.next()) |entry| {
+            total = saturatingAdd(total, entry.recipient_key.len);
+        }
+        return total;
+    }
+
+    fn pendingThirdPartyCompletionBytes(self: *const Peer) usize {
+        var total: usize = 0;
+        var await_it = self.pending_third_party_awaits.iterator();
+        while (await_it.next()) |entry| {
+            total = saturatingAdd(total, entry.key_ptr.*.len);
+        }
+        var answer_it = self.pending_third_party_answers.iterator();
+        while (answer_it.next()) |entry| {
+            total = saturatingAdd(total, entry.key_ptr.*.len);
+        }
+        return total;
+    }
+
+    fn ensureProvideBudget(self: *Peer, question_id: u32, recipient_key: []const u8) !void {
+        try ensureCountLimit(
+            self.provides_by_question.contains(question_id),
+            self.provides_by_question.count(),
+            self.limits.max_active_provides,
+        );
+        try ensureCountLimit(
+            self.provides_by_key.contains(recipient_key),
+            self.provides_by_key.count(),
+            self.limits.max_active_provides,
+        );
+        try ensureByteLimit(
+            self.activeProvideKeyBytes(),
+            recipient_key.len,
+            self.limits.max_active_provide_key_bytes,
+        );
+    }
+
+    fn ensureJoinBudget(self: *Peer, join_key_part: JoinKeyPart, question_id: u32) !void {
+        try ensureCountLimit(
+            self.pending_joins.contains(join_key_part.join_id),
+            self.pending_joins.count(),
+            self.limits.max_pending_joins,
+        );
+        try ensureCountLimit(
+            self.pending_join_questions.contains(question_id),
+            self.pending_join_questions.count(),
+            self.limits.max_pending_join_questions,
+        );
+    }
+
+    fn ensurePendingThirdPartyAwaitBudget(self: *Peer, completion_key: []const u8) !void {
+        try ensureCountLimit(
+            self.pending_third_party_awaits.contains(completion_key),
+            self.pending_third_party_awaits.count(),
+            self.limits.max_pending_third_party_awaits,
+        );
+        try ensureByteLimit(
+            self.pendingThirdPartyCompletionBytes(),
+            completion_key.len,
+            self.limits.max_pending_third_party_completion_bytes,
+        );
+    }
+
+    fn ensurePendingThirdPartyAnswerBudget(self: *Peer, completion_key: []const u8) !void {
+        try ensureCountLimit(
+            self.pending_third_party_answers.contains(completion_key),
+            self.pending_third_party_answers.count(),
+            self.limits.max_pending_third_party_answers,
+        );
+        try ensureByteLimit(
+            self.pendingThirdPartyCompletionBytes(),
+            completion_key.len,
+            self.limits.max_pending_third_party_completion_bytes,
+        );
+    }
+
+    fn ensureThirdPartyAdoptionBudget(self: *Peer, adopted_answer_id: u32) !void {
+        try ensureCountLimit(false, self.questions.count(), self.limits.max_outbound_questions);
+        try ensureCountLimit(
+            self.adopted_third_party_answers.contains(adopted_answer_id),
+            self.adopted_third_party_answers.count(),
+            self.limits.max_adopted_third_party_answers,
+        );
+    }
+
     /// Register a local capability for export and return its export ID.
     pub fn addExport(self: *Peer, exported: Export) !u32 {
         self.assertThreadAffinity();
@@ -1141,6 +1239,7 @@ pub const Peer = struct {
         // on peer.deinit(); the local errdefer must no longer fire.
         if (self.questions.getPtr(forwarded_question_id)) |q| {
             q.deinit_ctx = ForwardCallContext.deinit;
+            q.restore_on_return_error = false;
         }
         ctx_owned = false;
         const completion = try peer_forward_orchestration.finishForwardResolvedCall(
@@ -1896,8 +1995,19 @@ pub const Peer = struct {
     }
 
     fn handleAbort(self: *Peer, abort: protocol.Abort) !void {
-        log.debug("received abort from remote: {s}", .{abort.exception.reason});
-        try peer_control.handleAbort(self.allocator, &self.last_remote_abort_reason, abort);
+        const stored_len = @min(abort.exception.reason.len, self.limits.max_remote_abort_reason_bytes);
+        log.debug("received abort from remote (reason_len={}, stored_len={})", .{
+            abort.exception.reason.len,
+            stored_len,
+        });
+        const capped_abort = protocol.Abort{
+            .exception = .{
+                .reason = abort.exception.reason[0..stored_len],
+                .trace = abort.exception.trace,
+                .type_value = abort.exception.type_value,
+            },
+        };
+        try peer_control.handleAbort(self.allocator, &self.last_remote_abort_reason, capped_abort);
     }
 
     fn handleBootstrap(self: *Peer, bootstrap: protocol.Bootstrap) !void {
@@ -2126,6 +2236,7 @@ pub const Peer = struct {
             ),
             peer_control.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            Peer.ensureProvideBudget,
             peer_control.resolveProvideTargetForPeerFn(
                 Peer,
                 peer_control.resolveProvideImportedCapForPeerFn(Peer),
@@ -2177,6 +2288,7 @@ pub const Peer = struct {
             makeProvideTarget,
             ProvideTarget.deinit,
             JoinState.init,
+            Peer.ensureJoinBudget,
             peer_join_state.completeJoinForPeerFn(
                 Peer,
                 JoinState,
@@ -2206,6 +2318,7 @@ pub const Peer = struct {
             ),
             peer_control.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            Peer.ensurePendingThirdPartyAnswerBudget,
             peer_third_party_adoption.adoptPendingAwaitEntryForPeerFn(
                 Peer,
                 Question,
@@ -2421,6 +2534,7 @@ pub const Peer = struct {
             &self.adopted_third_party_answers,
             &self.pending_third_party_returns,
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            Peer.ensureThirdPartyAdoptionBudget,
             peer_control.freeOwnedFrameForPeerFn(Peer),
             peer_third_party_returns.handlePendingReturnFrameForPeerFn(
                 Peer,
@@ -2439,6 +2553,7 @@ pub const Peer = struct {
             ret,
             peer_return_orchestration.getQuestionForPeerFn(Peer, Question),
             peer_return_orchestration.removeQuestionForReturnForPeerFn(Peer),
+            peer_return_orchestration.restoreQuestionForReturnForPeerFn(Peer, Question),
             peer_return_orchestration.completeQuestionRemovalForPeerFn(Peer),
             Peer.handleMissingReturnQuestion,
             peer_return_orchestration.initInboundCapsForPeerFn(Peer, cap_table.InboundCapTable),
@@ -2451,6 +2566,7 @@ pub const Peer = struct {
                 peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
                 peer_control.freeOwnedFrameForPeerFn(Peer),
                 peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+                Peer.ensurePendingThirdPartyAwaitBudget,
                 adoptThirdPartyAnswer,
             ),
             peer_return_dispatch.maybeSendAutoFinishForPeerFn(
@@ -2595,6 +2711,40 @@ pub const Peer = struct {
             embargo: []const u8,
         ) !void {
             return Peer.queueEmbargoedAccept(self, answer_id, provided_question_id, embargo);
+        }
+
+        pub fn ensureProvideBudget(self: *Peer, question_id: u32, recipient_key: []const u8) !void {
+            return Peer.ensureProvideBudget(self, question_id, recipient_key);
+        }
+
+        pub fn ensureJoinBudget(
+            self: *Peer,
+            join_id: u32,
+            part_count: u16,
+            part_num: u16,
+            question_id: u32,
+        ) !void {
+            return Peer.ensureJoinBudget(
+                self,
+                .{
+                    .join_id = join_id,
+                    .part_count = part_count,
+                    .part_num = part_num,
+                },
+                question_id,
+            );
+        }
+
+        pub fn ensurePendingThirdPartyAwaitBudget(self: *Peer, completion_key: []const u8) !void {
+            return Peer.ensurePendingThirdPartyAwaitBudget(self, completion_key);
+        }
+
+        pub fn ensurePendingThirdPartyAnswerBudget(self: *Peer, completion_key: []const u8) !void {
+            return Peer.ensurePendingThirdPartyAnswerBudget(self, completion_key);
+        }
+
+        pub fn ensureThirdPartyAdoptionBudget(self: *Peer, adopted_answer_id: u32) !void {
+            return Peer.ensureThirdPartyAdoptionBudget(self, adopted_answer_id);
         }
     };
 };

@@ -214,6 +214,19 @@ pub fn build(b: *std.Build) void {
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);
 
+    const hardening_gate = b.addExecutable(.{
+        .name = "hardening-gate",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/hardening_gate.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_hardening_gate = b.addRunArtifact(hardening_gate);
+    const hardening_step = b.step("hardening", "Run static hardening gates");
+    hardening_step.dependOn(&run_hardening_gate.step);
+
     // RPC ping-pong example
     const rpc_pingpong_example = b.addExecutable(.{
         .name = "example-rpc-pingpong",

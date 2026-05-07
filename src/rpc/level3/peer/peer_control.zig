@@ -1268,17 +1268,26 @@ pub fn handleReturnRegular(
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
     take_adopted_answer_original: *const fn (*PeerType, u32) ?u32,
+    restore_adopted_answer_original: *const fn (*PeerType, u32, u32) void,
     dispatch_question_return: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *const InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
     maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
 ) !void {
     var callback_ret = ret;
+    var restore_adopted_answer = false;
+    var adopted_original_answer_id: u32 = undefined;
     if (take_adopted_answer_original(peer, ret.answer_id)) |original_answer_id| {
         callback_ret.answer_id = original_answer_id;
+        adopted_original_answer_id = original_answer_id;
+        restore_adopted_answer = true;
     }
+    errdefer if (restore_adopted_answer) {
+        restore_adopted_answer_original(peer, ret.answer_id, adopted_original_answer_id);
+    };
 
     try dispatch_question_return(peer, question, callback_ret, inbound_caps);
+    restore_adopted_answer = false;
 
     if (ret.tag == .results and ret.results != null) {
         release_inbound_caps(peer, inbound_caps) catch |err| {

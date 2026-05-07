@@ -23,24 +23,25 @@ the most exposed RPC and transport paths:
 - [x] Reject malformed non-null protocol pointers instead of collapsing them to null.
 - [x] Validate inbound `receiverHosted` capability IDs against live exports.
 - [x] Cap promised-answer transform length during parse/resolve.
-- [ ] Add peer and host bridge count/byte budgets for pending input-driven state.
+- [x] Add peer and host bridge count/byte budgets for pending input-driven state.
       Host bridge queue budgets, finite WASM/HostPeer defaults, streaming
       in-flight guards, and initial `PeerLimits` for high-pressure level3
       maps are complete; provide/join/third-party await/adoption maps and
-      abort reason length remain.
+      abort reason length are now bounded.
 - [x] Reject duplicate active inbound question IDs.
 - [x] Reject over-release before mutating export tables.
-- [ ] Fix failure atomicity in Return, third-party handoff, resolve/embargo, and return-routing paths.
+- [x] Fix failure atomicity in Return, third-party handoff, resolve/embargo, and return-routing paths.
       Third-party pending-await/answer adoption, duplicate embargoed Accept
       queuing, outbound return-routing clear-after-send, and inbound Return
       cap validation before question removal are complete; resolve/embargo
       send/store rollback and duplicate Resolve rejection are complete;
-      callback/auto-finish restoration remains.
+      callback/auto-finish restoration is complete.
 - [x] Enforce framer and send-queue byte budgets before append/copy allocation.
 - [x] Expose QUIC production hardening controls from `ServerOptions`.
-- [ ] Add focused regression tests and the first hardening gates.
+- [x] Add focused regression tests and the first hardening gates.
       Regression coverage is broadening across RPC, serialization, codegen,
-      HostPeer, and WASM; static unsafe-pattern and build-policy gates remain.
+      HostPeer, and WASM; static unsafe-pattern and build-policy gates are
+      wired into the build.
 
 Progress in this tranche:
 
@@ -82,6 +83,13 @@ Progress in this tranche:
   promised-call count/bytes, resolved answers/imports, pending embargoes,
   loopback/send-results routing, pending third-party return count/bytes, and
   embargoed Accept count/bucket/key bytes.
+- `PeerLimits` now also bound active Provides, active Provide key bytes,
+  pending Join state and Join questions, pending third-party await/answer
+  maps, third-party completion-key bytes, adopted third-party answers, and
+  stored remote Abort reason bytes.
+- Return handling now restores retryable questions and adopted-answer mappings
+  on callback/OOM failure, while one-shot forwarded-return contexts complete
+  removal and clean owned state instead of reusing freed callback context.
 - TCP writer-owned batches now continue counting against the outbound byte
   budget until the writer frees them, and terminal frame errors mark the
   connection closing before invoking error callbacks.
@@ -95,6 +103,10 @@ Progress in this tranche:
   strict pointer validation can require tracked allocation ranges, output slots
   are prevalidated before writes, and example Person serde validates frames,
   UTF-8 text, JSON size, frame size, and traversal limits.
+- `zig build hardening` now runs a static hardening gate over production Zig
+  paths and build policy files, with reviewed one-for-one allowlist entries
+  for existing unsafe-pattern exceptions. `just hardening`, `just ci`, and CI
+  run the same gate.
 
 ## Findings
 

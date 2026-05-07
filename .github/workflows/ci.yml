@@ -49,6 +49,17 @@ jobs:
       - name: Check formatting
         run: just fmt-check
 
+  hardening:
+    name: Hardening gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v4
+
+      - name: Run hardening gate
+        run: zig build hardening
+
   e2e-zig:
     name: Zig e2e interop
     runs-on: ubuntu-latest

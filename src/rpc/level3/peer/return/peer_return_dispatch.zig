@@ -25,6 +25,31 @@ pub fn takeAdoptedAnswerOriginalForPeerFn(comptime PeerType: type) *const fn (*P
     }.call;
 }
 
+pub fn restoreAdoptedAnswerOriginal(
+    adopted_answers: *std.AutoHashMap(u32, u32),
+    answer_id: u32,
+    original_answer_id: u32,
+) void {
+    adopted_answers.putAssumeCapacity(answer_id, original_answer_id);
+}
+
+pub fn restoreAdoptedAnswerOriginalForPeer(
+    comptime PeerType: type,
+    peer: *PeerType,
+    answer_id: u32,
+    original_answer_id: u32,
+) void {
+    restoreAdoptedAnswerOriginal(&peer.adopted_third_party_answers, answer_id, original_answer_id);
+}
+
+pub fn restoreAdoptedAnswerOriginalForPeerFn(comptime PeerType: type) *const fn (*PeerType, u32, u32) void {
+    return struct {
+        fn call(peer: *PeerType, answer_id: u32, original_answer_id: u32) void {
+            restoreAdoptedAnswerOriginalForPeer(PeerType, peer, answer_id, original_answer_id);
+        }
+    }.call;
+}
+
 pub fn reportNonfatalErrorForPeer(comptime PeerType: type, peer: *PeerType, err: anyerror) void {
     if (peer.on_error) |cb| cb(peer, err);
 }
