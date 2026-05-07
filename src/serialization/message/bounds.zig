@@ -114,7 +114,7 @@ test "checkBounds: offset + size overflow usize" {
 }
 
 test "checkBounds: maxInt(u32) offset on small slice" {
-    const data = [_]u8{0} ** 4;
+    const data: [4]u8 = @splat(0);
     try testing.expectError(error.OutOfBounds, checkBounds(&data, std.math.maxInt(u32), 1));
 }
 
@@ -200,7 +200,7 @@ test "checkOffset: maxInt(usize) offset fails" {
 }
 
 test "checkOffset: maxInt(u32) offset on small slice fails" {
-    const data = [_]u8{0} ** 4;
+    const data: [4]u8 = @splat(0);
     try testing.expectError(error.OutOfBounds, checkOffset(&data, std.math.maxInt(u32)));
 }
 
@@ -288,7 +288,7 @@ test "checkListContentBounds: multiple segments selects correct one" {
 }
 
 test "checkListContentBounds: content at exact segment boundary" {
-    const seg0 = [_]u8{0} ** 16;
+    const seg0: [16]u8 = @splat(0);
     const segments = [_][]const u8{&seg0};
     try checkListContentBounds(segments, 0, 8, 8); // exactly fills remaining
     try testing.expectError(error.OutOfBounds, checkListContentBounds(segments, 0, 8, 9)); // one byte over
@@ -299,7 +299,7 @@ test "checkListContentBounds: large element_count * element_size overflow simula
     // computes total_bytes that would overflow. The caller typically does this
     // multiplication before calling us, but if total_bytes itself is huge or
     // offset + total_bytes overflows, we must catch it.
-    const seg0 = [_]u8{0} ** 64;
+    const seg0: [64]u8 = @splat(0);
     const segments = [_][]const u8{&seg0};
     // maxInt(usize) / 2 + maxInt(usize) / 2 + 2 would overflow
     const half = std.math.maxInt(usize) / 2;

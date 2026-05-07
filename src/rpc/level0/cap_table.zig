@@ -306,6 +306,7 @@ fn resolveDescriptor(table: *CapTable, descriptor: protocol.CapDescriptor) !Reso
         },
         .receiverHosted => {
             const id = descriptor.id orelse return error.MissingCapDescriptorId;
+            if (!table.hasExport(id)) return error.UnknownExport;
             return .{ .exported = .{ .id = id } };
         },
         .receiverAnswer => {

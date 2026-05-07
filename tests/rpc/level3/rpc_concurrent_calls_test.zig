@@ -76,7 +76,7 @@ test "concurrent inbound calls: multiple calls dispatched to same export" {
 
     const ServerCtx = struct {
         call_count: u32 = 0,
-        question_ids: [16]u32 = [_]u32{0} ** 16,
+        question_ids: [16]u32 = @splat(0),
     };
     const Handlers = struct {
         fn onCall(
@@ -228,8 +228,8 @@ test "concurrent outbound calls: returns arrive in order" {
     const allocator = std.testing.allocator;
 
     const ReturnCtx = struct {
-        returned: [8]bool = [_]bool{false} ** 8,
-        answer_ids: [8]u32 = [_]u32{0} ** 8,
+        returned: [8]bool = @splat(false),
+        answer_ids: [8]u32 = @splat(0),
         count: u32 = 0,
     };
     const Callback = struct {
@@ -290,7 +290,7 @@ test "concurrent outbound calls: returns arrive in reverse order" {
     const allocator = std.testing.allocator;
 
     const ReturnCtx = struct {
-        answer_ids: [8]u32 = [_]u32{0} ** 8,
+        answer_ids: [8]u32 = @splat(0),
         count: u32 = 0,
     };
     const Callback = struct {
@@ -348,7 +348,7 @@ test "concurrent outbound calls: mixed results and exceptions" {
     const allocator = std.testing.allocator;
 
     const ReturnCtx = struct {
-        tags: [8]protocol.ReturnTag = [_]protocol.ReturnTag{.results} ** 8,
+        tags: [8]protocol.ReturnTag = @splat(.results),
         count: u32 = 0,
     };
     const Callback = struct {

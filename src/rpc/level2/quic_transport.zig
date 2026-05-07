@@ -114,24 +114,26 @@ const OutboundQueue = struct {
     fn enqueue(
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
-        bytes: []u8,
+        frame: []const u8,
     ) error{ BrokenPipe, OutboundQueueFull, OutOfMemory }!void {
         self.lock();
         defer self.mu.unlock();
         if (self.closed) {
-            allocator.free(bytes);
             return error.BrokenPipe;
         }
-        const new_bytes = std.math.add(usize, self.queued_bytes, bytes.len) catch {
-            allocator.free(bytes);
+        const encoded_len = std.math.add(usize, length_prefix_bytes, frame.len) catch return error.OutboundQueueFull;
+        const new_bytes = std.math.add(usize, self.queued_bytes, encoded_len) catch {
             return error.OutboundQueueFull;
         };
         if (self.queued_items >= self.max_items or new_bytes > self.max_bytes) {
-            allocator.free(bytes);
             return error.OutboundQueueFull;
         }
+
+        const bytes = allocator.alloc(u8, encoded_len) catch return error.OutOfMemory;
+        errdefer allocator.free(bytes);
+        std.mem.writeInt(u32, bytes[0..length_prefix_bytes], @intCast(frame.len), .little);
+        std.mem.copyForwards(u8, bytes[length_prefix_bytes..], frame);
         self.items.append(allocator, .{ .bytes = bytes }) catch {
-            allocator.free(bytes);
             return error.OutOfMemory;
         };
         self.queued_items += 1;
@@ -576,10 +578,7 @@ pub const Connection = struct {
         if (frame.len == 0 or frame.len > self.max_message_bytes) return error.FrameTooLarge;
         if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
-        const encoded = try self.allocator.alloc(u8, length_prefix_bytes + frame.len);
-        std.mem.writeInt(u32, encoded[0..length_prefix_bytes], @intCast(frame.len), .little);
-        std.mem.copyForwards(u8, encoded[length_prefix_bytes..], frame);
-        try self.outbound.enqueue(self.allocator, encoded);
+        try self.outbound.enqueue(self.allocator, frame);
     }
 
     pub fn close(self: *Connection) void {

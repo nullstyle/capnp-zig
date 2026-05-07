@@ -657,7 +657,7 @@ test "connection handleRead rejects oversized frame headers" {
 
 test "connection isClosing reflects transport state" {
     const allocator = std.testing.allocator;
-    var read_buf = [_]u8{0} ** 8;
+    var read_buf: [8]u8 = @splat(0);
 
     var conn = Connection{
         .allocator = allocator,

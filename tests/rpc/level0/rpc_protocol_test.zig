@@ -72,6 +72,7 @@ test "InboundCapTable resolves senderHosted and receiverHosted" {
 
     var caps = cap_table.CapTable.init(allocator);
     defer caps.deinit();
+    try caps.noteExport(9);
 
     var inbound = try cap_table.InboundCapTable.init(allocator, payload.cap_table, &caps);
     defer inbound.deinit();
@@ -124,6 +125,29 @@ test "RPC call promised answer encodes transform" {
     const op1 = try promised.transform.get(1);
     try std.testing.expectEqual(protocol.PromisedAnswerOpTag.getPointerField, op1.tag);
     try std.testing.expectEqual(@as(u16, 2), op1.pointer_index);
+}
+
+test "RPC call promised answer transform over cap is rejected on decode" {
+    const allocator = std.testing.allocator;
+
+    var ops: [protocol.max_promised_answer_transform_ops + 1]protocol.PromisedAnswerOp = undefined;
+    for (&ops) |*op| {
+        op.* = .{ .tag = .noop, .pointer_index = 0 };
+    }
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(1, 0xABCD, 0);
+    try call.setTargetPromisedAnswerWithOps(77, &ops);
+    _ = try call.initCapTableTyped(0);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    try std.testing.expectError(error.TransformTooLong, decoded.asCall());
 }
 
 test "RPC call sendResultsTo.yourself encodes and decodes" {
@@ -268,6 +292,37 @@ test "RPC call sendResultsTo conformance covers caller yourself and thirdParty" 
         const payload = call_decoded.send_results_to.third_party orelse return error.MissingThirdPartyPayload;
         try std.testing.expectEqualStrings("conformance-third-party", try payload.getText());
     }
+}
+
+test "InboundCapTable rejects unknown receiverHosted export id" {
+    const allocator = std.testing.allocator;
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var ret = try builder.beginReturn(7, .results);
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+    try any.setNull();
+
+    var cap_list = try ret.initCapTableTyped(1);
+    protocol.CapDescriptor.writeReceiverHosted(try cap_list.get(0), 999);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const ret_decoded = try decoded.asReturn();
+    const payload = ret_decoded.results orelse return error.MissingPayload;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    try std.testing.expectError(
+        error.UnknownExport,
+        cap_table.InboundCapTable.init(allocator, payload.cap_table, &caps),
+    );
 }
 
 test "InboundCapTable resolves receiverAnswer" {

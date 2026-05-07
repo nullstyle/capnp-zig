@@ -184,7 +184,7 @@ var outstanding_allocs = std.AutoHashMapUnmanaged(usize, AllocationRecord){};
 // and drain errors via capnp_error_take immediately after each ABI call.
 var last_error_code: u32 = 0;
 var last_error_len: u32 = 0;
-var last_error_buf: [1024]u8 = [_]u8{0} ** 1024;
+var last_error_buf: [1024]u8 = @splat(0);
 
 // Note: clearErrorState, setError, and getPeerState are internal helpers.
 // They do NOT acquire the mutex themselves; callers must hold global_mutex.

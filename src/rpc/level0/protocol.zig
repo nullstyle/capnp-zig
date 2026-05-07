@@ -30,6 +30,14 @@ pub const PayloadBuilder = rpc_capnp.Payload.Builder;
 
 const CapDescriptorListBuilder = message.typed_list_helpers.StructListBuilder(rpc_capnp.CapDescriptor);
 
+pub const max_promised_answer_transform_ops: u32 = 64;
+
+fn readOptionalStructList(reader: message.StructReader, pointer_index: usize) !?message.StructListReader {
+    const any = reader.readAnyPointer(pointer_index) catch return null;
+    if (any.isNull()) return null;
+    return try reader.readStructList(pointer_index);
+}
+
 /// Describes a capability being passed in a Call or Return payload's cap table.
 ///
 /// Each entry identifies where the capability lives: sender-hosted, sender-promise,
@@ -281,7 +289,7 @@ pub const DecodedMessage = struct {
     tag: MessageTag,
 
     pub fn init(allocator: std.mem.Allocator, frame: []const u8) !DecodedMessage {
-        var msg = try message.Message.initUnvalidated(allocator, frame);
+        var msg = try message.Message.init(allocator, frame, .{});
         errdefer msg.deinit();
         const root = try msg.getRootStruct();
         const disc = root.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);
@@ -634,7 +642,10 @@ pub const PromisedAnswer = struct {
 
     fn fromReader(reader: message.StructReader) !PromisedAnswer {
         const question_id = reader.readU32(byteOffsetU32(PROMISED_ANSWER_QUESTION_ID_OFFSET));
-        const transform = reader.readStructList(PROMISED_ANSWER_TRANSFORM_PTR) catch null;
+        const transform = try readOptionalStructList(reader, PROMISED_ANSWER_TRANSFORM_PTR);
+        if (transform) |list| {
+            if (list.len() > max_promised_answer_transform_ops) return error.TransformTooLong;
+        }
         return .{ .question_id = question_id, .transform = .{ .list = transform } };
     }
 };
@@ -749,7 +760,7 @@ pub const Payload = struct {
 
     fn fromReader(reader: message.StructReader) !Payload {
         const content = try reader.readAnyPointer(PAYLOAD_CONTENT_PTR);
-        const cap_table = reader.readStructList(PAYLOAD_CAP_TABLE_PTR) catch null;
+        const cap_table = try readOptionalStructList(reader, PAYLOAD_CAP_TABLE_PTR);
         return .{ .content = content, .cap_table = cap_table };
     }
 };

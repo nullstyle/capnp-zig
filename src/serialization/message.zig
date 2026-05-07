@@ -894,9 +894,8 @@ pub const Message = struct {
             0 => try self.validateStructPointer(segment_id, pointer_pos, pointer_word, null, remaining, nesting - 1),
             1 => try self.validateListPointer(segment_id, pointer_pos, pointer_word, null, remaining, nesting - 1),
             2 => try self.validateFarPointer(segment_id, pointer_pos, pointer_word, remaining, nesting - 1),
-            else => {
-                log.warn("InvalidPointer: unknown pointer type {} at segment={} pos={} word=0x{x}", .{ pointer_type, segment_id, pointer_pos, pointer_word });
-                return error.InvalidPointer;
+            3 => {
+                _ = try decodeCapabilityPointer(pointer_word);
             },
         }
     }

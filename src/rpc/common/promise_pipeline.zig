@@ -62,6 +62,8 @@ pub fn resolvePromisedAnswer(
     payload: protocol.Payload,
     transform: protocol.PromisedAnswerTransform,
 ) !ResolvedPromisedCap {
+    if (transform.len() > protocol.max_promised_answer_transform_ops) return error.TransformTooLong;
+
     var current = payload.content;
     var idx: u32 = 0;
     while (idx < transform.len()) : (idx += 1) {

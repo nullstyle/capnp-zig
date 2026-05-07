@@ -117,6 +117,34 @@ test "peer release with ref_count > 1 only decrements, does not remove" {
     try std.testing.expectEqual(@as(u32, 1), updated.ref_count);
 }
 
+test "peer release rejects over-release without mutating export" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var entry = peer.exports.getEntry(export_id) orelse return error.MissingExport;
+    entry.value_ptr.ref_count = 2;
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildRelease(export_id, 3);
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+
+    try std.testing.expectError(error.ReleaseCountExceeded, peer.handleFrame(frame));
+
+    const updated = peer.exports.get(export_id) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 2), updated.ref_count);
+    try std.testing.expect(peer.caps.hasExport(export_id));
+}
+
 test "peer release for unknown export id is handled gracefully" {
     const allocator = std.testing.allocator;
 
@@ -321,6 +349,48 @@ test "peer call to exported capability returns exception" {
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
     const ex = ret.exception orelse return error.MissingException;
     try std.testing.expectEqualStrings("intentional failure", ex.reason);
+}
+
+test "peer rejects duplicate active inbound question id" {
+    const allocator = std.testing.allocator;
+
+    const CountingHandler = struct {
+        fn onCall(
+            ctx: *anyopaque,
+            called_peer: *Peer,
+            call: protocol.Call,
+            inbound_caps: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            _ = called_peer;
+            _ = call;
+            _ = inbound_caps;
+            const count: *usize = @ptrCast(@alignCast(ctx));
+            count.* += 1;
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var call_count: usize = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &call_count,
+        .on_call = CountingHandler.onCall,
+    });
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(55, 0xABCD, 0);
+    try call.setTargetImportedCap(export_id);
+    _ = try call.initCapTableTyped(0);
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+
+    try peer.handleFrame(frame);
+    try std.testing.expectEqual(@as(usize, 1), call_count);
+
+    try std.testing.expectError(error.DuplicateQuestionId, peer.handleFrame(frame));
+    try std.testing.expectEqual(@as(usize, 1), call_count);
 }
 
 // ---------------------------------------------------------------------------

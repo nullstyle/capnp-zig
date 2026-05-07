@@ -390,7 +390,7 @@ test "Reader.readMessage rejects oversized payload claims" {
 }
 
 test "Reader.readPackedMessage rejects overflowing segment count" {
-    var packed_bytes: [10]u8 = [_]u8{0} ** 10;
+    var packed_bytes: [10]u8 = @splat(0);
     packed_bytes[0] = 0xff;
     std.mem.writeInt(u64, packed_bytes[1..9], 0x00000000ffffffff, .little);
     packed_bytes[9] = 0;
@@ -401,7 +401,7 @@ test "Reader.readPackedMessage rejects overflowing segment count" {
 
 test "Reader.readPackedMessage rejects oversized payload claims" {
     const oversized_words: u32 = @as(u32, @intCast(Reader.max_total_words + 1));
-    var packed_bytes: [10]u8 = [_]u8{0} ** 10;
+    var packed_bytes: [10]u8 = @splat(0);
     packed_bytes[0] = 0xff;
     std.mem.writeInt(u64, packed_bytes[1..9], @as(u64, oversized_words) << 32, .little);
     packed_bytes[9] = 0;

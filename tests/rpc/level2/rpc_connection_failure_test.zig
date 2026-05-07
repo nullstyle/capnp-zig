@@ -417,7 +417,7 @@ test "handleFrame after shutdown: returns for pending questions are delivered" {
     const allocator = std.testing.allocator;
 
     const ReturnCtx = struct {
-        answer_ids: [8]u32 = [_]u32{0} ** 8,
+        answer_ids: [8]u32 = @splat(0),
         count: u32 = 0,
     };
     const Callback = struct {

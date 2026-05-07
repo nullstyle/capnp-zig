@@ -70,27 +70,26 @@ pub const Transport = struct {
         max_bytes: usize = default_max_queued_bytes,
         closed: bool = false,
 
-        /// Push an owned allocation onto the queue. Frees `data` and returns
-        /// an error if the queue is closed or would exceed its configured
-        /// item/byte bounds.
-        fn enqueue(self: *WriteQueue, io: std.Io, allocator: std.mem.Allocator, data: []u8) EnqueueError!void {
+        /// Copy bytes into the queue after checking the configured item and
+        /// byte bounds. The copy is deliberately made while the queue lock is
+        /// held so a full queue is rejected before allocating.
+        fn enqueueCopy(self: *WriteQueue, io: std.Io, allocator: std.mem.Allocator, bytes: []const u8) EnqueueError!void {
             self.mu.lockUncancelable(io);
             defer self.mu.unlock(io);
 
             if (self.closed) {
-                allocator.free(data);
                 return error.BrokenPipe;
             }
             if (self.items.items.len >= self.max_items) {
-                allocator.free(data);
                 return error.WriteQueueFull;
             }
-            if (data.len > self.max_bytes or self.queued_bytes > self.max_bytes - data.len) {
-                allocator.free(data);
+            if (bytes.len > self.max_bytes or self.queued_bytes > self.max_bytes - bytes.len) {
                 return error.WriteQueueBytesExceeded;
             }
+
+            const data = allocator.dupe(u8, bytes) catch return error.OutOfMemory;
+            errdefer allocator.free(data);
             self.items.append(allocator, data) catch {
-                allocator.free(data);
                 return error.OutOfMemory;
             };
             self.queued_bytes += data.len;
@@ -190,7 +189,8 @@ pub const Transport = struct {
     pub fn read(self: *Transport) ReadError!usize {
         if (self.close_requested.load(.acquire)) return 0;
         var bufs: [1][]u8 = .{self.read_buf};
-        return self.io.vtable.netRead(self.io.userdata, self.fd, &bufs);
+        var stream = net.Stream{ .socket = .{ .handle = self.fd, .address = undefined } };
+        return stream.read(self.io, &bufs);
     }
 
     /// Blocking write of all bytes. Retries partial writes until the
@@ -224,8 +224,7 @@ pub const Transport = struct {
             self.write(bytes) catch return error.BrokenPipe;
             return;
         }
-        const owned = self.allocator.dupe(u8, bytes) catch return error.OutOfMemory;
-        self.write_queue.enqueue(self.io, self.allocator, owned) catch |err| {
+        self.write_queue.enqueueCopy(self.io, self.allocator, bytes) catch |err| {
             return err;
         };
     }
@@ -349,7 +348,8 @@ fn createSocketPair() !struct { [2]std.posix.fd_t } {
 /// Read from a socket handle via Io into a buffer.
 fn ioRead(io: std.Io, fd: net.Socket.Handle, buf: []u8) Transport.ReadError!usize {
     var bufs: [1][]u8 = .{buf};
-    return io.vtable.netRead(io.userdata, fd, &bufs);
+    var stream = net.Stream{ .socket = .{ .handle = fd, .address = undefined } };
+    return stream.read(io, &bufs);
 }
 
 test "transport init and deinit" {

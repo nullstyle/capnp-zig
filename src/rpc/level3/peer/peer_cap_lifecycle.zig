@@ -87,7 +87,7 @@ pub fn releaseExport(
     count: u32,
     clear_export: *const fn (*PeerType, u32) void,
     deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
-) void {
+) !void {
     if (count == 0) return;
     var entry = exports.getEntry(id) orelse {
         log.warn("release for unknown export id={}", .{id});
@@ -98,17 +98,15 @@ pub fn releaseExport(
     // The bootstrap handler (Export.ctx) must outlive the Peer.
     if (bootstrap_export_id) |bootstrap_id| {
         if (bootstrap_id == id) {
-            if (entry.value_ptr.ref_count <= count) {
-                log.debug("bootstrap export ref count saturated to zero (release_count={d} exceeded ref_count={d})", .{ count, entry.value_ptr.ref_count });
-                entry.value_ptr.ref_count = 0;
-            } else {
-                entry.value_ptr.ref_count -= count;
-            }
+            if (count > entry.value_ptr.ref_count) return error.ReleaseCountExceeded;
+            entry.value_ptr.ref_count -= count;
             return;
         }
     }
 
-    if (entry.value_ptr.ref_count <= count) {
+    if (count > entry.value_ptr.ref_count) return error.ReleaseCountExceeded;
+
+    if (entry.value_ptr.ref_count == count) {
         _ = exports.remove(id);
         clear_export(peer, id);
         if (pending_export_promises.fetchRemove(id)) |removed| {
@@ -176,7 +174,7 @@ pub fn releaseResultCaps(
     peer: *PeerType,
     allocator: std.mem.Allocator,
     frame: []const u8,
-    release_export: *const fn (*PeerType, u32, u32) void,
+    release_export: *const fn (*PeerType, u32, u32) anyerror!void,
 ) !void {
     var decoded = try protocol.DecodedMessage.init(allocator, frame);
     defer decoded.deinit();
@@ -190,7 +188,7 @@ pub fn releaseResultCaps(
         switch (desc.tag) {
             .senderHosted, .senderPromise => {
                 if (desc.id) |id| {
-                    release_export(peer, id, 1);
+                    try release_export(peer, id, 1);
                 }
             },
             else => {},
@@ -353,7 +351,7 @@ test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-pro
         }
     };
     const Hooks = struct {
-        fn releaseExport(state: *State, id: u32, count: u32) void {
+        fn releaseExport(state: *State, id: u32, count: u32) !void {
             _ = count;
             state.releases.append(std.testing.allocator, id) catch unreachable;
         }

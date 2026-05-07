@@ -55,7 +55,7 @@ test "MessageBuilder and Message: round trip simple struct" {
     defer testing.allocator.free(bytes);
 
     // Read it back
-    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -76,7 +76,7 @@ test "MessageBuilder and Message: bool fields" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -258,7 +258,7 @@ test "Message: validate traversal and nesting limits" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     try msg.validate(.{});
@@ -282,7 +282,7 @@ test "Message: validate enforces segment count limit option" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     try msg.validate(.{ .segment_count_limit = 2 });
@@ -299,7 +299,7 @@ test "Message: traversal limit boundary conditions" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     try msg.validate(.{ .traversal_limit_words = 1 });
@@ -318,7 +318,7 @@ test "Message: nesting limit boundary conditions" {
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
     try msg.validate(.{ .nesting_limit = 3 });
@@ -382,7 +382,7 @@ fn makeFarPointer(landing_pad_is_double: bool, landing_pad_offset_words: u32, se
 test "Message: negative list pointer offset" {
     const allocator = testing.allocator;
 
-    var segment = [_]u8{0} ** (3 * 8);
+    var segment: [3 * 8]u8 = @splat(0);
 
     // Text data at word 1 (offset 8): "hi\0"
     segment[8] = 'h';
@@ -419,8 +419,8 @@ test "Message: negative list pointer offset" {
 test "Message: far pointer root struct in another segment" {
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (1 * 8);
-    var segment1 = [_]u8{0} ** (2 * 8);
+    var segment0: [1 * 8]u8 = @splat(0);
+    var segment1: [2 * 8]u8 = @splat(0);
 
     const far_ptr = makeFarPointer(false, 0, 1);
     std.mem.writeInt(u64, segment0[0..8], far_ptr, .little);
@@ -454,8 +454,8 @@ test "Message: far pointer root struct in another segment" {
 test "Message: far pointer list in another segment" {
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (2 * 8);
-    var segment1 = [_]u8{0} ** (2 * 8);
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [2 * 8]u8 = @splat(0);
 
     const root_ptr = makeStructPointer(0, 0, 1);
     std.mem.writeInt(u64, segment0[0..8], root_ptr, .little);
@@ -494,8 +494,8 @@ test "Message: far pointer list in another segment" {
 test "Message: double-far pointer root struct" {
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (1 * 8);
-    var segment1 = [_]u8{0} ** (3 * 8);
+    var segment0: [1 * 8]u8 = @splat(0);
+    var segment1: [3 * 8]u8 = @splat(0);
 
     const far_ptr = makeFarPointer(true, 0, 1);
     std.mem.writeInt(u64, segment0[0..8], far_ptr, .little);
@@ -987,6 +987,15 @@ test "MessageBuilder and Message: capability pointer list" {
     try testing.expectEqual(@as(u32, 7), cap1.id);
 }
 
+test "Message validation rejects invalid capability pointer encoding" {
+    var bytes: [16]u8 = @splat(0);
+    std.mem.writeInt(u32, bytes[0..4], 0, .little);
+    std.mem.writeInt(u32, bytes[4..8], 1, .little);
+    std.mem.writeInt(u64, bytes[8..16], (@as(u64, 1) << 2) | 3, .little);
+
+    try testing.expectError(error.InvalidPointer, message.Message.init(testing.allocator, &bytes, .{}));
+}
+
 test "MessageBuilder: packed bytes roundtrip" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -1016,7 +1025,7 @@ test "Message: initPacked caps unpacked expansion" {
 
 test "Message: initPacked rejects oversized segment word claims" {
     const oversized_words: u32 = @as(u32, @intCast(message.Message.max_total_words + 1));
-    var packed_bytes: [10]u8 = [_]u8{0} ** 10;
+    var packed_bytes: [10]u8 = @splat(0);
     packed_bytes[0] = 0xff;
     std.mem.writeInt(u64, packed_bytes[1..9], @as(u64, oversized_words) << 32, .little);
     packed_bytes[9] = 0;
@@ -1062,7 +1071,7 @@ test "MessageBuilder: struct list rejects oversized element count" {
 }
 
 test "Message: invalid double-far landing pointer reports InvalidFarPointer" {
-    var bytes: [40]u8 = [_]u8{0} ** 40;
+    var bytes: [40]u8 = @splat(0);
     std.mem.writeInt(u32, bytes[0..4], 1, .little); // 2 segments total
     std.mem.writeInt(u32, bytes[4..8], 1, .little); // segment 0: root pointer word
     std.mem.writeInt(u32, bytes[8..12], 2, .little); // segment 1: double-far landing pad (2 words)
@@ -1082,7 +1091,7 @@ test "Message: invalid double-far landing pointer reports InvalidFarPointer" {
 }
 
 test "Message: inline composite overflow in expected words is rejected" {
-    var bytes: [32]u8 = [_]u8{0} ** 32;
+    var bytes: [32]u8 = @splat(0);
     std.mem.writeInt(u32, bytes[0..4], 0, .little); // 1 segment
     std.mem.writeInt(u32, bytes[4..8], 3, .little); // 3 words
 
@@ -1496,8 +1505,8 @@ test "Message: far pointer to inline-composite list (raw bytes)" {
     //     word 5: element 1 pointer (null)
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (2 * 8);
-    var segment1 = [_]u8{0} ** (6 * 8);
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [6 * 8]u8 = @splat(0);
 
     // Word 0: root struct pointer -> struct at offset 0 (i.e. word 1), 0 data words, 1 pointer word
     const root_ptr = makeStructPointer(0, 0, 1);
@@ -1568,9 +1577,9 @@ test "Message: double-far pointer Layout A inline-composite list (raw bytes)" {
     //     word 1: element 1 data (u32 = 20)
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (2 * 8);
-    var segment1 = [_]u8{0} ** (2 * 8);
-    var segment2 = [_]u8{0} ** (2 * 8);
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [2 * 8]u8 = @splat(0);
+    var segment2: [2 * 8]u8 = @splat(0);
 
     // Segment 0, word 0: root struct pointer -> word 1, 0 data, 1 pointer
     std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
@@ -1633,9 +1642,9 @@ test "Message: double-far pointer Layout B inline-composite list (raw bytes)" {
     //     word 4: element 1 pointer (null)
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (2 * 8);
-    var segment1 = [_]u8{0} ** (2 * 8);
-    var segment2 = [_]u8{0} ** (5 * 8);
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [2 * 8]u8 = @splat(0);
+    var segment2: [5 * 8]u8 = @splat(0);
 
     // Segment 0, word 0: root struct pointer -> word 1, 0 data, 1 pointer
     std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
@@ -1697,9 +1706,9 @@ test "Message: double-far pointer Layout B with multi-word struct elements" {
     //   Segment 2 (5 words): tag word + 2 elements x 2 data words
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (2 * 8);
-    var segment1 = [_]u8{0} ** (2 * 8);
-    var segment2 = [_]u8{0} ** (5 * 8);
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [2 * 8]u8 = @splat(0);
+    var segment2: [5 * 8]u8 = @splat(0);
 
     // Segment 0: root struct (0 data, 1 ptr) + double-far -> seg 1
     std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
@@ -1767,8 +1776,8 @@ test "Message: far pointer inline-composite list at nonzero offset in target seg
     //     words 3-6: 2 elements x (1 data + 1 pointer)
     const allocator = testing.allocator;
 
-    var segment0 = [_]u8{0} ** (2 * 8);
-    var segment1 = [_]u8{0} ** (7 * 8);
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [7 * 8]u8 = @splat(0);
 
     // Root struct -> word 1, 0 data, 1 pointer
     std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);

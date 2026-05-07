@@ -11,17 +11,12 @@ pub fn cloneOpsFromSlice(
     return copied;
 }
 
-/// Maximum number of transform operations allowed in a PromisedAnswer.
-/// Matches a reasonable cap on pointer traversal depth (Cap'n Proto spec
-/// allows arbitrary nesting, but real schemas rarely exceed a handful).
-const max_transform_ops: u32 = 64;
-
 pub fn cloneOpsFromPromised(
     allocator: std.mem.Allocator,
     promised: protocol.PromisedAnswer,
 ) ![]protocol.PromisedAnswerOp {
     const op_count = promised.transform.len();
-    if (op_count > max_transform_ops) return error.TransformTooLong;
+    if (op_count > protocol.max_promised_answer_transform_ops) return error.TransformTooLong;
     const ops = try allocator.alloc(protocol.PromisedAnswerOp, op_count);
     errdefer allocator.free(ops);
 

@@ -122,9 +122,9 @@ pub fn handleRelease(
     comptime PeerType: type,
     peer: *PeerType,
     release: protocol.Release,
-    on_release_export: *const fn (*PeerType, u32, u32) void,
-) void {
-    on_release_export(peer, release.id, release.reference_count);
+    on_release_export: *const fn (*PeerType, u32, u32) anyerror!void,
+) !void {
+    try on_release_export(peer, release.id, release.reference_count);
 }
 
 /// Bundles the 11 callback parameters of handleFinish into a single operations struct.

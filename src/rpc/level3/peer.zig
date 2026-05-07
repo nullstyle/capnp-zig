@@ -241,6 +241,8 @@ pub const Peer = struct {
     questions: std.AutoHashMap(u32, Question),
     /// Cached Return frames for answered questions, kept until Finish.
     resolved_answers: std.AutoHashMap(u32, ResolvedAnswer),
+    /// Inbound call question IDs accepted from the remote peer until Return or Finish.
+    active_inbound_questions: std.AutoHashMap(u32, void),
 
     // -- Promise queueing ---------------------------------------------------
 
@@ -378,6 +380,7 @@ pub const Peer = struct {
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),
             .resolved_answers = std.AutoHashMap(u32, ResolvedAnswer).init(allocator),
+            .active_inbound_questions = std.AutoHashMap(u32, void).init(allocator),
             .pending_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .pending_export_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .forwarded_questions = std.AutoHashMap(u32, u32).init(allocator),
@@ -537,6 +540,7 @@ pub const Peer = struct {
             }
         }
         self.questions.deinit();
+        self.active_inbound_questions.deinit();
         self.exports.deinit();
         self.forwarded_questions.deinit();
         self.forwarded_tail_questions.deinit();
@@ -1275,6 +1279,7 @@ pub const Peer = struct {
             deliverLoopbackReturn,
             sendFrame,
         );
+        _ = self.active_inbound_questions.remove(answer_id);
     }
 
     fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {
@@ -1494,8 +1499,8 @@ pub const Peer = struct {
         entry.value_ptr.ref_count -= 1;
     }
 
-    fn releaseExport(self: *Peer, id: u32, count: u32) void {
-        peer_cap_lifecycle.releaseExport(
+    fn releaseExport(self: *Peer, id: u32, count: u32) !void {
+        try peer_cap_lifecycle.releaseExport(
             Peer,
             ExportEntry,
             PendingCall,
@@ -1733,6 +1738,7 @@ pub const Peer = struct {
     }
 
     fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
+        _ = self.active_inbound_questions.remove(finish.question_id);
         if (!finish.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
             // deliverable, cancel the queued call immediately.
@@ -1831,7 +1837,7 @@ pub const Peer = struct {
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {
-        peer_control.handleRelease(Peer, self, release, releaseExport);
+        try peer_control.handleRelease(Peer, self, release, releaseExport);
     }
 
     fn handleResolve(self: *Peer, resolve: protocol.Resolve) !void {
@@ -2024,6 +2030,7 @@ pub const Peer = struct {
     fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
         // Reject duplicate question IDs from the remote peer (spec violation).
         if (self.resolved_answers.contains(call.question_id) or
+            self.active_inbound_questions.contains(call.question_id) or
             self.send_results_to_yourself.contains(call.question_id) or
             self.send_results_to_third_party.contains(call.question_id) or
             self.forwarded_questions.contains(call.question_id) or
@@ -2032,6 +2039,9 @@ pub const Peer = struct {
         {
             return error.DuplicateQuestionId;
         }
+
+        try self.active_inbound_questions.put(call.question_id, {});
+        errdefer _ = self.active_inbound_questions.remove(call.question_id);
 
         peer_call_orchestration.handleCallForPeer(
             Peer,
