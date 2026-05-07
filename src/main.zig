@@ -3,6 +3,8 @@ const builtin = @import("builtin");
 const Generator = @import("capnpc-zig/generator.zig").Generator;
 const request_reader = @import("serialization/request_reader.zig");
 
+const max_code_generator_request_bytes: usize = 64 * 1024 * 1024;
+
 const RunOptions = struct {
     verbose: bool = false,
     emit_schema_manifest: bool = true,
@@ -22,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
     var read_buf: [65536]u8 = undefined;
     var reader = stdin.reader(io, &read_buf);
     reader.mode = .streaming;
-    const input_data = reader.interface.allocRemaining(allocator, .unlimited) catch |err| {
+    const input_data = readCodeGeneratorRequestInput(allocator, &reader.interface) catch |err| {
         logStderr("Error reading stdin: {}\n", .{err});
         return err;
     };
@@ -233,8 +235,42 @@ fn parseShapeSharingToken(token: []const u8) ?bool {
 
 // Parsing and freeing are handled by request_reader.zig.
 
+fn readCodeGeneratorRequestInput(allocator: std.mem.Allocator, reader: anytype) ![]u8 {
+    return readCodeGeneratorRequestInputWithLimit(allocator, reader, max_code_generator_request_bytes);
+}
+
+fn readCodeGeneratorRequestInputWithLimit(allocator: std.mem.Allocator, reader: anytype, limit: usize) ![]u8 {
+    return reader.allocRemaining(allocator, .limited(limit));
+}
+
+fn validateRelativeSchemaPath(path: []const u8) !void {
+    if (path.len == 0) return error.InvalidSchemaPath;
+    if (std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidSchemaPath;
+    if (path[0] == '/') return error.InvalidSchemaPath;
+    if (hasWindowsDriveRoot(path)) return error.InvalidSchemaPath;
+
+    var component_start: usize = 0;
+    for (path, 0..) |c, i| {
+        if (c != '/') continue;
+        try validateSchemaPathComponent(path[component_start..i]);
+        component_start = i + 1;
+    }
+    try validateSchemaPathComponent(path[component_start..]);
+}
+
+fn hasWindowsDriveRoot(path: []const u8) bool {
+    return path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and path[2] == '/';
+}
+
+fn validateSchemaPathComponent(component: []const u8) !void {
+    if (component.len == 0) return error.InvalidSchemaPath;
+    if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.InvalidSchemaPath;
+}
+
 /// Get output filename from input filename
 fn getOutputFilename(allocator: std.mem.Allocator, input_filename: []const u8) ![]const u8 {
+    try validateRelativeSchemaPath(input_filename);
+
     // Replace .capnp extension with .zig
     if (std.mem.endsWith(u8, input_filename, ".capnp")) {
         const base = input_filename[0 .. input_filename.len - 6];
@@ -245,6 +281,8 @@ fn getOutputFilename(allocator: std.mem.Allocator, input_filename: []const u8) !
 }
 
 fn createOutputFileInDir(dir: std.Io.Dir, io: std.Io, output_filename: []const u8) !std.Io.File {
+    try validateRelativeSchemaPath(output_filename);
+
     if (std.fs.path.dirname(output_filename)) |parent_dir| {
         if (parent_dir.len != 0 and !std.mem.eql(u8, parent_dir, ".")) {
             try dir.createDirPath(io, parent_dir);
@@ -267,6 +305,17 @@ test "getOutputFilename" {
     const result2 = try getOutputFilename(allocator, "schema/example.capnp");
     defer allocator.free(result2);
     try std.testing.expectEqualStrings("schema/example.zig", result2);
+}
+
+test "getOutputFilename rejects unsafe output paths" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(error.InvalidSchemaPath, getOutputFilename(allocator, ""));
+    try std.testing.expectError(error.InvalidSchemaPath, getOutputFilename(allocator, "/tmp/schema.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, getOutputFilename(allocator, "C:/tmp/schema.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, getOutputFilename(allocator, "schema//example.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, getOutputFilename(allocator, "schema/../example.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, getOutputFilename(allocator, "schema/./example.capnp"));
 }
 
 test "parseRunOptions defaults to quiet" {
@@ -395,4 +444,20 @@ test "createOutputFileInDir creates parent directories for nested output paths" 
 
     var reopened = try tmp.dir.openFile(io, "capnp/persistent.zig", .{});
     defer reopened.close(io);
+}
+
+test "createOutputFileInDir rejects traversal output paths" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try std.testing.expectError(error.InvalidSchemaPath, createOutputFileInDir(tmp.dir, io, "../escape.zig"));
+}
+
+test "readCodeGeneratorRequestInput enforces size limit" {
+    var reader: std.Io.Reader = .fixed("abcd");
+    try std.testing.expectError(
+        error.StreamTooLong,
+        readCodeGeneratorRequestInputWithLimit(std.testing.allocator, &reader, 3),
+    );
 }

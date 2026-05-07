@@ -138,12 +138,13 @@ pub const CapTable = struct {
     /// Record that a capability with `remote_id` was received from the remote
     /// peer. Increments the reference count if already known.
     pub fn noteImport(self: *CapTable, remote_id: u32) !void {
-        var entry = try self.imports.getOrPut(remote_id);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = .{ .ref_count = 1 };
-        } else {
+        if (self.imports.getEntry(remote_id)) |entry| {
             entry.value_ptr.ref_count = std.math.add(u32, entry.value_ptr.ref_count, 1) catch return error.RefCountOverflow;
+            return;
         }
+
+        try self.ensureCanAddEntry();
+        try self.imports.put(remote_id, .{ .ref_count = 1 });
     }
 
     /// Decrement the reference count for an imported capability.
@@ -159,14 +160,7 @@ pub const CapTable = struct {
     }
 
     fn allocLocalCapId(self: *CapTable) error{CapTableFull}!u32 {
-        const total = self.totalEntries();
-        if (total >= max_table_size) {
-            log.err("cap table full ({} entries)", .{total});
-            return error.CapTableFull;
-        }
-        if (total >= max_table_size * 9 / 10) {
-            log.warn("cap table near full: {}/{} entries", .{ total, max_table_size });
-        }
+        try self.ensureCanAddEntry();
         var iterations: u32 = 0;
         while (iterations < max_table_size + 1) : (iterations += 1) {
             const id = self.next_export_id;
@@ -178,6 +172,17 @@ pub const CapTable = struct {
         }
         log.err("cap table full after exhaustive ID search", .{});
         return error.CapTableFull;
+    }
+
+    fn ensureCanAddEntry(self: *const CapTable) error{CapTableFull}!void {
+        const total = self.totalEntries();
+        if (total >= max_table_size) {
+            log.err("cap table full ({} entries)", .{total});
+            return error.CapTableFull;
+        }
+        if (total >= max_table_size * 9 / 10) {
+            log.warn("cap table near full: {}/{} entries", .{ total, max_table_size });
+        }
     }
 };
 
@@ -213,6 +218,7 @@ pub const InboundCapTable = struct {
 
         const list = list_opt.?;
         const count = list.len();
+        if (count > max_table_size) return error.CapTableFull;
         var entries = try allocator.alloc(ResolvedCap, count);
         errdefer allocator.free(entries);
         const retained = try allocator.alloc(bool, count);

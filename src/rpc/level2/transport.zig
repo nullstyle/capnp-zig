@@ -39,85 +39,95 @@ pub const Transport = struct {
     write_queue: WriteQueue = .{},
     writer_thread: ?std.Thread = null,
 
+    pub const default_max_queued_items: usize = 1024;
+    pub const default_max_queued_bytes: usize = 64 * 1024 * 1024;
+
     pub const ReadError = net.Stream.Reader.Error;
     pub const WriteError = net.Stream.Writer.Error;
 
     pub const EnqueueError = error{
         BrokenPipe,
         OutOfMemory,
+        WriteQueueFull,
+        WriteQueueBytesExceeded,
     };
 
-    /// Thread-safe write queue. Uses a spinlock for the data structure and
-    /// a condition variable for blocking/waking the writer thread.
-    const WriteQueue = struct {
-        mu: std.atomic.Mutex = .unlocked,
-        items: std.ArrayListUnmanaged([]u8) = .empty,
-        closed: bool = false,
-        /// Condition variable and mutex for writer thread notification.
-        cond: std.Io.Condition = .init,
-        cond_mu: std.Io.Mutex = .init,
+    pub const Options = struct {
+        read_buffer_size: usize,
+        write_queue_max_items: usize = default_max_queued_items,
+        write_queue_max_bytes: usize = default_max_queued_bytes,
+    };
 
-        fn lock(self: *WriteQueue) void {
-            while (!self.mu.tryLock()) std.atomic.spinLoopHint();
-        }
+    /// Thread-safe write queue. The queue state and condition wait use the
+    /// same mutex so enqueue/close cannot signal between the writer's state
+    /// check and its wait registration.
+    const WriteQueue = struct {
+        mu: std.Io.Mutex = .init,
+        cond: std.Io.Condition = .init,
+        items: std.ArrayListUnmanaged([]u8) = .empty,
+        queued_bytes: usize = 0,
+        max_items: usize = default_max_queued_items,
+        max_bytes: usize = default_max_queued_bytes,
+        closed: bool = false,
 
         /// Push an owned allocation onto the queue. Frees `data` and returns
-        /// `error.BrokenPipe` if the queue is already closed.
+        /// an error if the queue is closed or would exceed its configured
+        /// item/byte bounds.
         fn enqueue(self: *WriteQueue, io: std.Io, allocator: std.mem.Allocator, data: []u8) EnqueueError!void {
-            self.lock();
-            defer self.mu.unlock();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
+
             if (self.closed) {
                 allocator.free(data);
                 return error.BrokenPipe;
+            }
+            if (self.items.items.len >= self.max_items) {
+                allocator.free(data);
+                return error.WriteQueueFull;
+            }
+            if (data.len > self.max_bytes or self.queued_bytes > self.max_bytes - data.len) {
+                allocator.free(data);
+                return error.WriteQueueBytesExceeded;
             }
             self.items.append(allocator, data) catch {
                 allocator.free(data);
                 return error.OutOfMemory;
             };
-            // Signal the writer thread.
+            self.queued_bytes += data.len;
             self.cond.signal(io);
         }
 
-        /// Block until items are available or the queue is closed.
-        /// Returns false when the queue is closed and empty.
-        fn waitForSignal(self: *WriteQueue, io: std.Io) bool {
-            self.cond_mu.lockUncancelable(io);
-            defer self.cond_mu.unlock(io);
-            while (true) {
-                self.lock();
-                const has_items = self.items.items.len > 0;
-                const is_closed = self.closed;
-                self.mu.unlock();
-                if (has_items) return true;
-                if (is_closed) return false;
-                self.cond.waitUncancelable(io, &self.cond_mu);
-            }
-        }
+        /// Block until queued items are available or the queue is closed.
+        /// Returns null when the queue is closed and empty.
+        fn waitForBatch(self: *WriteQueue, io: std.Io) ?std.ArrayListUnmanaged([]u8) {
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
 
-        /// Take all queued items at once. Returns null if the queue is empty.
-        fn takeBatch(self: *WriteQueue) ?std.ArrayListUnmanaged([]u8) {
-            self.lock();
-            defer self.mu.unlock();
+            while (self.items.items.len == 0 and !self.closed) {
+                self.cond.waitUncancelable(io, &self.mu);
+            }
             if (self.items.items.len == 0) return null;
+
             const result = self.items;
             self.items = .empty;
+            self.queued_bytes = 0;
             return result;
         }
 
         /// Mark the queue as closed and wake the writer thread.
         /// Idempotent.
         fn close(self: *WriteQueue, io: std.Io) void {
-            self.lock();
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             self.closed = true;
-            self.mu.unlock();
             self.cond.broadcast(io);
         }
 
         /// Free all remaining queued items and the backing storage.
         /// Idempotent — safe to call multiple times.
-        fn drain(self: *WriteQueue, allocator: std.mem.Allocator) void {
-            self.lock();
-            defer self.mu.unlock();
+        fn drain(self: *WriteQueue, io: std.Io, allocator: std.mem.Allocator) void {
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
             for (self.items.items) |item| {
                 allocator.free(item);
             }
@@ -126,6 +136,7 @@ pub const Transport = struct {
             // sets self.* = undefined, so a second drain would crash without
             // this reset.
             self.items = .empty;
+            self.queued_bytes = 0;
         }
     };
 
@@ -140,13 +151,26 @@ pub const Transport = struct {
         fd: net.Socket.Handle,
         read_buffer_size: usize,
     ) !Transport {
+        return initWithOptions(allocator, io, fd, .{ .read_buffer_size = read_buffer_size });
+    }
+
+    pub fn initWithOptions(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        fd: net.Socket.Handle,
+        options: Options,
+    ) !Transport {
         ignoreSigpipe();
-        const buf = try allocator.alloc(u8, read_buffer_size);
+        const buf = try allocator.alloc(u8, options.read_buffer_size);
         return .{
             .allocator = allocator,
             .io = io,
             .fd = fd,
             .read_buf = buf,
+            .write_queue = .{
+                .max_items = options.write_queue_max_items,
+                .max_bytes = options.write_queue_max_bytes,
+            },
         };
     }
 
@@ -187,6 +211,9 @@ pub const Transport = struct {
     /// Enqueue bytes for asynchronous writing by the writer thread.
     /// Makes an owned copy of `bytes`. Called from the owner thread.
     /// The write queue itself is thread-safe via its internal mutex.
+    /// If the async queue would exceed its item or byte bound, this returns
+    /// `error.WriteQueueFull` or `error.WriteQueueBytesExceeded` without
+    /// closing the transport.
     ///
     /// If the writer thread has not been started yet (i.e., before
     /// `startWriter()`), falls back to a synchronous blocking write.
@@ -212,12 +239,12 @@ pub const Transport = struct {
     /// Stop the writer thread and drain any remaining queued writes.
     /// Idempotent — safe to call multiple times.
     pub fn stopWriter(self: *Transport) void {
-        self.write_queue.close(self.io);
+        self.shutdown();
         if (self.writer_thread) |t| {
             t.join();
             self.writer_thread = null;
         }
-        self.write_queue.drain(self.allocator);
+        self.write_queue.drain(self.io, self.allocator);
     }
 
     /// Writer thread entry point. Blocks on the condition variable,
@@ -225,10 +252,7 @@ pub const Transport = struct {
     /// Exits when the queue is closed or on write error.
     fn writerLoop(self: *Transport) void {
         while (true) {
-            // Block until signaled by enqueue or close.
-            if (!self.write_queue.waitForSignal(self.io)) break;
-
-            var batch = self.write_queue.takeBatch() orelse continue;
+            var batch = self.write_queue.waitForBatch(self.io) orelse break;
             defer batch.deinit(self.allocator);
 
             var write_failed = false;
@@ -236,8 +260,7 @@ pub const Transport = struct {
                 if (!write_failed) {
                     self.write(item) catch |err| {
                         log.debug("writer thread write error: {}", .{err});
-                        self.close_requested.store(true, .release);
-                        self.write_queue.close(self.io);
+                        self.shutdown();
                         write_failed = true;
                     };
                 }
@@ -254,21 +277,22 @@ pub const Transport = struct {
     /// Also closes the write queue so the writer thread will exit.
     /// The owning thread should subsequently call `deinit()`.
     pub fn shutdown(self: *Transport) void {
-        if (self.fd_closed) return;
         self.close_requested.store(true, .release);
         self.write_queue.close(self.io);
-        ioShutdown(self.io, self.fd);
+        if (!self.fd_closed) {
+            ioShutdown(self.io, self.fd);
+        }
     }
 
     /// Shut down the socket and signal the writer to stop. Idempotent.
     /// The fd is not closed here — `deinit()` closes it after the writer
     /// thread has been joined.
     pub fn close(self: *Transport) void {
-        if (self.close_requested.load(.acquire)) return;
-        log.debug("transport close requested", .{});
-        self.close_requested.store(true, .release);
-        self.write_queue.close(self.io);
-        ioShutdown(self.io, self.fd);
+        const was_closing = self.close_requested.load(.acquire);
+        if (!was_closing) {
+            log.debug("transport close requested", .{});
+        }
+        self.shutdown();
     }
 
     /// Returns `true` if `close()` or `shutdown()` has been called.

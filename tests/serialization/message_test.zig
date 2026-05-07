@@ -3,6 +3,34 @@ const testing = std.testing;
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 
+fn mutableCopy(bytes: []const u8) ![]u8 {
+    const out = try testing.allocator.alloc(u8, bytes.len);
+    @memcpy(out, bytes);
+    return out;
+}
+
+fn setRootPointer0ElementCount(framed: []u8, element_count: u32) !void {
+    // These tests build a single-segment root struct with 0 data words and
+    // 1 pointer word, so pointer field 0 is at framed byte offset 16.
+    const pointer_offset = 16;
+    if (framed.len < pointer_offset + 8) return error.TestSetupFailed;
+    var pointer_word = std.mem.readInt(u64, framed[pointer_offset..][0..8], .little);
+    const element_count_mask = @as(u64, 0x1fff_ffff) << 35;
+    pointer_word = (pointer_word & ~element_count_mask) | (@as(u64, element_count) << 35);
+    std.mem.writeInt(u64, framed[pointer_offset..][0..8], pointer_word, .little);
+}
+
+fn packedZeroRunOverMessageLimit() ![]u8 {
+    const decoded_bytes_per_run = 256 * 8;
+    const runs = message.Message.max_packed_unpacked_bytes / decoded_bytes_per_run + 1;
+    const packed_bytes = try testing.allocator.alloc(u8, runs * 2);
+    for (0..runs) |i| {
+        packed_bytes[i * 2] = 0x00;
+        packed_bytes[i * 2 + 1] = 0xff;
+    }
+    return packed_bytes;
+}
+
 test "MessageBuilder: create empty message" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -80,6 +108,44 @@ test "MessageBuilder and Message: all integer types" {
     try testing.expectEqual(@as(u16, 65535), root.readU16(2));
     try testing.expectEqual(@as(u32, 4294967295), root.readU32(4));
     try testing.expectEqual(@as(u64, 18446744073709551615), root.readU64(8));
+}
+
+test "StructReader: extreme offsets and pointer indexes do not overflow" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(1, 1);
+    struct_builder.writeU64(0, 1234);
+    try struct_builder.writeText(0, "safe");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const max = std.math.maxInt(usize);
+
+    try testing.expectEqual(@as(u64, 0), root.readU64(max));
+    try testing.expectEqual(@as(u32, 0), root.readU32(max));
+    try testing.expectEqual(@as(u16, 0), root.readU16(max));
+    try testing.expectEqual(@as(u8, 0), root.readU8(max));
+    try testing.expectEqual(false, root.readBool(max, 0));
+    try testing.expectError(error.OutOfBounds, root.readU64Strict(max));
+    try testing.expectError(error.OutOfBounds, root.readU32Strict(max));
+    try testing.expectError(error.OutOfBounds, root.readU16Strict(max));
+    try testing.expectError(error.OutOfBounds, root.readU8Strict(max));
+    try testing.expectError(error.OutOfBounds, root.readBoolStrict(max, 0));
+
+    try testing.expect(root.isPointerNull(max));
+    try testing.expectEqualStrings("", try root.readText(max));
+    try testing.expectError(error.OutOfBounds, root.readAnyPointer(max));
+    try testing.expectError(error.OutOfBounds, root.readStruct(max));
+    try testing.expectError(error.OutOfBounds, root.readStructList(max));
+    try testing.expectError(error.OutOfBounds, root.readTextList(max));
+    try testing.expectError(error.OutOfBounds, root.readPointerList(max));
+    try testing.expectError(error.OutOfBounds, root.readData(max));
 }
 
 test "MessageBuilder and Message: text field" {
@@ -940,6 +1006,25 @@ test "MessageBuilder: packed bytes roundtrip" {
     try testing.expectEqualStrings("packed", try root.readText(0));
 }
 
+test "Message: initPacked caps unpacked expansion" {
+    const packed_bytes = try packedZeroRunOverMessageLimit();
+    defer testing.allocator.free(packed_bytes);
+
+    try testing.expectError(error.MessageTooLarge, message.Message.initPackedUnvalidated(testing.allocator, packed_bytes));
+    try testing.expectError(error.MessageTooLarge, message.Message.initPacked(testing.allocator, packed_bytes, .{}));
+}
+
+test "Message: initPacked rejects oversized segment word claims" {
+    const oversized_words: u32 = @as(u32, @intCast(message.Message.max_total_words + 1));
+    var packed_bytes: [10]u8 = [_]u8{0} ** 10;
+    packed_bytes[0] = 0xff;
+    std.mem.writeInt(u64, packed_bytes[1..9], @as(u64, oversized_words) << 32, .little);
+    packed_bytes[9] = 0;
+
+    try testing.expectError(error.MessageTooLarge, message.Message.initPackedUnvalidated(testing.allocator, &packed_bytes));
+    try testing.expectError(error.MessageTooLarge, message.Message.initPacked(testing.allocator, &packed_bytes, .{}));
+}
+
 test "AnyPointer: set and read text" {
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
@@ -1194,6 +1279,76 @@ test "readTextStrict: null pointer returns empty string" {
     const root = try msg.getRootStruct();
     const text = try root.readTextStrict(0);
     try testing.expectEqualStrings("", text);
+}
+
+test "readTextStrict: missing trailing NUL is rejected without breaking readText" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    try struct_builder.writeText(0, "abc");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    const mutated = try mutableCopy(bytes);
+    defer testing.allocator.free(mutated);
+    try setRootPointer0ElementCount(mutated, 3);
+
+    var msg = try message.Message.init(testing.allocator, mutated, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    try testing.expectEqualStrings("abc", try root.readText(0));
+    try testing.expectError(error.InvalidTextPointer, root.readTextStrict(0));
+}
+
+test "readTextStrict: invalid UTF-8 with trailing NUL is rejected" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    try struct_builder.writeText(0, "bad");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    const mutated = try mutableCopy(bytes);
+    defer testing.allocator.free(mutated);
+    const pos = std.mem.indexOf(u8, mutated, "bad") orelse return error.TestSetupFailed;
+    mutated[pos] = 0xff;
+
+    var msg = try message.Message.init(testing.allocator, mutated, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const raw = try root.readText(0);
+    try testing.expectEqual(@as(u8, 0xff), raw[0]);
+    try testing.expectError(error.InvalidUtf8, root.readTextStrict(0));
+}
+
+test "AnyPointer.getTextStrict: missing trailing NUL is rejected" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var any = try root_builder.getAnyPointer(0);
+    try any.setText("any");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    const mutated = try mutableCopy(bytes);
+    defer testing.allocator.free(mutated);
+    try setRootPointer0ElementCount(mutated, 3);
+
+    var msg = try message.Message.init(testing.allocator, mutated, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const any_reader = try root.readAnyPointer(0);
+    try testing.expectEqualStrings("any", try any_reader.getText());
+    try testing.expectError(error.InvalidTextPointer, any_reader.getTextStrict());
 }
 
 test "TextListReader.getStrict: valid UTF-8 succeeds" {

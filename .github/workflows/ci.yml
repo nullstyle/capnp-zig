@@ -47,7 +47,30 @@ jobs:
       - uses: jdx/mise-action@v4
 
       - name: Check formatting
-        run: zig fmt --check --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/
+        run: just fmt-check
+
+  e2e-zig:
+    name: Zig e2e interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - name: Install Cap'n Proto compiler
+        run: |
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y capnproto libcapnp-dev
+          else
+            apt-get update
+            apt-get install -y capnproto libcapnp-dev
+          fi
+
+      - name: Run Zig e2e gate
+        run: just e2e-zig
 
   bench-check:
     name: Benchmark regression check
@@ -60,7 +83,7 @@ jobs:
       - uses: jdx/mise-action@v4
 
       - name: Run benchmark regression checks
-        run: zig build bench-check
+        run: zig build -Doptimize=ReleaseFast bench-check
 
   wasm-build:
     name: WASM build

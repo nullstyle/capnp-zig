@@ -29,6 +29,11 @@ pub const schema_validation = @import("serialization/schema_validation.zig");
 /// message framing, and the level-based peer protocol implementation.
 pub const rpc = @import("rpc/mod.zig");
 
+/// Switchable `std.Io` backend selection. Centralises the choice between
+/// `std.Io.Threaded` and (eventually) `std.Io.Evented` so applications can
+/// flip backends in one place.
+pub const io_backend = @import("io_backend.zig");
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

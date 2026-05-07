@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
@@ -7,6 +8,7 @@ const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.cap_table;
 const Connection = capnpc.rpc.connection.Connection;
 const Peer = peer_impl.Peer;
+const Transport = capnpc.rpc.transport.Transport;
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
@@ -65,6 +67,37 @@ fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32) ![]const u8 
     defer builder.deinit();
     try builder.buildFinish(question_id, false, false);
     return builder.finish();
+}
+
+fn createSocketPair() ![2]std.posix.fd_t {
+    if (comptime builtin.target.os.tag == .windows) return error.SocketPairFailed;
+    var fds: [2]std.posix.fd_t = undefined;
+    if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
+        return error.SocketPairFailed;
+    }
+    return fds;
+}
+
+fn closeFd(fd: std.posix.fd_t) void {
+    switch (std.posix.errno(std.posix.system.close(fd))) {
+        .SUCCESS, .INTR, .BADF => {},
+        else => {},
+    }
+}
+
+fn writeAll(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const rc = std.posix.system.write(fd, bytes[offset..].ptr, bytes.len - offset);
+        const n: usize = switch (std.posix.errno(rc)) {
+            .SUCCESS => @intCast(rc),
+            .INTR => continue,
+            .PIPE => return error.BrokenPipe,
+            else => return error.WriteFailed,
+        };
+        if (n == 0) return error.BrokenPipe;
+        offset += n;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -429,4 +462,114 @@ test "handleFrame after shutdown: returns for pending questions are delivered" {
     for (0..3) |i| {
         try std.testing.expectEqual(qids[i], return_ctx.answer_ids[i]);
     }
+}
+
+test "transport enqueueWrite rejects queued item overflow" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const pair = try createSocketPair();
+    defer closeFd(pair[1]);
+
+    var transport = try Transport.initWithOptions(allocator, std.testing.io, pair[0], .{
+        .read_buffer_size = 64,
+        .write_queue_max_items = 0,
+        .write_queue_max_bytes = 1024,
+    });
+    defer transport.deinit();
+
+    try transport.startWriter();
+    try std.testing.expectError(error.WriteQueueFull, transport.enqueueWrite("x"));
+}
+
+test "transport enqueueWrite rejects queued byte overflow" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const pair = try createSocketPair();
+    defer closeFd(pair[1]);
+
+    var transport = try Transport.initWithOptions(allocator, std.testing.io, pair[0], .{
+        .read_buffer_size = 64,
+        .write_queue_max_items = 8,
+        .write_queue_max_bytes = 2,
+    });
+    defer transport.deinit();
+
+    try transport.startWriter();
+    try std.testing.expectError(error.WriteQueueBytesExceeded, transport.enqueueWrite("abc"));
+}
+
+test "transport stopWriter shuts down before joining idle writer" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const pair = try createSocketPair();
+    defer closeFd(pair[1]);
+
+    var transport = try Transport.init(allocator, std.testing.io, pair[0], 64);
+    defer transport.deinit();
+
+    try transport.startWriter();
+    transport.stopWriter();
+
+    try std.testing.expect(transport.isClosing());
+    try std.testing.expectError(error.BrokenPipe, transport.enqueueWrite("after-stop"));
+}
+
+test "connection run treats malformed frame as terminal after on_error" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const pair = try createSocketPair();
+    defer closeFd(pair[1]);
+
+    const State = struct {
+        error_count: usize = 0,
+        close_count: usize = 0,
+        message_count: usize = 0,
+        last_error: ?anyerror = null,
+        closing_seen_in_error: bool = false,
+
+        fn onMessage(conn: *Connection, _: []const u8) !void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.message_count += 1;
+        }
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+            state.closing_seen_in_error = conn.transport.isClosing();
+        }
+
+        fn onClose(conn: *Connection) void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.close_count += 1;
+        }
+    };
+
+    const Runner = struct {
+        fn run(conn: *Connection) void {
+            conn.run();
+        }
+    };
+
+    var conn = try Connection.init(allocator, std.testing.io, pair[0], .{});
+    defer conn.deinit();
+
+    var state = State{};
+    conn.start(&state, State.onMessage, State.onError, State.onClose);
+
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&conn});
+    const bad_header = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    try writeAll(pair[1], &bad_header);
+    thread.join();
+
+    try std.testing.expectEqual(@as(usize, 0), state.message_count);
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+    try std.testing.expect(!state.closing_seen_in_error);
+    try std.testing.expect(conn.transport.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
 }

@@ -63,6 +63,61 @@ fn decodeCapabilityPointer(pointer_word: u64) !u32 {
     return @as(u32, @truncate(pointer_word >> 32));
 }
 
+inline fn checkedAddUsize(a: usize, b: usize) error{OutOfBounds}!usize {
+    return std.math.add(usize, a, b) catch return error.OutOfBounds;
+}
+
+inline fn checkedMulUsize(a: usize, b: usize) error{OutOfBounds}!usize {
+    return std.math.mul(usize, a, b) catch return error.OutOfBounds;
+}
+
+inline fn hasByteRange(data: []const u8, offset: usize, size: usize) bool {
+    const end = std.math.add(usize, offset, size) catch return false;
+    return end <= data.len;
+}
+
+inline fn checkedSlice(data: []const u8, offset: usize, size: usize) error{OutOfBounds}![]const u8 {
+    const end = try checkedAddUsize(offset, size);
+    if (end > data.len) return error.OutOfBounds;
+    return data[offset..end];
+}
+
+inline fn pointerIndexByteOffset(pointer_index: usize) error{OutOfBounds}!usize {
+    return checkedMulUsize(pointer_index, 8);
+}
+
+inline fn wordsToBytes(words: usize) error{OutOfBounds}!usize {
+    return checkedMulUsize(words, 8);
+}
+
+fn framedHeaderBytes(segment_count: usize) error{InvalidMessageSize}!usize {
+    const padding_words: usize = if (segment_count % 2 == 0) 1 else 0;
+    const header_words_no_padding = std.math.add(usize, 1, segment_count) catch return error.InvalidMessageSize;
+    const header_words = std.math.add(usize, header_words_no_padding, padding_words) catch return error.InvalidMessageSize;
+    return std.math.mul(usize, header_words, 4) catch return error.InvalidMessageSize;
+}
+
+fn maxFramedBytesForLimits(segment_count_limit: usize, total_words_limit: usize) usize {
+    const header_bytes = framedHeaderBytes(segment_count_limit) catch unreachable;
+    const payload_bytes = std.math.mul(usize, total_words_limit, 8) catch unreachable;
+    return std.math.add(usize, header_bytes, payload_bytes) catch unreachable;
+}
+
+fn requireTextTerminator(text_data: []const u8) ![]const u8 {
+    if (text_data.len == 0 or text_data[text_data.len - 1] != 0) {
+        return error.InvalidTextPointer;
+    }
+    return text_data[0 .. text_data.len - 1];
+}
+
+fn requireStrictText(text_data: []const u8) ![]const u8 {
+    const text = try requireTextTerminator(text_data);
+    if (!std.unicode.utf8ValidateSlice(text)) {
+        return error.InvalidUtf8;
+    }
+    return text;
+}
+
 fn listContentBytes(element_size: u3, element_count: u32) !usize {
     const count = @as(u64, element_count);
     const total: u64 = switch (element_size) {
@@ -86,9 +141,14 @@ fn listContentWords(element_size: u3, element_count: u32) !usize {
     return (bytes + 7) / 8;
 }
 
-fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
+fn addEstimatedUnpackedBytes(total: *usize, amount: usize, max_unpacked_bytes: usize) !void {
+    total.* = std.math.add(usize, total.*, amount) catch return error.MessageTooLarge;
+    if (total.* > max_unpacked_bytes) return error.MessageTooLarge;
+}
+
+fn unpackPackedLimited(allocator: std.mem.Allocator, packed_bytes: []const u8, max_unpacked_bytes: usize) ![]u8 {
     // Size-estimation pass: scan packed bytes to calculate exact output size.
-    const total_size = try estimateUnpackedSize(packed_bytes);
+    const total_size = try estimateUnpackedSizeLimited(packed_bytes, max_unpacked_bytes);
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -145,12 +205,16 @@ fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+fn unpackPacked(allocator: std.mem.Allocator, packed_bytes: []const u8) ![]u8 {
+    return unpackPackedLimited(allocator, packed_bytes, std.math.maxInt(usize));
+}
+
 /// Scans packed bytes to calculate the exact unpacked output size without
 /// performing any allocation. This mirrors the structure of the packing format:
 ///   - Tag 0x00: 1 zero word + N extra zero words (N from count byte)
 ///   - Tag 0xFF: 1 literal word + N literal words (N from count byte)
 ///   - Other tags: 1 word with @popCount(tag) non-zero bytes
-fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
+fn estimateUnpackedSizeLimited(packed_bytes: []const u8, max_unpacked_bytes: usize) !usize {
     var total: usize = 0;
     var index: usize = 0;
 
@@ -159,36 +223,40 @@ fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
         index += 1;
 
         if (tag == 0x00) {
-            total = std.math.add(usize, total, 8) catch return error.Overflow;
+            try addEstimatedUnpackedBytes(&total, 8, max_unpacked_bytes);
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
             index += 1;
-            total = std.math.add(usize, total, @as(usize, count) * 8) catch return error.Overflow;
+            try addEstimatedUnpackedBytes(&total, @as(usize, count) * 8, max_unpacked_bytes);
             continue;
         }
 
         if (tag == 0xFF) {
             if (index + 8 > packed_bytes.len) return error.UnexpectedEof;
-            total = std.math.add(usize, total, 8) catch return error.Overflow;
+            try addEstimatedUnpackedBytes(&total, 8, max_unpacked_bytes);
             index += 8;
             if (index >= packed_bytes.len) return error.UnexpectedEof;
             const count = packed_bytes[index];
             index += 1;
             const byte_count = @as(usize, count) * 8;
             if (index + byte_count > packed_bytes.len) return error.UnexpectedEof;
-            total = std.math.add(usize, total, byte_count) catch return error.Overflow;
+            try addEstimatedUnpackedBytes(&total, byte_count, max_unpacked_bytes);
             index += byte_count;
             continue;
         }
 
         // Regular tag: each set bit means one non-zero byte follows.
-        total = std.math.add(usize, total, 8) catch return error.Overflow;
+        try addEstimatedUnpackedBytes(&total, 8, max_unpacked_bytes);
         const nonzero_bytes = @popCount(tag);
         if (index + nonzero_bytes > packed_bytes.len) return error.UnexpectedEof;
         index += nonzero_bytes;
     }
 
     return total;
+}
+
+fn estimateUnpackedSize(packed_bytes: []const u8) !usize {
+    return estimateUnpackedSizeLimited(packed_bytes, std.math.maxInt(usize));
 }
 
 /// Returns true if any byte in the u64 value is zero.
@@ -314,6 +382,8 @@ pub const Capability = struct {
 /// segment index (and backing data, if owned).
 pub const Message = struct {
     pub const max_segment_count: usize = 512;
+    pub const max_total_words: usize = 8 * 1024 * 1024;
+    pub const max_packed_unpacked_bytes: usize = maxFramedBytesForLimits(max_segment_count, max_total_words);
 
     allocator: std.mem.Allocator,
     segments: []const []const u8,
@@ -344,6 +414,27 @@ pub const Message = struct {
         traversal_limit_words: usize = 8 * 1024 * 1024,
         nesting_limit: usize = 64,
     };
+
+    fn checkFramedWordLimit(data: []const u8, total_words_limit: usize) !void {
+        if (data.len < 4) return;
+
+        const segment_count_minus_one = std.mem.readInt(u32, data[0..4], .little);
+        const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
+        const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
+        if (segment_count_usize > max_segment_count) return error.SegmentCountLimitExceeded;
+
+        const header_bytes = framedHeaderBytes(segment_count_usize) catch return error.InvalidMessageSize;
+        if (header_bytes > data.len) return;
+
+        var total_words: usize = 0;
+        var cursor: usize = 4;
+        for (0..segment_count_usize) |_| {
+            const size_words = std.mem.readInt(u32, data[cursor..][0..4], .little);
+            total_words = std.math.add(usize, total_words, @as(usize, size_words)) catch return error.InvalidMessageSize;
+            if (total_words > total_words_limit) return error.MessageTooLarge;
+            cursor += 4;
+        }
+    }
 
     /// Deserialize and validate a Cap'n Proto message from its framed wire representation.
     ///
@@ -446,8 +537,9 @@ pub const Message = struct {
     /// Unpacks `packed_bytes` into standard framed format, then parses segments.
     /// The unpacked buffer is owned by this message and freed on `deinit`.
     pub fn initPackedUnvalidated(allocator: std.mem.Allocator, packed_bytes: []const u8) !Message {
-        const unpacked = try unpackPacked(allocator, packed_bytes);
+        const unpacked = try unpackPackedLimited(allocator, packed_bytes, max_packed_unpacked_bytes);
         errdefer allocator.free(unpacked);
+        try checkFramedWordLimit(unpacked, max_total_words);
 
         var msg = try Message.initUnvalidated(allocator, unpacked);
         msg.backing_data = unpacked;
@@ -477,7 +569,7 @@ pub const Message = struct {
     /// Returns the landing segment data and landing byte offset.
     fn resolveFarLandingPad(self: *const Message, far: FarPointer) !struct { segment: []const u8, landing_pos: usize } {
         if (far.segment_id >= self.segments.len) return error.InvalidSegmentId;
-        const landing_pos = @as(usize, far.landing_pad_offset_words) * 8;
+        const landing_pos = try wordsToBytes(@as(usize, far.landing_pad_offset_words));
         const landing_segment = self.segments[far.segment_id];
         const pad_size: usize = if (far.landing_pad_is_double) 16 else 8;
         try bounds.checkBounds(landing_segment, landing_pos, pad_size);
@@ -491,9 +583,16 @@ pub const Message = struct {
         if (content_override) |override| {
             return override;
         }
-        const signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset_words) * 8;
-        if (signed < 0 or signed > std.math.maxInt(usize)) return error.OutOfBounds;
-        return @as(usize, @intCast(signed));
+        const base = try checkedAddUsize(pointer_pos, 8);
+        if (offset_words >= 0) {
+            const delta = try wordsToBytes(@as(usize, @intCast(offset_words)));
+            return checkedAddUsize(base, delta);
+        }
+
+        const delta_words = @as(usize, @intCast(-@as(i64, offset_words)));
+        const delta = try wordsToBytes(delta_words);
+        if (delta > base) return error.OutOfBounds;
+        return base - delta;
     }
 
     pub fn resolvePointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64, depth: u8) !ResolvedPointer {
@@ -534,7 +633,7 @@ pub const Message = struct {
         }
         if (landing_far.segment_id >= self.segments.len) return error.InvalidSegmentId;
 
-        const content_offset = @as(usize, landing_far.landing_pad_offset_words) * 8;
+        const content_offset = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words));
         return .{
             .segment_id = landing_far.segment_id,
             .pointer_pos = 0,
@@ -545,6 +644,7 @@ pub const Message = struct {
 
     pub fn resolveStructPointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64) !StructReader {
         const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
+        if (resolved.segment_id >= self.segments.len) return error.InvalidSegmentId;
         if (resolved.pointer_word == 0) {
             log.warn("InvalidRootPointer: null pointer at segment={} pos={}", .{ segment_id, pointer_pos });
             return error.InvalidRootPointer;
@@ -564,17 +664,15 @@ pub const Message = struct {
         if (resolved.content_override) |override| {
             struct_offset = override;
         } else {
-            const struct_offset_signed = @as(i64, @intCast(resolved.pointer_pos)) + 8 + @as(i64, offset) * 8;
-            if (struct_offset_signed < 0 or struct_offset_signed > std.math.maxInt(usize)) return error.InvalidRootPointer;
-            struct_offset = @as(usize, @intCast(struct_offset_signed));
+            struct_offset = computeContentOffset(resolved.pointer_pos, offset, null) catch return error.InvalidRootPointer;
         }
 
         const segment = self.segments[resolved.segment_id];
         const total_bytes = (@as(usize, data_size) + @as(usize, pointer_count)) * 8;
-        if (struct_offset + total_bytes > segment.len) {
+        bounds.checkBounds(segment, struct_offset, total_bytes) catch {
             log.warn("TruncatedMessage: struct needs {} bytes at offset {} but segment {} has {} bytes (data_words={} pointer_words={})", .{ total_bytes, struct_offset, resolved.segment_id, segment.len, data_size, pointer_count });
             return error.TruncatedMessage;
-        }
+        };
 
         return StructReader{
             .message = self,
@@ -587,6 +685,7 @@ pub const Message = struct {
 
     pub fn resolveListPointer(self: *const Message, segment_id: u32, pointer_pos: usize, pointer_word: u64) !ResolvedListPointer {
         const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
+        if (resolved.segment_id >= self.segments.len) return error.InvalidSegmentId;
         if (resolved.pointer_word == 0) return error.InvalidPointer;
 
         const pointer_type = @as(u2, @truncate(resolved.pointer_word & 0x3));
@@ -642,9 +741,7 @@ pub const Message = struct {
             const offset = decodeOffsetWords(pointer_word);
             const word_count = @as(u32, @truncate(pointer_word >> 35));
 
-            const tag_pos_signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset) * 8;
-            if (tag_pos_signed < 0 or tag_pos_signed > std.math.maxInt(usize)) return error.OutOfBounds;
-            const tag_pos = @as(usize, @intCast(tag_pos_signed));
+            const tag_pos = try computeContentOffset(pointer_pos, offset, null);
 
             const tag_word = try self.readWord(segment_id, tag_pos);
             const tag_type = @as(u2, @truncate(tag_word & 0x3));
@@ -661,7 +758,7 @@ pub const Message = struct {
             const expected_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
             if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
-            const elements_offset = tag_pos + 8;
+            const elements_offset = try checkedAddUsize(tag_pos, 8);
             const total_bytes = @as(usize, word_count) * 8;
             try bounds.checkBounds(self.segments[segment_id], elements_offset, total_bytes);
 
@@ -710,7 +807,7 @@ pub const Message = struct {
             const total_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
             if (total_words_u64 > std.math.maxInt(usize) / 8) return error.OutOfBounds;
             const total_words = @as(usize, @intCast(total_words_u64));
-            const elements_offset = @as(usize, landing_far.landing_pad_offset_words) * 8;
+            const elements_offset = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words));
             const total_bytes = total_words * 8;
             try bounds.checkBounds(self.segments[landing_far.segment_id], elements_offset, total_bytes);
 
@@ -730,7 +827,7 @@ pub const Message = struct {
             if (element_size != 7) return error.InvalidInlineCompositePointer;
             const word_count = @as(u32, @truncate(list_pointer_word >> 35));
 
-            const tag_pos = @as(usize, landing_far.landing_pad_offset_words) * 8;
+            const tag_pos = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words));
             const tag_word = try self.readWord(landing_far.segment_id, tag_pos);
             const tag_type = @as(u2, @truncate(tag_word & 0x3));
             if (tag_type != 0) return error.InvalidInlineCompositePointer;
@@ -745,7 +842,7 @@ pub const Message = struct {
             const expected_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
             if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
-            const elements_offset = tag_pos + 8;
+            const elements_offset = try checkedAddUsize(tag_pos, 8);
             const total_bytes = @as(usize, word_count) * 8;
             try bounds.checkBounds(self.segments[landing_far.segment_id], elements_offset, total_bytes);
 
@@ -837,7 +934,7 @@ pub const Message = struct {
         }
         if (landing_far.segment_id >= self.segments.len) return error.InvalidSegmentId;
 
-        const elements_offset = @as(usize, landing_far.landing_pad_offset_words) * 8;
+        const elements_offset = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words));
         const tag_type = @as(u2, @truncate(tag_word & 0x3));
         if (tag_type == 0) {
             return self.validateInlineCompositeTag(landing_far.segment_id, elements_offset, tag_word, remaining, nesting);
@@ -866,14 +963,12 @@ pub const Message = struct {
             struct_offset = override;
         } else {
             const offset = decodeOffsetWords(pointer_word);
-            const struct_offset_signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset) * 8;
-            if (struct_offset_signed < 0 or struct_offset_signed > std.math.maxInt(usize)) return error.OutOfBounds;
-            struct_offset = @as(usize, @intCast(struct_offset_signed));
+            struct_offset = try computeContentOffset(pointer_pos, offset, null);
         }
 
         const segment = self.segments[segment_id];
         const total_words = @as(usize, data_size) + @as(usize, pointer_count);
-        const total_bytes = total_words * 8;
+        const total_bytes = try wordsToBytes(total_words);
         if (struct_offset > segment.len) {
             log.warn("OutOfBounds: struct offset {} exceeds segment {} length {} (data_words={} pointer_words={})", .{ struct_offset, segment_id, segment.len, data_size, pointer_count });
             return error.OutOfBounds;
@@ -886,10 +981,10 @@ pub const Message = struct {
         try consumeWords(remaining, total_words);
 
         if (pointer_count == 0) return;
-        const pointer_section_offset = struct_offset + @as(usize, data_size) * 8;
+        const pointer_section_offset = try checkedAddUsize(struct_offset, try wordsToBytes(@as(usize, data_size)));
         var idx: usize = 0;
         while (idx < pointer_count) : (idx += 1) {
-            const ptr_pos = pointer_section_offset + idx * 8;
+            const ptr_pos = try checkedAddUsize(pointer_section_offset, try pointerIndexByteOffset(idx));
             const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
             try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
         }
@@ -928,8 +1023,8 @@ pub const Message = struct {
             const expected_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
             if (expected_words_u64 > @as(u64, word_count)) return error.InvalidInlineCompositePointer;
 
-            const elements_offset = tag_pos + 8;
-            const total_bytes = @as(usize, word_count) * 8;
+            const elements_offset = try checkedAddUsize(tag_pos, 8);
+            const total_bytes = try wordsToBytes(@as(usize, word_count));
             const segment = self.segments[segment_id];
             if (elements_offset > segment.len) return error.OutOfBounds;
             if (total_bytes > segment.len - elements_offset) return error.OutOfBounds;
@@ -937,14 +1032,14 @@ pub const Message = struct {
             try consumeWords(remaining, @as(usize, word_count));
 
             if (pointer_words == 0 or element_count == 0) return;
-            const element_stride = (@as(usize, data_words) + @as(usize, pointer_words)) * 8;
+            const element_stride = try wordsToBytes(@as(usize, data_words) + @as(usize, pointer_words));
             var element_index: u32 = 0;
             while (element_index < element_count) : (element_index += 1) {
-                const element_base = elements_offset + @as(usize, element_index) * element_stride;
-                const pointer_section = element_base + @as(usize, data_words) * 8;
+                const element_base = try checkedAddUsize(elements_offset, try checkedMulUsize(@as(usize, element_index), element_stride));
+                const pointer_section = try checkedAddUsize(element_base, try wordsToBytes(@as(usize, data_words)));
                 var ptr_index: u16 = 0;
                 while (ptr_index < pointer_words) : (ptr_index += 1) {
-                    const ptr_pos = pointer_section + @as(usize, ptr_index) * 8;
+                    const ptr_pos = try checkedAddUsize(pointer_section, try pointerIndexByteOffset(@as(usize, ptr_index)));
                     const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
                     try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
                 }
@@ -958,9 +1053,7 @@ pub const Message = struct {
             content_offset = override;
         } else {
             const offset = decodeOffsetWords(pointer_word);
-            const content_offset_signed = @as(i64, @intCast(pointer_pos)) + 8 + @as(i64, offset) * 8;
-            if (content_offset_signed < 0 or content_offset_signed > std.math.maxInt(usize)) return error.OutOfBounds;
-            content_offset = @as(usize, @intCast(content_offset_signed));
+            content_offset = try computeContentOffset(pointer_pos, offset, null);
         }
 
         const segment = self.segments[segment_id];
@@ -980,7 +1073,7 @@ pub const Message = struct {
         if (element_size != 6 or element_count == 0) return;
         var index: u32 = 0;
         while (index < element_count) : (index += 1) {
-            const ptr_pos = content_offset + @as(usize, index) * 8;
+            const ptr_pos = try checkedAddUsize(content_offset, try pointerIndexByteOffset(@as(usize, index)));
             const word = std.mem.readInt(u64, segment[ptr_pos..][0..8], .little);
             try self.validatePointer(segment_id, ptr_pos, word, remaining, nesting);
         }
@@ -1111,15 +1204,18 @@ pub const StructReader = struct {
     pub fn getDataSection(self: StructReader) []const u8 {
         const segment = self.message.segments[self.segment_id];
         const start = self.offset;
-        const end = start + @as(usize, self.data_size) * 8;
+        const data_bytes = wordsToBytes(@as(usize, self.data_size)) catch return &[_]u8{};
+        const end = checkedAddUsize(start, data_bytes) catch return &[_]u8{};
         if (end > segment.len) return &[_]u8{};
         return segment[start..end];
     }
 
     pub fn getPointerSection(self: StructReader) []const u8 {
         const segment = self.message.segments[self.segment_id];
-        const start = self.offset + @as(usize, self.data_size) * 8;
-        const end = start + @as(usize, self.pointer_count) * 8;
+        const data_bytes = wordsToBytes(@as(usize, self.data_size)) catch return &[_]u8{};
+        const pointer_bytes = wordsToBytes(@as(usize, self.pointer_count)) catch return &[_]u8{};
+        const start = checkedAddUsize(self.offset, data_bytes) catch return &[_]u8{};
+        const end = checkedAddUsize(start, pointer_bytes) catch return &[_]u8{};
         if (end > segment.len) return &[_]u8{};
         return segment[start..end];
     }
@@ -1128,8 +1224,8 @@ pub const StructReader = struct {
     // pointer_index is always a small codegen constant; overflow not possible in practice
     pub fn isPointerNull(self: StructReader, pointer_index: usize) bool {
         const pointers = self.getPointerSection();
-        const pointer_offset = pointer_index * 8;
-        if (pointer_offset + 8 > pointers.len) return true;
+        const pointer_offset = pointerIndexByteOffset(pointer_index) catch return true;
+        if (!hasByteRange(pointers, pointer_offset, 8)) return true;
         const pointer_word = std.mem.readInt(u64, pointers[pointer_offset..][0..8], .little);
         return pointer_word == 0;
     }
@@ -1146,7 +1242,7 @@ pub const StructReader = struct {
     /// an error (e.g. protocol-internal parsing where the field must exist).
     pub fn readU64(self: StructReader, byte_offset: usize) u64 {
         const data = self.getDataSection();
-        if (byte_offset + 8 > data.len) return 0;
+        if (!hasByteRange(data, byte_offset, 8)) return 0;
         return std.mem.readInt(u64, data[byte_offset..][0..8], .little);
     }
 
@@ -1169,7 +1265,7 @@ pub const StructReader = struct {
     /// an error.
     pub fn readU32(self: StructReader, byte_offset: usize) u32 {
         const data = self.getDataSection();
-        if (byte_offset + 4 > data.len) return 0;
+        if (!hasByteRange(data, byte_offset, 4)) return 0;
         return std.mem.readInt(u32, data[byte_offset..][0..4], .little);
     }
 
@@ -1192,7 +1288,7 @@ pub const StructReader = struct {
     /// an error.
     pub fn readU16(self: StructReader, byte_offset: usize) u16 {
         const data = self.getDataSection();
-        if (byte_offset + 2 > data.len) return 0;
+        if (!hasByteRange(data, byte_offset, 2)) return 0;
         return std.mem.readInt(u16, data[byte_offset..][0..2], .little);
     }
 
@@ -1258,17 +1354,23 @@ pub const StructReader = struct {
         return self.readU16(byte_offset);
     }
 
+    fn absolutePointerPos(self: StructReader, pointer_offset: usize) !usize {
+        const data_bytes = try wordsToBytes(@as(usize, self.data_size));
+        const pointer_section_start = try checkedAddUsize(self.offset, data_bytes);
+        return checkedAddUsize(pointer_section_start, pointer_offset);
+    }
+
     /// Read a struct list (inline-composite encoding) from the given pointer index.
     pub fn readStructList(self: StructReader, pointer_index: usize) !StructListReader {
         const pointers = self.getPointerSection();
-        const pointer_offset = pointer_index * 8;
+        const pointer_offset = try pointerIndexByteOffset(pointer_index);
         try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
         if (pointer_word == 0) return error.InvalidPointer;
 
-        const absolute_pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_offset;
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
         const list = try self.message.resolveInlineCompositeList(self.segment_id, absolute_pointer_pos, pointer_word);
 
         return .{
@@ -1283,14 +1385,14 @@ pub const StructReader = struct {
 
     fn resolveListPointerAt(self: StructReader, pointer_index: usize) !Message.ResolvedListPointer {
         const pointers = self.getPointerSection();
-        const pointer_offset = pointer_index * 8;
+        const pointer_offset = try pointerIndexByteOffset(pointer_index);
         try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
         if (pointer_word == 0) return error.InvalidPointer;
 
-        const absolute_pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_offset;
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
         return self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
     }
 
@@ -1323,26 +1425,26 @@ pub const StructReader = struct {
     /// Read a nested struct from the given pointer index.
     pub fn readStruct(self: StructReader, pointer_index: usize) !StructReader {
         const pointers = self.getPointerSection();
-        const pointer_offset = pointer_index * 8;
+        const pointer_offset = try pointerIndexByteOffset(pointer_index);
         try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
         if (pointer_word == 0) return error.InvalidPointer;
 
-        const absolute_pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_offset;
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
         return self.message.resolveStructPointer(self.segment_id, absolute_pointer_pos, pointer_word);
     }
 
     /// Read a type-erased pointer from the given pointer index.
     pub fn readAnyPointer(self: StructReader, pointer_index: usize) !AnyPointerReader {
         const pointers = self.getPointerSection();
-        const pointer_offset = pointer_index * 8;
+        const pointer_offset = try pointerIndexByteOffset(pointer_index);
         try bounds.checkBounds(pointers, pointer_offset, 8);
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
-        const absolute_pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_offset;
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
 
         return .{
             .message = self.message,
@@ -1367,7 +1469,7 @@ pub const StructReader = struct {
         try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         const segment = self.message.segments[list.segment_id];
-        return segment[list.content_offset .. list.content_offset + total_bytes];
+        return checkedSlice(segment, list.content_offset, total_bytes);
     }
 
     /// Read a `List(UInt8)` from the given pointer index.
@@ -1504,18 +1606,18 @@ pub const StructReader = struct {
     /// when the pointer is null. This follows the Cap'n Proto convention where
     /// absent/null text fields default to the empty string for schema evolution
     /// compatibility.
-    pub fn readText(self: StructReader, pointer_index: usize) ![]const u8 {
+    fn readTextData(self: StructReader, pointer_index: usize) !?[]const u8 {
         const pointers = self.getPointerSection();
-        const pointer_offset = pointer_index * 8;
-        if (pointer_offset + 8 > pointers.len) return "";
+        const pointer_offset = pointerIndexByteOffset(pointer_index) catch return null;
+        if (!hasByteRange(pointers, pointer_offset, 8)) return null;
 
         const pointer_data = pointers[pointer_offset..][0..8];
         const pointer_word = std.mem.readInt(u64, pointer_data, .little);
 
         // Check if null pointer
-        if (pointer_word == 0) return "";
+        if (pointer_word == 0) return null;
 
-        const absolute_pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_offset;
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
         const list = try self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
 
         // Text should be byte-sized elements
@@ -1523,22 +1625,22 @@ pub const StructReader = struct {
 
         try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
 
-        // Text includes null terminator, so return without it
         const segment = self.message.segments[list.segment_id];
-        const text_data = segment[list.content_offset .. list.content_offset + list.element_count];
+        return try checkedSlice(segment, list.content_offset, list.element_count);
+    }
+
+    pub fn readText(self: StructReader, pointer_index: usize) ![]const u8 {
+        const text_data = (try self.readTextData(pointer_index)) orelse return "";
         return bounds.stripNullTerminator(text_data);
     }
 
     /// Read a text field with strict UTF-8 validation.
     ///
-    /// Like `readText`, but returns `error.InvalidUtf8` when the text
-    /// contains ill-formed UTF-8 byte sequences.
+    /// Like `readText`, but non-null text must include the wire-format trailing
+    /// NUL byte and contain well-formed UTF-8 before that terminator.
     pub fn readTextStrict(self: StructReader, pointer_index: usize) ![]const u8 {
-        const text = try self.readText(pointer_index);
-        if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
-            return error.InvalidUtf8;
-        }
-        return text;
+        const text_data = (try self.readTextData(pointer_index)) orelse return "";
+        return requireStrictText(text_data);
     }
 };
 

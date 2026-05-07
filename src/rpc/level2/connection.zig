@@ -86,6 +86,8 @@ pub const Connection = struct {
 
     pub const Options = struct {
         read_buffer_size: usize = 64 * 1024,
+        write_queue_max_items: usize = transport_mod.Transport.default_max_queued_items,
+        write_queue_max_bytes: usize = transport_mod.Transport.default_max_queued_bytes,
     };
 
     pub fn init(
@@ -97,7 +99,11 @@ pub const Connection = struct {
         return .{
             .allocator = allocator,
             .io = io,
-            .transport = try transport_mod.Transport.init(allocator, io, fd, options.read_buffer_size),
+            .transport = try transport_mod.Transport.initWithOptions(allocator, io, fd, .{
+                .read_buffer_size = options.read_buffer_size,
+                .write_queue_max_items = options.write_queue_max_items,
+                .write_queue_max_bytes = options.write_queue_max_bytes,
+            }),
             .framer = framing.Framer.init(allocator),
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
@@ -249,13 +255,19 @@ pub const Connection = struct {
             const n = self.transport.read() catch |err| {
                 log.debug("transport read error: {}", .{err});
                 self.invokeOnError(err);
+                self.on_message = null;
+                self.on_error = null;
+                self.transport.shutdown();
                 break;
             };
             if (n == 0) {
                 log.debug("transport EOF", .{});
                 break;
             }
-            self.handleRead(self.transport.read_buf[0..n]);
+            if (!self.handleRead(self.transport.read_buf[0..n])) {
+                self.transport.shutdown();
+                break;
+            }
         }
         // Stop the writer thread before invoking on_close, since on_close
         // may deinit/destroy the connection.
@@ -298,20 +310,15 @@ pub const Connection = struct {
         return self.transport.isClosing();
     }
 
-    fn handleRead(self: *Connection, data: []const u8) void {
-        if (self.on_message == null or self.on_error == null) return;
+    fn handleRead(self: *Connection, data: []const u8) bool {
+        if (self.on_message == null or self.on_error == null) return false;
 
         const push_result = self.framer.push(data);
         if (push_result) |_| {} else |err| {
             log.debug("framer push failed: {}", .{err});
             self.framer.reset();
-            self.on_message = null;
-            const on_error = self.on_error;
-            self.on_error = null;
-            if (on_error) |cb| {
-                self.invokeErrorCallback(cb, err);
-            }
-            return;
+            self.invokeTerminalError(err);
+            return false;
         }
 
         while (true) {
@@ -326,19 +333,14 @@ pub const Connection = struct {
                     // framer and callbacks intact so the next read can retry.
                     log.debug("popFrame OOM, will retry on next read", .{});
                     self.invokeOnError(err);
-                    return;
+                    return true;
                 }
                 // Framing errors (InvalidFrame, FrameTooLarge) corrupt the
                 // byte stream — reset the framer and null the callbacks.
                 log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.framer.reset();
-                self.on_message = null;
-                const on_error = self.on_error;
-                self.on_error = null;
-                if (on_error) |cb| {
-                    self.invokeErrorCallback(cb, err);
-                }
-                return;
+                self.invokeTerminalError(err);
+                return false;
             };
             if (frame == null) break;
             const bytes = frame.?;
@@ -354,14 +356,24 @@ pub const Connection = struct {
             // receiving future reads normally.
             self.on_message.?(self, bytes) catch |err| {
                 self.invokeOnError(err);
-                return;
+                return true;
             };
         }
+        return true;
     }
 
     fn invokeOnError(self: *Connection, err: anyerror) void {
         const cb = self.on_error orelse return;
         self.invokeErrorCallback(cb, err);
+    }
+
+    fn invokeTerminalError(self: *Connection, err: anyerror) void {
+        const on_error = self.on_error;
+        if (on_error) |cb| {
+            self.invokeErrorCallback(cb, err);
+        }
+        self.on_message = null;
+        self.on_error = null;
     }
 
     fn invokeErrorCallback(
@@ -421,6 +433,7 @@ test "connection handleRead assembles fragmented frame and dispatches once compl
 
     var conn = Connection{
         .allocator = allocator,
+        .io = std.testing.io,
         .transport = undefined,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
@@ -430,11 +443,11 @@ test "connection handleRead assembles fragmented frame and dispatches once compl
     defer conn.framer.deinit();
 
     try std.testing.expect(frame.len > 8);
-    conn.handleRead(frame[0..5]);
+    try std.testing.expect(conn.handleRead(frame[0..5]));
     try std.testing.expectEqual(@as(usize, 0), state.received.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.error_count);
 
-    conn.handleRead(frame[5..]);
+    try std.testing.expect(conn.handleRead(frame[5..]));
     try std.testing.expectEqual(@as(usize, 1), state.received.items.len);
     try std.testing.expectEqual(@as(u32, 0xA1B2_C3D4), state.received.items[0]);
     try std.testing.expectEqual(@as(usize, 0), state.error_count);
@@ -482,6 +495,7 @@ test "connection handleRead dispatches coalesced frames in order" {
 
     var conn = Connection{
         .allocator = allocator,
+        .io = std.testing.io,
         .transport = undefined,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
@@ -490,7 +504,7 @@ test "connection handleRead dispatches coalesced frames in order" {
     };
     defer conn.framer.deinit();
 
-    conn.handleRead(combined);
+    try std.testing.expect(conn.handleRead(combined));
     try std.testing.expectEqual(@as(usize, 2), state.received.items.len);
     try std.testing.expectEqual(@as(u32, 10), state.received.items[0]);
     try std.testing.expectEqual(@as(u32, 20), state.received.items[1]);
@@ -542,6 +556,7 @@ test "connection handleRead stops draining when message handler errors" {
 
     var conn = Connection{
         .allocator = allocator,
+        .io = std.testing.io,
         .transport = undefined,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
@@ -550,7 +565,7 @@ test "connection handleRead stops draining when message handler errors" {
     };
     defer conn.framer.deinit();
 
-    conn.handleRead(combined);
+    try std.testing.expect(conn.handleRead(combined));
     try std.testing.expectEqual(@as(usize, 1), state.received.items.len);
     try std.testing.expectEqual(@as(u32, 111), state.received.items[0]);
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
@@ -579,6 +594,7 @@ test "connection handleRead reports malformed frame errors" {
     var state = Harness.State{};
     var conn = Connection{
         .allocator = allocator,
+        .io = std.testing.io,
         .transport = undefined,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
@@ -589,10 +605,12 @@ test "connection handleRead reports malformed frame errors" {
 
     // segment_count_minus_one = max u32 overflows on +1 in framer.updateExpected()
     const bad_header = [_]u8{ 0xff, 0xff, 0xff, 0xff };
-    conn.handleRead(&bad_header);
+    try std.testing.expect(!conn.handleRead(&bad_header));
 
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+    try std.testing.expect(conn.on_message == null);
+    try std.testing.expect(conn.on_error == null);
 }
 
 test "connection handleRead rejects oversized frame headers" {
@@ -616,6 +634,7 @@ test "connection handleRead rejects oversized frame headers" {
     var state = Harness.State{};
     var conn = Connection{
         .allocator = allocator,
+        .io = std.testing.io,
         .transport = undefined,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
@@ -629,9 +648,11 @@ test "connection handleRead rejects oversized frame headers" {
     std.mem.writeInt(u32, header[0..4], 0, .little); // 1 segment
     std.mem.writeInt(u32, header[4..8], oversized_words, .little);
 
-    conn.handleRead(&header);
+    try std.testing.expect(!conn.handleRead(&header));
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.FrameTooLarge), state.last_error);
+    try std.testing.expect(conn.on_message == null);
+    try std.testing.expect(conn.on_error == null);
 }
 
 test "connection isClosing reflects transport state" {
@@ -640,8 +661,10 @@ test "connection isClosing reflects transport state" {
 
     var conn = Connection{
         .allocator = allocator,
+        .io = std.testing.io,
         .transport = .{
             .allocator = allocator,
+            .io = std.testing.io,
             .fd = undefined,
             .read_buf = read_buf[0..],
         },

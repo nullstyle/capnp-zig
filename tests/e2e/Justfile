@@ -1,6 +1,6 @@
 # Zig-focused Cap'n Proto RPC interop e2e harness.
-runner := 'deno run --allow-all ../../tools/e2e_runner.ts'
-zig-runner := 'zig run ../../tools/e2e_runner.zig --'
+runner := 'zig run ../../tools/e2e_runner.zig --'
+deno-runner := 'deno run --allow-all ../../tools/e2e_runner.ts'
 
 build:
     {{runner}} --build-only
@@ -10,7 +10,11 @@ test:
 
 # Run e2e using the native Zig runner (no Deno dependency)
 test-zig:
-    {{zig-runner}}
+    {{runner}}
+
+# Run e2e using the legacy Deno runner
+test-deno:
+    {{deno-runner}}
 
 test-skip-build:
     {{runner}} --skip-build

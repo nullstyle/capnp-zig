@@ -17,8 +17,8 @@ const net = std.Io.net;
 /// connection, then loops back to accept the next one.
 ///
 /// The user-provided `AcceptFn` callback fires on the worker thread when a
-/// connection is accepted; the user sets the bootstrap capability and starts
-/// the peer inside the callback.
+/// connection is accepted. WorkerPool owns the accepted peer/connection; the
+/// callback configures it and returns whether to run or reject it.
 pub const WorkerPool = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -27,6 +27,9 @@ pub const WorkerPool = struct {
     ctx: *anyopaque,
     on_accept: AcceptFn,
     conn_options: Connection.Options,
+    active_connections: []?*Connection,
+    active_mu: std.Io.Mutex,
+    run_active: std.atomic.Value(bool),
     should_stop: std.atomic.Value(bool),
     fd_closed: std.atomic.Value(bool),
 
@@ -36,14 +39,27 @@ pub const WorkerPool = struct {
         connection_options: Connection.Options = .{},
     };
 
-    /// Called on worker thread when a connection is accepted.
-    /// User sets bootstrap capability and calls peer.start().
+    /// Result returned by `AcceptFn`.
+    pub const AcceptDecision = enum {
+        /// The callback configured the peer and the worker should enter
+        /// `Connection.run()`.
+        accept,
+        /// Close and clean up the accepted peer/connection without running it.
+        reject,
+    };
+
+    /// Called on worker thread when a connection is accepted. WorkerPool owns
+    /// the `Peer` and `Connection` for every outcome; the callback must not
+    /// deinit or destroy either pointer. On `.accept`, the callback should
+    /// configure the peer and normally call `peer.start()`. WorkerPool cleans
+    /// both objects after `Connection.run()` returns. On `.reject` or error,
+    /// WorkerPool closes and frees both objects without running the connection.
     pub const AcceptFn = *const fn (
         ctx: *anyopaque,
         peer: *Peer,
         conn: *Connection,
         worker_index: u32,
-    ) void;
+    ) anyerror!AcceptDecision;
 
     const Worker = struct {
         thread: ?std.Thread = null,
@@ -70,6 +86,10 @@ pub const WorkerPool = struct {
             w.* = .{};
         }
 
+        const active_connections = try allocator.alloc(?*Connection, concurrency);
+        errdefer allocator.free(active_connections);
+        @memset(active_connections, null);
+
         return .{
             .allocator = allocator,
             .io = io,
@@ -78,6 +98,9 @@ pub const WorkerPool = struct {
             .ctx = ctx,
             .on_accept = on_accept,
             .conn_options = config.connection_options,
+            .active_connections = active_connections,
+            .active_mu = .init,
+            .run_active = std.atomic.Value(bool).init(false),
             .should_stop = std.atomic.Value(bool).init(false),
             .fd_closed = std.atomic.Value(bool).init(false),
         };
@@ -86,12 +109,14 @@ pub const WorkerPool = struct {
     /// Blocks until shutdown. Spawns N-1 threads; the calling thread runs
     /// worker 0.
     pub fn run(self: *WorkerPool) !void {
+        if (self.run_active.cmpxchgStrong(false, true, .acq_rel, .acquire) != null) {
+            return error.WorkerPoolAlreadyRunning;
+        }
+        defer self.run_active.store(false, .release);
+
         var spawned: usize = 0;
         errdefer {
-            self.should_stop.store(true, .release);
-            if (!self.fd_closed.swap(true, .acq_rel)) {
-                closeListenFd(self.io, self.server.socket.handle);
-            }
+            self.shutdown();
             for (self.workers[1..][0..spawned]) |*w| {
                 if (w.thread) |t| t.join();
                 w.thread = null;
@@ -114,27 +139,35 @@ pub const WorkerPool = struct {
     }
 
     /// Signal all workers to stop. Closes the listen socket to unblock
-    /// any threads blocked in `accept()`.
+    /// any threads blocked in `accept()`, and requests close on every
+    /// connection currently running on a worker. This is an abrupt pool
+    /// shutdown: callbacks still receive normal peer/connection close
+    /// notifications, but active transports are not drained gracefully.
     pub fn shutdown(self: *WorkerPool) void {
         self.should_stop.store(true, .release);
         if (!self.fd_closed.swap(true, .acq_rel)) {
             closeListenFd(self.io, self.server.socket.handle);
         }
+        self.closeActiveConnections();
     }
 
     pub fn deinit(self: *WorkerPool) void {
-        if (!self.fd_closed.swap(true, .acq_rel)) {
-            closeListenFd(self.io, self.server.socket.handle);
+        self.shutdown();
+        while (self.run_active.load(.acquire)) {
+            std.Thread.yield() catch {};
         }
         // Join any worker threads that are still running. Normally run()
         // joins all threads before returning, but deinit must be safe if
-        // called after shutdown() without a completed run().
+        // called after shutdown() without a completed run(); shutdown()
+        // requests close on active connections so these joins do not wait
+        // for clients to disconnect on their own.
         for (self.workers) |*w| {
             if (w.thread) |t| {
                 t.join();
                 w.thread = null;
             }
         }
+        self.allocator.free(self.active_connections);
         self.allocator.free(self.workers);
     }
 
@@ -154,25 +187,73 @@ pub const WorkerPool = struct {
             };
 
             if (pool.should_stop.load(.acquire)) {
-                conn_ptr.deinit();
-                pool.allocator.destroy(conn_ptr);
+                destroyConnection(pool.allocator, conn_ptr);
                 break;
             }
 
             const peer_ptr = pool.allocator.create(Peer) catch {
-                conn_ptr.deinit();
-                pool.allocator.destroy(conn_ptr);
+                destroyConnection(pool.allocator, conn_ptr);
                 continue;
             };
 
             peer_ptr.* = Peer.init(pool.allocator, conn_ptr);
 
-            pool.on_accept(pool.ctx, peer_ptr, conn_ptr, worker_index);
+            const decision = pool.on_accept(pool.ctx, peer_ptr, conn_ptr, worker_index) catch |err| {
+                log.debug("worker {}: on_accept failed: {}", .{ worker_index, err });
+                destroyAccepted(pool.allocator, peer_ptr, conn_ptr);
+                continue;
+            };
+
+            if (decision == .reject) {
+                destroyAccepted(pool.allocator, peer_ptr, conn_ptr);
+                continue;
+            }
 
             // Run the connection's blocking read loop.
             // This returns when the connection closes or errors.
+            pool.setActiveConnection(worker_index, conn_ptr);
             conn_ptr.run();
+            pool.clearActiveConnection(worker_index, conn_ptr);
+            destroyAccepted(pool.allocator, peer_ptr, conn_ptr);
         }
+    }
+
+    fn setActiveConnection(self: *WorkerPool, worker_index: u32, conn: *Connection) void {
+        self.active_mu.lockUncancelable(self.io);
+        defer self.active_mu.unlock(self.io);
+        self.active_connections[@intCast(worker_index)] = conn;
+        if (self.should_stop.load(.acquire)) {
+            conn.requestClose();
+        }
+    }
+
+    fn clearActiveConnection(self: *WorkerPool, worker_index: u32, conn: *Connection) void {
+        self.active_mu.lockUncancelable(self.io);
+        defer self.active_mu.unlock(self.io);
+        const index: usize = @intCast(worker_index);
+        if (self.active_connections[index] == conn) {
+            self.active_connections[index] = null;
+        }
+    }
+
+    fn closeActiveConnections(self: *WorkerPool) void {
+        self.active_mu.lockUncancelable(self.io);
+        defer self.active_mu.unlock(self.io);
+        for (self.active_connections) |maybe_conn| {
+            if (maybe_conn) |conn| conn.requestClose();
+        }
+    }
+
+    fn destroyAccepted(allocator: std.mem.Allocator, peer: *Peer, conn: *Connection) void {
+        _ = peer.takeAttachedConnection(*Connection);
+        peer.deinit();
+        allocator.destroy(peer);
+        destroyConnection(allocator, conn);
+    }
+
+    fn destroyConnection(allocator: std.mem.Allocator, conn: *Connection) void {
+        conn.deinit();
+        allocator.destroy(conn);
     }
 
     fn closeListenFd(io: std.Io, fd: net.Socket.Handle) void {

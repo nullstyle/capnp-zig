@@ -216,6 +216,35 @@ test "InboundCapTable isRetained out of bounds returns false" {
     try std.testing.expect(!inbound.isRetained(999));
 }
 
+test "InboundCapTable rejects cap tables over the configured limit" {
+    const allocator = std.testing.allocator;
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var ret = try builder.beginReturn(1, .results);
+    var payload = try ret.payloadTyped();
+    _ = try payload.initContent();
+    _ = try ret.initCapTableTyped(cap_table.max_table_size + 1);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+
+    const ret_decoded = try decoded.asReturn();
+    const results = ret_decoded.results orelse return error.MissingPayload;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    try std.testing.expectError(
+        error.CapTableFull,
+        cap_table.InboundCapTable.init(allocator, results.cap_table, &caps),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // InboundCapTable.clone() tests
 // ---------------------------------------------------------------------------

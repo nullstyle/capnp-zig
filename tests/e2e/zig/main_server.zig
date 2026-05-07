@@ -1,5 +1,6 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
+const io_backend_options = @import("io_backend_options");
 
 const rpc = capnpc.rpc;
 const message = capnpc.message;
@@ -1710,19 +1711,10 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
 }
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
-    const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
-
-    peer.deinit();
-    allocator.destroy(peer);
-
-    if (conn) |attached| {
-        attached.deinit();
-        allocator.destroy(attached);
-    }
+    _ = peer;
 }
 
-fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, _: u32) void {
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.connection.Connection, _: u32) anyerror!rpc.worker_pool.WorkerPool.AcceptDecision {
     const app: *App = @ptrCast(@alignCast(ctx_ptr));
 
     const bootstrap_result = switch (app.schema) {
@@ -1734,14 +1726,11 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Con
 
     _ = bootstrap_result catch |err| {
         std.log.err("failed to set bootstrap: {s}", .{@errorName(err)});
-        peer.deinit();
-        app.allocator.destroy(peer);
-        conn.deinit();
-        app.allocator.destroy(conn);
-        return;
+        return err;
     };
 
     peer.start(onPeerError, onPeerClose);
+    return .accept;
 }
 
 fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
@@ -1764,10 +1753,17 @@ fn usage() void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const io = init.io;
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
+
+    const backend_kind = capnpc.io_backend.parseKind(io_backend_options.kind) orelse {
+        std.debug.print("invalid -Dio-backend selector: {s}\n", .{io_backend_options.kind});
+        return error.InvalidIoBackend;
+    };
+    var backend = try capnpc.io_backend.Backend.init(backend_kind, init.gpa, init.io);
+    defer backend.deinit();
+    const io = backend.io();
 
     const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => {

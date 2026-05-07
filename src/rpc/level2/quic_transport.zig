@@ -20,6 +20,8 @@ pub const default_udp_rx_buffer_size: usize = 64 * 1024;
 pub const default_udp_tx_buffer_size: usize = 1500;
 pub const default_stream_read_buffer_size: usize = 64 * 1024;
 pub const default_max_message_bytes: usize = framing.Framer.max_frame_words * 8;
+pub const default_max_outbound_queue_items: usize = 1024;
+pub const default_max_outbound_queue_bytes: usize = default_max_message_bytes + length_prefix_bytes;
 
 const length_prefix_bytes: usize = 4;
 
@@ -49,6 +51,8 @@ pub const ClientOptions = struct {
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
     stream_read_buffer_size: usize = default_stream_read_buffer_size,
     max_message_bytes: usize = default_max_message_bytes,
+    max_outbound_queue_items: usize = default_max_outbound_queue_items,
+    max_outbound_queue_bytes: usize = default_max_outbound_queue_bytes,
     ca_pem: ?[]const u8 = null,
 };
 
@@ -64,6 +68,8 @@ pub const ServerOptions = struct {
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
     stream_read_buffer_size: usize = default_stream_read_buffer_size,
     max_message_bytes: usize = default_max_message_bytes,
+    max_outbound_queue_items: usize = default_max_outbound_queue_items,
+    max_outbound_queue_bytes: usize = default_max_outbound_queue_bytes,
 };
 
 const Role = enum { client, server };
@@ -86,7 +92,20 @@ const QueuedWrite = struct {
 const OutboundQueue = struct {
     mu: std.atomic.Mutex = .unlocked,
     items: std.ArrayListUnmanaged(QueuedWrite) = .empty,
+    head: usize = 0,
+    queued_items: usize = 0,
+    queued_bytes: usize = 0,
+    max_items: usize = default_max_outbound_queue_items,
+    max_bytes: usize = default_max_outbound_queue_bytes,
     closed: bool = false,
+    flushing: bool = false,
+
+    fn init(max_items: usize, max_bytes: usize) OutboundQueue {
+        return .{
+            .max_items = max_items,
+            .max_bytes = max_bytes,
+        };
+    }
 
     fn lock(self: *OutboundQueue) void {
         while (!self.mu.tryLock()) std.atomic.spinLoopHint();
@@ -96,17 +115,27 @@ const OutboundQueue = struct {
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
         bytes: []u8,
-    ) error{ BrokenPipe, OutOfMemory }!void {
+    ) error{ BrokenPipe, OutboundQueueFull, OutOfMemory }!void {
         self.lock();
         defer self.mu.unlock();
         if (self.closed) {
             allocator.free(bytes);
             return error.BrokenPipe;
         }
+        const new_bytes = std.math.add(usize, self.queued_bytes, bytes.len) catch {
+            allocator.free(bytes);
+            return error.OutboundQueueFull;
+        };
+        if (self.queued_items >= self.max_items or new_bytes > self.max_bytes) {
+            allocator.free(bytes);
+            return error.OutboundQueueFull;
+        }
         self.items.append(allocator, .{ .bytes = bytes }) catch {
             allocator.free(bytes);
             return error.OutOfMemory;
         };
+        self.queued_items += 1;
+        self.queued_bytes = new_bytes;
     }
 
     fn close(self: *OutboundQueue) void {
@@ -118,15 +147,18 @@ const OutboundQueue = struct {
     fn isEmpty(self: *OutboundQueue) bool {
         self.lock();
         defer self.mu.unlock();
-        return self.items.items.len == 0;
+        return self.queued_items == 0;
     }
 
     fn drain(self: *OutboundQueue, allocator: std.mem.Allocator) void {
         self.lock();
         defer self.mu.unlock();
-        for (self.items.items) |item| allocator.free(item.bytes);
+        for (self.items.items[self.head..]) |item| allocator.free(item.bytes);
         self.items.deinit(allocator);
         self.items = .empty;
+        self.head = 0;
+        self.queued_items = 0;
+        self.queued_bytes = 0;
     }
 
     fn flush(
@@ -134,30 +166,111 @@ const OutboundQueue = struct {
         allocator: std.mem.Allocator,
         conn: *nullq.Connection,
     ) !void {
-        self.lock();
-        defer self.mu.unlock();
+        if (!self.beginFlush()) return;
+        defer self.endFlush();
 
-        while (self.items.items.len > 0) {
-            var item = &self.items.items[0];
-            const remaining = item.bytes[item.offset..];
-            if (remaining.len == 0) {
-                allocator.free(item.bytes);
-                _ = self.items.orderedRemove(0);
-                continue;
-            }
+        while (true) {
+            var item = self.takeFront() orelse return;
+            while (true) {
+                const remaining = item.bytes[item.offset..];
+                if (remaining.len == 0) {
+                    const item_len = item.bytes.len;
+                    allocator.free(item.bytes);
+                    self.releaseItem(item_len);
+                    break;
+                }
 
-            const written = conn.streamWrite(baseline_stream_id, remaining) catch |err| switch (err) {
-                error.StreamNotFound => return,
-                else => return err,
-            };
-            if (written == 0) return;
+                const written = conn.streamWrite(baseline_stream_id, remaining) catch |err| switch (err) {
+                    error.StreamNotFound => {
+                        self.requeueFront(allocator, item);
+                        return;
+                    },
+                    else => {
+                        self.requeueFront(allocator, item);
+                        return err;
+                    },
+                };
+                if (written == 0) {
+                    self.requeueFront(allocator, item);
+                    return;
+                }
 
-            item.offset += written;
-            if (item.offset == item.bytes.len) {
-                allocator.free(item.bytes);
-                _ = self.items.orderedRemove(0);
+                item.offset += written;
             }
         }
+    }
+
+    fn beginFlush(self: *OutboundQueue) bool {
+        self.lock();
+        defer self.mu.unlock();
+        if (self.flushing) return false;
+        self.flushing = true;
+        return true;
+    }
+
+    fn endFlush(self: *OutboundQueue) void {
+        self.lock();
+        self.flushing = false;
+        self.mu.unlock();
+    }
+
+    fn takeFront(self: *OutboundQueue) ?QueuedWrite {
+        self.lock();
+        defer self.mu.unlock();
+        if (self.head >= self.items.items.len) return null;
+
+        const item = self.items.items[self.head];
+        self.head += 1;
+        return item;
+    }
+
+    fn requeueFront(
+        self: *OutboundQueue,
+        allocator: std.mem.Allocator,
+        item: QueuedWrite,
+    ) void {
+        var free_item = false;
+
+        self.lock();
+        if (self.closed) {
+            self.queued_items -= 1;
+            self.queued_bytes -= item.bytes.len;
+            free_item = true;
+        } else {
+            std.debug.assert(self.head > 0);
+            self.head -= 1;
+            self.items.items[self.head] = item;
+        }
+        self.mu.unlock();
+
+        if (free_item) allocator.free(item.bytes);
+    }
+
+    fn releaseItem(self: *OutboundQueue, item_len: usize) void {
+        self.lock();
+        self.queued_items -= 1;
+        self.queued_bytes -= item_len;
+        self.compactIfNeeded();
+        self.mu.unlock();
+    }
+
+    fn compactIfNeeded(self: *OutboundQueue) void {
+        if (self.head == 0) return;
+        if (self.head == self.items.items.len) {
+            self.items.clearRetainingCapacity();
+            self.head = 0;
+            return;
+        }
+        if (self.head < 32 or self.head < self.items.items.len - self.head) return;
+
+        const live = self.items.items.len - self.head;
+        std.mem.copyForwards(
+            QueuedWrite,
+            self.items.items[0..live],
+            self.items.items[self.head..],
+        );
+        self.items.items.len = live;
+        self.head = 0;
     }
 };
 
@@ -267,7 +380,9 @@ pub const Connection = struct {
         if (options.udp_rx_buffer_size == 0 or
             options.udp_tx_buffer_size == 0 or
             options.stream_read_buffer_size == 0 or
-            options.max_message_bytes == 0)
+            options.max_message_bytes == 0 or
+            options.max_outbound_queue_items == 0 or
+            options.max_outbound_queue_bytes == 0)
         {
             return error.InvalidConfig;
         }
@@ -299,6 +414,8 @@ pub const Connection = struct {
             options.udp_tx_buffer_size,
             options.stream_read_buffer_size,
             options.max_message_bytes,
+            options.max_outbound_queue_items,
+            options.max_outbound_queue_bytes,
             options.remote_addr,
         );
     }
@@ -309,10 +426,13 @@ pub const Connection = struct {
         options: ServerOptions,
     ) !Connection {
         if (options.alpn_protocols.len == 0) return error.InvalidConfig;
+        if (options.max_concurrent_connections != 1) return error.InvalidConfig;
         if (options.udp_rx_buffer_size == 0 or
             options.udp_tx_buffer_size == 0 or
             options.stream_read_buffer_size == 0 or
-            options.max_message_bytes == 0)
+            options.max_message_bytes == 0 or
+            options.max_outbound_queue_items == 0 or
+            options.max_outbound_queue_bytes == 0)
         {
             return error.InvalidConfig;
         }
@@ -344,6 +464,8 @@ pub const Connection = struct {
             options.udp_tx_buffer_size,
             options.stream_read_buffer_size,
             options.max_message_bytes,
+            options.max_outbound_queue_items,
+            options.max_outbound_queue_bytes,
             null,
         );
     }
@@ -359,6 +481,8 @@ pub const Connection = struct {
         udp_tx_buffer_size: usize,
         stream_read_buffer_size: usize,
         max_message_bytes: usize,
+        max_outbound_queue_items: usize,
+        max_outbound_queue_bytes: usize,
         remote_addr: ?Net.IpAddress,
     ) !Connection {
         const udp_rx_buf = try allocator.alloc(u8, udp_rx_buffer_size);
@@ -382,6 +506,7 @@ pub const Connection = struct {
             .stream_read_buf = stream_read_buf,
             .max_message_bytes = max_message_bytes,
             .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
+            .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
     }
@@ -452,7 +577,6 @@ pub const Connection = struct {
         if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
         const encoded = try self.allocator.alloc(u8, length_prefix_bytes + frame.len);
-        errdefer self.allocator.free(encoded);
         std.mem.writeInt(u32, encoded[0..length_prefix_bytes], @intCast(frame.len), .little);
         std.mem.copyForwards(u8, encoded[length_prefix_bytes..], frame);
         try self.outbound.enqueue(self.allocator, encoded);
@@ -601,11 +725,7 @@ pub const Connection = struct {
                     self.invokeOnError(err);
                     return;
                 }
-                self.inbound.reset();
-                self.on_message = null;
-                const on_error = self.on_error;
-                self.on_error = null;
-                if (on_error) |cb| self.invokeErrorCallback(cb, err);
+                self.terminateFrameError(err);
                 return;
             };
             const bytes = frame orelse return;
@@ -615,6 +735,17 @@ pub const Connection = struct {
                 return;
             };
         }
+    }
+
+    fn terminateFrameError(self: *Connection, err: anyerror) void {
+        log.debug("fatal QUIC frame error, closing connection: {}", .{err});
+        self.close_requested.store(true, .release);
+        self.outbound.close();
+        self.inbound.reset();
+        self.on_message = null;
+        const on_error = self.on_error;
+        self.on_error = null;
+        if (on_error) |cb| self.invokeErrorCallback(cb, err);
     }
 
     fn drainOutgoingDatagrams(self: *Connection, now_us: u64) !void {
@@ -791,6 +922,57 @@ test "LengthDelimitedFramer rejects oversized frames" {
     std.mem.writeInt(u32, bytes[0..4], 3, .little);
     try framer.push(&bytes);
     try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
+}
+
+test "QUIC dispatch treats malformed frames as terminal" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var udp_rx_buf: [0]u8 = .{};
+    var udp_tx_buf: [0]u8 = .{};
+    var stream_read_buf: [0]u8 = .{};
+    var conn = Connection{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .role = .client,
+        .socket = undefined,
+        .endpoint = undefined,
+        .start_timestamp = std.Io.Timestamp.now(std.testing.io, .awake),
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        .udp_rx_buf = &udp_rx_buf,
+        .udp_tx_buf = &udp_tx_buf,
+        .stream_read_buf = &stream_read_buf,
+        .max_message_bytes = 1024,
+        .inbound = LengthDelimitedFramer.init(std.testing.allocator, 1024),
+        .outbound = OutboundQueue.init(4, 1024),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.inbound.deinit();
+    defer conn.outbound.drain(std.testing.allocator);
+
+    const bad_frame = [_]u8{ 0, 0, 0, 0 };
+    try conn.inbound.push(&bad_frame);
+    try conn.dispatchAvailableFrames();
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+    try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 
 test "QUIC path address round-trips IPv4" {

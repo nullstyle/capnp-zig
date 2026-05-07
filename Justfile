@@ -40,7 +40,7 @@ e2e-build:
 
 # Run Zig interoperability e2e gate
 e2e:
-    just --justfile tests/e2e/Justfile test
+    just --justfile tests/e2e/Justfile test-zig
 
 # Run e2e using the native Zig runner (no Deno dependency)
 e2e-zig:
@@ -58,7 +58,7 @@ e2e-scaffold:
 ci:
     just src/rpc/check-rpc
     zig build test --summary all
-    just e2e
+    just e2e-zig
 
 # List CI workflow jobs as seen by `act`
 act-list:
@@ -105,7 +105,11 @@ clean:
 
 # Format code
 fmt:
-    zig fmt --exclude tests/golden src/ tests/ bench/ tools/ examples/
+    zig fmt --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
+
+# Check formatting with the same paths CI uses
+fmt-check:
+    zig fmt --check --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
 
 # Check for errors without building
 check:

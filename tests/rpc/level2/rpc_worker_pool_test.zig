@@ -7,10 +7,11 @@ const Connection = capnpc.rpc.connection.Connection;
 const Peer = capnpc.rpc.peer.Peer;
 const net = std.Io.net;
 
-fn onAcceptNoop(_: *anyopaque, peer: *Peer, _: *Connection, _: u32) void {
+fn onAcceptNoop(_: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
     // Just start the peer so it wires up; it will close when the client
     // disconnects.
     peer.start(onPeerError, onPeerClose);
+    return .accept;
 }
 
 fn onPeerError(peer: *Peer, _: anyerror) void {
@@ -18,14 +19,7 @@ fn onPeerError(peer: *Peer, _: anyerror) void {
 }
 
 fn onPeerClose(peer: *Peer) void {
-    const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*Connection);
-    peer.deinit();
-    allocator.destroy(peer);
-    if (conn) |c| {
-        c.deinit();
-        allocator.destroy(c);
-    }
+    _ = peer;
 }
 
 test "WorkerPool: init and deinit with concurrency=1" {
@@ -107,10 +101,42 @@ test "WorkerPool: multi-worker run and immediate shutdown" {
 const AcceptCounter = struct {
     count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
-    fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) void {
+    fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
         const self: *AcceptCounter = @ptrCast(@alignCast(ctx));
         _ = self.count.fetchAdd(1, .monotonic);
         peer.start(onPeerError, onPeerClose);
+        return .accept;
+    }
+};
+
+const AcceptFailureCounter = struct {
+    count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    fn onAccept(ctx: *anyopaque, _: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *AcceptFailureCounter = @ptrCast(@alignCast(ctx));
+        _ = self.count.fetchAdd(1, .monotonic);
+        return error.TestAcceptFailed;
+    }
+};
+
+const RejectCounter = struct {
+    count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    fn onAccept(ctx: *anyopaque, _: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *RejectCounter = @ptrCast(@alignCast(ctx));
+        _ = self.count.fetchAdd(1, .monotonic);
+        return .reject;
+    }
+};
+
+const ActiveCounter = struct {
+    count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+
+    fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *ActiveCounter = @ptrCast(@alignCast(ctx));
+        _ = self.count.fetchAdd(1, .monotonic);
+        peer.start(onPeerError, onPeerClose);
+        return .accept;
     }
 };
 
@@ -185,6 +211,50 @@ const posix_helpers = if (builtin.target.os.tag != .windows) struct {
     }
 } else struct {};
 
+fn spawnPoolThread(pool: *WorkerPool) !std.Thread {
+    return std.Thread.spawn(.{}, struct {
+        fn call(p: *WorkerPool) void {
+            p.run() catch {};
+        }
+    }.call, .{pool});
+}
+
+fn connectUntilAccepted(
+    addr: net.IpAddress,
+    count: *std.atomic.Value(u32),
+    keep_connected: bool,
+) !?std.posix.fd_t {
+    var attempts: u32 = 0;
+    while (count.load(.acquire) == 0 and attempts < 200) : (attempts += 1) {
+        const client_fd = posix_helpers.rawTcpConnect(addr) catch |err| {
+            switch (err) {
+                error.ConnectionRefused,
+                error.ConnectionResetByPeer,
+                error.NetworkUnreachable,
+                => {
+                    posix_helpers.sleepMs(10);
+                    continue;
+                },
+                else => return err,
+            }
+        };
+
+        var wait_attempts: u32 = 0;
+        while (count.load(.acquire) == 0 and wait_attempts < 20) : (wait_attempts += 1) {
+            posix_helpers.sleepMs(10);
+        }
+
+        if (count.load(.acquire) > 0) {
+            if (keep_connected) return client_fd;
+            posix_helpers.closeFd(client_fd);
+            return null;
+        }
+
+        posix_helpers.closeFd(client_fd);
+    }
+    return error.AcceptTimedOut;
+}
+
 test "WorkerPool: single worker accepts connection then shuts down" {
     if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -203,42 +273,111 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     // Retrieve the actual bound port from the shared listen fd.
     const port = try posix_helpers.getSockPort(pool.server.socket.handle);
 
-    // Run pool in a background thread.
-    const pool_thread = try std.Thread.spawn(.{}, struct {
-        fn call(p: *WorkerPool) void {
-            p.run() catch {};
-        }
-    }.call, .{&pool});
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
 
     const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-
-    // Poll until an accept is observed, issuing connect attempts while waiting.
-    // This avoids flaky fixed-sleep timing on slower CI machines.
-    // Use iteration counter (~200 * 10ms = 2s timeout).
-    var attempts: u32 = 0;
-    while (counter.count.load(.acquire) == 0 and attempts < 200) : (attempts += 1) {
-        const client_fd = posix_helpers.rawTcpConnect(connect_addr) catch |err| {
-            switch (err) {
-                error.ConnectionRefused,
-                error.ConnectionResetByPeer,
-                error.NetworkUnreachable,
-                => {
-                    posix_helpers.sleepMs(10);
-                    continue;
-                },
-                else => {
-                    pool.shutdown();
-                    pool_thread.join();
-                    return err;
-                },
-            }
-        };
-        posix_helpers.closeFd(client_fd);
-        posix_helpers.sleepMs(10);
-    }
+    _ = try connectUntilAccepted(connect_addr, &counter.count, false);
 
     pool.shutdown();
     pool_thread.join();
 
     try std.testing.expect(counter.count.load(.acquire) >= 1);
+}
+
+test "WorkerPool: on_accept error closes accepted connection" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var counter = AcceptFailureCounter{};
+    var pool = try WorkerPool.init(
+        allocator,
+        std.testing.io,
+        .{ .ip4 = .loopback(0) },
+        @ptrCast(&counter),
+        AcceptFailureCounter.onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
+
+    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+    _ = try connectUntilAccepted(connect_addr, &counter.count, false);
+
+    pool.shutdown();
+    pool_thread.join();
+
+    try std.testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
+}
+
+test "WorkerPool: on_accept reject closes accepted connection" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var counter = RejectCounter{};
+    var pool = try WorkerPool.init(
+        allocator,
+        std.testing.io,
+        .{ .ip4 = .loopback(0) },
+        @ptrCast(&counter),
+        RejectCounter.onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
+
+    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+    _ = try connectUntilAccepted(connect_addr, &counter.count, false);
+
+    pool.shutdown();
+    pool_thread.join();
+
+    try std.testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
+}
+
+test "WorkerPool: shutdown closes active connection so run can return" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var counter = ActiveCounter{};
+    var pool = try WorkerPool.init(
+        allocator,
+        std.testing.io,
+        .{ .ip4 = .loopback(0) },
+        @ptrCast(&counter),
+        ActiveCounter.onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
+
+    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+    const client_fd = (try connectUntilAccepted(connect_addr, &counter.count, true)).?;
+    defer posix_helpers.closeFd(client_fd);
+
+    pool.shutdown();
+    pool_thread.join();
+
+    try std.testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
 }

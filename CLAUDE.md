@@ -20,7 +20,7 @@ capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/)
 
 ## Build & Test Commands
 
-Requires **Zig 0.16** (use `mise install` to set up toolchain).
+Requires **Zig 0.16.0** (pinned in `mise.toml`; run `mise install` to set up the toolchain).
 
 | Task | Command |
 |---|---|
@@ -58,7 +58,7 @@ Four-layer design, each building on the previous:
 
 **Code Generation** (`src/capnpc-zig/`) — Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP using synchronous POSIX I/O with concurrent read/write transport. Modules: `runtime.zig` (listener/socket helpers), `connection.zig` (state machine), `framing.zig` (message framing), `transport.zig` (concurrent read/write I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
+**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP. All socket I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded` today, `std.Io.Evented` once it lands upstream). Modules: `runtime.zig` (listener/socket helpers), `connection.zig` (state machine), `framing.zig` (message framing), `transport.zig` (concurrent read/write I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
 
 ### Key data flows
 
@@ -70,7 +70,17 @@ Four-layer design, each building on the previous:
 
 ### Public API (`src/lib.zig`)
 
-Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`
+Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`, `io_backend`
+
+### Switchable Io Backend
+
+The RPC runtime is polymorphic over `std.Io`. Centralised selection lives in `src/io_backend.zig` (`pub const io_backend` from `src/lib.zig`):
+
+- `Backend.init(.process_init, gpa, init.io)` — reuse the `std.Io` provided by `std.process.Init` (currently `std.Io.Threaded`).
+- `Backend.init(.threaded, gpa, _)` — explicitly construct a fresh `std.Io.Threaded`.
+- `Backend.init(.evented, gpa, _)` — placeholder for `std.Io.Evented`; returns `error.EventedBackendNotImplemented` until Zig ships it.
+
+RPC entry points (`examples/rpc_pingpong.zig`, `tests/e2e/zig/main_{server,client}.zig`) read the kind from the `-Dio-backend=process_init|threaded|evented` build option (default `process_init`) via the `io_backend_options` module wired up in `build.zig`.
 
 ## Coding Conventions
 
@@ -92,118 +102,27 @@ Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC r
 
 ## Tooling & Configuration
 
-- Target Zig `0.16`. `capnp`, `just`, and `mise` are optional but recommended for local workflows.
-- Use `bd` for task tracking (see below).
-
-<!-- BEGIN BEADS INTEGRATION -->
-## Issue Tracking with bd (beads)
-
-**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
-
-### Why bd?
-
-- Dependency-aware: Track blockers and relationships between issues
-- Git-friendly: Dolt-powered version control with native sync
-- Agent-optimized: JSON output, ready work detection, discovered-from links
-- Prevents duplicate tracking systems and confusion
-
-### Quick Start
-
-**Check for ready work:**
-
-```bash
-bd ready --json
-```
-
-**Create new issues:**
-
-```bash
-bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
-```
-
-**Claim and update:**
-
-```bash
-bd update <id> --claim --json
-bd update bd-42 --priority 1 --json
-```
-
-**Complete work:**
-
-```bash
-bd close bd-42 --reason "Completed" --json
-```
-
-### Issue Types
-
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature with subtasks
-- `chore` - Maintenance (dependencies, tooling)
-
-### Priorities
-
-- `0` - Critical (security, data loss, broken builds)
-- `1` - High (major features, important bugs)
-- `2` - Medium (default, nice-to-have)
-- `3` - Low (polish, optimization)
-- `4` - Backlog (future ideas)
-
-### Workflow for AI Agents
-
-1. **Check ready work**: `bd ready` shows unblocked issues
-2. **Claim your task atomically**: `bd update <id> --claim`
-3. **Work on it**: Implement, test, document
-4. **Discover new work?** Create linked issue:
-   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
-5. **Complete**: `bd close <id> --reason "Done"`
-
-### Auto-Sync
-
-bd automatically syncs via Dolt:
-
-- Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
-- No manual export/import needed!
-
-### Important Rules
-
-- Use bd for ALL task tracking
-- Always use `--json` flag for programmatic use
-- Link discovered work with `discovered-from` dependencies
-- Check `bd ready` before asking "what should I work on?"
-- Do NOT create markdown TODO lists
-- Do NOT use external issue trackers
-- Do NOT duplicate tracking systems
-
-For more details, see README.md and docs/QUICKSTART.md.
-
-<!-- END BEADS INTEGRATION -->
+- Target Zig `0.16.0`. `capnp`, `just`, and `mise` are optional but recommended for local workflows.
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+**When ending a code-changing work session that owns the current branch**, complete the steps below. Work is not complete until the owned changes are committed and pushed, but do not push unrelated user work from a dirty shared checkout.
 
 **MANDATORY WORKFLOW:**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+1. **Run quality gates** (if code changed) - Tests, linters, builds
+2. **PUSH OWNED CHANGES TO REMOTE**:
    ```bash
+   git status --short
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+3. **Clean up** - Clear stashes, prune remote branches
+4. **Verify** - All changes committed AND pushed
+5. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
+- Work is NOT complete until owned changes are pushed.
+- Do not push when the worktree contains unrelated edits you do not own.
+- If push fails, resolve owned branch issues and retry, or hand off the blocker clearly.

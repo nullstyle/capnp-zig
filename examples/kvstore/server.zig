@@ -1183,17 +1183,6 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
         svc.removeSubscriber(peer);
     }
 
-    const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
-
-    peer.deinit();
-    allocator.destroy(peer);
-
-    if (conn) |attached| {
-        attached.deinit();
-        allocator.destroy(attached);
-    }
-
     std.log.info("client disconnected", .{});
 }
 
@@ -1201,7 +1190,7 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 // Listener (WorkerPool)
 // ---------------------------------------------------------------------------
 
-fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, _: u32) void {
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, _: u32) anyerror!rpc.worker_pool.WorkerPool.AcceptDecision {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
 
     // Enable cross-thread wake so notifications can be sent on this
@@ -1212,11 +1201,12 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Con
 
     _ = KvStore.setBootstrap(peer, &svc.server) catch |err| {
         std.log.err("failed to set bootstrap: {s}", .{@errorName(err)});
-        return;
+        return err;
     };
 
     peer.start(onPeerError, onPeerClose);
     std.log.info("client connected", .{});
+    return .accept;
 }
 
 // ---------------------------------------------------------------------------

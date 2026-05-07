@@ -133,6 +133,8 @@ pub const Generator = struct {
     /// definitions. Returns an allocator-owned byte slice containing the
     /// generated `.zig` source.
     pub fn generateFile(self: *Generator, requested_file: schema.RequestedFile) ![]const u8 {
+        try validateRelativeSchemaPath(requested_file.filename);
+
         self.verboseLog("capnpc-zig: generating file {s}\n", .{requested_file.filename});
 
         // Set current file context for cross-file type resolution.
@@ -1476,11 +1478,37 @@ pub const Generator = struct {
     /// E.g., "other.capnp" → "other.zig", "path/to/types.capnp" → "path/to/types.zig"
     fn importPathFromCapnpName(self: *Generator, capnp_name: []const u8) ![]const u8 {
         const normalized = if (std.mem.startsWith(u8, capnp_name, "/")) capnp_name[1..] else capnp_name;
+        try validateRelativeSchemaPath(normalized);
+
         if (std.mem.endsWith(u8, normalized, ".capnp")) {
             const base = normalized[0 .. normalized.len - 6];
             return std.fmt.allocPrint(self.allocator, "{s}.zig", .{base});
         }
         return std.fmt.allocPrint(self.allocator, "{s}.zig", .{normalized});
+    }
+
+    fn validateRelativeSchemaPath(path: []const u8) !void {
+        if (path.len == 0) return error.InvalidSchemaPath;
+        if (std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidSchemaPath;
+        if (path[0] == '/') return error.InvalidSchemaPath;
+        if (hasWindowsDriveRoot(path)) return error.InvalidSchemaPath;
+
+        var component_start: usize = 0;
+        for (path, 0..) |c, i| {
+            if (c != '/') continue;
+            try validateSchemaPathComponent(path[component_start..i]);
+            component_start = i + 1;
+        }
+        try validateSchemaPathComponent(path[component_start..]);
+    }
+
+    fn hasWindowsDriveRoot(path: []const u8) bool {
+        return path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and path[2] == '/';
+    }
+
+    fn validateSchemaPathComponent(component: []const u8) !void {
+        if (component.len == 0) return error.InvalidSchemaPath;
+        if (std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) return error.InvalidSchemaPath;
     }
 
     /// Walk the scope chain from a node to find its owning file node ID.
@@ -1996,17 +2024,25 @@ test "Generator.importPathFromCapnpName handles empty and minimal names" {
     var gen = Generator.init(alloc, &.{}) catch unreachable;
     defer gen.deinit();
 
-    const empty = try gen.importPathFromCapnpName("");
-    defer alloc.free(empty);
-    try std.testing.expectEqualStrings(".zig", empty);
-
-    const root = try gen.importPathFromCapnpName("/");
-    defer alloc.free(root);
-    try std.testing.expectEqualStrings(".zig", root);
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName(""));
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("/"));
 
     const minimal = try gen.importPathFromCapnpName("x");
     defer alloc.free(minimal);
     try std.testing.expectEqualStrings("x.zig", minimal);
+}
+
+test "Generator.importPathFromCapnpName rejects unsafe import paths" {
+    const alloc = std.testing.allocator;
+    var gen = Generator.init(alloc, &.{}) catch unreachable;
+    defer gen.deinit();
+
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("/"));
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("C:/tmp/schema.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("path//types.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("path/../types.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("path/./types.capnp"));
+    try std.testing.expectError(error.InvalidSchemaPath, gen.importPathFromCapnpName("path\\types.capnp"));
 }
 
 test "Generator.lowerFirst lowercases first character" {

@@ -31,6 +31,21 @@ pub fn build(b: *std.Build) void {
     });
     const nullq_module = nullq_dep.module("nullq");
 
+    // Selects which std.Io backend RPC entry points should construct. See
+    // src/io_backend.zig for the full list of accepted spellings; the
+    // default `process_init` reuses the std.Io that std.process.Init
+    // already provides (currently std.Io.Threaded). Switch to `evented`
+    // once Zig ships std.Io.Evented.
+    const io_backend_kind = b.option(
+        []const u8,
+        "io-backend",
+        "Io backend used by RPC entry points: process_init|threaded|evented (default: process_init)",
+    ) orelse "process_init";
+
+    const io_backend_options = b.addOptions();
+    io_backend_options.addOption([]const u8, "kind", io_backend_kind);
+    const io_backend_options_module = io_backend_options.createModule();
+
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
         .root_source_file = b.path("src/lib.zig"),
@@ -144,8 +159,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(ping_pong_bench);
-
     const run_ping_pong = b.addRunArtifact(ping_pong_bench);
     if (b.args) |args| {
         run_ping_pong.addArgs(args);
@@ -165,8 +178,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-
-    b.installArtifact(pack_unpack_bench);
 
     const run_pack = b.addRunArtifact(pack_unpack_bench);
     run_pack.addArgs(&.{ "--mode", "pack" });
@@ -195,10 +206,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    b.installArtifact(bench_check);
-
     const run_bench_check = b.addRunArtifact(bench_check);
-    run_bench_check.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_bench_check.addArgs(args);
     }
@@ -215,6 +223,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "io_backend_options", .module = io_backend_options_module },
             },
         }),
     });
@@ -227,6 +236,9 @@ pub fn build(b: *std.Build) void {
     const example_rpc_step = b.step("example-rpc", "Run RPC ping-pong example");
     example_rpc_step.dependOn(&run_rpc_pingpong.step);
 
+    const install_rpc_pingpong_step = b.step("example-rpc-install", "Build RPC ping-pong example (install only)");
+    install_rpc_pingpong_step.dependOn(&b.addInstallArtifact(rpc_pingpong_example, .{}).step);
+
     // Zig e2e RPC hooks
     const e2e_zig_client = b.addExecutable(.{
         .name = "e2e-zig-client",
@@ -236,6 +248,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "io_backend_options", .module = io_backend_options_module },
             },
         }),
     });
@@ -248,6 +261,9 @@ pub fn build(b: *std.Build) void {
     const e2e_zig_client_step = b.step("e2e-zig-client", "Run Zig RPC e2e client hook");
     e2e_zig_client_step.dependOn(&run_e2e_zig_client.step);
 
+    const install_e2e_zig_client_step = b.step("e2e-zig-client-install", "Build Zig RPC e2e client (install only)");
+    install_e2e_zig_client_step.dependOn(&b.addInstallArtifact(e2e_zig_client, .{}).step);
+
     const e2e_zig_server = b.addExecutable(.{
         .name = "e2e-zig-server",
         .root_module = b.createModule(.{
@@ -256,6 +272,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "io_backend_options", .module = io_backend_options_module },
             },
         }),
     });
@@ -484,7 +501,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_rpc_step);
     test_step.dependOn(test_wasm_host_step);
 
-    // Check step (compile without linking) — reuse the main exe
+    // Check step (compile visible user-facing targets without running them).
     const check_step = b.step("check", "Check for compilation errors");
     check_step.dependOn(&exe.step);
+    check_step.dependOn(&lib_tests.step);
+    check_step.dependOn(&main_tests.step);
+    check_step.dependOn(&rpc_pingpong_example.step);
+    check_step.dependOn(&e2e_zig_client.step);
+    check_step.dependOn(&e2e_zig_server.step);
+    check_step.dependOn(&wasm_host_module.step);
 }

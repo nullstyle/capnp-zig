@@ -1,5 +1,6 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
+const io_backend_options = @import("io_backend_options");
 const pingpong = @import("pingpong.zig");
 
 const rpc = capnpc.rpc;
@@ -180,10 +181,17 @@ fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) 
 // ---------------------------------------------------------------------------
 
 pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
+
+    const backend_kind = capnpc.io_backend.parseKind(io_backend_options.kind) orelse {
+        std.debug.print("invalid -Dio-backend selector: {s}\n", .{io_backend_options.kind});
+        return error.InvalidIoBackend;
+    };
+    var backend = try capnpc.io_backend.Backend.init(backend_kind, init.gpa, init.io);
+    defer backend.deinit();
+    const io = backend.io();
 
     const address = parseIp4Address("127.0.0.1", 7001);
 

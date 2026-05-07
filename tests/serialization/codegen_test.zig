@@ -1,8 +1,45 @@
 const std = @import("std");
 const testing = std.testing;
+const capnpc_mod = @import("capnpc-zig");
+const request_reader = capnpc_mod.request;
 
 // This test file will test the generated code from example schemas
 // We'll create a simple Person struct and test its serialization
+
+fn encodeOffsetWords(offset_words: i32) u32 {
+    if (offset_words < 0) {
+        const base: i64 = 1 << 30;
+        return @as(u32, @intCast(base + offset_words));
+    }
+    return @as(u32, @intCast(offset_words));
+}
+
+fn makeStructPointer(offset_words: i32, data_words: u16, pointer_words: u16) u64 {
+    var pointer: u64 = 0;
+    pointer |= @as(u64, encodeOffsetWords(offset_words)) << 2;
+    pointer |= @as(u64, data_words) << 32;
+    pointer |= @as(u64, pointer_words) << 48;
+    return pointer;
+}
+
+fn makeRecursiveCodeGeneratorRequestBytes(allocator: std.mem.Allocator) ![]u8 {
+    const bytes = try allocator.alloc(u8, 24);
+    @memset(bytes, 0);
+
+    std.mem.writeInt(u32, bytes[0..4], 0, .little); // segment count - 1
+    std.mem.writeInt(u32, bytes[4..8], 2, .little); // segment size in words
+    std.mem.writeInt(u64, bytes[8..16], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, bytes[16..24], makeStructPointer(-1, 0, 1), .little);
+
+    return bytes;
+}
+
+test "CodeGeneratorRequest parser validates traversal before reading schema" {
+    const bytes = try makeRecursiveCodeGeneratorRequestBytes(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.NestingLimitExceeded, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
 
 test "Generated code: Person struct round trip" {
     // This test assumes we've generated code from a Person schema

@@ -158,6 +158,18 @@ fn writeToTmpFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
     try file.writeStreamingAll(io, data);
 }
 
+fn shouldSkipPycapnpFailure(stderr: []const u8) bool {
+    const capnp_import_failed =
+        std.mem.indexOf(u8, stderr, "No module named 'capnp'") != null or
+        std.mem.indexOf(u8, stderr, "No module named capnp") != null or
+        (std.mem.indexOf(u8, stderr, "ImportError") != null and
+            std.mem.indexOf(u8, stderr, "capnp") != null);
+    const capnp_dylib_missing =
+        std.mem.indexOf(u8, stderr, "Library not loaded") != null and
+        std.mem.indexOf(u8, stderr, "libcapnp") != null;
+    return capnp_import_failed or capnp_dylib_missing;
+}
+
 test "Interop: Zig -> pycapnp round trip" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -256,6 +268,7 @@ test "Interop: Zig -> pycapnp round trip" {
     defer allocator.free(result.stderr);
 
     if (!(result.term == .exited and result.term.exited == 0)) {
+        if (shouldSkipPycapnpFailure(result.stderr)) return error.SkipZigTest;
         std.debug.print("pycapnp verify failed:\nstdout: {s}\nstderr: {s}\n", .{ result.stdout, result.stderr });
         return error.PycapnpVerifyFailed;
     }
@@ -360,6 +373,7 @@ test "Interop: Zig -> pycapnp packed round trip" {
     defer allocator.free(result.stderr);
 
     if (!(result.term == .exited and result.term.exited == 0)) {
+        if (shouldSkipPycapnpFailure(result.stderr)) return error.SkipZigTest;
         std.debug.print("pycapnp packed verify failed:\nstdout: {s}\nstderr: {s}\n", .{ result.stdout, result.stderr });
         return error.PycapnpVerifyFailed;
     }
@@ -421,6 +435,7 @@ fn runRandomFixture(use_packed: bool) !void {
         defer allocator.free(result.stderr);
 
         if (!(result.term == .exited and result.term.exited == 0)) {
+            if (shouldSkipPycapnpFailure(result.stderr)) return error.SkipZigTest;
             std.debug.print("python fixture gen failed:\nstdout: {s}\nstderr: {s}\n", .{ result.stdout, result.stderr });
             return error.PythonFixtureGenFailed;
         }

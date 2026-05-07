@@ -4,7 +4,7 @@
 - Full Cap'n Proto RPC protocol compliance (bootstrap, calls, returns, pipelining, capability transfer).
 - Production-ready performance: low overhead, backpressure-aware, minimal allocations.
 - Integration with the existing `src/serialization/message.zig` wire-format layer and codegen.
-- Concurrent read/write I/O via POSIX sockets with dedicated writer threads.
+- Concurrent read/write I/O over `std.Io` with dedicated writer threads. The runtime is polymorphic over the concrete `std.Io` backend so that `std.Io.Threaded` (Zig 0.16) and the eventual `std.Io.Evented` are both supported without protocol changes — see `src/io_backend.zig`.
 
 ## Non-Goals (Initial Phase)
 - TLS or authentication for the TCP transport (assume a trusted transport).

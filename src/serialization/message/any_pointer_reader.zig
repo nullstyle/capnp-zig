@@ -1,6 +1,23 @@
 const std = @import("std");
 const bounds = @import("bounds.zig");
 
+inline fn checkedSlice(data: []const u8, offset: usize, size: usize) error{OutOfBounds}![]const u8 {
+    const end = std.math.add(usize, offset, size) catch return error.OutOfBounds;
+    if (end > data.len) return error.OutOfBounds;
+    return data[offset..end];
+}
+
+fn requireStrictText(text_data: []const u8) ![]const u8 {
+    if (text_data.len == 0 or text_data[text_data.len - 1] != 0) {
+        return error.InvalidTextPointer;
+    }
+    const text = text_data[0 .. text_data.len - 1];
+    if (!std.unicode.utf8ValidateSlice(text)) {
+        return error.InvalidUtf8;
+    }
+    return text;
+}
+
 pub fn define(
     comptime MessageType: type,
     comptime StructReaderType: type,
@@ -68,18 +85,21 @@ pub fn define(
 
                 try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
 
-                const text_data = self.message.segments[list.segment_id][list.content_offset .. list.content_offset + list.element_count];
+                const text_data = try checkedSlice(self.message.segments[list.segment_id], list.content_offset, list.element_count);
                 return bounds.stripNullTerminator(text_data);
             }
 
-            /// Like `getText`, but returns `error.InvalidUtf8` when the text
-            /// contains ill-formed UTF-8 byte sequences.
+            /// Like `getText`, but non-null text must include the wire-format
+            /// trailing NUL byte and contain well-formed UTF-8 before it.
             pub fn getTextStrict(self: AnyPointerReader) ![]const u8 {
-                const text = try self.getText();
-                if (text.len > 0 and !std.unicode.utf8ValidateSlice(text)) {
-                    return error.InvalidUtf8;
-                }
-                return text;
+                if (self.pointer_word == 0) return "";
+                const list = try self.message.resolveListPointer(self.segment_id, self.pointer_pos, self.pointer_word);
+                if (list.element_size != 2) return error.InvalidTextPointer;
+
+                try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, list.element_count);
+
+                const text_data = try checkedSlice(self.message.segments[list.segment_id], list.content_offset, list.element_count);
+                return requireStrictText(text_data);
             }
 
             pub fn getData(self: AnyPointerReader) ![]const u8 {
@@ -88,7 +108,7 @@ pub fn define(
                 if (list.element_size != 2) return error.InvalidPointer;
                 const total_bytes = try list_content_bytes(list.element_size, list.element_count);
                 try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
-                return self.message.segments[list.segment_id][list.content_offset .. list.content_offset + total_bytes];
+                return checkedSlice(self.message.segments[list.segment_id], list.content_offset, total_bytes);
             }
 
             pub fn getPointerList(self: AnyPointerReader) !PointerListReaderType {

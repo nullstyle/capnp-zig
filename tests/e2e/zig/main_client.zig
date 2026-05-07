@@ -1,5 +1,6 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
+const io_backend_options = @import("io_backend_options");
 
 const rpc = capnpc.rpc;
 
@@ -338,10 +339,17 @@ fn usage() void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const io = init.io;
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
+
+    const backend_kind = capnpc.io_backend.parseKind(io_backend_options.kind) orelse {
+        std.debug.print("invalid -Dio-backend selector: {s}\n", .{io_backend_options.kind});
+        return error.InvalidIoBackend;
+    };
+    var backend = try capnpc.io_backend.Backend.init(backend_kind, init.gpa, init.io);
+    defer backend.deinit();
+    const io = backend.io();
 
     const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => {

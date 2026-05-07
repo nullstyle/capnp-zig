@@ -2,11 +2,11 @@
 
 **WARNING: This code was extensively vibed;  It's only for me for now, use at your own risk**
 
-A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime using synchronous POSIX I/O with a concurrent read/write transport. Written entirely in Zig 0.16.
+A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets Zig 0.16.0.
 
 ## Features
 
-- **Pure Zig Implementation**: No C++ dependencies, written entirely in Zig 0.16
+- **Pure Zig Implementation**: No C++ dependencies, targets Zig 0.16.0
 - **Full Serialization Support**: Complete Cap'n Proto wire format including packed encoding and far pointers
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
@@ -19,7 +19,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 
 ### Prerequisites
 
-- Zig 0.16
+- Zig 0.16.0 (pinned in `mise.toml`)
 - Cap'n Proto compiler (`capnp`) - optional, for schema compilation
 - `mise` (recommended, for environment management)
 - `just` (recommended, for task automation)
@@ -252,6 +252,38 @@ Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp` (integratio
 - **Capability-based security**: Each connection maintains export and import tables tracking capabilities by ID with reference counting. The runtime sends `Release` when a refcount reaches zero.
 - **Promise pipelining**: Calls can be pipelined on promised answers before results arrive, reducing round trips.
 - **Structured peer orchestration**: The `Peer` type handles the full lifecycle -- call dispatch, return handling, embargo management, capability forwarding, and third-party handoff.
+- **Backend-agnostic I/O**: Every socket op flows through `std.Io`, so the runtime is polymorphic over any concrete backend (`std.Io.Threaded` today, `std.Io.Evented` once it lands upstream).
+
+### Switchable Io Backend
+
+The RPC runtime accepts a `std.Io` value at every entry point (`rpc.runtime.Listener.init`, `rpc.connection.Connection.init`, `rpc.transport.Transport.init`). To centralise backend selection, the library exports `capnpc.io_backend`:
+
+```zig
+const capnpc = @import("capnpc-zig");
+
+pub fn main(init: std.process.Init) !void {
+    var backend = try capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
+    defer backend.deinit();
+    const io = backend.io();
+    // pass `io` to rpc.runtime.Listener / rpc.connection.Connection / etc.
+}
+```
+
+`Backend.init` accepts:
+
+- `.process_init` -- reuse the `std.Io` provided by `std.process.Init` (in Zig 0.16 this is `std.Io.Threaded`).
+- `.threaded` -- explicitly construct a fresh `std.Io.Threaded` (useful for sizing your own thread pool or running multiple isolated I/O instances).
+- `.evented` -- reserved for `std.Io.Evented` once it ships in std; today returns `error.EventedBackendNotImplemented`.
+
+Bundled RPC executables (`example-rpc`, `e2e-zig-server`, `e2e-zig-client`) read the selection from a build option:
+
+```bash
+zig build example-rpc -Dio-backend=process_init   # default
+zig build example-rpc -Dio-backend=threaded       # explicit Threaded
+zig build example-rpc -Dio-backend=evented        # errors at runtime today
+```
+
+When `std.Io.Evented` becomes available, switching is a single-line change in `src/io_backend.zig` plus a rebuild with `-Dio-backend=evented`.
 
 ### Running the RPC Example
 

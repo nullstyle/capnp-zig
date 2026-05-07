@@ -1,6 +1,15 @@
 const std = @import("std");
 const message = @import("message.zig");
 
+inline fn hasByteRange(data: []const u8, offset: usize, size: usize) bool {
+    const end = std.math.add(usize, offset, size) catch return false;
+    return end <= data.len;
+}
+
+inline fn checkedEnd(offset: usize, size: usize) error{OutOfBounds}!usize {
+    return std.math.add(usize, offset, size) catch return error.OutOfBounds;
+}
+
 /// Minimal sequential reader over a fixed byte slice, providing the duck-typed
 /// methods expected by `readMessage` and `readPackedMessage` (readByte,
 /// readInt, readAll, readNoEof).
@@ -17,13 +26,14 @@ pub const SliceReader = struct {
 
     pub fn readInt(self: *SliceReader, comptime T: type, comptime endian: std.builtin.Endian) error{EndOfStream}!T {
         const size = @sizeOf(T);
-        if (self.pos + size > self.data.len) return error.EndOfStream;
+        if (!hasByteRange(self.data, self.pos, size)) return error.EndOfStream;
         const result = std.mem.readInt(T, self.data[self.pos..][0..size], endian);
         self.pos += size;
         return result;
     }
 
     pub fn readAll(self: *SliceReader, buf: []u8) error{EndOfStream}!usize {
+        if (self.pos >= self.data.len) return 0;
         const available = self.data.len - self.pos;
         const n = @min(buf.len, available);
         @memcpy(buf[0..n], self.data[self.pos..][0..n]);
@@ -32,7 +42,7 @@ pub const SliceReader = struct {
     }
 
     pub fn readNoEof(self: *SliceReader, buf: []u8) error{EndOfStream}!void {
-        if (self.pos + buf.len > self.data.len) return error.EndOfStream;
+        if (!hasByteRange(self.data, self.pos, buf.len)) return error.EndOfStream;
         @memcpy(buf, self.data[self.pos..][0..buf.len]);
         self.pos += buf.len;
     }
@@ -40,7 +50,7 @@ pub const SliceReader = struct {
 
 /// Cap'n Proto message reader (segment-aware)
 pub const Reader = struct {
-    pub const max_total_words: usize = 8 * 1024 * 1024;
+    pub const max_total_words: usize = message.Message.max_total_words;
 
     msg: message.Message,
     allocator: std.mem.Allocator,
@@ -206,7 +216,7 @@ pub const Reader = struct {
 
     fn readPointer(self: Reader, offset: usize) u64 {
         const segment = self.segment0();
-        if (offset + 8 > segment.len) return 0;
+        if (!hasByteRange(segment, offset, 8)) return 0;
         return std.mem.readInt(u64, segment[offset..][0..8], .little);
     }
 
@@ -219,10 +229,11 @@ pub const Reader = struct {
         if (list.element_size != 2) return null;
 
         const segment = self.msg.segments[list.segment_id];
-        if (list.content_offset + list.element_count > segment.len) return null;
+        const end = checkedEnd(list.content_offset, list.element_count) catch return null;
+        if (end > segment.len) return null;
         if (list.element_count == 0) return "";
 
-        const data = segment[list.content_offset .. list.content_offset + list.element_count];
+        const data = segment[list.content_offset..end];
         if (data.len > 0 and data[data.len - 1] == 0) {
             return data[0 .. data.len - 1];
         }
@@ -232,7 +243,7 @@ pub const Reader = struct {
     /// Read a primitive value at the given offset in segment 0.
     pub fn readPrimitive(self: Reader, comptime T: type, offset: usize) T {
         const segment = self.segment0();
-        if (offset + @sizeOf(T) > segment.len) return 0;
+        if (!hasByteRange(segment, offset, @sizeOf(T))) return 0;
         return std.mem.readInt(T, segment[offset..][0..@sizeOf(T)], .little);
     }
 
@@ -305,6 +316,28 @@ test "Reader.readText follows far pointers" {
     try std.testing.expectEqualStrings("far", maybe_text.?);
 }
 
+test "Reader public offset arithmetic handles extreme offsets" {
+    const allocator = std.testing.allocator;
+
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(1, 1);
+    struct_builder.writeU64(0, 99);
+    try struct_builder.writeText(0, "reader");
+
+    const bytes = try builder.toBytes();
+    defer allocator.free(bytes);
+
+    var reader = try Reader.init(allocator, bytes);
+    defer reader.deinit();
+
+    const max = std.math.maxInt(usize);
+    try std.testing.expectEqual(@as(u64, 0), reader.readPrimitive(u64, max));
+    try std.testing.expectEqual(false, reader.readBool(max, 0));
+    try std.testing.expect(reader.readText(max) == null);
+}
+
 test "Reader.readPackedMessage unpacks a packed stream" {
     const allocator = std.testing.allocator;
 
@@ -333,6 +366,17 @@ test "Reader.readMessage rejects overflowing segment count" {
     const bytes = [_]u8{ 0xff, 0xff, 0xff, 0xff };
     var stream = SliceReader{ .data = &bytes };
     try std.testing.expectError(error.InvalidSegmentCount, Reader.readMessage(std.testing.allocator, &stream));
+}
+
+test "SliceReader handles extreme positions without arithmetic overflow" {
+    const bytes = [_]u8{ 1, 2, 3, 4 };
+    var stream = SliceReader{ .data = &bytes, .pos = std.math.maxInt(usize) };
+    var buf: [4]u8 = undefined;
+
+    try std.testing.expectError(error.EndOfStream, stream.readByte());
+    try std.testing.expectError(error.EndOfStream, stream.readInt(u32, .little));
+    try std.testing.expectEqual(@as(usize, 0), try stream.readAll(&buf));
+    try std.testing.expectError(error.EndOfStream, stream.readNoEof(&buf));
 }
 
 test "Reader.readMessage rejects oversized payload claims" {
