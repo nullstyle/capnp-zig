@@ -202,11 +202,14 @@ var outstanding_allocs = std.AutoHashMapUnmanaged(usize, AllocationRecord){};
 var outstanding_alloc_bytes: usize = 0;
 var strict_pointer_validation: bool = builtin.target.cpu.arch == .wasm32;
 
+const ERROR_MESSAGE_MAX_BYTES: usize = 1024;
+const DISCLOSURE_SAFE_FALLBACK = "internal error";
+
 // NOTE: Error state is global (one error at a time). Callers must check return values
 // and drain errors via capnp_error_take immediately after each ABI call.
 var last_error_code: u32 = 0;
 var last_error_len: u32 = 0;
-var last_error_buf: [1024]u8 = @splat(0);
+var last_error_buf: [ERROR_MESSAGE_MAX_BYTES]u8 = @splat(0);
 
 // Note: clearErrorState, setError, and getPeerState are internal helpers.
 // They do NOT acquire the mutex themselves; callers must hold global_mutex.
@@ -216,10 +219,38 @@ fn clearErrorState() void {
     last_error_len = 0;
 }
 
+fn errorMessageContainsDisclosureMarker(msg: []const u8) bool {
+    const markers = [_][]const u8{
+        "/Users/",
+        "/home/",
+        "/private/",
+        "/tmp/",
+        "\\Users\\",
+        "src/",
+        "tests/",
+        ".zig:",
+        "stack trace",
+        "Stack trace",
+        "panicked at",
+        "\n",
+        "\r",
+        "\t",
+    };
+
+    for (markers) |marker| {
+        if (std.mem.indexOf(u8, msg, marker) != null) return true;
+    }
+    return false;
+}
+
 fn setError(code: u32, msg: []const u8) void {
-    const n = @min(msg.len, last_error_buf.len);
+    const public_msg = if (errorMessageContainsDisclosureMarker(msg))
+        DISCLOSURE_SAFE_FALLBACK
+    else
+        msg;
+    const n = @min(public_msg.len, last_error_buf.len);
     if (n > 0) {
-        std.mem.copyForwards(u8, last_error_buf[0..n], msg[0..n]);
+        std.mem.copyForwards(u8, last_error_buf[0..n], public_msg[0..n]);
     }
     last_error_code = code;
     last_error_len = @intCast(n);
@@ -403,6 +434,17 @@ pub fn testingDefaultMaxOutstandingAllocations() usize {
 
 pub fn testingExampleMaxTextBytes() usize {
     return EXAMPLE_MAX_TEXT_BYTES;
+}
+
+pub fn testingErrorMessageMaxBytes() usize {
+    return ERROR_MESSAGE_MAX_BYTES;
+}
+
+pub fn testingSetErrorForDisclosure(code: u32, msg: []const u8) void {
+    global_mutex.lock();
+    defer global_mutex.unlock();
+
+    setError(code, msg);
 }
 
 /// Allocate `len` bytes from the module allocator.

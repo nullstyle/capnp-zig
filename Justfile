@@ -30,6 +30,14 @@ test-resource-budgets:
 test-oom:
     zig build test-oom --summary all
 
+# Run deterministic hardening fuzz/smoke coverage
+test-fuzz-smoke:
+    zig build test-fuzz-smoke --summary all
+
+# Run key hardening gates under ReleaseSafe
+test-release-safe:
+    zig build test-release-safe --summary all
+
 # Run Cap'n Proto RPC level 0 tests (framing/protocol/cap-table)
 test-rpc-level0:
     zig build test-rpc-level0 --summary all
@@ -69,8 +77,10 @@ e2e-scaffold:
 # CI gate (unit + interop e2e)
 ci:
     zig build hardening
+    zig build test-fuzz-smoke --summary all
     zig build test-resource-budgets --summary all
     zig build test-oom --summary all
+    zig build test-release-safe --summary all
     just src/rpc/check-rpc
     zig build test --summary all
     just e2e-zig

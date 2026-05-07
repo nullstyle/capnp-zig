@@ -21,6 +21,22 @@ fn addLibTest(
     return &b.addRunArtifact(t).step;
 }
 
+fn addMainTest(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Run {
+    const t = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    return b.addRunArtifact(t);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -328,6 +344,7 @@ pub fn build(b: *std.Build) void {
     // Serialization tests
     const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
     const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
+    const run_fuzz_smoke_tests = addLibTest(b, "tests/hardening/fuzz_smoke_test.zig", target, optimize, lib_module);
     const run_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, optimize, lib_module);
     const run_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, optimize, lib_module);
     const run_codegen_annotations_tests = addLibTest(b, "tests/serialization/codegen_annotations_test.zig", target, optimize, lib_module);
@@ -406,6 +423,9 @@ pub fn build(b: *std.Build) void {
     const test_message_step = b.step("test-message", "Run message serialization tests");
     test_message_step.dependOn(run_message_tests);
     test_message_step.dependOn(run_serialization_fuzz_tests);
+
+    const test_fuzz_smoke_step = b.step("test-fuzz-smoke", "Run deterministic hardening fuzz/smoke coverage");
+    test_fuzz_smoke_step.dependOn(run_fuzz_smoke_tests);
 
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");
     test_codegen_step.dependOn(run_codegen_tests);
@@ -509,6 +529,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(&run_main_tests.step);
     test_resource_budgets_step.dependOn(run_message_tests);
     test_resource_budgets_step.dependOn(run_serialization_fuzz_tests);
+    test_resource_budgets_step.dependOn(run_fuzz_smoke_tests);
     test_resource_budgets_step.dependOn(run_codegen_tests);
     test_resource_budgets_step.dependOn(run_schema_validation_tests);
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
@@ -519,6 +540,7 @@ pub fn build(b: *std.Build) void {
     const test_oom_step = b.step("test-oom", "Run OOM and failing allocator regression tests");
     test_oom_step.dependOn(&run_main_tests.step);
     test_oom_step.dependOn(run_message_tests);
+    test_oom_step.dependOn(run_fuzz_smoke_tests);
     test_oom_step.dependOn(run_codegen_tests);
     test_oom_step.dependOn(run_codegen_defaults_tests);
     test_oom_step.dependOn(run_rpc_framing_tests);
@@ -528,11 +550,50 @@ pub fn build(b: *std.Build) void {
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
     test_lib_step.dependOn(&run_lib_tests.step);
 
+    const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    const release_safe_nullq_dep = b.dependency("nullq", .{
+        .target = target,
+        .optimize = release_safe_optimize,
+    });
+    const release_safe_nullq_module = release_safe_nullq_dep.module("nullq");
+    const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = release_safe_optimize,
+        .imports = &.{},
+    });
+    release_safe_lib_module.addImport("capnpc-zig", release_safe_lib_module);
+    release_safe_lib_module.addImport("nullq", release_safe_nullq_module);
+
+    const run_release_safe_main_tests = addMainTest(b, "src/main.zig", target, release_safe_optimize);
+    const run_release_safe_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_fuzz_smoke_tests = addLibTest(b, "tests/hardening/fuzz_smoke_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/level0/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/level2/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module);
+
+    const test_release_safe_step = b.step("test-release-safe", "Run key hardening gates under ReleaseSafe");
+    test_release_safe_step.dependOn(&run_release_safe_main_tests.step);
+    test_release_safe_step.dependOn(run_release_safe_message_tests);
+    test_release_safe_step.dependOn(run_release_safe_serialization_fuzz_tests);
+    test_release_safe_step.dependOn(run_release_safe_fuzz_smoke_tests);
+    test_release_safe_step.dependOn(run_release_safe_codegen_tests);
+    test_release_safe_step.dependOn(run_release_safe_codegen_defaults_tests);
+    test_release_safe_step.dependOn(run_release_safe_schema_validation_tests);
+    test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
+    test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
+    test_release_safe_step.dependOn(run_release_safe_rpc_quic_transport_tests);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(test_serialization_step);
     test_step.dependOn(test_rpc_step);
     test_step.dependOn(test_wasm_host_step);
+    test_step.dependOn(test_fuzz_smoke_step);
     test_step.dependOn(test_resource_budgets_step);
     test_step.dependOn(test_oom_step);
 

@@ -55,6 +55,52 @@ fn readAbiInt(comptime T: type, ptr: abi.AbiPtr) T {
     return std.mem.readInt(T, bytes[0..@sizeOf(T)], .little);
 }
 
+const ErrorSnapshot = struct {
+    code: u32,
+    msg: []const u8,
+};
+
+fn takeErrorSnapshot() !ErrorSnapshot {
+    var code: u32 = 0;
+    var msg_ptr: abi.AbiPtr = 0;
+    var msg_len: u32 = 0;
+
+    try std.testing.expectEqual(@as(u32, 1), abi.capnp_error_take(
+        toAbiPtr(&code),
+        toAbiPtr(&msg_ptr),
+        toAbiPtr(&msg_len),
+    ));
+    try std.testing.expect(msg_ptr != 0);
+
+    const msg_bytes: [*]const u8 = @ptrFromInt(@as(usize, @intCast(msg_ptr)));
+    return .{ .code = code, .msg = msg_bytes[0..msg_len] };
+}
+
+fn expectDisclosureSafeErrorMessage(msg: []const u8) !void {
+    try std.testing.expect(msg.len <= abi.testingErrorMessageMaxBytes());
+
+    const forbidden = [_][]const u8{
+        "/Users/",
+        "/home/",
+        "/private/",
+        "/tmp/",
+        "\\Users\\",
+        "src/",
+        "tests/",
+        ".zig:",
+        "stack trace",
+        "Stack trace",
+        "panicked at",
+    };
+
+    for (forbidden) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, msg, needle) == null);
+    }
+    try std.testing.expect(std.mem.indexOfScalar(u8, msg, '\n') == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, msg, '\r') == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, msg, '\t') == null);
+}
+
 fn buildPersonFrame(allocator: std.mem.Allocator, name: []const u8, age: u32, email: []const u8) ![]const u8 {
     var builder = capnpc.message.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -723,6 +769,64 @@ test "capnp_error_take validates output pointers" {
         0,
     ));
     try std.testing.expectEqual(@as(u32, 2), abi.capnp_last_error_code());
+}
+
+test "production ABI errors do not disclose host diagnostics" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_push_frame(9999, 0, 0));
+    const unknown_peer = try takeErrorSnapshot();
+    try std.testing.expectEqual(@as(u32, 3), unknown_peer.code);
+    try std.testing.expectEqualStrings("unknown peer handle", unknown_peer.msg);
+    try expectDisclosureSafeErrorMessage(unknown_peer.msg);
+
+    const peer = abi.capnp_peer_new();
+    defer abi.capnp_peer_free(peer);
+    try std.testing.expect(peer != 0);
+
+    const detailed_host_reason =
+        "/Users/nullstyle/prj/local/capnp-zig/src/secret.zig:42\nstack trace: host detail";
+    try std.testing.expectEqual(@as(u32, 0), abi.capnp_peer_respond_host_call_exception(
+        peer,
+        0xCAFE,
+        toAbiPtr(detailed_host_reason.ptr),
+        @intCast(detailed_host_reason.len),
+    ));
+    const host_call = try takeErrorSnapshot();
+    try std.testing.expectEqual(@as(u32, 10), host_call.code);
+    try expectDisclosureSafeErrorMessage(host_call.msg);
+    try std.testing.expect(std.mem.indexOf(u8, host_call.msg, detailed_host_reason) == null);
+}
+
+test "ABI error disclosure filter redacts paths stack traces and raw host details" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const source_path_detail =
+        "host failed at /Users/nullstyle/prj/local/capnp-zig/src/wasm/capnp_host_abi.zig:219\nstack trace: raw frame";
+    abi.testingSetErrorForDisclosure(77, source_path_detail);
+
+    const redacted = try takeErrorSnapshot();
+    try std.testing.expectEqual(@as(u32, 77), redacted.code);
+    try std.testing.expectEqualStrings("internal error", redacted.msg);
+    try expectDisclosureSafeErrorMessage(redacted.msg);
+}
+
+test "ABI error disclosure filter caps oversized diagnostics" {
+    abi.capnp_clear_error();
+    defer abi.capnp_clear_error();
+
+    const max_len = abi.testingErrorMessageMaxBytes();
+    const long_msg = try std.testing.allocator.alloc(u8, max_len + 128);
+    defer std.testing.allocator.free(long_msg);
+    @memset(long_msg, 'x');
+
+    abi.testingSetErrorForDisclosure(78, long_msg);
+    const capped = try takeErrorSnapshot();
+    try std.testing.expectEqual(@as(u32, 78), capped.code);
+    try std.testing.expectEqual(@as(u32, @intCast(max_len)), @as(u32, @intCast(capped.msg.len)));
+    try expectDisclosureSafeErrorMessage(capped.msg);
 }
 
 test "capnp_free validates tracked allocation identity and length" {

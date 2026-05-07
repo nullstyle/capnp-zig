@@ -72,14 +72,14 @@ just test
 ```bash
 just server
 # custom:
-just server host=0.0.0.0 port=9000 db_path=kvstore-data backup_dir=kvstore-backups
+just server host=127.0.0.1 port=9000 db_path=kvstore-data backup_dir=kvstore-backups
 # quiet mode:
-just server host=0.0.0.0 port=9000 db_path=kvstore-data backup_dir=kvstore-backups opts="--quiet"
+just server host=127.0.0.1 port=9000 db_path=kvstore-data backup_dir=kvstore-backups opts="--quiet"
 ```
 
 Server flags:
 
-- `--host` (default `0.0.0.0`)
+- `--host` (default `127.0.0.1`; pass `0.0.0.0` only when you intend to expose it beyond localhost)
 - `--port` (default `9000`)
 - `--db-path` (default `kvstore-data`)
 - `--backup-dir` (default `kvstore-backups`)

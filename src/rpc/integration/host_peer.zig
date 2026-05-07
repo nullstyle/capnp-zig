@@ -388,6 +388,7 @@ pub const HostPeer = struct {
 
     fn copyOutgoingFrame(self: *HostPeer, frame: []const u8) ![]u8 {
         if (try self.sanitizedReturnExceptionFrame(frame)) |sanitized| return sanitized;
+        if (try self.sanitizedAbortFrame(frame)) |sanitized| return sanitized;
 
         const owned = try self.outgoing_allocator.alloc(u8, frame.len);
         std.mem.copyForwards(u8, owned, frame);
@@ -416,6 +417,26 @@ pub const HostPeer = struct {
         ret_builder.setReleaseParamCaps(ret.release_param_caps);
         ret_builder.setNoFinishNeeded(ret.no_finish_needed);
         try ret_builder.setException(sanitized.bytes);
+
+        return @constCast(try builder.finish());
+    }
+
+    fn sanitizedAbortFrame(self: *HostPeer, frame: []const u8) !?[]u8 {
+        var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return null,
+        };
+        defer decoded.deinit();
+
+        if (decoded.tag != .abort) return null;
+        const abort = decoded.asAbort() catch return null;
+
+        const sanitized = try self.sanitizeExternalReason(abort.exception.reason);
+        defer sanitized.deinit(self.allocator);
+
+        var builder = protocol.MessageBuilder.init(self.outgoing_allocator);
+        defer builder.deinit();
+        try builder.buildAbort(sanitized.bytes);
 
         return @constCast(try builder.finish());
     }

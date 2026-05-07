@@ -60,6 +60,9 @@ jobs:
       - name: Run hardening gate
         run: zig build hardening
 
+      - name: Run deterministic fuzz/smoke tests
+        run: zig build test-fuzz-smoke --summary all
+
       - name: Run resource-budget regression tests
         run: zig build test-resource-budgets --summary all
 
@@ -127,3 +130,16 @@ jobs:
 
       - name: Build ReleaseSafe
         run: zig build -Doptimize=ReleaseSafe
+
+  release-safe-tests:
+    name: ReleaseSafe hardening tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - name: Run ReleaseSafe hardening tests
+        run: zig build test-release-safe --summary all

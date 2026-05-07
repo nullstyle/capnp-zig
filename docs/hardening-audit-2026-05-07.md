@@ -127,6 +127,20 @@ Progress in this tranche:
 - `zig build test-resource-budgets` and `zig build test-oom` now provide
   named resource/OOM regression gates, with matching `just` recipes and CI
   hardening-job coverage.
+- `docs/security-regression-matrix.md` now maps major Cap'n Proto, RPC, QUIC,
+  WASM, codegen, and build-policy vulnerability classes to their regression
+  gates, with remaining gaps marked explicitly.
+- `zig build test-fuzz-smoke` now provides deterministic hostile-input smoke
+  coverage across message decode, packed decode, RPC framing/protocol, QUIC
+  length framing, and peer state. `zig build test-release-safe` runs key
+  hardening suites under ReleaseSafe and is wired into CI.
+- HostPeer outbound Abort frames are now sanitized with the same external
+  error disclosure policy as Return exceptions, and WASM ABI diagnostics are
+  capped and filtered for paths, stack traces, panic markers, and multiline
+  details before exposure.
+- The KV store example now defaults to localhost, redacts sensitive operational
+  details from normal output, and adds local caps for keys, values, list
+  requests, watched keys, batch operations, and pending notifications.
 
 ## Findings
 

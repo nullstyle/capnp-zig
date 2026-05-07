@@ -196,6 +196,51 @@ test "host peer debug error disclosure caps and sanitizes exception frames" {
     try std.testing.expectEqualStrings("abc de", ex.reason);
 }
 
+test "host peer redacts captured abort frames by default" {
+    const allocator = std.testing.allocator;
+
+    var host = HostPeer.init(allocator);
+    defer host.deinit();
+    host.start(null, null);
+
+    try std.testing.expectError(error.TruncatedMessage, host.pushFrame(&[_]u8{}));
+
+    const frame = host.popOutgoingFrame() orelse return error.ExpectedFrame;
+    defer host.freeFrame(frame);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+
+    try std.testing.expectEqual(protocol.MessageTag.abort, decoded.tag);
+    const abort = try decoded.asAbort();
+    try std.testing.expectEqualStrings(default_host_error_reason, abort.exception.reason);
+    try std.testing.expect(std.mem.indexOf(u8, abort.exception.reason, "TruncatedMessage") == null);
+}
+
+test "host peer custom abort disclosure caps and sanitizes generic reason" {
+    const allocator = std.testing.allocator;
+
+    var host = HostPeer.init(allocator);
+    defer host.deinit();
+    host.start(null, null);
+    host.setErrorDisclosurePolicy(.{
+        .max_reason_bytes = 12,
+        .generic_reason = "src/rpc\nsecret.zig:42",
+    });
+
+    try std.testing.expectError(error.TruncatedMessage, host.pushFrame(&[_]u8{}));
+
+    const frame = host.popOutgoingFrame() orelse return error.ExpectedFrame;
+    defer host.freeFrame(frame);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+
+    try std.testing.expectEqual(protocol.MessageTag.abort, decoded.tag);
+    const abort = try decoded.asAbort();
+    try std.testing.expectEqualStrings("src/rpc secr", abort.exception.reason);
+}
+
 test "host peer tracks outbound bytes and enforces queue limits" {
     const allocator = std.testing.allocator;
 

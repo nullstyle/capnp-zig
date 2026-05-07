@@ -31,6 +31,15 @@ const user_key_prefix = "u:";
 const next_version_meta_key = "m:next_version";
 const encoded_version_size = @sizeOf(u64);
 
+const Limits = struct {
+    const max_key_bytes: usize = 1024;
+    const max_value_bytes: usize = 64 * 1024;
+    const max_batch_ops: u32 = 256;
+    const max_watch_keys: u32 = 512;
+    const max_list_limit: u32 = 1024;
+    const max_pending_notifications: usize = 1024;
+};
+
 const StoredRecord = struct {
     version: u64,
     value: []const u8,
@@ -109,6 +118,18 @@ fn makeUserKey(allocator: Allocator, key: []const u8) ![]u8 {
     return out;
 }
 
+fn validateKey(key: []const u8) !void {
+    if (key.len > Limits.max_key_bytes) return error.KeyTooLarge;
+}
+
+fn validateValue(value: []const u8) !void {
+    if (value.len > Limits.max_value_bytes) return error.ValueTooLarge;
+}
+
+fn validateListLimit(limit: u32) !void {
+    if (limit > Limits.max_list_limit) return error.ListLimitTooLarge;
+}
+
 fn watchedKeysContain(watched_keys: []const []u8, candidate: []const u8) bool {
     for (watched_keys) |watched| {
         if (std.mem.eql(u8, watched, candidate)) return true;
@@ -132,7 +153,8 @@ fn notifyChangesIntersectWatched(watched_keys: []const []u8, changes: []const No
 
 fn logRocksError(operation: []const u8, err: anyerror, err_data: ?rocksdb.Data) void {
     if (err_data) |data| {
-        std.log.err("rocksdb {s} failed ({s}): {s}", .{ operation, @errorName(err), data.data });
+        _ = data;
+        std.log.err("rocksdb {s} failed ({s}); details redacted", .{ operation, @errorName(err) });
     } else {
         std.log.err("rocksdb {s} failed ({s})", .{ operation, @errorName(err) });
     }
@@ -145,7 +167,7 @@ fn logRocksCStringError(operation: []const u8, err_ptr: ?[*:0]u8) void {
             .free = rdb.rocksdb_free,
         };
         defer data.deinit();
-        std.log.err("rocksdb {s} failed: {s}", .{ operation, data.data });
+        std.log.err("rocksdb {s} failed; details redacted", .{operation});
     }
 }
 
@@ -506,6 +528,14 @@ const KvService = struct {
     fn setSubscriberWatchedKeys(self: *KvService, peer: *rpc.peer.Peer, watched_keys: message.TextListReader) !u32 {
         const subscriber = self.findSubscriber(peer) orelse return error.NotSubscribed;
 
+        if (watched_keys.len() > Limits.max_watch_keys) return error.TooManyWatchedKeys;
+        for (0..watched_keys.len()) |idx_usize| {
+            const idx: u32 = @intCast(idx_usize);
+            const key = try watched_keys.get(idx);
+            if (key.len == 0) continue;
+            try validateKey(key);
+        }
+
         self.clearWatchedKeys(&subscriber.watched_keys);
 
         const count: u32 = watched_keys.len();
@@ -571,6 +601,14 @@ const KvService = struct {
             const watched_keys = subscriber.watched_keys.items;
             if (!notifyChangesIntersectWatched(watched_keys, changes)) continue;
 
+            while (!subscriber.pending_mu.tryLock()) {}
+            const pending_full = subscriber.pending.items.len >= Limits.max_pending_notifications;
+            subscriber.pending_mu.unlock();
+            if (pending_full) {
+                std.log.warn("dropping notification for subscriber: pending queue limit reached ({d})", .{Limits.max_pending_notifications});
+                continue;
+            }
+
             // Build owned copies of the relevant (filtered) changes.
             const owned_changes = self.buildOwnedKeysChanged(changes, watched_keys) catch |err| {
                 std.log.warn("failed to build notification: {s}", .{@errorName(err)});
@@ -579,15 +617,23 @@ const KvService = struct {
 
             // Push to subscriber's queue (thread-safe via spinlock).
             while (!subscriber.pending_mu.tryLock()) {}
-            defer subscriber.pending_mu.unlock();
+            if (subscriber.pending.items.len >= Limits.max_pending_notifications) {
+                subscriber.pending_mu.unlock();
+                std.log.warn("dropping notification for subscriber: pending queue limit reached ({d})", .{Limits.max_pending_notifications});
+                for (owned_changes) |c| c.deinit(self.allocator);
+                self.allocator.free(owned_changes);
+                continue;
+            }
             subscriber.pending.append(self.allocator, .{
                 .keys_changed = .{ .changes = owned_changes },
             }) catch |err| {
+                subscriber.pending_mu.unlock();
                 std.log.warn("failed to queue notification: {s}", .{@errorName(err)});
                 for (owned_changes) |c| c.deinit(self.allocator);
                 self.allocator.free(owned_changes);
                 continue;
             };
+            subscriber.pending_mu.unlock();
 
             // Wake the subscriber's connection so it drains the queue.
             subscriber.conn.wake();
@@ -639,16 +685,22 @@ const KvService = struct {
 
             // Push to subscriber's queue (thread-safe via spinlock).
             while (!subscriber.pending_mu.tryLock()) {}
-            defer subscriber.pending_mu.unlock();
+            if (subscriber.pending.items.len >= Limits.max_pending_notifications) {
+                subscriber.pending_mu.unlock();
+                std.log.warn("dropping state reset notification for subscriber: pending queue limit reached ({d})", .{Limits.max_pending_notifications});
+                continue;
+            }
             subscriber.pending.append(self.allocator, .{
                 .state_reset = .{
                     .restored_backup_id = restored_backup_id,
                     .next_version = next_version,
                 },
             }) catch |err| {
+                subscriber.pending_mu.unlock();
                 std.log.warn("failed to queue state reset notification: {s}", .{@errorName(err)});
                 continue;
             };
+            subscriber.pending_mu.unlock();
 
             // Wake the subscriber's connection so it drains the queue.
             subscriber.conn.wake();
@@ -713,7 +765,8 @@ fn onWakeKeysChangedReturn(
 ) anyerror!void {
     switch (response) {
         .exception => |ex| {
-            std.log.debug("client notifier returned exception: {s}", .{ex.reason});
+            _ = ex;
+            std.log.debug("client notifier returned exception", .{});
         },
         else => {},
     }
@@ -727,7 +780,8 @@ fn onWakeStateResetReturn(
 ) anyerror!void {
     switch (response) {
         .exception => |ex| {
-            std.log.debug("client reset notifier returned exception: {s}", .{ex.reason});
+            _ = ex;
+            std.log.debug("client reset notifier returned exception", .{});
         },
         else => {},
     }
@@ -771,7 +825,7 @@ fn onConnectionWake(conn: *rpc.connection.Connection) void {
 
     // Process each queued notification on this connection's thread.
     defer svc.allocator.free(pending);
-    std.log.info("WAKE: draining {d} pending notification(s)", .{pending.len});
+    std.log.debug("draining {d} pending notification(s)", .{pending.len});
     for (pending) |notif| {
         switch (notif) {
             .keys_changed => |kc| {
@@ -818,7 +872,8 @@ fn handleGet(
     while (!svc.mu.tryLock()) {}
     defer svc.mu.unlock();
     const key = try params.getKey();
-    std.log.info("GET \"{s}\"", .{key});
+    try validateKey(key);
+    std.log.debug("GET key_bytes={d}", .{key.len});
 
     const db_key = try makeUserKey(svc.allocator, key);
     defer svc.allocator.free(db_key);
@@ -857,7 +912,8 @@ fn handleWriteBatch(
     defer svc.mu.unlock();
     const ops = try params.getOps();
     const op_count: u32 = ops.len();
-    std.log.info("WRITE BATCH ops={d}", .{op_count});
+    std.log.debug("WRITE BATCH ops={d}", .{op_count});
+    if (op_count > Limits.max_batch_ops) return error.TooManyBatchOps;
 
     if (op_count == 0) {
         _ = try results.initResults(0);
@@ -889,6 +945,7 @@ fn handleWriteBatch(
     for (0..op_count) |idx| {
         const op = try ops.get(@intCast(idx));
         const key = try op.getKey();
+        try validateKey(key);
         const which = try op.which();
 
         const db_key = try makeUserKey(svc.allocator, key);
@@ -897,6 +954,7 @@ fn handleWriteBatch(
         switch (which) {
             .put => {
                 const value = try op.getPut();
+                try validateValue(value);
 
                 const assigned_version = if (batch_put_version) |existing|
                     existing
@@ -1003,7 +1061,9 @@ fn handleList(
     defer svc.mu.unlock();
     const prefix = try params.getPrefix();
     const limit = try params.getLimit();
-    std.log.info("LIST prefix=\"{s}\" limit={d}", .{ prefix, limit });
+    try validateKey(prefix);
+    try validateListLimit(limit);
+    std.log.debug("LIST prefix_bytes={d} limit={d}", .{ prefix.len, limit });
 
     if (limit == 0) {
         _ = try results.initEntries(0);
@@ -1084,7 +1144,7 @@ fn handleSubscribe(
     const notifier = try params.resolveNotifier(peer, caps);
     const conn = peer.getAttachedConnection(*rpc.connection.Connection) orelse return error.NoPeerConnection;
     try svc.addOrUpdateSubscriber(peer, conn, notifier);
-    std.log.info("SUBSCRIBE cap={d}", .{notifier.cap_id});
+    std.log.debug("SUBSCRIBE", .{});
 }
 
 fn handleSetWatchedKeys(
@@ -1099,7 +1159,7 @@ fn handleSetWatchedKeys(
     defer svc.mu.unlock();
     const watched_keys = try params.getKeys();
     const count = try svc.setSubscriberWatchedKeys(peer, watched_keys);
-    std.log.info("SET WATCHED KEYS count={d}", .{count});
+    std.log.debug("SET WATCHED KEYS count={d}", .{count});
 }
 
 fn writeBackupInfo(builder: *BackupInfo.Builder, record: BackupRecord) !void {
@@ -1183,7 +1243,7 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
         svc.removeSubscriber(peer);
     }
 
-    std.log.info("client disconnected", .{});
+    std.log.debug("client disconnected", .{});
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,7 +1265,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Con
     };
 
     peer.start(onPeerError, onPeerClose);
-    std.log.info("client connected", .{});
+    std.log.debug("client connected", .{});
     return .accept;
 }
 
@@ -1214,7 +1274,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Con
 // ---------------------------------------------------------------------------
 
 const CliArgs = struct {
-    host: []const u8 = "0.0.0.0",
+    host: []const u8 = "127.0.0.1",
     port: u16 = 9000,
     db_path: []const u8 = "kvstore-data",
     backup_dir: []const u8 = "kvstore-backups",
@@ -1293,7 +1353,7 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
 
 fn usage() void {
     std.debug.print(
-        \\Usage: kvstore-server [--host 0.0.0.0] [--port 9000] [--db-path kvstore-data] [--backup-dir kvstore-backups] [--quiet]
+        \\Usage: kvstore-server [--host 127.0.0.1] [--port 9000] [--db-path kvstore-data] [--backup-dir kvstore-backups] [--quiet]
         \\  --quiet             suppress debug/info logs
         \\
     , .{});
@@ -1360,14 +1420,35 @@ pub fn main(init: std.process.Init) !void {
     defer pool.deinit();
 
     if (!server_is_quiet) {
-        std.debug.print("READY on {s}:{d} (db: {s}, backup: {s}, next_version={d})\n", .{
+        std.debug.print("READY on {s}:{d}\n", .{
             args.host,
             args.port,
-            args.db_path,
-            args.backup_dir,
-            svc.next_version,
         });
     }
 
     try pool.run();
+}
+
+test "kvstore server defaults bind localhost" {
+    const args = CliArgs{};
+    try std.testing.expectEqualStrings("127.0.0.1", args.host);
+
+    const address = try parseIp4Address(args.host, args.port);
+    try std.testing.expectEqual(@as(u16, 9000), address.ip4.port);
+    try std.testing.expectEqualSlices(u8, &.{ 127, 0, 0, 1 }, address.ip4.bytes[0..]);
+}
+
+test "kvstore server rejects over-limit keys and values" {
+    var key: [Limits.max_key_bytes + 1]u8 = undefined;
+    @memset(key[0..], 'k');
+    try std.testing.expectError(error.KeyTooLarge, validateKey(key[0..]));
+
+    var value: [Limits.max_value_bytes + 1]u8 = undefined;
+    @memset(value[0..], 'v');
+    try std.testing.expectError(error.ValueTooLarge, validateValue(value[0..]));
+}
+
+test "kvstore server rejects over-limit list requests" {
+    try std.testing.expectError(error.ListLimitTooLarge, validateListLimit(Limits.max_list_limit + 1));
+    try validateListLimit(Limits.max_list_limit);
 }
