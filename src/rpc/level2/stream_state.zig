@@ -5,6 +5,8 @@ const std = @import("std");
 /// Cap'n Proto `-> stream` flow control on the client side.
 pub const StreamState = struct {
     in_flight: u32 = 0,
+    /// A zero value means "unlimited".
+    max_in_flight: u32 = 0,
     stream_error: ?anyerror = null,
     on_drain: ?DrainCallback = null,
     on_drain_ctx: ?*anyopaque = null,
@@ -12,8 +14,11 @@ pub const StreamState = struct {
     pub const DrainCallback = *const fn (ctx: *anyopaque, err: ?anyerror) void;
 
     /// Record that a new streaming call has been sent.
-    pub fn noteCallSent(self: *StreamState) void {
-        self.in_flight += 1;
+    pub fn noteCallSent(self: *StreamState) !void {
+        if (self.max_in_flight != 0 and self.in_flight >= self.max_in_flight) {
+            return error.StreamInFlightLimitExceeded;
+        }
+        self.in_flight = std.math.add(u32, self.in_flight, 1) catch return error.StreamInFlightLimitExceeded;
     }
 
     /// Called by the Return handler for each completed streaming call.
@@ -62,8 +67,8 @@ test "StreamState: basic lifecycle" {
     try std.testing.expectEqual(@as(u32, 0), state.in_flight);
 
     // Send two calls
-    state.noteCallSent();
-    state.noteCallSent();
+    try state.noteCallSent();
+    try state.noteCallSent();
     try std.testing.expectEqual(@as(u32, 2), state.in_flight);
 
     // First returns OK
@@ -80,8 +85,8 @@ test "StreamState: basic lifecycle" {
 test "StreamState: error caching" {
     var state = StreamState{};
 
-    state.noteCallSent();
-    state.noteCallSent();
+    try state.noteCallSent();
+    try state.noteCallSent();
 
     // First call fails
     state.handleReturn(true);
@@ -102,7 +107,7 @@ test "StreamState: drain callback fires when in-flight hits zero" {
     };
     var ctx = Ctx{};
 
-    state.noteCallSent();
+    try state.noteCallSent();
     state.waitStreaming(@ptrCast(&ctx), struct {
         fn cb(ptr: *anyopaque, err: ?anyerror) void {
             const c: *Ctx = @ptrCast(@alignCast(ptr));
@@ -150,7 +155,7 @@ test "StreamState: drain callback reports cached error" {
     };
     var ctx = Ctx{};
 
-    state.noteCallSent();
+    try state.noteCallSent();
     state.handleReturn(true); // fails
 
     state.waitStreaming(@ptrCast(&ctx), struct {
@@ -175,7 +180,7 @@ test "StreamState: second waiter gets explicit error without replacing first wai
     var first = Ctx{};
     var second = Ctx{};
 
-    state.noteCallSent();
+    try state.noteCallSent();
     state.waitStreaming(@ptrCast(&first), struct {
         fn cb(ptr: *anyopaque, err: ?anyerror) void {
             const c: *Ctx = @ptrCast(@alignCast(ptr));
@@ -198,4 +203,26 @@ test "StreamState: second waiter gets explicit error without replacing first wai
     state.handleReturn(false);
     try std.testing.expect(first.called);
     try std.testing.expectEqual(@as(?anyerror, null), first.err);
+}
+
+test "StreamState: max in-flight limit is enforced" {
+    var state = StreamState{ .max_in_flight = 2 };
+
+    try state.noteCallSent();
+    try state.noteCallSent();
+    try std.testing.expectEqual(@as(u32, 2), state.in_flight);
+
+    try std.testing.expectError(error.StreamInFlightLimitExceeded, state.noteCallSent());
+    try std.testing.expectEqual(@as(u32, 2), state.in_flight);
+
+    state.handleReturn(false);
+    try state.noteCallSent();
+    try std.testing.expectEqual(@as(u32, 2), state.in_flight);
+}
+
+test "StreamState: in-flight overflow returns a typed error" {
+    var state = StreamState{ .in_flight = std.math.maxInt(u32) };
+
+    try std.testing.expectError(error.StreamInFlightLimitExceeded, state.noteCallSent());
+    try std.testing.expectEqual(std.math.maxInt(u32), state.in_flight);
 }

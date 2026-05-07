@@ -146,6 +146,8 @@ test "host peer tracks outbound bytes and enforces queue limits" {
     const limits_after_set = host.getLimits();
     try std.testing.expectEqual(@as(usize, 1), limits_after_set.outbound_count_limit);
     try std.testing.expectEqual(@as(usize, 0), limits_after_set.outbound_bytes_limit);
+    try std.testing.expectEqual(HostPeer.Limits.default_host_call_count_limit, limits_after_set.host_call_count_limit);
+    try std.testing.expectEqual(HostPeer.Limits.default_host_call_bytes_limit, limits_after_set.host_call_bytes_limit);
 
     try host.peer.sendReturnException(1, "first");
     const first_pending_bytes = host.pendingOutgoingBytes();
@@ -167,6 +169,151 @@ test "host peer tracks outbound bytes and enforces queue limits" {
     host.setLimits(.{});
     try host.peer.sendReturnException(4, "fourth");
     try std.testing.expectEqual(@as(usize, 1), host.pendingOutgoingCount());
+}
+
+test "host peer host-call bridge enforces queued call count limit" {
+    const allocator = std.testing.allocator;
+
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        limit_returned: bool = false,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.limit_returned = true;
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            const ex = ret.exception orelse return error.MissingException;
+            try std.testing.expectEqualStrings("HostCallQueueLimitExceeded", ex.reason);
+        }
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            _ = try call.initCapTableTyped(0);
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null);
+
+    var server = HostPeer.init(allocator);
+    defer server.deinit();
+    server.start(null, null);
+    server.setLimits(.{ .host_call_count_limit = 1, .host_call_bytes_limit = 0 });
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x1111,
+        1,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+    try pumpAll(&client, &server);
+    try std.testing.expectEqual(@as(usize, 1), server.pendingHostCallCount());
+    try std.testing.expect(server.pendingHostCallBytes() > 0);
+
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x1111,
+        2,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+    try pumpAll(&client, &server);
+    try std.testing.expectEqual(@as(usize, 1), server.pendingHostCallCount());
+    try pumpAll(&server, &client);
+    try std.testing.expect(client_ctx.limit_returned);
+
+    const call = server.popHostCall() orelse return error.MissingHostCall;
+    defer server.freeHostCallFrame(call.frame);
+    try std.testing.expectEqual(@as(usize, 0), server.pendingHostCallBytes());
+    try server.respondHostCallException(call.question_id, "dropped");
+}
+
+test "host peer host-call bridge enforces queued call byte limit before copy" {
+    const allocator = std.testing.allocator;
+
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        limit_returned: bool = false,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.limit_returned = true;
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            const ex = ret.exception orelse return error.MissingException;
+            try std.testing.expectEqualStrings("HostCallBytesLimitExceeded", ex.reason);
+        }
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            _ = try call.initCapTableTyped(0);
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null);
+
+    var server = HostPeer.init(allocator);
+    defer server.deinit();
+    server.start(null, null);
+    server.setLimits(.{ .host_call_count_limit = 0, .host_call_bytes_limit = 1 });
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x2222,
+        3,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+
+    try pumpAll(&client, &server);
+    try std.testing.expectEqual(@as(usize, 0), server.pendingHostCallCount());
+    try std.testing.expectEqual(@as(usize, 0), server.pendingHostCallBytes());
+    try pumpAll(&server, &client);
+    try std.testing.expect(client_ctx.limit_returned);
 }
 
 test "host peer host-call bridge queues call and allows exception response" {

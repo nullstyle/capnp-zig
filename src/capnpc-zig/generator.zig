@@ -1200,9 +1200,12 @@ pub const Generator = struct {
                 p.call_name, p.method_prefix, p.dot, p.zig_name,
             });
             try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
-            try writer.print("            const ctx = try self.client.peer.allocator.create({s}{s}{s}.StreamCallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
+            try writer.writeAll("            try self.stream.noteCallSent();\n");
+            try writer.print("            const ctx = self.client.peer.allocator.create({s}{s}{s}.StreamCallContext) catch |err| {{\n", .{ p.method_prefix, p.dot, p.zig_name });
+            try writer.writeAll("                self.stream.in_flight -= 1;\n");
+            try writer.writeAll("                return err;\n");
+            try writer.writeAll("            };\n");
             try writer.writeAll("            ctx.* = .{ .stream = &self.stream, .build_ctx = build_ctx, .build = build };\n");
-            try writer.writeAll("            self.stream.noteCallSent();\n");
             try writer.print("            _ = self.client.peer.sendCall(self.client.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.streamCallBuild, {s}{s}{s}.streamCallReturn) catch |err| {{\n", .{
                 p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });

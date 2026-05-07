@@ -24,6 +24,8 @@ the most exposed RPC and transport paths:
 - [x] Validate inbound `receiverHosted` capability IDs against live exports.
 - [x] Cap promised-answer transform length during parse/resolve.
 - [ ] Add peer and host bridge count/byte budgets for pending input-driven state.
+      Host bridge queue budgets and streaming in-flight guards are complete;
+      broader `PeerLimits` for all pending maps remain.
 - [x] Reject duplicate active inbound question IDs.
 - [x] Reject over-release before mutating export tables.
 - [ ] Fix failure atomicity in Return, third-party handoff, resolve/embargo, and return-routing paths.
@@ -41,6 +43,11 @@ Progress in this tranche:
 - Peers now track active inbound question IDs and reject duplicate calls while the first call is still unresolved.
 - TCP and QUIC outbound queues now check configured queue bounds before copying frames into owned queue allocations.
 - The cumulative RPC level3 and serialization message suites pass with the new regressions.
+- Host-call bridge queues now enforce default count and byte limits before copying
+  inbound frames, and expose pending host-call byte accounting.
+- Generated streaming clients now call a typed `StreamState.noteCallSent` guard
+  before allocating per-call context; `StreamState` rejects configured in-flight
+  excess and `u32` overflow with `error.StreamInFlightLimitExceeded`.
 
 ## Findings
 

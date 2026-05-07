@@ -140,8 +140,8 @@ test "Codegen emits streaming method types and handlers" {
 
     // Streaming calls check hasFailed
     try expectContains(sc_section, "self.stream.hasFailed()");
-    // Streaming calls use noteCallSent
-    try expectContains(sc_section, "self.stream.noteCallSent()");
+    // Streaming calls use bounded noteCallSent
+    try expectContains(sc_section, "try self.stream.noteCallSent()");
     // Streaming calls use streamCallBuild/streamCallReturn
     try expectContains(sc_section, "streamCallBuild");
     try expectContains(sc_section, "streamCallReturn");

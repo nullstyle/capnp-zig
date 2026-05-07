@@ -9,10 +9,17 @@ pub const HostPeer = struct {
     const MAX_CAPTURED_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
     pub const Limits = struct {
+        pub const default_host_call_count_limit: usize = 1024;
+        pub const default_host_call_bytes_limit: usize = MAX_CAPTURED_FRAME_BYTES;
+
         // A zero value means "unlimited".
         outbound_count_limit: usize = 0,
         // A zero value means "unlimited".
         outbound_bytes_limit: usize = 0,
+        // A zero value means "unlimited".
+        host_call_count_limit: usize = default_host_call_count_limit,
+        // A zero value means "unlimited".
+        host_call_bytes_limit: usize = default_host_call_bytes_limit,
     };
 
     pub const HostCall = struct {
@@ -29,6 +36,7 @@ pub const HostPeer = struct {
     outgoing_bytes: usize = 0,
     limits: Limits = .{},
     host_calls: std.ArrayList(HostCall),
+    host_call_bytes: usize = 0,
     pending_host_call_questions: std.AutoHashMap(u32, void),
     current_inbound_frame: ?[]const u8 = null,
     host_bridge_enabled: bool = false,
@@ -125,10 +133,17 @@ pub const HostPeer = struct {
         return self.host_calls.items.len;
     }
 
+    pub fn pendingHostCallBytes(self: *const HostPeer) usize {
+        self.peer.assertThreadAffinity();
+        return self.host_call_bytes;
+    }
+
     pub fn popHostCall(self: *HostPeer) ?HostCall {
         self.peer.assertThreadAffinity();
         if (self.host_calls.items.len == 0) return null;
-        return self.host_calls.orderedRemove(0);
+        const call = self.host_calls.orderedRemove(0);
+        self.host_call_bytes -= call.frame.len;
+        return call;
     }
 
     pub fn freeHostCallFrame(self: *HostPeer, frame: []u8) void {
@@ -142,6 +157,7 @@ pub const HostPeer = struct {
             _ = self.pending_host_call_questions.remove(call.question_id);
         }
         self.host_calls.clearRetainingCapacity();
+        self.host_call_bytes = 0;
     }
 
     pub fn respondHostCallException(self: *HostPeer, question_id: u32, reason: []const u8) !void {
@@ -222,6 +238,26 @@ pub const HostPeer = struct {
         const self: *HostPeer = @ptrCast(@alignCast(ctx));
         const inbound_frame = self.current_inbound_frame orelse return error.MissingHostInboundFrame;
 
+        if (inbound_frame.len > MAX_CAPTURED_FRAME_BYTES) {
+            log.debug("host call frame too large: {} bytes", .{inbound_frame.len});
+            return error.FrameTooLarge;
+        }
+        if (self.pending_host_call_questions.contains(call.question_id)) return error.DuplicateQuestionId;
+        if (self.limits.host_call_count_limit != 0 and self.host_calls.items.len >= self.limits.host_call_count_limit) {
+            log.debug("host call queue count limit exceeded", .{});
+            return error.HostCallQueueLimitExceeded;
+        }
+        if (self.limits.host_call_bytes_limit != 0) {
+            const next = std.math.add(usize, self.host_call_bytes, inbound_frame.len) catch {
+                log.debug("host call bytes limit exceeded", .{});
+                return error.HostCallBytesLimitExceeded;
+            };
+            if (next > self.limits.host_call_bytes_limit) {
+                log.debug("host call bytes limit exceeded", .{});
+                return error.HostCallBytesLimitExceeded;
+            }
+        }
+
         const frame_copy = try self.allocator.alloc(u8, inbound_frame.len);
         errdefer self.allocator.free(frame_copy);
         std.mem.copyForwards(u8, frame_copy, inbound_frame);
@@ -236,6 +272,7 @@ pub const HostPeer = struct {
             .method_id = call.method_id,
             .frame = frame_copy,
         });
+        self.host_call_bytes += inbound_frame.len;
     }
 
     fn captureOutgoingFrame(ctx: *anyopaque, frame: []const u8) anyerror!void {
