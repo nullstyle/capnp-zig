@@ -47,11 +47,12 @@ pub const Connection = struct {
     /// Called exactly once when the connection's run loop exits.
     ///
     /// If close includes an error, `on_error` is dispatched first and then
-    /// `on_close`. `on_error` callbacks must not call `deinit`/destroy the
-    /// connection; cleanup belongs in `on_close`. This is runtime-enforced:
-    /// calling `deinit()` from `on_error` panics in all build modes.
+    /// `on_close`. If a callback calls `deinit()`, cleanup is deferred until
+    /// after `on_close` returns so the active callback stack can unwind.
     on_close: ?*const fn (conn: *Connection) void = null,
-    in_error_callback: bool = false,
+    callback_depth: usize = 0,
+    deinit_requested: bool = false,
+    deinitialized: bool = false,
 
     // -- Cross-thread wake support -------------------------------------------
 
@@ -147,10 +148,20 @@ pub const Connection = struct {
     /// For stack-allocated or embedded connections (e.g., in tests), only
     /// `deinit()` is needed.
     pub fn deinit(self: *Connection) void {
-        self.assertThreadAffinity();
-        if (self.in_error_callback) {
-            @panic("Connection.deinit() must not be called from on_error callback; defer cleanup to on_close");
+        if (self.deinitialized) return;
+        if (self.callback_depth != 0) {
+            self.deinit_requested = true;
+            self.requestClose();
+            return;
         }
+        self.deinitNow(true);
+    }
+
+    fn deinitNow(self: *Connection, comptime check_affinity: bool) void {
+        if (self.deinitialized) return;
+        if (check_affinity) self.assertThreadAffinity();
+        self.deinitialized = true;
+        self.deinit_requested = false;
         self.ctx = null;
         self.on_message = null;
         self.on_error = null;
@@ -207,8 +218,9 @@ pub const Connection = struct {
             log.debug("failed to start writer thread: {}", .{err});
             self.invokeOnError(err);
             if (self.on_close) |cb| {
-                cb(self);
+                self.invokeCloseCallback(cb);
             }
+            self.completeDeferredDeinit();
             return;
         };
 
@@ -275,8 +287,9 @@ pub const Connection = struct {
 
         // Signal close to the owner (typically the Peer).
         if (self.on_close) |cb| {
-            cb(self);
+            self.invokeCloseCallback(cb);
         }
+        self.completeDeferredDeinit();
     }
 
     /// Enqueue a framed message for sending to the remote peer.
@@ -329,11 +342,10 @@ pub const Connection = struct {
 
             const frame = self.framer.popFrame() catch |err| {
                 if (err == error.OutOfMemory) {
-                    // OOM is transient — report the error but leave the
-                    // framer and callbacks intact so the next read can retry.
-                    log.debug("popFrame OOM, will retry on next read", .{});
-                    self.invokeOnError(err);
-                    return true;
+                    log.debug("popFrame OOM, closing connection", .{});
+                    self.framer.reset();
+                    self.invokeTerminalError(err);
+                    return false;
                 }
                 // Framing errors (InvalidFrame, FrameTooLarge) corrupt the
                 // byte stream — reset the framer and null the callbacks.
@@ -354,10 +366,11 @@ pub const Connection = struct {
             // further buffered frames from *this* read, but do not reset the
             // framer or null the callbacks, so the connection can continue
             // receiving future reads normally.
-            self.on_message.?(self, bytes) catch |err| {
+            self.invokeMessageCallback(self.on_message.?, bytes) catch |err| {
                 self.invokeOnError(err);
                 return true;
             };
+            if (self.deinit_requested) return false;
         }
         return true;
     }
@@ -382,9 +395,34 @@ pub const Connection = struct {
         cb: *const fn (conn: *Connection, callback_err: anyerror) void,
         err: anyerror,
     ) void {
-        self.in_error_callback = true;
-        defer self.in_error_callback = false;
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
         cb(self, err);
+    }
+
+    fn invokeMessageCallback(
+        self: *Connection,
+        cb: *const fn (conn: *Connection, frame: []const u8) anyerror!void,
+        frame: []const u8,
+    ) !void {
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
+        try cb(self, frame);
+    }
+
+    fn invokeCloseCallback(
+        self: *Connection,
+        cb: *const fn (conn: *Connection) void,
+    ) void {
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
+        cb(self);
+    }
+
+    fn completeDeferredDeinit(self: *Connection) void {
+        if (self.deinit_requested and self.callback_depth == 0) {
+            self.deinitNow(false);
+        }
     }
 };
 

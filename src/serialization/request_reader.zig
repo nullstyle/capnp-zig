@@ -73,10 +73,7 @@ pub fn parseCodeGeneratorRequest(allocator: std.mem.Allocator, bytes: []const u8
     errdefer freeRequestedFiles(allocator, requested_files);
 
     var capnp_version: ?schema.CapnpVersion = null;
-    const version_reader = root.readStruct(2) catch |err| switch (err) {
-        error.InvalidPointer => null,
-        else => return err,
-    };
+    const version_reader = try readOptionalStruct(root, 2);
     if (version_reader) |version| {
         capnp_version = .{
             .major = version.readU16(0),
@@ -98,10 +95,8 @@ pub fn freeCodeGeneratorRequest(allocator: std.mem.Allocator, request: schema.Co
 }
 
 fn parseNodeList(allocator: std.mem.Allocator, root: message.StructReader) ![]schema.Node {
-    const list = root.readStructList(0) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.Node, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(root, 0)) orelse return allocator.alloc(schema.Node, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var nodes = try allocator.alloc(schema.Node, count);
@@ -207,10 +202,8 @@ fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema
 }
 
 fn parseNestedNodes(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Node.NestedNode {
-    const list = reader.readStructList(1) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.Node.NestedNode, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(reader, 1)) orelse return allocator.alloc(schema.Node.NestedNode, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var nested = try allocator.alloc(schema.Node.NestedNode, count);
@@ -253,10 +246,8 @@ fn parseStructNode(allocator: std.mem.Allocator, reader: message.StructReader) !
 }
 
 fn parseEnumNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.EnumNode {
-    const list = reader.readStructList(3) catch |err| switch (err) {
-        error.InvalidPointer => return .{ .enumerants = try allocator.alloc(schema.Enumerant, 0) },
-        else => return err,
-    };
+    const list = (try readOptionalStructList(reader, 3)) orelse return .{ .enumerants = try allocator.alloc(schema.Enumerant, 0) };
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var enumerants = try allocator.alloc(schema.Enumerant, count);
@@ -285,18 +276,17 @@ fn parseEnumNode(allocator: std.mem.Allocator, reader: message.StructReader) !sc
 }
 
 fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.InterfaceNode {
-    const list = reader.readStructList(3) catch |err| switch (err) {
-        error.InvalidPointer => {
-            const methods = try allocator.alloc(schema.Method, 0);
-            errdefer allocator.free(methods);
-            const superclasses = try allocator.alloc(schema.Id, 0);
-            return .{
-                .methods = methods,
-                .superclasses = superclasses,
-            };
-        },
-        else => return err,
+    const maybe_list = try readOptionalStructList(reader, 3);
+    const list = maybe_list orelse {
+        const methods = try allocator.alloc(schema.Method, 0);
+        errdefer allocator.free(methods);
+        const superclasses = try allocator.alloc(schema.Id, 0);
+        return .{
+            .methods = methods,
+            .superclasses = superclasses,
+        };
     };
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var methods = try allocator.alloc(schema.Method, count);
@@ -329,10 +319,8 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
 }
 
 fn parseSuperclasses(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Id {
-    const list = reader.readStructList(4) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.Id, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(reader, 4)) orelse return allocator.alloc(schema.Id, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var superclasses = try allocator.alloc(schema.Id, count);
@@ -351,10 +339,7 @@ fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !s
     const typ = try parseType(allocator, type_reader, 0);
     errdefer freeType(allocator, typ);
 
-    const value_reader = reader.readStruct(4) catch |err| switch (err) {
-        error.InvalidPointer => null,
-        else => return err,
-    };
+    const value_reader = try readOptionalStruct(reader, 4);
     const value = if (value_reader) |value|
         (try parseValue(allocator, value)) orelse return error.InvalidConstValue
     else
@@ -388,10 +373,8 @@ fn parseAnnotationNode(allocator: std.mem.Allocator, reader: message.StructReade
 }
 
 fn parseFields(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Field {
-    const list = reader.readStructList(3) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.Field, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(reader, 3)) orelse return allocator.alloc(schema.Field, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var fields = try allocator.alloc(schema.Field, count);
@@ -438,10 +421,7 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
             const field_type = try parseType(allocator, type_reader, 0);
             errdefer freeType(allocator, field_type);
 
-            const default_value_reader = reader.readStruct(3) catch |err| switch (err) {
-                error.InvalidPointer => null,
-                else => return err,
-            };
+            const default_value_reader = try readOptionalStruct(reader, 3);
 
             const default_value = if (default_value_reader) |value|
                 (try parseValue(allocator, value))
@@ -471,10 +451,8 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
 }
 
 fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, pointer_index: usize) ![]schema.AnnotationUse {
-    const list = reader.readStructList(pointer_index) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.AnnotationUse, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(reader, pointer_index)) orelse return allocator.alloc(schema.AnnotationUse, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var annotations = try allocator.alloc(schema.AnnotationUse, count);
@@ -487,10 +465,7 @@ fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, 
     while (initialized < count) : (initialized += 1) {
         const item = try list.get(initialized);
         const id = item.readU64(0);
-        const value_reader = item.readStruct(0) catch |err| switch (err) {
-            error.InvalidPointer => null,
-            else => return err,
-        };
+        const value_reader = try readOptionalStruct(item, 0);
         const value = if (value_reader) |value|
             (try parseValue(allocator, value)) orelse .void
         else
@@ -506,10 +481,8 @@ fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, 
 }
 
 fn parseRequestedFiles(allocator: std.mem.Allocator, root: message.StructReader) ![]schema.RequestedFile {
-    const list = root.readStructList(1) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.RequestedFile, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(root, 1)) orelse return allocator.alloc(schema.RequestedFile, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var requested = try allocator.alloc(schema.RequestedFile, count);
@@ -544,10 +517,8 @@ fn parseRequestedFile(allocator: std.mem.Allocator, reader: message.StructReader
 }
 
 fn parseImports(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Import {
-    const list = reader.readStructList(1) catch |err| switch (err) {
-        error.InvalidPointer => return allocator.alloc(schema.Import, 0),
-        else => return err,
-    };
+    const list = (try readOptionalStructList(reader, 1)) orelse return allocator.alloc(schema.Import, 0);
+    try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var imports = try allocator.alloc(schema.Import, count);
@@ -606,7 +577,7 @@ fn parseType(allocator: std.mem.Allocator, reader: message.StructReader, depth: 
 
 fn parseValue(allocator: std.mem.Allocator, reader: message.StructReader) !?schema.Value {
     const which_raw = reader.readU16(0);
-    const which_tag = std.enums.fromInt(ValueWhich, which_raw) orelse return null;
+    const which_tag = std.enums.fromInt(ValueWhich, which_raw) orelse return error.InvalidValueKind;
 
     return switch (which_tag) {
         .void => .void,
@@ -622,35 +593,29 @@ fn parseValue(allocator: std.mem.Allocator, reader: message.StructReader) !?sche
         .float32 => .{ .float32 = @bitCast(reader.readU32(4)) },
         .float64 => .{ .float64 = @bitCast(reader.readU64(8)) },
         .text => blk: {
-            const text = try reader.readText(0);
+            const text = try reader.readTextStrict(0);
             const owned = try allocator.dupe(u8, text);
             break :blk .{ .text = owned };
         },
         .data => blk: {
-            const data = reader.readData(0) catch |err| switch (err) {
-                error.InvalidPointer, error.OutOfBounds => &[_]u8{},
-                else => return err,
-            };
+            const data = try readOptionalData(reader, 0);
             const owned = try allocator.dupe(u8, data);
             break :blk .{ .data = owned };
         },
         .list => blk: {
-            const any = try reader.readAnyPointer(0);
-            if (any.pointer_word == 0) return null;
+            const any = (try readOptionalAnyPointer(reader, 0)) orelse return null;
             const bytes = try message.cloneAnyPointerToBytes(allocator, any);
             break :blk .{ .list = .{ .message_bytes = bytes } };
         },
         .@"enum" => .{ .@"enum" = reader.readU16(2) },
         .@"struct" => blk: {
-            const any = try reader.readAnyPointer(0);
-            if (any.pointer_word == 0) return null;
+            const any = (try readOptionalAnyPointer(reader, 0)) orelse return null;
             const bytes = try message.cloneAnyPointerToBytes(allocator, any);
             break :blk .{ .@"struct" = .{ .message_bytes = bytes } };
         },
         .interface => .interface,
         .any_pointer => blk: {
-            const any = try reader.readAnyPointer(0);
-            if (any.pointer_word == 0) return null;
+            const any = (try readOptionalAnyPointer(reader, 0)) orelse return null;
             const bytes = try message.cloneAnyPointerToBytes(allocator, any);
             break :blk .{ .any_pointer = .{ .message_bytes = bytes } };
         },
@@ -658,8 +623,46 @@ fn parseValue(allocator: std.mem.Allocator, reader: message.StructReader) !?sche
 }
 
 fn dupText(allocator: std.mem.Allocator, reader: message.StructReader, pointer_index: usize) ![]const u8 {
-    const text = try reader.readText(pointer_index);
+    const text = try reader.readTextStrict(pointer_index);
     return allocator.dupe(u8, text);
+}
+
+fn readOptionalStruct(reader: message.StructReader, pointer_index: usize) !?message.StructReader {
+    return reader.readStruct(pointer_index) catch |err| switch (err) {
+        error.InvalidPointer, error.OutOfBounds => if (reader.isPointerNull(pointer_index)) null else return err,
+        else => return err,
+    };
+}
+
+fn readOptionalStructList(reader: message.StructReader, pointer_index: usize) !?message.StructListReader {
+    return reader.readStructList(pointer_index) catch |err| switch (err) {
+        error.InvalidPointer,
+        error.InvalidInlineCompositePointer,
+        error.OutOfBounds,
+        => if (reader.isPointerNull(pointer_index)) null else return err,
+        else => return err,
+    };
+}
+
+fn readOptionalAnyPointer(reader: message.StructReader, pointer_index: usize) !?message.AnyPointerReader {
+    const any = reader.readAnyPointer(pointer_index) catch |err| switch (err) {
+        error.OutOfBounds => return null,
+    };
+    if (any.isNull()) return null;
+    return any;
+}
+
+fn readOptionalData(reader: message.StructReader, pointer_index: usize) ![]const u8 {
+    return reader.readData(pointer_index) catch |err| switch (err) {
+        error.InvalidPointer, error.OutOfBounds => if (reader.isPointerNull(pointer_index)) &[_]u8{} else return err,
+        else => return err,
+    };
+}
+
+fn rejectZeroWidthStructList(list: message.StructListReader) !void {
+    if (list.element_count > 0 and list.data_words == 0 and list.pointer_words == 0) {
+        return error.InvalidInlineCompositePointer;
+    }
 }
 
 fn freeNodes(allocator: std.mem.Allocator, nodes: []schema.Node) void {

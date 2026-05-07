@@ -522,14 +522,16 @@ pub const Connection = struct {
     inbound: LengthDelimitedFramer,
     outbound: OutboundQueue = .{},
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    socket_closed: bool = false,
+    socket_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     baseline_ready: bool = false,
 
     ctx: ?*anyopaque = null,
     on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
     on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
     on_close: ?*const fn (conn: *Connection) void = null,
-    in_error_callback: bool = false,
+    callback_depth: usize = 0,
+    deinit_requested: bool = false,
+    deinitialized: bool = false,
 
     owner_thread_id: ?std.Thread.Id = null,
 
@@ -657,11 +659,21 @@ pub const Connection = struct {
     }
 
     pub fn deinit(self: *Connection) void {
-        self.assertThreadAffinity();
-        if (self.in_error_callback) {
-            @panic("Connection.deinit() must not be called from on_error callback; defer cleanup to on_close");
+        if (self.deinitialized) return;
+        if (self.callback_depth != 0) {
+            self.deinit_requested = true;
+            self.requestClose();
+            return;
         }
-        self.close_requested.store(true, .release);
+        self.deinitNow(true);
+    }
+
+    fn deinitNow(self: *Connection, comptime check_affinity: bool) void {
+        if (self.deinitialized) return;
+        if (check_affinity) self.assertThreadAffinity();
+        self.deinitialized = true;
+        self.deinit_requested = false;
+        _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
         self.outbound.drain(self.allocator);
         self.inbound.deinit();
@@ -669,9 +681,8 @@ pub const Connection = struct {
         self.on_message = null;
         self.on_error = null;
         self.on_close = null;
-        if (!self.socket_closed) {
+        if (!self.socket_closed.swap(true, .acq_rel)) {
             self.socket.close(self.io);
-            self.socket_closed = true;
         }
         switch (self.endpoint) {
             .client => |*client| client.deinit(),
@@ -706,14 +717,15 @@ pub const Connection = struct {
             };
             if (self.activeQuicConn()) |conn| {
                 if (conn.isClosed() and self.outbound.isEmpty()) {
-                    self.close_requested.store(true, .release);
+                    _ = self.close_requested.swap(true, .acq_rel);
                 }
             }
         }
 
         self.flushCloseDatagram();
         self.outbound.close();
-        if (self.on_close) |cb| cb(self);
+        if (self.on_close) |cb| self.invokeCloseCallback(cb);
+        self.completeDeferredDeinit();
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
@@ -725,7 +737,7 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
-        self.close_requested.store(true, .release);
+        _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
         if (self.activeQuicConn()) |conn| {
             conn.close(false, 0, "");
@@ -733,7 +745,7 @@ pub const Connection = struct {
     }
 
     pub fn requestClose(self: *Connection) void {
-        self.close_requested.store(true, .release);
+        _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
     }
 
@@ -864,7 +876,7 @@ pub const Connection = struct {
             if (self.on_message == null or self.on_error == null) return;
             const frame = self.inbound.popFrame() catch |err| {
                 if (err == error.OutOfMemory) {
-                    self.invokeOnError(err);
+                    self.terminateFrameError(err);
                     return;
                 }
                 self.terminateFrameError(err);
@@ -872,16 +884,17 @@ pub const Connection = struct {
             };
             const bytes = frame orelse return;
             defer self.allocator.free(bytes);
-            self.on_message.?(self, bytes) catch |err| {
+            self.invokeMessageCallback(self.on_message.?, bytes) catch |err| {
                 self.invokeOnError(err);
                 return;
             };
+            if (self.deinit_requested) return;
         }
     }
 
     fn terminateFrameError(self: *Connection, err: anyerror) void {
         log.debug("fatal QUIC frame error, closing connection: {}", .{err});
-        self.close_requested.store(true, .release);
+        _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
         self.inbound.reset();
         self.on_message = null;
@@ -946,7 +959,7 @@ pub const Connection = struct {
                     const reaped = server.server.reap();
                     if (reaped > 0) {
                         server.slot = null;
-                        self.close_requested.store(true, .release);
+                        _ = self.close_requested.swap(true, .acq_rel);
                     }
                 } else {
                     _ = server.server.reap();
@@ -972,9 +985,34 @@ pub const Connection = struct {
         cb: *const fn (conn: *Connection, callback_err: anyerror) void,
         err: anyerror,
     ) void {
-        self.in_error_callback = true;
-        defer self.in_error_callback = false;
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
         cb(self, err);
+    }
+
+    fn invokeMessageCallback(
+        self: *Connection,
+        cb: *const fn (conn: *Connection, frame: []const u8) anyerror!void,
+        frame: []const u8,
+    ) !void {
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
+        try cb(self, frame);
+    }
+
+    fn invokeCloseCallback(
+        self: *Connection,
+        cb: *const fn (conn: *Connection) void,
+    ) void {
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
+        cb(self);
+    }
+
+    fn completeDeferredDeinit(self: *Connection) void {
+        if (self.deinit_requested and self.callback_depth == 0) {
+            self.deinitNow(false);
+        }
     }
 };
 
@@ -1141,6 +1179,120 @@ test "QUIC dispatch treats malformed frames as terminal" {
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
+test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var state = Harness.State{};
+    var udp_rx_buf: [0]u8 = .{};
+    var udp_tx_buf: [0]u8 = .{};
+    var stream_read_buf: [0]u8 = .{};
+    var conn = Connection{
+        .allocator = failing.allocator(),
+        .io = std.testing.io,
+        .role = .client,
+        .socket = undefined,
+        .endpoint = undefined,
+        .start_timestamp = std.Io.Timestamp.now(std.testing.io, .awake),
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        .udp_rx_buf = &udp_rx_buf,
+        .udp_tx_buf = &udp_tx_buf,
+        .stream_read_buf = &stream_read_buf,
+        .max_message_bytes = 1024,
+        .inbound = LengthDelimitedFramer.init(failing.allocator(), 1024),
+        .outbound = OutboundQueue.init(4, 1024),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+    };
+    defer conn.inbound.deinit();
+    defer conn.outbound.drain(failing.allocator());
+
+    var encoded: [7]u8 = undefined;
+    std.mem.writeInt(u32, encoded[0..4], 3, .little);
+    @memcpy(encoded[4..7], "abc");
+
+    try conn.inbound.push(&encoded);
+    try conn.dispatchAvailableFrames();
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), state.last_error);
+    try std.testing.expectEqual(@as(usize, 0), conn.inbound.buffer.items.len);
+    try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
+test "QUIC deinit requested from error callback is deferred without panic" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            close_count: usize = 0,
+            deinit_seen_in_error: bool = false,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, _: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            conn.deinit();
+            state.deinit_seen_in_error = conn.deinit_requested;
+        }
+
+        fn onClose(conn: *Connection) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.close_count += 1;
+        }
+    };
+
+    var state = Harness.State{};
+    var udp_rx_buf: [0]u8 = .{};
+    var udp_tx_buf: [0]u8 = .{};
+    var stream_read_buf: [0]u8 = .{};
+    var conn = Connection{
+        .allocator = std.testing.allocator,
+        .io = std.testing.io,
+        .role = .client,
+        .socket = undefined,
+        .endpoint = undefined,
+        .start_timestamp = std.Io.Timestamp.now(std.testing.io, .awake),
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+        .udp_rx_buf = &udp_rx_buf,
+        .udp_tx_buf = &udp_tx_buf,
+        .stream_read_buf = &stream_read_buf,
+        .max_message_bytes = 1024,
+        .inbound = LengthDelimitedFramer.init(std.testing.allocator, 1024),
+        .outbound = OutboundQueue.init(4, 1024),
+        .ctx = &state,
+        .on_message = Harness.onMessage,
+        .on_error = Harness.onError,
+        .on_close = Harness.onClose,
+    };
+    defer if (!conn.deinitialized) conn.inbound.deinit();
+    defer if (!conn.deinitialized) conn.outbound.drain(std.testing.allocator);
+
+    conn.terminateFrameError(error.InvalidFrame);
+    if (conn.on_close) |cb| conn.invokeCloseCallback(cb);
+
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
+    try std.testing.expect(state.deinit_seen_in_error);
+    try std.testing.expect(conn.deinit_requested);
 }
 
 test "QUIC path address round-trips IPv4" {

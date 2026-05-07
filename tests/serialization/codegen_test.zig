@@ -31,6 +31,29 @@ fn makeListPointer(offset_words: i32, element_size: u3, element_count: u32) u64 
     return pointer;
 }
 
+fn allocFramedSegment(allocator: std.mem.Allocator, word_count: u32) ![]u8 {
+    const bytes = try allocator.alloc(u8, 8 + @as(usize, word_count) * 8);
+    @memset(bytes, 0);
+    std.mem.writeInt(u32, bytes[0..4], 0, .little);
+    std.mem.writeInt(u32, bytes[4..8], word_count, .little);
+    return bytes;
+}
+
+fn writeSegmentWord(bytes: []u8, word_index: usize, value: u64) void {
+    const offset = 8 + word_index * 8;
+    std.mem.writeInt(u64, bytes[offset..][0..8], value, .little);
+}
+
+fn writeSegmentU16(bytes: []u8, word_index: usize, byte_offset: usize, value: u16) void {
+    const offset = 8 + word_index * 8 + byte_offset;
+    std.mem.writeInt(u16, bytes[offset..][0..2], value, .little);
+}
+
+fn writeSegmentBytes(bytes: []u8, word_index: usize, value: []const u8) void {
+    const offset = 8 + word_index * 8;
+    std.mem.copyForwards(u8, bytes[offset..][0..value.len], value);
+}
+
 fn makeRecursiveCodeGeneratorRequestBytes(allocator: std.mem.Allocator) ![]u8 {
     const bytes = try allocator.alloc(u8, 24);
     @memset(bytes, 0);
@@ -58,6 +81,107 @@ fn makeZeroWidthNodeListRequestBytes(allocator: std.mem.Allocator) ![]u8 {
     return bytes;
 }
 
+fn makeWrongTypeNodesRequestBytes(allocator: std.mem.Allocator) ![]u8 {
+    const bytes = try allocFramedSegment(allocator, 5);
+
+    writeSegmentWord(bytes, 0, makeStructPointer(0, 0, 3));
+    writeSegmentWord(bytes, 1, makeStructPointer(2, 1, 0));
+
+    return bytes;
+}
+
+fn makeNodeDisplayNameRequestBytes(
+    allocator: std.mem.Allocator,
+    text_bytes: []const u8,
+    element_count: u32,
+) ![]u8 {
+    const bytes = try allocFramedSegment(allocator, 12);
+
+    writeSegmentWord(bytes, 0, makeStructPointer(0, 0, 3));
+    writeSegmentWord(bytes, 1, makeListPointer(2, 7, 7));
+    writeSegmentWord(bytes, 4, makeStructPointer(1, 3, 3));
+    writeSegmentWord(bytes, 8, makeListPointer(2, 2, element_count));
+    writeSegmentBytes(bytes, 11, text_bytes);
+
+    return bytes;
+}
+
+fn makeStructFieldNameRequestBytes(
+    allocator: std.mem.Allocator,
+    text_bytes: []const u8,
+    element_count: u32,
+) ![]u8 {
+    const bytes = try allocFramedSegment(allocator, 24);
+
+    writeSegmentWord(bytes, 0, makeStructPointer(0, 0, 3));
+    writeSegmentWord(bytes, 1, makeListPointer(2, 7, 10));
+    writeSegmentWord(bytes, 4, makeStructPointer(1, 5, 4));
+    writeSegmentU16(bytes, 5, 12, 1);
+    writeSegmentWord(bytes, 13, makeListPointer(0, 7, 8));
+    writeSegmentWord(bytes, 14, makeStructPointer(1, 3, 4));
+    writeSegmentWord(bytes, 18, makeListPointer(3, 2, element_count));
+    writeSegmentWord(bytes, 20, makeStructPointer(2, 1, 0));
+    writeSegmentBytes(bytes, 22, text_bytes);
+    writeSegmentU16(bytes, 23, 0, 12);
+
+    return bytes;
+}
+
+fn makeStructFieldDefaultTextRequestBytes(
+    allocator: std.mem.Allocator,
+    text_bytes: []const u8,
+    element_count: u32,
+) ![]u8 {
+    const bytes = try allocFramedSegment(allocator, 27);
+
+    writeSegmentWord(bytes, 0, makeStructPointer(0, 0, 3));
+    writeSegmentWord(bytes, 1, makeListPointer(2, 7, 10));
+    writeSegmentWord(bytes, 4, makeStructPointer(1, 5, 4));
+    writeSegmentU16(bytes, 5, 12, 1);
+    writeSegmentWord(bytes, 13, makeListPointer(0, 7, 8));
+    writeSegmentWord(bytes, 14, makeStructPointer(1, 3, 4));
+    writeSegmentWord(bytes, 20, makeStructPointer(2, 1, 0));
+    writeSegmentWord(bytes, 21, makeStructPointer(2, 1, 1));
+    writeSegmentU16(bytes, 23, 0, 12);
+    writeSegmentU16(bytes, 24, 0, 12);
+    writeSegmentWord(bytes, 25, makeListPointer(0, 2, element_count));
+    writeSegmentBytes(bytes, 26, text_bytes);
+
+    return bytes;
+}
+
+fn makeStructFieldDefaultDataWrongTypeRequestBytes(allocator: std.mem.Allocator) ![]u8 {
+    const bytes = try allocFramedSegment(allocator, 27);
+
+    writeSegmentWord(bytes, 0, makeStructPointer(0, 0, 3));
+    writeSegmentWord(bytes, 1, makeListPointer(2, 7, 10));
+    writeSegmentWord(bytes, 4, makeStructPointer(1, 5, 4));
+    writeSegmentU16(bytes, 5, 12, 1);
+    writeSegmentWord(bytes, 13, makeListPointer(0, 7, 8));
+    writeSegmentWord(bytes, 14, makeStructPointer(1, 3, 4));
+    writeSegmentWord(bytes, 20, makeStructPointer(2, 1, 0));
+    writeSegmentWord(bytes, 21, makeStructPointer(2, 1, 1));
+    writeSegmentU16(bytes, 23, 0, 13);
+    writeSegmentU16(bytes, 24, 0, 13);
+    writeSegmentWord(bytes, 25, makeStructPointer(0, 1, 0));
+
+    return bytes;
+}
+
+fn makeInvalidAnnotationValueRequestBytes(allocator: std.mem.Allocator) ![]u8 {
+    const bytes = try allocFramedSegment(allocator, 15);
+
+    writeSegmentWord(bytes, 0, makeStructPointer(0, 0, 3));
+    writeSegmentWord(bytes, 1, makeListPointer(2, 7, 7));
+    writeSegmentWord(bytes, 4, makeStructPointer(1, 3, 3));
+    writeSegmentWord(bytes, 10, makeListPointer(0, 7, 3));
+    writeSegmentWord(bytes, 11, makeStructPointer(1, 1, 1));
+    writeSegmentWord(bytes, 13, makeStructPointer(0, 1, 0));
+    writeSegmentU16(bytes, 14, 0, 99);
+
+    return bytes;
+}
+
 test "CodeGeneratorRequest parser validates traversal before reading schema" {
     const bytes = try makeRecursiveCodeGeneratorRequestBytes(testing.allocator);
     defer testing.allocator.free(bytes);
@@ -70,6 +194,51 @@ test "CodeGeneratorRequest parser rejects huge zero-width node lists" {
     defer testing.allocator.free(bytes);
 
     try testing.expectError(error.TraversalLimitExceeded, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
+
+test "CodeGeneratorRequest parser rejects non-null wrong-type nodes pointer" {
+    const bytes = try makeWrongTypeNodesRequestBytes(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.InvalidPointer, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
+
+test "CodeGeneratorRequest parser validates display name text strictly" {
+    const invalid_utf8 = try makeNodeDisplayNameRequestBytes(testing.allocator, &[_]u8{ 0xff, 0 }, 2);
+    defer testing.allocator.free(invalid_utf8);
+    try testing.expectError(error.InvalidUtf8, request_reader.parseCodeGeneratorRequest(testing.allocator, invalid_utf8));
+
+    const missing_nul = try makeNodeDisplayNameRequestBytes(testing.allocator, "abc", 3);
+    defer testing.allocator.free(missing_nul);
+    try testing.expectError(error.InvalidTextPointer, request_reader.parseCodeGeneratorRequest(testing.allocator, missing_nul));
+}
+
+test "CodeGeneratorRequest parser validates field name text strictly" {
+    const bytes = try makeStructFieldNameRequestBytes(testing.allocator, &[_]u8{ 0xff, 0 }, 2);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.InvalidUtf8, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
+
+test "CodeGeneratorRequest parser validates default text strictly" {
+    const bytes = try makeStructFieldDefaultTextRequestBytes(testing.allocator, "abc", 3);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.InvalidTextPointer, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
+
+test "CodeGeneratorRequest parser rejects malformed default data pointer" {
+    const bytes = try makeStructFieldDefaultDataWrongTypeRequestBytes(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.InvalidPointer, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
+}
+
+test "CodeGeneratorRequest parser rejects invalid annotation value union" {
+    const bytes = try makeInvalidAnnotationValueRequestBytes(testing.allocator);
+    defer testing.allocator.free(bytes);
+
+    try testing.expectError(error.InvalidValueKind, request_reader.parseCodeGeneratorRequest(testing.allocator, bytes));
 }
 
 test "Generated code: Person struct round trip" {

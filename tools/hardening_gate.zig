@@ -45,11 +45,9 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/level3/peer/call/peer_call_orchestration.zig", .kind = .unchecked_unreachable, .needle = ".queue_promise_export => unreachable", .reason = "filtered by handleCallImportedTargetForPeer before dispatch" },
 
     .{ .path = "src/rpc/level2/connection.zig", .kind = .panic_call, .needle = "Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
-    .{ .path = "src/rpc/level2/connection.zig", .kind = .panic_call, .needle = "Connection.deinit() must not be called from on_error callback", .reason = "programmer misuse guard" },
     .{ .path = "src/rpc/level2/connection.zig", .kind = .optional_unwrap, .needle = "const bytes = frame.?;", .reason = "guarded by preceding null frame branch" },
     .{ .path = "src/rpc/level2/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
     .{ .path = "src/rpc/level2/stream_state.zig", .kind = .optional_unwrap, .needle = "cb(ctx.?, self.stream_error)", .reason = "callback context is paired with callback registration" },
-    .{ .path = "src/rpc/level2/quic_transport.zig", .kind = .panic_call, .needle = "Connection.deinit() must not be called from on_error callback", .reason = "programmer misuse guard" },
     .{ .path = "src/rpc/level2/quic_transport.zig", .kind = .panic_call, .needle = "QUIC Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/level2/quic_transport.zig", .kind = .optional_unwrap, .needle = "const remote = self.remote_addr.?;", .reason = "remote address is initialized before connection path use" },
     .{ .path = "src/rpc/level2/quic_transport.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },

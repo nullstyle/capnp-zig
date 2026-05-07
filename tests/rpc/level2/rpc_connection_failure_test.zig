@@ -9,6 +9,7 @@ const cap_table = capnpc.rpc.cap_table;
 const Connection = capnpc.rpc.connection.Connection;
 const Peer = peer_impl.Peer;
 const Transport = capnpc.rpc.transport.Transport;
+const Listener = capnpc.rpc.runtime.Listener;
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
@@ -645,4 +646,202 @@ test "connection run treats malformed frame as terminal after on_error" {
     try std.testing.expect(state.closing_seen_in_error);
     try std.testing.expect(conn.transport.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.close_count);
+}
+
+test "connection run closes after inbound frame allocation OOM" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const pair = try createSocketPair();
+
+    const State = struct {
+        error_count: usize = 0,
+        close_count: usize = 0,
+        last_error: ?anyerror = null,
+        closing_seen_in_error: bool = false,
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+            state.closing_seen_in_error = conn.transport.isClosing();
+        }
+
+        fn onClose(conn: *Connection) void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.close_count += 1;
+        }
+    };
+
+    const Runner = struct {
+        fn run(conn: *Connection) void {
+            conn.run();
+        }
+    };
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 2 });
+    var conn = try Connection.init(failing.allocator(), std.testing.io, pair[0], .{});
+    defer if (!conn.deinitialized) conn.deinit();
+
+    var state = State{};
+    conn.start(&state, State.onMessage, State.onError, State.onClose);
+
+    const frame = try buildReturnResultsFrame(allocator, 99);
+    defer allocator.free(frame);
+
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&conn});
+    try writeAll(pair[1], frame);
+    closeFd(pair[1]);
+    thread.join();
+
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), state.last_error);
+    try std.testing.expect(state.closing_seen_in_error);
+    try std.testing.expect(conn.transport.isClosing());
+    try std.testing.expectEqual(@as(usize, 0), conn.framer.bufferedBytes());
+}
+
+test "connection deinit requested from error callback is deferred without panic" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    const pair = try createSocketPair();
+    defer closeFd(pair[1]);
+
+    const State = struct {
+        error_count: usize = 0,
+        close_count: usize = 0,
+        deinit_seen_in_error: bool = false,
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, _: anyerror) void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            conn.deinit();
+            state.deinit_seen_in_error = conn.deinit_requested;
+        }
+
+        fn onClose(conn: *Connection) void {
+            const state: *@This() = @ptrCast(@alignCast(conn.ctx.?));
+            state.close_count += 1;
+        }
+    };
+
+    const Runner = struct {
+        fn run(conn: *Connection) void {
+            conn.run();
+        }
+    };
+
+    var conn = try Connection.init(allocator, std.testing.io, pair[0], .{});
+    defer if (!conn.deinitialized) conn.deinit();
+
+    var state = State{};
+    conn.start(&state, State.onMessage, State.onError, State.onClose);
+
+    const thread = try std.Thread.spawn(.{}, Runner.run, .{&conn});
+    const bad_header = [_]u8{ 0xff, 0xff, 0xff, 0xff };
+    try writeAll(pair[1], &bad_header);
+    thread.join();
+
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
+    try std.testing.expect(state.deinit_seen_in_error);
+    try std.testing.expect(conn.deinitialized);
+}
+
+test "transport concurrent close and shutdown call socket shutdown once" {
+    const net = std.Io.net;
+
+    const CountingIo = struct {
+        const State = struct {
+            shutdown_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+            close_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+        };
+
+        var active_state: ?*State = null;
+
+        fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {
+            _ = active_state.?.shutdown_count.fetchAdd(1, .acq_rel);
+        }
+
+        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {
+            _ = active_state.?.close_count.fetchAdd(1, .acq_rel);
+        }
+    };
+
+    const Runner = struct {
+        fn closeTransport(transport: *Transport) void {
+            transport.close();
+        }
+    };
+
+    var state = CountingIo.State{};
+    CountingIo.active_state = &state;
+    defer CountingIo.active_state = null;
+
+    var vtable = std.testing.io.vtable.*;
+    vtable.netShutdown = CountingIo.netShutdown;
+    vtable.netClose = CountingIo.netClose;
+    const io = std.Io{
+        .userdata = std.testing.io.userdata,
+        .vtable = &vtable,
+    };
+
+    var transport = try Transport.init(std.testing.allocator, io, 123, 64);
+    var threads: [8]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Runner.closeTransport, .{&transport});
+    }
+    for (threads) |thread| thread.join();
+    transport.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), state.shutdown_count.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), state.close_count.load(.acquire));
+}
+
+test "listener concurrent close calls socket close once" {
+    const net = std.Io.net;
+
+    const CountingIo = struct {
+        const State = struct {
+            close_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+        };
+
+        var active_state: ?*State = null;
+
+        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {
+            _ = active_state.?.close_count.fetchAdd(1, .acq_rel);
+        }
+    };
+
+    const Runner = struct {
+        fn closeListener(listener: *Listener) void {
+            listener.close();
+        }
+    };
+
+    var state = CountingIo.State{};
+    CountingIo.active_state = &state;
+    defer CountingIo.active_state = null;
+
+    var vtable = std.testing.io.vtable.*;
+    vtable.netClose = CountingIo.netClose;
+    const io = std.Io{
+        .userdata = std.testing.io.userdata,
+        .vtable = &vtable,
+    };
+
+    var listener = Listener.initFd(std.testing.allocator, io, 456, .{});
+    var threads: [8]std.Thread = undefined;
+    for (&threads) |*thread| {
+        thread.* = try std.Thread.spawn(.{}, Runner.closeListener, .{&listener});
+    }
+    for (threads) |thread| thread.join();
+
+    try std.testing.expectEqual(@as(usize, 1), state.close_count.load(.acquire));
 }

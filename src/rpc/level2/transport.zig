@@ -34,6 +34,7 @@ pub const Transport = struct {
     read_buf: []u8,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    fd_mu: std.atomic.Mutex = .unlocked,
 
     // Write queue for concurrent write support
     write_queue: WriteQueue = .{},
@@ -190,8 +191,10 @@ pub const Transport = struct {
     /// socket if not already closed.
     pub fn deinit(self: *Transport) void {
         self.stopWriter();
+        self.lockFd();
+        defer self.fd_mu.unlock();
         if (!self.fd_closed.swap(true, .acq_rel)) {
-            self.close_requested.store(true, .release);
+            _ = self.close_requested.swap(true, .acq_rel);
             ioClose(self.io, self.fd);
         }
         self.allocator.free(self.read_buf);
@@ -293,8 +296,12 @@ pub const Transport = struct {
     /// Also closes the write queue so the writer thread will exit.
     /// The owning thread should subsequently call `deinit()`.
     pub fn shutdown(self: *Transport) void {
-        self.close_requested.store(true, .release);
+        const already_closing = self.close_requested.swap(true, .acq_rel);
         self.write_queue.close(self.io);
+        if (already_closing) return;
+
+        self.lockFd();
+        defer self.fd_mu.unlock();
         if (!self.fd_closed.load(.acquire)) {
             ioShutdown(self.io, self.fd);
         }
@@ -314,6 +321,10 @@ pub const Transport = struct {
     /// Returns `true` if `close()` or `shutdown()` has been called.
     pub fn isClosing(self: *const Transport) bool {
         return self.close_requested.load(.acquire);
+    }
+
+    fn lockFd(self: *Transport) void {
+        while (!self.fd_mu.tryLock()) std.atomic.spinLoopHint();
     }
 };
 

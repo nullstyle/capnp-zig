@@ -93,6 +93,15 @@ Progress in this tranche:
 - TCP writer-owned batches now continue counting against the outbound byte
   budget until the writer frees them, and terminal frame errors mark the
   connection closing before invoking error callbacks.
+- TCP and QUIC inbound receive OOM during frame extraction is now terminal:
+  buffered input is reset, error callbacks see a closing connection, and
+  callbacks can request deferred deinit without panicking the process.
+- TCP transport and listener close paths now use atomic idempotency guards,
+  with socket shutdown/close covered by concurrent-close regressions.
+- Request parsing now distinguishes absent/null schema pointers from malformed
+  non-null pointers, rejects invalid `Value` union tags, rejects non-empty
+  zero-width struct lists in schema-specific lists, and uses strict Text
+  validation for schema names and default text.
 - HostPeer now has finite outbound defaults and redacts/caps/sanitizes external
   exception reasons by default, including prebuilt exception return frames.
 - Message validation now charges inline-composite element counts separately

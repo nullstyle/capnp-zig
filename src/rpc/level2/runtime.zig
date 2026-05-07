@@ -97,8 +97,7 @@ pub const Listener = struct {
     /// Close the listening socket. Idempotent.
     /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {
-        if (self.close_requested.load(.acquire)) return;
-        self.close_requested.store(true, .release);
+        if (self.close_requested.swap(true, .acq_rel)) return;
         closeFd(self.io, self.server.socket.handle);
     }
 
