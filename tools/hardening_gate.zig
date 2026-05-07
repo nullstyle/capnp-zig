@@ -9,6 +9,12 @@ const PatternKind = enum {
     unchecked_unreachable,
     runtime_safety_disabled,
     unsafe_optimize,
+    disclosure_source_path,
+    disclosure_stack_trace,
+    disclosure_build_identity,
+    disclosure_banner,
+    disclosure_verbose_close_reason,
+    disclosure_debug_details,
 };
 
 const Allow = struct {
@@ -66,6 +72,17 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/level0/cap_table.zig", .kind = .optional_unwrap, .needle = "const list = list_opt.?;", .reason = "guarded by nullable cap-table list check" },
 
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .optional_unwrap, .needle = "state.bootstrap_stub_export_id.?", .reason = "bootstrap export id is initialized before write" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"/Users/\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"/home/\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"/private/\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"/tmp/\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"\\\\Users\\\\\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"src/\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"tests/\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\".zig:\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"stack trace\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"Stack trace\"", .reason = "defensive disclosure-marker filter data" },
+    .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"panicked at\"", .reason = "defensive disclosure-marker filter data" },
     .{ .path = "src/io_backend.zig", .kind = .unchecked_unreachable, .needle = ".evented => unreachable", .reason = "evented enum path is rejected before switch until Zig ships std.Io.Evented" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
 };
@@ -78,6 +95,19 @@ const unsafe_dirs = [_][]const u8{
 
 const unsafe_files = [_][]const u8{
     "src/io_backend.zig",
+};
+
+const disclosure_extra_dirs = [_][]const u8{
+    "src/capnpc-zig",
+};
+
+const disclosure_extra_files = [_][]const u8{
+    "src/main.zig",
+    "src/lib.zig",
+    "src/lib_core.zig",
+    "examples/rpc_pingpong.zig",
+    "examples/kvstore/server.zig",
+    "examples/kvstore/stressor.zig",
 };
 
 const build_policy_files = [_][]const u8{
@@ -127,6 +157,8 @@ fn printUsage() void {
         \\  - bans unreviewed catch unreachable, @panic, .? unwraps,
         \\    unchecked unreachable, and @setRuntimeSafety(false)
         \\  - bans unreviewed ReleaseFast/ReleaseSmall build-policy drift
+        \\  - bans public disclosure drift for source paths, stack traces,
+        \\    build identity strings, banners, and verbose close reasons
         \\  - skips generated code and Zig test blocks to reduce test-only noise
         \\  - keeps reviewed exceptions in tools/hardening_gate.zig
         \\
@@ -154,6 +186,12 @@ fn kindName(kind: PatternKind) []const u8 {
         .unchecked_unreachable => "unchecked unreachable",
         .runtime_safety_disabled => "@setRuntimeSafety(false)",
         .unsafe_optimize => "unsafe optimize policy",
+        .disclosure_source_path => "disclosure source path",
+        .disclosure_stack_trace => "disclosure stack trace",
+        .disclosure_build_identity => "disclosure build identity",
+        .disclosure_banner => "disclosure banner",
+        .disclosure_verbose_close_reason => "disclosure verbose close reason",
+        .disclosure_debug_details => "disclosure debug details",
     };
 }
 
@@ -254,6 +292,141 @@ fn scanUnsafeCode(ctx: *Context, path: []const u8, line_no: usize, raw_line: []c
     if (!catch_unreachable and hasWord(code, "unreachable")) ctx.record(path, line_no, .unchecked_unreachable, raw_line);
 }
 
+const DisclosureMarker = struct {
+    kind: PatternKind,
+    needle: []const u8,
+};
+
+const disclosure_string_markers = [_]DisclosureMarker{
+    .{ .kind = .disclosure_source_path, .needle = "/Users/" },
+    .{ .kind = .disclosure_source_path, .needle = "/home/" },
+    .{ .kind = .disclosure_source_path, .needle = "/private/" },
+    .{ .kind = .disclosure_source_path, .needle = "/var/folders/" },
+    .{ .kind = .disclosure_source_path, .needle = "/tmp/" },
+    .{ .kind = .disclosure_source_path, .needle = "/workspace/" },
+    .{ .kind = .disclosure_source_path, .needle = "github/workspace" },
+    .{ .kind = .disclosure_source_path, .needle = "\\\\Users\\\\" },
+    .{ .kind = .disclosure_source_path, .needle = "C:\\\\" },
+    .{ .kind = .disclosure_source_path, .needle = "C:/" },
+    .{ .kind = .disclosure_source_path, .needle = ".zig:" },
+    .{ .kind = .disclosure_source_path, .needle = "src/" },
+    .{ .kind = .disclosure_source_path, .needle = "tests/" },
+    .{ .kind = .disclosure_source_path, .needle = "capnp-zig/src/" },
+    .{ .kind = .disclosure_stack_trace, .needle = "stack trace" },
+    .{ .kind = .disclosure_stack_trace, .needle = "Stack trace" },
+    .{ .kind = .disclosure_stack_trace, .needle = "error return trace" },
+    .{ .kind = .disclosure_stack_trace, .needle = "panicked at" },
+    .{ .kind = .disclosure_stack_trace, .needle = "panic:" },
+    .{ .kind = .disclosure_build_identity, .needle = "build id" },
+    .{ .kind = .disclosure_build_identity, .needle = "build-id" },
+    .{ .kind = .disclosure_build_identity, .needle = "build_id" },
+    .{ .kind = .disclosure_build_identity, .needle = "git sha" },
+    .{ .kind = .disclosure_build_identity, .needle = "git_sha" },
+    .{ .kind = .disclosure_build_identity, .needle = "gitSha" },
+    .{ .kind = .disclosure_build_identity, .needle = "commit sha" },
+    .{ .kind = .disclosure_build_identity, .needle = "commit_sha" },
+    .{ .kind = .disclosure_build_identity, .needle = "commitHash" },
+    .{ .kind = .disclosure_build_identity, .needle = "built at" },
+    .{ .kind = .disclosure_build_identity, .needle = "build date" },
+    .{ .kind = .disclosure_build_identity, .needle = "build time" },
+    .{ .kind = .disclosure_build_identity, .needle = "dirty build" },
+    .{ .kind = .disclosure_banner, .needle = "X-Powered-By" },
+    .{ .kind = .disclosure_banner, .needle = "Server:" },
+};
+
+fn scanDisclosureLiteral(ctx: *Context, path: []const u8, line_no: usize, raw_line: []const u8, literal: []const u8) void {
+    for (disclosure_string_markers) |marker| {
+        if (std.mem.indexOf(u8, literal, marker.needle) != null) {
+            ctx.record(path, line_no, marker.kind, raw_line);
+        }
+    }
+}
+
+fn scanZigStringLiterals(ctx: *Context, path: []const u8, line_no: usize, raw_line: []const u8) void {
+    const trimmed_left = std.mem.trimStart(u8, raw_line, " \t");
+    if (std.mem.startsWith(u8, trimmed_left, "\\\\")) {
+        scanDisclosureLiteral(ctx, path, line_no, raw_line, trimmed_left[2..]);
+        return;
+    }
+
+    var in_string = false;
+    var escaped = false;
+    var start: usize = 0;
+    var index: usize = 0;
+    while (index < raw_line.len) : (index += 1) {
+        const c = raw_line[index];
+        if (!in_string and index + 1 < raw_line.len and c == '/' and raw_line[index + 1] == '/') {
+            break;
+        }
+
+        if (!in_string) {
+            if (c == '"') {
+                in_string = true;
+                escaped = false;
+                start = index + 1;
+            }
+            continue;
+        }
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            scanDisclosureLiteral(ctx, path, line_no, raw_line, raw_line[start..index]);
+            in_string = false;
+        }
+    }
+}
+
+fn hasTrueAssignment(code: []const u8, name: []const u8) bool {
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, code, index, name)) |pos| {
+        var cursor = pos + name.len;
+        if (cursor < code.len and isIdentChar(code[cursor])) {
+            index = cursor;
+            continue;
+        }
+        while (cursor < code.len and (code[cursor] == ' ' or code[cursor] == '\t')) : (cursor += 1) {}
+        if (cursor >= code.len or code[cursor] != '=') {
+            index = cursor;
+            continue;
+        }
+        cursor += 1;
+        while (cursor < code.len and (code[cursor] == ' ' or code[cursor] == '\t')) : (cursor += 1) {}
+        if (std.mem.startsWith(u8, code[cursor..], "true")) {
+            const end = cursor + "true".len;
+            if (end >= code.len or !isIdentChar(code[end])) return true;
+        }
+        index = cursor;
+    }
+    return false;
+}
+
+fn scanDisclosureCode(ctx: *Context, path: []const u8, line_no: usize, raw_line: []const u8, code: []const u8) void {
+    scanZigStringLiterals(ctx, path, line_no, raw_line);
+
+    if (std.mem.indexOf(u8, code, "@src(") != null) ctx.record(path, line_no, .disclosure_source_path, raw_line);
+    if (std.mem.indexOf(u8, code, "@errorReturnTrace") != null or
+        std.mem.indexOf(u8, code, "std.debug.dumpStackTrace") != null or
+        std.mem.indexOf(u8, code, "std.debug.dumpCurrentStackTrace") != null or
+        std.mem.indexOf(u8, code, "std.debug.captureStackTrace") != null or
+        std.mem.indexOf(u8, code, "std.builtin.StackTrace") != null)
+    {
+        ctx.record(path, line_no, .disclosure_stack_trace, raw_line);
+    }
+    if (hasTrueAssignment(code, "reveal_close_reason_on_wire")) {
+        ctx.record(path, line_no, .disclosure_verbose_close_reason, raw_line);
+    }
+    if (hasTrueAssignment(code, "reveal_details")) {
+        ctx.record(path, line_no, .disclosure_debug_details, raw_line);
+    }
+}
+
 fn scanBuildPolicy(ctx: *Context, path: []const u8, line_no: usize, raw_line: []const u8, code: []const u8) void {
     if (std.mem.indexOf(u8, code, "ReleaseFast") != null or
         std.mem.indexOf(u8, code, "ReleaseSmall") != null)
@@ -262,7 +435,31 @@ fn scanBuildPolicy(ctx: *Context, path: []const u8, line_no: usize, raw_line: []
     }
 }
 
-fn scanZigFile(ctx: *Context, path: []const u8) !void {
+fn scanDisclosurePolicy(ctx: *Context, path: []const u8, line_no: usize, raw_line: []const u8, code: []const u8) void {
+    if (std.mem.indexOf(u8, code, "--verbose-close-reason") != null or
+        std.mem.indexOf(u8, code, "--reveal-close-reason") != null or
+        std.mem.indexOf(u8, code, "-Ddebug-disclosure") != null)
+    {
+        ctx.record(path, line_no, .disclosure_verbose_close_reason, raw_line);
+    }
+    if (std.mem.indexOf(u8, code, "reveal_close_reason_on_wire=true") != null or
+        std.mem.indexOf(u8, code, "reveal_close_reason_on_wire = true") != null)
+    {
+        ctx.record(path, line_no, .disclosure_verbose_close_reason, raw_line);
+    }
+    if (std.mem.indexOf(u8, code, "X-Powered-By") != null or
+        std.mem.indexOf(u8, code, "Server:") != null)
+    {
+        ctx.record(path, line_no, .disclosure_banner, raw_line);
+    }
+}
+
+const ZigScanMode = struct {
+    unsafe: bool = false,
+    disclosure: bool = false,
+};
+
+fn scanZigFile(ctx: *Context, path: []const u8, mode: ZigScanMode) !void {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(ctx.io, path, ctx.allocator, .limited(max_file_bytes));
     defer ctx.allocator.free(bytes);
 
@@ -285,7 +482,8 @@ fn scanZigFile(ctx: *Context, path: []const u8) !void {
             continue;
         }
 
-        scanUnsafeCode(ctx, path, line_no, raw_line, code);
+        if (mode.unsafe) scanUnsafeCode(ctx, path, line_no, raw_line, code);
+        if (mode.disclosure) scanDisclosureCode(ctx, path, line_no, raw_line, code);
     }
 }
 
@@ -301,6 +499,7 @@ fn scanPolicyFile(ctx: *Context, path: []const u8) !void {
         const code = try sanitizePolicyLine(ctx.allocator, path, raw_line);
         defer ctx.allocator.free(code);
         scanBuildPolicy(ctx, path, line_no, raw_line, code);
+        scanDisclosurePolicy(ctx, path, line_no, raw_line, code);
     }
 }
 
@@ -313,10 +512,12 @@ fn normalizePathInPlace(path: []u8) void {
 fn shouldSkipPath(path: []const u8) bool {
     return std.mem.startsWith(u8, path, "src/rpc/gen/") or
         std.mem.startsWith(u8, path, "src/wasm/generated/") or
+        std.mem.startsWith(u8, path, "examples/kvstore/gen/") or
+        std.mem.startsWith(u8, path, "examples/kvstore/vendor/") or
         std.mem.endsWith(u8, path, "_test.zig");
 }
 
-fn scanUnsafeDir(ctx: *Context, dir_path: []const u8) !void {
+fn scanZigDir(ctx: *Context, dir_path: []const u8, mode: ZigScanMode) !void {
     var dir = try std.Io.Dir.cwd().openDir(ctx.io, dir_path, .{ .iterate = true });
     defer dir.close(ctx.io);
 
@@ -336,7 +537,7 @@ fn scanUnsafeDir(ctx: *Context, dir_path: []const u8) !void {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, path, ".zig")) continue;
         if (shouldSkipPath(path)) continue;
-        try scanZigFile(ctx, path);
+        try scanZigFile(ctx, path, mode);
     }
 }
 
@@ -374,9 +575,13 @@ pub fn main(init: std.process.Init) !void {
         .allow_used = allow_used,
     };
 
-    for (unsafe_dirs) |dir_path| try scanUnsafeDir(&ctx, dir_path);
+    for (unsafe_dirs) |dir_path| try scanZigDir(&ctx, dir_path, .{ .unsafe = true, .disclosure = true });
     for (unsafe_files) |path| {
-        if (!shouldSkipPath(path)) try scanZigFile(&ctx, path);
+        if (!shouldSkipPath(path)) try scanZigFile(&ctx, path, .{ .unsafe = true, .disclosure = true });
+    }
+    for (disclosure_extra_dirs) |dir_path| try scanZigDir(&ctx, dir_path, .{ .disclosure = true });
+    for (disclosure_extra_files) |path| {
+        if (!shouldSkipPath(path)) try scanZigFile(&ctx, path, .{ .disclosure = true });
     }
     for (build_policy_files) |path| try scanPolicyFile(&ctx, path);
 

@@ -38,6 +38,10 @@ test-fuzz-smoke:
 test-release-safe:
     zig build test-release-safe --summary all
 
+# Run raw-frame RPC security e2e tests
+test-e2e-security:
+    zig build test-e2e-security --summary all
+
 # Run Cap'n Proto RPC level 0 tests (framing/protocol/cap-table)
 test-rpc-level0:
     zig build test-rpc-level0 --summary all
@@ -80,6 +84,7 @@ ci:
     zig build test-fuzz-smoke --summary all
     zig build test-resource-budgets --summary all
     zig build test-oom --summary all
+    zig build test-e2e-security --summary all
     zig build test-release-safe --summary all
     just src/rpc/check-rpc
     zig build test --summary all
@@ -130,11 +135,11 @@ clean:
 
 # Format code
 fmt:
-    zig fmt --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
+    zig fmt --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude examples/kvstore/vendor --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
 
 # Check formatting with the same paths CI uses
 fmt-check:
-    zig fmt --check --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
+    zig fmt --check --exclude examples/kvstore/gen --exclude examples/kvstore/zig-pkg --exclude examples/kvstore/vendor --exclude tests/e2e/zig/generated --exclude tests/golden --exclude src/rpc/gen src/ tests/ bench/ tools/ examples/
 
 # Check for errors without building
 check:

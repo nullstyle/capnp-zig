@@ -35,9 +35,9 @@ Status values:
 | Resource-budget and OOM regression drift | Serialization, RPC, WASM, codegen | `zig build test-resource-budgets`, `zig build test-oom` | Covered |
 | Deterministic fuzz/smoke gate across decode, RPC, QUIC, and peer state | Cross-cutting | `zig build test-fuzz-smoke` | Covered |
 | ReleaseSafe hardening coverage | Test/e2e build policy | `zig build test-release-safe`, `release-safe-tests` CI job | Covered |
-| Malformed interop/security e2e with raw frame clients | E2E RPC interop | Security e2e runner | Pending |
-| KV example public defaults and sensitive logging | `examples/kvstore` | server defaults/quota unit tests; example build currently blocked by RocksDB build-script compatibility | Partial |
-| Disclosure scan for banners, build IDs, source paths, stack traces, and verbose close reasons | CI/build policy | Static disclosure scan gate | Pending |
+| Malformed interop/security e2e with raw frame clients | E2E RPC interop | `zig build test-e2e-security`, `tests/rpc/level2/rpc_raw_frame_security_test.zig` | Covered |
+| KV example public defaults and sensitive logging | `examples/kvstore` | server defaults/quota unit tests; `cd examples/kvstore && zig build test` | Covered |
+| Disclosure scan for banners, build IDs, source paths, stack traces, and verbose close reasons | CI/build policy | `zig build hardening` disclosure scan | Covered |
 
 When adding a new hardening regression, update the `Regression Gate` column to
 name the exact command or test file. When an external advisory maps to one of

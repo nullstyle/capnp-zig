@@ -122,8 +122,10 @@ Progress in this tranche:
   UTF-8 text, JSON size, frame size, and traversal limits.
 - `zig build hardening` now runs a static hardening gate over production Zig
   paths and build policy files, with reviewed one-for-one allowlist entries
-  for existing unsafe-pattern exceptions. `just hardening`, `just ci`, and CI
-  run the same gate.
+  for existing unsafe-pattern and public-disclosure exceptions. The same gate
+  now scans for source paths, stack traces, build identity strings, banners,
+  debug detail defaults, and verbose close reasons. `just hardening`,
+  `just ci`, and CI run the same gate.
 - `zig build test-resource-budgets` and `zig build test-oom` now provide
   named resource/OOM regression gates, with matching `just` recipes and CI
   hardening-job coverage.
@@ -140,7 +142,12 @@ Progress in this tranche:
   details before exposure.
 - The KV store example now defaults to localhost, redacts sensitive operational
   details from normal output, and adds local caps for keys, values, list
-  requests, watched keys, batch operations, and pending notifications.
+  requests, watched keys, batch operations, and pending notifications. Its
+  RocksDB wrapper dependency is vendored and patched for Zig 0.16 build APIs so
+  `cd examples/kvstore && zig build test` is a live regression gate again.
+- `zig build test-e2e-security` now exercises raw TCP frame clients, HostPeer
+  malformed complete frames, invalid RPC top-level tags, and QUIC
+  length-delimited framing failures before they reach application handlers.
 
 ## Findings
 
@@ -484,6 +491,7 @@ Progress in this tranche:
 - Trigger: running the KV example with default options.
 - Impact: binds to all interfaces, logs user keys/prefixes/internal paths/state, and lacks app-level quotas.
 - Fix: bind localhost and quiet/redacted logs by default; cap keys, values, ops, watches, and pending notifications.
+- Status: fixed, with `cd examples/kvstore && zig build test` restored as the live regression gate.
 
 ### Test And Release Gates
 
@@ -514,7 +522,7 @@ Progress in this tranche:
 
 **Medium: interop security gate is missing**
 
-- Current state: e2e interop is mostly functional/happy-path.
+- Current state: raw-frame security coverage is now wired through `zig build test-e2e-security`.
 - Fix: add malformed/resource e2e cases with raw frame clients.
 
 **Medium: no public-advisory regression matrix**

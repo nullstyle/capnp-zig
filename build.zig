@@ -378,6 +378,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/level2/rpc_worker_pool_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/level2/rpc_quic_transport_test.zig", target, optimize, lib_module);
+    const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/level2/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
     const run_rpc_peer_control_from_peer_control_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_control_from_peer_control_zig_test.zig", target, optimize, lib_module);
@@ -510,6 +511,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(run_rpc_connection_failure_tests);
     test_rpc_level2_step.dependOn(run_rpc_worker_pool_tests);
     test_rpc_level2_step.dependOn(run_rpc_quic_transport_tests);
+    test_rpc_level2_step.dependOn(run_rpc_raw_frame_security_tests);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run RPC level 3+ tests (advanced peer semantics)");
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
@@ -521,6 +523,9 @@ pub fn build(b: *std.Build) void {
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_level3_step);
+
+    const test_e2e_security_step = b.step("test-e2e-security", "Run raw-frame RPC security e2e tests");
+    test_e2e_security_step.dependOn(run_rpc_raw_frame_security_tests);
 
     const test_wasm_host_step = b.step("test-wasm-host", "Run wasm host ABI tests");
     test_wasm_host_step.dependOn(&run_wasm_host_abi_tests.step);
@@ -535,6 +540,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
     test_resource_budgets_step.dependOn(run_rpc_quic_transport_tests);
+    test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
     test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_oom_step = b.step("test-oom", "Run OOM and failing allocator regression tests");
@@ -545,6 +551,7 @@ pub fn build(b: *std.Build) void {
     test_oom_step.dependOn(run_codegen_defaults_tests);
     test_oom_step.dependOn(run_rpc_framing_tests);
     test_oom_step.dependOn(run_rpc_connection_failure_tests);
+    test_oom_step.dependOn(run_rpc_raw_frame_security_tests);
     test_oom_step.dependOn(&run_wasm_host_abi_tests.step);
 
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
@@ -575,6 +582,7 @@ pub fn build(b: *std.Build) void {
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/level0/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/level2/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/level2/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
 
     const test_release_safe_step = b.step("test-release-safe", "Run key hardening gates under ReleaseSafe");
     test_release_safe_step.dependOn(&run_release_safe_main_tests.step);
@@ -587,6 +595,7 @@ pub fn build(b: *std.Build) void {
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_quic_transport_tests);
+    test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);
 
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
