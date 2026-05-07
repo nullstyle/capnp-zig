@@ -1847,6 +1847,7 @@ pub const Peer = struct {
             .release_resolved_cap = releaseResolvedCap,
             .alloc_embargo_id = peer_control.allocateEmbargoIdForPeerFn(Peer),
             .remember_pending_embargo = peer_control.rememberPendingEmbargoForPeerFn(Peer),
+            .forget_pending_embargo = peer_control.forgetPendingEmbargoForPeerFn(Peer),
             .send_disembargo_sender_loopback = peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             .store_resolved_import = storeResolvedImport,
         };

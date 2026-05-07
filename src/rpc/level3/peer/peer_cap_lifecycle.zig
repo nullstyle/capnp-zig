@@ -134,14 +134,11 @@ pub fn storeResolvedImport(
     embargoed: bool,
     release_resolved_cap: *const fn (*PeerType, ResolvedCapType) anyerror!void,
 ) !void {
-    if (resolved_imports.fetchRemove(promise_id)) |existing| {
-        if (existing.value.embargo_id) |id| {
-            _ = pending_embargoes.remove(id);
-        }
-        if (existing.value.cap) |old_cap| {
-            try release_resolved_cap(peer, old_cap);
-        }
-    }
+    _ = peer;
+    _ = pending_embargoes;
+    _ = release_resolved_cap;
+
+    if (resolved_imports.contains(promise_id)) return error.DuplicateResolve;
     try resolved_imports.put(promise_id, .{
         .cap = cap,
         .embargo_id = embargo_id,
@@ -336,6 +333,60 @@ test "peer_cap_lifecycle clearExportForPeerFn delegates to peer cap table" {
     clear_export(&peer, 71);
     try std.testing.expectEqual(@as(usize, 1), peer.caps.calls);
     try std.testing.expectEqual(@as(u32, 71), peer.caps.last_export_id);
+}
+
+test "peer_cap_lifecycle storeResolvedImport rejects duplicate before mutation" {
+    const ResolvedCap = union(enum) {
+        none,
+        imported: struct { id: u32 },
+    };
+    const ResolvedImport = struct {
+        cap: ?ResolvedCap = null,
+        embargo_id: ?u32 = null,
+        embargoed: bool = false,
+    };
+    const State = struct {
+        release_calls: usize = 0,
+
+        fn releaseResolved(state: *@This(), resolved: ResolvedCap) !void {
+            _ = resolved;
+            state.release_calls += 1;
+        }
+    };
+
+    var resolved_imports = std.AutoHashMap(u32, ResolvedImport).init(std.testing.allocator);
+    defer resolved_imports.deinit();
+    var pending_embargoes = std.AutoHashMap(u32, u32).init(std.testing.allocator);
+    defer pending_embargoes.deinit();
+
+    try resolved_imports.put(7, .{
+        .cap = .{ .imported = .{ .id = 1 } },
+        .embargo_id = 55,
+        .embargoed = true,
+    });
+    try pending_embargoes.put(55, 7);
+
+    var state = State{};
+    try std.testing.expectError(error.DuplicateResolve, storeResolvedImport(
+        State,
+        ResolvedImport,
+        ResolvedCap,
+        &state,
+        &resolved_imports,
+        &pending_embargoes,
+        7,
+        .{ .imported = .{ .id = 2 } },
+        null,
+        false,
+        State.releaseResolved,
+    ));
+
+    const existing = resolved_imports.get(7) orelse return error.MissingResolvedImport;
+    try std.testing.expectEqual(@as(u32, 1), existing.cap.?.imported.id);
+    try std.testing.expectEqual(@as(?u32, 55), existing.embargo_id);
+    try std.testing.expect(existing.embargoed);
+    try std.testing.expectEqual(@as(?u32, 7), pending_embargoes.get(55));
+    try std.testing.expectEqual(@as(usize, 0), state.release_calls);
 }
 
 test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-promise ids" {

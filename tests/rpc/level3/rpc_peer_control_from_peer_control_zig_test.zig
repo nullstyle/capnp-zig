@@ -10,6 +10,7 @@ const allocateEmbargoIdForPeerFn = peer_control.allocateEmbargoIdForPeerFn;
 const captureAnyPointerPayloadForPeerFn = peer_control.captureAnyPointerPayloadForPeerFn;
 const clearResolvedImportEmbargoForPeerFn = peer_control.clearResolvedImportEmbargoForPeerFn;
 const freeOwnedFrameForPeerFn = peer_control.freeOwnedFrameForPeerFn;
+const forgetPendingEmbargoForPeerFn = peer_control.forgetPendingEmbargoForPeerFn;
 const handleBootstrap = peer_control.handleBootstrap;
 const handleFinish = peer_control.handleFinish;
 const handleUnimplementedQuestionForPeerFn = peer_control.handleUnimplementedQuestionForPeerFn;
@@ -60,6 +61,7 @@ test "peer_control resolve/disembargo peer helper factories operate on peer stat
 
     const alloc_embargo_id = allocateEmbargoIdForPeerFn(FakePeer);
     const remember_pending = rememberPendingEmbargoForPeerFn(FakePeer);
+    const forget_pending = forgetPendingEmbargoForPeerFn(FakePeer);
     const take_pending = takePendingEmbargoPromiseForPeerFn(FakePeer);
     const clear_embargo = clearResolvedImportEmbargoForPeerFn(FakePeer);
 
@@ -68,6 +70,9 @@ test "peer_control resolve/disembargo peer helper factories operate on peer stat
     try std.testing.expectEqual(@as(u32, 0), first_id);
     try std.testing.expectEqual(@as(u32, 1), second_id);
     try remember_pending(&peer, first_id, 41);
+    try remember_pending(&peer, second_id, 42);
+    forget_pending(&peer, second_id);
+    try std.testing.expectEqual(@as(?u32, null), take_pending(&peer, second_id));
     try remember_pending(&peer, second_id, 42);
     try std.testing.expectEqual(@as(?u32, 41), take_pending(&peer, first_id));
     try std.testing.expectEqual(@as(?u32, null), take_pending(&peer, first_id));
