@@ -187,10 +187,13 @@ pub fn handleReturnAcceptFromThirdParty(
         return error.DuplicateThirdPartyAwait;
     }
 
-    if (peer_third_party_pending.takePendingAnswerId(allocator, pending_answers, completion_key)) |pending_answer_id| {
+    if (pending_answers.get(completion_key)) |pending_answer_id| {
+        try adopt_third_party_answer(peer, answer_id, pending_answer_id, question);
+        if (pending_answers.fetchRemove(completion_key)) |pending_answer| {
+            allocator.free(pending_answer.key);
+        }
         free_payload(peer, completion_key);
         owns_completion_key = false;
-        try adopt_third_party_answer(peer, answer_id, pending_answer_id, question);
     } else {
         const pending_await = make_pending_await(answer_id, question);
         try peer_third_party_pending.putPendingAwait(
@@ -393,6 +396,84 @@ test "peer_third_party_adoption handleReturnAcceptFromThirdParty adopts pending 
     try std.testing.expectEqual(@as(u32, 55), state.adopted_question_id);
     try std.testing.expectEqual(@as(u32, 0x4000_0022), state.adopted_answer_id);
     try std.testing.expectEqual(@as(u32, 99), state.adopted_question);
+}
+
+test "peer_third_party_adoption handleReturnAcceptFromThirdParty preserves pending answer when adoption fails" {
+    const PendingAwait = struct {
+        question_id: u32,
+        question: u32,
+    };
+    const State = struct {
+        adopt_calls: usize = 0,
+    };
+    const Hooks = struct {
+        fn capture(_: *State, await_ptr: ?message.AnyPointerReader) !?[]u8 {
+            _ = await_ptr;
+            return try std.testing.allocator.dupe(u8, "completion-key");
+        }
+
+        fn freePayload(_: *State, payload: []u8) void {
+            std.testing.allocator.free(payload);
+        }
+
+        fn sendAbort(_: *State, reason: []const u8) !void {
+            _ = reason;
+            return error.TestUnexpectedResult;
+        }
+
+        fn adopt(state: *State, question_id: u32, adopted_answer_id: u32, question: u32) !void {
+            _ = question_id;
+            _ = adopted_answer_id;
+            _ = question;
+            state.adopt_calls += 1;
+            return error.TestExpectedError;
+        }
+
+        fn makePending(question_id: u32, question: u32) PendingAwait {
+            return .{ .question_id = question_id, .question = question };
+        }
+    };
+
+    var pending_awaits = std.StringHashMap(PendingAwait).init(std.testing.allocator);
+    defer {
+        var it = pending_awaits.iterator();
+        while (it.next()) |entry| std.testing.allocator.free(entry.key_ptr.*);
+        pending_awaits.deinit();
+    }
+
+    var pending_answers = std.StringHashMap(u32).init(std.testing.allocator);
+    defer {
+        var it = pending_answers.iterator();
+        while (it.next()) |entry| std.testing.allocator.free(entry.key_ptr.*);
+        pending_answers.deinit();
+    }
+
+    const answer_key = try std.testing.allocator.dupe(u8, "completion-key");
+    try pending_answers.put(answer_key, 0x4000_0022);
+
+    var state = State{};
+    try std.testing.expectError(error.TestExpectedError, handleReturnAcceptFromThirdParty(
+        State,
+        u32,
+        PendingAwait,
+        std.testing.allocator,
+        &state,
+        55,
+        99,
+        null,
+        &pending_awaits,
+        &pending_answers,
+        Hooks.capture,
+        Hooks.freePayload,
+        Hooks.sendAbort,
+        Hooks.adopt,
+        Hooks.makePending,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), state.adopt_calls);
+    try std.testing.expectEqual(@as(usize, 1), pending_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), pending_awaits.count());
+    try std.testing.expectEqual(@as(u32, 0x4000_0022), pending_answers.get("completion-key").?);
 }
 
 test "peer_third_party_adoption handleThirdPartyAnswer adopts pending await" {

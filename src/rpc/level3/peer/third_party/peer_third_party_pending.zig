@@ -10,12 +10,12 @@ pub fn adoptPendingAwait(
     adopted_answer_id: u32,
     adopt_pending_entry: *const fn (*PeerType, u32, PendingAwaitType) anyerror!void,
 ) !bool {
-    if (pending_awaits.fetchRemove(completion_key)) |await_entry| {
-        defer allocator.free(await_entry.key);
-        try adopt_pending_entry(peer, adopted_answer_id, await_entry.value);
-        return true;
-    }
-    return false;
+    const await_entry = pending_awaits.getEntry(completion_key) orelse return false;
+    try adopt_pending_entry(peer, adopted_answer_id, await_entry.value_ptr.*);
+
+    const removed = pending_awaits.fetchRemove(completion_key) orelse return false;
+    allocator.free(removed.key);
+    return true;
 }
 
 pub fn takePendingAnswerId(
@@ -134,6 +134,57 @@ test "peer_third_party_pending adoptPendingAwait returns false when key is absen
     );
     try std.testing.expect(!adopted);
     try std.testing.expect(!state.called);
+}
+
+test "peer_third_party_pending adoptPendingAwait preserves entry when adopter fails" {
+    const PendingAwait = struct {
+        question_id: u32,
+        question: u32,
+    };
+    const State = struct {
+        called: bool = false,
+    };
+    const Hooks = struct {
+        fn adopt(state: *State, adopted_answer_id: u32, pending: PendingAwait) !void {
+            _ = adopted_answer_id;
+            _ = pending;
+            state.called = true;
+            return error.TestExpectedError;
+        }
+    };
+
+    var pending = std.StringHashMap(PendingAwait).init(std.testing.allocator);
+    defer {
+        var it = pending.iterator();
+        while (it.next()) |entry| {
+            std.testing.allocator.free(entry.key_ptr.*);
+        }
+        pending.deinit();
+    }
+
+    const key = try std.testing.allocator.dupe(u8, "completion-key");
+    try putPendingAwait(PendingAwait, &pending, key, .{
+        .question_id = 44,
+        .question = 99,
+    });
+
+    var state = State{};
+    try std.testing.expectError(error.TestExpectedError, adoptPendingAwait(
+        State,
+        PendingAwait,
+        std.testing.allocator,
+        &pending,
+        &state,
+        "completion-key",
+        777,
+        Hooks.adopt,
+    ));
+
+    try std.testing.expect(state.called);
+    try std.testing.expectEqual(@as(usize, 1), pending.count());
+    const still_pending = pending.get("completion-key") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 44), still_pending.question_id);
+    try std.testing.expectEqual(@as(u32, 99), still_pending.question);
 }
 
 test "peer_third_party_pending takePendingAnswerId removes and returns answer id" {

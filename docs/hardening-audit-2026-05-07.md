@@ -29,6 +29,9 @@ the most exposed RPC and transport paths:
 - [x] Reject duplicate active inbound question IDs.
 - [x] Reject over-release before mutating export tables.
 - [ ] Fix failure atomicity in Return, third-party handoff, resolve/embargo, and return-routing paths.
+      Third-party pending-await/answer adoption, duplicate embargoed Accept
+      queuing, and outbound return-routing clear-after-send are complete;
+      inbound Return question removal and resolve/embargo rollback remain.
 - [ ] Enforce framer and send-queue byte budgets before append/copy allocation.
 - [ ] Expose QUIC production hardening controls from `ServerOptions`.
 - [ ] Add focused regression tests and the first hardening gates.
@@ -48,6 +51,12 @@ Progress in this tranche:
 - Generated streaming clients now call a typed `StreamState.noteCallSent` guard
   before allocating per-call context; `StreamState` rejects configured in-flight
   excess and `u32` overflow with `error.StreamInFlightLimitExceeded`.
+- Return send helpers now preserve return-routing state until the encoded Return
+  frame has been sent successfully.
+- Embargoed Accept queuing now rejects duplicate answer IDs before mutating
+  either lookup map.
+- Third-party pending-await and pending-answer adoption now leave pending state
+  intact if the adopter fails.
 
 ## Findings
 

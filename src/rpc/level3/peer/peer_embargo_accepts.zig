@@ -17,6 +17,8 @@ pub fn queueEmbargoedAccept(
     // allocation for the question→embargo entry. Otherwise allocate once
     // and share the same slice between both maps.
 
+    if (pending_accept_embargo_by_question.contains(answer_id)) return error.DuplicateQuestionId;
+
     if (pending_accepts_by_embargo.getEntry(embargo)) |entry| {
         try entry.value_ptr.append(allocator, .{
             .answer_id = answer_id,
@@ -313,6 +315,43 @@ test "peer_embargo_accepts queue and clear keep maps consistent" {
     );
     try std.testing.expectEqual(@as(usize, 0), pending_accepts_by_embargo.count());
     try std.testing.expectEqual(@as(usize, 0), pending_accept_embargo_by_question.count());
+}
+
+test "peer_embargo_accepts rejects duplicate question before mutating maps" {
+    var pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(TestPendingAccept)).init(std.testing.allocator);
+    var pending_accept_embargo_by_question = std.AutoHashMap(u32, []u8).init(std.testing.allocator);
+    defer cleanupPendingMaps(
+        std.testing.allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+    );
+
+    try queueEmbargoedAccept(
+        TestPendingAccept,
+        std.testing.allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+        10,
+        100,
+        "accept-embargo",
+    );
+
+    try std.testing.expectError(error.DuplicateQuestionId, queueEmbargoedAccept(
+        TestPendingAccept,
+        std.testing.allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+        10,
+        101,
+        "other-embargo",
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), pending_accepts_by_embargo.count());
+    try std.testing.expectEqual(@as(usize, 1), pending_accept_embargo_by_question.count());
+    const list = pending_accepts_by_embargo.get("accept-embargo") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqual(@as(u32, 100), list.items[0].provided_question_id);
+    try std.testing.expect(pending_accepts_by_embargo.get("other-embargo") == null);
 }
 
 test "peer_embargo_accepts release routes to provided target and exception for missing provision" {

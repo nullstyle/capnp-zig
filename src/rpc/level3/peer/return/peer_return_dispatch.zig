@@ -214,9 +214,9 @@ fn clearAndSendReturnFrameForPeer(
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    clear_send_results_routing(peer, answer_id);
     defer peer.allocator.free(frame);
     try send_return_frame_with_loopback(peer, answer_id, frame);
+    clear_send_results_routing(peer, answer_id);
 }
 
 pub fn sendReturnTagForPeer(
@@ -326,7 +326,7 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
             defer decoded.deinit();
             const ret = try decoded.asReturn();
             state.sent_tag = ret.tag;
-            try std.testing.expectEqual(@as(usize, 1), state.clear_calls);
+            try std.testing.expectEqual(@as(usize, 0), state.clear_calls);
         }
     };
 
@@ -348,6 +348,39 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
     try std.testing.expectEqual(@as(u32, 44), state.clear_answer_id);
     try std.testing.expectEqual(@as(u32, 44), state.sent_answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.resultsSentElsewhere, state.sent_tag);
+}
+
+test "peer_return_dispatch keeps routing when send fails" {
+    const State = struct {
+        allocator: std.mem.Allocator,
+        clear_calls: usize = 0,
+        send_calls: usize = 0,
+
+        fn clear(state: *@This(), answer_id: u32) void {
+            _ = answer_id;
+            state.clear_calls += 1;
+        }
+
+        fn send(state: *@This(), answer_id: u32, frame: []const u8) !void {
+            _ = answer_id;
+            _ = frame;
+            state.send_calls += 1;
+            return error.TestExpectedError;
+        }
+    };
+
+    var state = State{ .allocator = std.testing.allocator };
+    try std.testing.expectError(error.TestExpectedError, sendReturnTagForPeer(
+        State,
+        &state,
+        44,
+        .resultsSentElsewhere,
+        State.clear,
+        State.send,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), state.send_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.clear_calls);
 }
 
 test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await payload" {
