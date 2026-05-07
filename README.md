@@ -244,7 +244,7 @@ capnpc-zig/
 The RPC runtime implements the Cap'n Proto RPC protocol over TCP, using synchronous POSIX I/O with a concurrent read/write transport layer. It is organized following the Cap'n Proto RPC specification levels.
 
 **Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `docs/rpc_runtime_design.md` for details.
-Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp` (integration plan: `docs/rpc-capnp-integration-plan.md`).
+Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
 
 ### Design Highlights
 
@@ -450,8 +450,9 @@ Implemented today:
 - Schema-evolution runtime coverage and expanded transport failure-path tests
 - Local benchmark and interop gates (`zig build bench-check`, `just e2e`)
 
-Roadmap and parity tracking live in:
-- `docs/production_parity_checklist.md`
+Runtime design and API stability notes live in:
+- `docs/rpc_runtime_design.md`
+- `docs/stability.md`
 
 ## Dependencies
 

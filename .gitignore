@@ -18,7 +18,3 @@ test_*
 e2e_runner
 .tmp/
 .worktrees/
-
-# Dolt database files (added by bd init)
-.dolt/
-*.db

@@ -17,7 +17,7 @@ This file is optimized for LLM orientation. Use module-level `llms.txt` files fi
 
 - [src/](src/): Library/plugin implementation (serialization, codegen, RPC, wasm ABI).
 - [tests/](tests/): Serialization, RPC, wasm ABI, interop, fixtures, and e2e harnesses.
-- [docs/](docs/): Architecture, API contracts, stability, integration guides, and audits.
+- [docs/](docs/): Architecture, API contracts, stability, and integration guides.
 - [examples/](examples/): Ping-pong and kvstore examples plus generated schema usage patterns.
 - [bench/](bench/): Benchmarks and regression baselines.
 - [vendor/ext/](vendor/ext/): Vendored Cap'n Proto and go-capnp references used by fixture/interop paths.
@@ -54,10 +54,8 @@ This file is optimized for LLM orientation. Use module-level `llms.txt` files fi
 
 ## Optional
 
-- [docs/audit-2026-02-22.md](docs/audit-2026-02-22.md): Latest broad audit and open risk items.
 - [docs/rpc_runtime_design.md](docs/rpc_runtime_design.md): Runtime threading and transport model details.
-- [docs/rpc-capnp-integration-plan.md](docs/rpc-capnp-integration-plan.md): Generated RPC schema integration plan.
 - [docs/wasm_host_abi.md](docs/wasm_host_abi.md): Host ABI contract and expected host responsibilities.
-- [docs/large_schema_dedup_assessment.md](docs/large_schema_dedup_assessment.md): Large-schema/codegen scaling controls.
+- [docs/large_schema_dedup_assessment.md](docs/large_schema_dedup_assessment.md): Large-schema/codegen scaling controls and historical measurements.
 - [examples/rpc_pingpong.zig](examples/rpc_pingpong.zig): Minimal end-to-end RPC example.
 - [examples/kvstore/README.md](examples/kvstore/README.md): Richer service example with persistence/notifications.

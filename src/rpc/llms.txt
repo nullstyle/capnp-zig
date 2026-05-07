@@ -49,4 +49,3 @@
 
 - [level1/README.md](level1/README.md): Notes on promise/pipelining helper intent.
 - [../../docs/rpc_runtime_design.md](../../docs/rpc_runtime_design.md): Runtime threading and transport design.
-- [../../docs/rpc-capnp-integration-plan.md](../../docs/rpc-capnp-integration-plan.md): Status of generated-vs-manual protocol integration.
