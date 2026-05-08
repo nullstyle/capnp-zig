@@ -58,7 +58,7 @@
 - [peer/bootstrap.zig](peer/bootstrap.zig): Bootstrap, abort, and
   unimplemented-message control handling.
 - [peer/finish.zig](peer/finish.zig): Finish cleanup and resolved-answer cleanup
-  facade.
+  handling.
 - [peer/resolve.zig](peer/resolve.zig): Resolve-message and pending-embargo
   facade.
 - [peer/disembargo.zig](peer/disembargo.zig): Disembargo handling facade.

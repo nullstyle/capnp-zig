@@ -379,6 +379,9 @@ First local pass:
 - Bootstrap, abort, and unimplemented-message logic has moved into
   `peer/bootstrap.zig`; `peer_control.zig` re-exports those names for existing
   tests and compatibility.
+- Finish cleanup and resolved-answer frame cleanup have moved into
+  `peer/finish.zig`; `peer_control.zig` re-exports those names for existing
+  tests and compatibility.
 
 ### Tranche 9: Split Provide/Accept/Join And Third-Party Helpers
 
