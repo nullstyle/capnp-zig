@@ -52,6 +52,11 @@ suite and generated-code support, but that surface is intentionally unstable.
 | Peer state | `src/rpc/peer/state.zig` | Peer limits, small state record types, and debug thread-affinity helpers. |
 | Peer errors | `src/rpc/peer/errors.zig` | Named error groups for future peer API narrowing. |
 | Peer transport facade | `src/rpc/peer/transport.zig` | Peer-facing transport binding aliases plus callback/state helper facades. |
+| Peer dispatch facade | `src/rpc/peer/dispatch.zig` | Inbound message routing facade. |
+| Peer bootstrap facade | `src/rpc/peer/bootstrap.zig` | Bootstrap, abort, and unimplemented-message control facade. |
+| Peer finish facade | `src/rpc/peer/finish.zig` | Finish cleanup and resolved-answer cleanup facade. |
+| Peer resolve facade | `src/rpc/peer/resolve.zig` | Resolve-message and pending-embargo facade. |
+| Peer disembargo facade | `src/rpc/peer/disembargo.zig` | Disembargo handling facade. |
 | Peer transport callbacks | `src/rpc/peer/peer_transport_callbacks.zig` | Transport event wiring. |
 | Peer transport state | `src/rpc/peer/peer_transport_state.zig` | Transport-level state tracking. |
 | Peer call targets | `src/rpc/peer/call/peer_call_targets.zig` | Call target resolution. |

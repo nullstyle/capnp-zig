@@ -18,10 +18,14 @@ pub const generated = struct {
 };
 
 pub const _internal = struct {
+    pub const peer_bootstrap = @import("./peer/bootstrap.zig");
+    pub const peer_disembargo = @import("./peer/disembargo.zig");
+    pub const peer_dispatch = @import("./peer/dispatch.zig");
     pub const peer_errors = @import("./peer/errors.zig");
+    pub const peer_finish = @import("./peer/finish.zig");
+    pub const peer_resolve = @import("./peer/resolve.zig");
     pub const peer_state = @import("./peer/state.zig");
     pub const peer_transport = @import("./peer/transport.zig");
-    pub const peer_dispatch = @import("./peer/peer_dispatch.zig");
     pub const peer_control = @import("./peer/peer_control.zig");
     pub const peer_cleanup = @import("./peer/peer_cleanup.zig");
     pub const peer_transport_callbacks = @import("./peer/peer_transport_callbacks.zig");

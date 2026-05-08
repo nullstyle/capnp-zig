@@ -54,6 +54,14 @@
   narrowing.
 - [peer/transport.zig](peer/transport.zig): Peer-facing transport binding
   facade and transport callback/state helper modules.
+- [peer/dispatch.zig](peer/dispatch.zig): Inbound RPC message dispatch facade.
+- [peer/bootstrap.zig](peer/bootstrap.zig): Bootstrap, abort, and
+  unimplemented-message control facade.
+- [peer/finish.zig](peer/finish.zig): Finish cleanup and resolved-answer cleanup
+  facade.
+- [peer/resolve.zig](peer/resolve.zig): Resolve-message and pending-embargo
+  facade.
+- [peer/disembargo.zig](peer/disembargo.zig): Disembargo handling facade.
 - [peer/peer_control.zig](peer/peer_control.zig): Control-path handlers
   (`finish`, `resolve`, embargo, provide/accept/join).
 - [peer/call/peer_call_orchestration.zig](peer/call/peer_call_orchestration.zig):

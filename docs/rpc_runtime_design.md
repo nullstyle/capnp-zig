@@ -94,6 +94,11 @@ Outbound call:
 - `src/rpc/peer/state.zig`
 - `src/rpc/peer/errors.zig`
 - `src/rpc/peer/transport.zig`
+- `src/rpc/peer/dispatch.zig`
+- `src/rpc/peer/bootstrap.zig`
+- `src/rpc/peer/finish.zig`
+- `src/rpc/peer/resolve.zig`
+- `src/rpc/peer/disembargo.zig`
 
 ## Test Plan
 - Unit tests for framing and state machines.

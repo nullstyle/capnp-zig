@@ -26,6 +26,10 @@ domain`):
   groups, and the peer-facing transport callback facade into
   `src/rpc/peer/state.zig`, `src/rpc/peer/errors.zig`, and
   `src/rpc/peer/transport.zig`.
+- Option 3 Tranche 8 has started with protocol-family facades:
+  `dispatch.zig`, `bootstrap.zig`, `finish.zig`, `resolve.zig`, and
+  `disembargo.zig`. These currently wrap existing implementation helpers so the
+  semantic paths exist before code is moved behind them.
 
 ## Goals
 
@@ -364,6 +368,14 @@ src/rpc/peer/disembargo.zig
 
 Each module should own one protocol message family. Prefer passing a narrow
 context object instead of letting every helper reach through the whole `Peer`.
+
+First local pass:
+
+- Added facade modules for dispatch, bootstrap/abort/unimplemented, finish,
+  resolve, and disembargo.
+- `peer/mod.zig` now routes those message families through the new facade
+  names, while `peer_control.zig` remains as the compatibility implementation
+  holder for the still-unsplit helpers.
 
 ### Tranche 9: Split Provide/Accept/Join And Third-Party Helpers
 

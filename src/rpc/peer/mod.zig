@@ -3,8 +3,18 @@ const log = std.log.scoped(.rpc_peer);
 const protocol = @import("../wire/protocol.zig");
 const cap_table = @import("../caps/table.zig");
 const message = @import("../../serialization/message.zig");
-const peer_dispatch = @import("./peer_dispatch.zig");
+pub const dispatch = @import("./dispatch.zig");
+pub const bootstrap = @import("./bootstrap.zig");
+pub const finish = @import("./finish.zig");
+pub const resolve = @import("./resolve.zig");
+pub const disembargo = @import("./disembargo.zig");
+
+const peer_dispatch = dispatch;
+const peer_bootstrap = bootstrap;
 const peer_control = @import("./peer_control.zig");
+const peer_finish = finish;
+const peer_resolve = resolve;
+const peer_disembargo = disembargo;
 const peer_call_targets = @import("./call/peer_call_targets.zig");
 const peer_call_sender = @import("./call/peer_call_sender.zig");
 const payload_remap = @import("../caps/payload_remap.zig");
@@ -1734,7 +1744,7 @@ pub const Peer = struct {
             self.pending_embargoes.count(),
             self.limits.max_pending_embargoes,
         );
-        try peer_control.rememberPendingEmbargoForPeer(Peer, self, embargo_id, promise_id);
+        try peer_resolve.rememberPendingEmbargoForPeer(Peer, self, embargo_id, promise_id);
     }
 
     fn releaseResolvedImport(self: *Peer, promise_id: u32) anyerror!void {
@@ -1921,11 +1931,11 @@ pub const Peer = struct {
     }
 
     fn handleUnimplemented(self: *Peer, unimplemented: protocol.Unimplemented) !void {
-        try peer_control.handleUnimplemented(
+        try peer_bootstrap.handleUnimplemented(
             Peer,
             self,
             unimplemented,
-            peer_control.handleUnimplementedQuestionForPeerFn(
+            peer_bootstrap.handleUnimplementedQuestionForPeerFn(
                 Peer,
                 Peer.handleReturn,
             ),
@@ -1945,15 +1955,15 @@ pub const Peer = struct {
                 .type_value = abort.exception.type_value,
             },
         };
-        try peer_control.handleAbort(self.allocator, &self.last_remote_abort_reason, capped_abort);
+        try peer_bootstrap.handleAbort(self.allocator, &self.last_remote_abort_reason, capped_abort);
     }
 
-    fn handleBootstrap(self: *Peer, bootstrap: protocol.Bootstrap) !void {
-        try peer_control.handleBootstrap(
+    fn handleBootstrap(self: *Peer, bootstrap_msg: protocol.Bootstrap) !void {
+        try peer_bootstrap.handleBootstrap(
             Peer,
             self,
             self.allocator,
-            bootstrap,
+            bootstrap_msg,
             self.bootstrap_export_id,
             noteExportRef,
             sendReturnException,
@@ -1962,14 +1972,14 @@ pub const Peer = struct {
         );
     }
 
-    fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
-        _ = self.active_inbound_questions.remove(finish.question_id);
-        if (!finish.require_early_cancellation) {
+    fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
+        _ = self.active_inbound_questions.remove(finish_msg.question_id);
+        if (!finish_msg.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
             // deliverable, cancel the queued call immediately.
-            _ = try self.cancelQueuedPendingQuestion(finish.question_id);
+            _ = try self.cancelQueuedPendingQuestion(finish_msg.question_id);
         }
-        const ops = peer_control.FinishOps(Peer){
+        const ops = peer_finish.FinishOps(Peer){
             .remove_send_results_to_yourself = peer_forward_orchestration.removeSendResultsToYourselfForPeerFn(Peer),
             .clear_send_results_to_third_party = clearSendResultsToThirdParty,
             .clear_provide = peer_provides_state.clearProvideForPeerFn(
@@ -1992,15 +2002,15 @@ pub const Peer = struct {
             ),
             .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
             .send_finish = peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            .take_resolved_answer_frame = peer_control.takeResolvedAnswerFrameForPeerFn(Peer),
+            .take_resolved_answer_frame = peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
             .release_caps_for_frame = releaseResultCaps,
-            .free_frame = peer_control.freeOwnedFrameForPeerFn(Peer),
+            .free_frame = peer_finish.freeOwnedFrameForPeerFn(Peer),
         };
-        try peer_control.handleFinishWithOps(
+        try peer_finish.handleFinishWithOps(
             Peer,
             self,
-            finish.question_id,
-            finish.release_result_caps,
+            finish_msg.question_id,
+            finish_msg.release_result_caps,
             ops,
         );
     }
@@ -2065,18 +2075,18 @@ pub const Peer = struct {
         try peer_control.handleRelease(Peer, self, release, releaseExport);
     }
 
-    fn handleResolve(self: *Peer, resolve: protocol.Resolve) !void {
-        const ops = peer_control.ResolveOps(Peer){
-            .has_known_promise = peer_control.hasKnownResolvePromiseForPeerFn(Peer),
-            .resolve_cap_descriptor = peer_control.resolveCapDescriptorForPeerFn(Peer),
+    fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
+        const ops = peer_resolve.ResolveOps(Peer){
+            .has_known_promise = peer_resolve.hasKnownResolvePromiseForPeerFn(Peer),
+            .resolve_cap_descriptor = peer_resolve.resolveCapDescriptorForPeerFn(Peer),
             .release_resolved_cap = releaseResolvedCap,
-            .alloc_embargo_id = peer_control.allocateEmbargoIdForPeerFn(Peer),
+            .alloc_embargo_id = peer_resolve.allocateEmbargoIdForPeerFn(Peer),
             .remember_pending_embargo = Peer.rememberPendingEmbargo,
-            .forget_pending_embargo = peer_control.forgetPendingEmbargoForPeerFn(Peer),
+            .forget_pending_embargo = peer_resolve.forgetPendingEmbargoForPeerFn(Peer),
             .send_disembargo_sender_loopback = peer_outbound_control.sendDisembargoSenderLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             .store_resolved_import = storeResolvedImport,
         };
-        try peer_control.handleResolveWithOps(Peer, self, resolve, ops);
+        try peer_resolve.handleResolveWithOps(Peer, self, resolve_msg, ops);
     }
 
     fn hasKnownDisembargoTarget(self: *Peer, target: protocol.MessageTarget) bool {
@@ -2095,12 +2105,12 @@ pub const Peer = struct {
         };
     }
 
-    fn handleDisembargo(self: *Peer, disembargo: protocol.Disembargo) !void {
-        const ops = peer_control.DisembargoOps(Peer){
+    fn handleDisembargo(self: *Peer, disembargo_msg: protocol.Disembargo) !void {
+        const ops = peer_disembargo.DisembargoOps(Peer){
             .has_known_disembargo_target = Peer.hasKnownDisembargoTarget,
             .send_disembargo_receiver_loopback = peer_outbound_control.sendDisembargoReceiverLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            .take_pending_embargo_promise = peer_control.takePendingEmbargoPromiseForPeerFn(Peer),
-            .clear_resolved_import_embargo = peer_control.clearResolvedImportEmbargoForPeerFn(Peer),
+            .take_pending_embargo_promise = peer_disembargo.takePendingEmbargoPromiseForPeerFn(Peer),
+            .clear_resolved_import_embargo = peer_disembargo.clearResolvedImportEmbargoForPeerFn(Peer),
             .release_embargoed_accepts = peer_embargo_accepts.releaseEmbargoedAcceptsForPeerFn(
                 Peer,
                 PendingEmbargoedAccept,
@@ -2110,7 +2120,7 @@ pub const Peer = struct {
                 Peer.sendReturnException,
             ),
         };
-        try peer_control.handleDisembargoWithOps(Peer, self, disembargo, ops);
+        try peer_disembargo.handleDisembargoWithOps(Peer, self, disembargo_msg, ops);
     }
 
     fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {
@@ -2607,8 +2617,8 @@ pub const Peer = struct {
             return Peer.handleResolvedCall(self, call, inbound_caps, resolved);
         }
 
-        pub fn handleFinish(self: *Peer, finish: protocol.Finish) !void {
-            return Peer.handleFinish(self, finish);
+        pub fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
+            return Peer.handleFinish(self, finish_msg);
         }
 
         pub fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
