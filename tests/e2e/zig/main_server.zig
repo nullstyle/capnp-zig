@@ -501,8 +501,8 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
 }
 
 fn nowMillis() i64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(.REALTIME, &ts);
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.REALTIME, &ts);
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
 }
 
