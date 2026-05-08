@@ -27,7 +27,7 @@ Status values:
 | Peer pending-map resource exhaustion | `src/rpc/peer/mod.zig` | `zig build test-rpc-level3`, `zig build test-resource-budgets`, `zig build test-oom` | Covered |
 | Return/resolve/embargo failure atomicity under OOM or callback failure | `src/rpc/peer/**` | `tests/rpc/peer/rpc_peer_from_peer_zig_test.zig`, `tests/rpc/peer/rpc_release_and_failure_test.zig` | Covered |
 | TCP transport frame budget, close, and callback cleanup behavior | `src/rpc/transport/tcp/connection.zig`, `src/rpc/transport/tcp/stream_transport.zig` | `tests/rpc/transport/tcp/rpc_connection_failure_test.zig`, `tests/rpc/peer/rpc_peer_cleanup_test.zig` | Covered |
-| QUIC receive/send budget and production hardening controls | `src/rpc/transport/quic/connection.zig` | `tests/rpc/transport/quic/rpc_quic_transport_test.zig`, `zig build test-resource-budgets` | Covered |
+| QUIC receive/send budget and production hardening controls | `src/rpc/transport/quic/connection.zig` | `tests/rpc/transport/quic/rpc_quic_transport_test.zig`, `zig build -Dquic=true test-rpc-quic`, `zig build -Dquic=true test-resource-budgets` | Covered |
 | HostPeer queue budgets and default external exception/abort disclosure | `src/rpc/integration/host_peer.zig` | `tests/rpc/integration/rpc_host_peer_test.zig` | Covered |
 | WASM ABI invalid pointers, double frees, output-slot validation, and diagnostic disclosure | `src/wasm/capnp_host_abi.zig` | `tests/wasm_host_abi_test.zig`, `zig build test-wasm-host` | Covered |
 | WASM example serde malformed frames and oversized JSON/text | `src/wasm/capnp_host_abi.zig` | `tests/wasm_host_abi_test.zig` example serde tests | Covered |

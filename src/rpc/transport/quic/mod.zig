@@ -1,10 +1,25 @@
 const adapter = @import("nullq_adapter.zig");
+pub const close = @import("close.zig");
 const conn = @import("connection.zig");
+pub const endpoint = @import("endpoint.zig");
 const framer = @import("length_framer.zig");
+pub const listener = @import("listener.zig");
 const options = @import("options.zig");
+const scheduler_mod = @import("scheduler.zig");
+pub const session = @import("session.zig");
 
+pub const enabled = true;
 pub const Connection = conn.Connection;
+pub const ApplicationCloseCode = close.ApplicationCloseCode;
+pub const CloseStatus = close.Status;
+pub const Endpoint = endpoint.Endpoint;
+pub const Listener = listener.Listener;
+pub const Role = endpoint.Role;
+pub const Session = session.Session;
 pub const LengthDelimitedFramer = framer.LengthDelimitedFramer;
+pub const scheduler = scheduler_mod;
+pub const StepMode = scheduler_mod.StepMode;
+pub const StepResult = scheduler_mod.StepResult;
 pub const length_prefix_bytes = framer.length_prefix_bytes;
 
 pub const alpn = options.alpn;
@@ -25,6 +40,7 @@ pub const default_quic_new_token_lifetime_us = options.default_quic_new_token_li
 pub const default_quic_max_connection_memory = options.default_quic_max_connection_memory;
 pub const default_quic_listener_rate_window_us = options.default_quic_listener_rate_window_us;
 pub const default_quic_max_log_events_per_source_per_window = options.default_quic_max_log_events_per_source_per_window;
+pub const supported_max_concurrent_sessions = options.supported_max_concurrent_sessions;
 
 pub const ServerQlogCallback = options.ServerQlogCallback;
 pub const ServerLogEvent = options.ServerLogEvent;

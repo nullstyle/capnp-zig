@@ -2,10 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const nullq = @import("nullq");
 
+const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
 const nullq_adapter = @import("nullq_adapter.zig");
 const quic_options = @import("options.zig");
+const quic_close = @import("close.zig");
 const outbound_queue = @import("outbound_queue.zig");
+const scheduler = @import("scheduler.zig");
 
 const log = std.log.scoped(.rpc_quic_transport);
 const Net = std.Io.net;
@@ -15,17 +18,9 @@ const ServerOptions = quic_options.ServerOptions;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
 const OutboundQueue = outbound_queue.OutboundQueue;
 
-const Role = enum { client, server };
-
-const Endpoint = union(Role) {
-    client: nullq.Client,
-    server: ServerEndpoint,
-};
-
-const ServerEndpoint = struct {
-    server: nullq.Server,
-    slot: ?*nullq.Server.Slot = null,
-};
+const Role = endpoint_mod.Role;
+const Endpoint = endpoint_mod.Endpoint;
+const ServerEndpoint = endpoint_mod.ServerEndpoint;
 
 /// A single vat-to-vat Cap'n Proto RPC session over QUIC.
 ///
@@ -36,6 +31,9 @@ const ServerEndpoint = struct {
 /// listener can fan out `nullq.Server.Slot`s to multiple `Connection`s without
 /// changing the peer-facing send/start/close shape.
 pub const Connection = struct {
+    pub const StepMode = scheduler.StepMode;
+    pub const StepResult = scheduler.StepResult;
+
     allocator: std.mem.Allocator,
     io: std.Io,
     role: Role,
@@ -52,6 +50,14 @@ pub const Connection = struct {
     outbound: OutboundQueue = .{},
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     socket_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// POSIX-only run-loop wake pipe. [0] is read by the run loop; [1] is
+    /// written by cross-thread `sendFrame()` / `requestClose()` calls.
+    wake_fds: ?[2]std.posix.fd_t = null,
+    reveal_close_reason_on_wire: bool = false,
+    close_status: ?quic_close.Status = null,
+    close_reason_buf: [quic_close.max_wire_reason_bytes]u8 = undefined,
+    close_reason_len: usize = 0,
     baseline_ready: bool = false,
 
     ctx: ?*anyopaque = null,
@@ -110,6 +116,7 @@ pub const Connection = struct {
             options.max_outbound_queue_items,
             options.max_outbound_queue_bytes,
             options.remote_addr,
+            false,
         );
     }
 
@@ -143,6 +150,7 @@ pub const Connection = struct {
             options.max_outbound_queue_items,
             options.max_outbound_queue_bytes,
             null,
+            options.reveal_close_reason_on_wire,
         );
     }
 
@@ -160,6 +168,7 @@ pub const Connection = struct {
         max_outbound_queue_items: usize,
         max_outbound_queue_bytes: usize,
         remote_addr: ?Net.IpAddress,
+        reveal_close_reason_on_wire: bool,
     ) !Connection {
         const udp_rx_buf = try allocator.alloc(u8, udp_rx_buffer_size);
         errdefer allocator.free(udp_rx_buf);
@@ -183,8 +192,30 @@ pub const Connection = struct {
             .max_message_bytes = max_message_bytes,
             .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
             .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
+            .wake_fds = createWakeFds(),
+            .reveal_close_reason_on_wire = reveal_close_reason_on_wire,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
+    }
+
+    fn createWakeFds() ?[2]std.posix.fd_t {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return null;
+        var fds: [2]std.posix.fd_t = undefined;
+        if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
+            return null;
+        }
+        setNonBlocking(fds[0]);
+        setNonBlocking(fds[1]);
+        return fds;
+    }
+
+    fn setNonBlocking(fd: std.posix.fd_t) void {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+        const rc = std.posix.system.fcntl(fd, std.posix.F.GETFL, @as(usize, 0));
+        if (std.posix.errno(rc) != .SUCCESS) return;
+        var flags: usize = @intCast(rc);
+        flags |= @as(usize, 1 << @bitOffsetOf(std.posix.O, "NONBLOCK"));
+        _ = std.posix.system.fcntl(fd, std.posix.F.SETFL, flags);
     }
 
     pub fn deinit(self: *Connection) void {
@@ -210,6 +241,7 @@ pub const Connection = struct {
         self.on_message = null;
         self.on_error = null;
         self.on_close = null;
+        self.closeWakeFds();
         if (!self.socket_closed.swap(true, .acq_rel)) {
             self.socket.close(self.io);
         }
@@ -220,6 +252,14 @@ pub const Connection = struct {
         self.allocator.free(self.udp_rx_buf);
         self.allocator.free(self.udp_tx_buf);
         self.allocator.free(self.stream_read_buf);
+    }
+
+    fn closeWakeFds(self: *Connection) void {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+        const fds = self.wake_fds orelse return;
+        self.wake_fds = null;
+        _ = std.posix.system.close(fds[0]);
+        _ = std.posix.system.close(fds[1]);
     }
 
     pub fn start(
@@ -240,8 +280,7 @@ pub const Connection = struct {
         while (!self.close_requested.load(.acquire)) {
             self.step() catch |err| {
                 log.debug("QUIC connection step failed: {}", .{err});
-                self.invokeOnError(err);
-                self.close();
+                self.terminateInternalError(err);
                 break;
             };
             if (self.activeQuicConn()) |conn| {
@@ -263,23 +302,40 @@ pub const Connection = struct {
         if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
         try self.outbound.enqueue(self.allocator, frame);
+        self.wake();
+    }
+
+    /// Wake a blocked `run()` loop from any thread.
+    ///
+    /// POSIX builds use a socketpair so the UDP wait is interrupted
+    /// immediately. Other targets keep a wake flag and the scheduler caps
+    /// blocking waits to a short interval until a native event primitive lands.
+    pub fn wake(self: *Connection) void {
+        if (self.wake_requested.swap(true, .acq_rel)) return;
+        const fds = self.wake_fds orelse return;
+        writeWakeByte(fds[1]);
     }
 
     pub fn close(self: *Connection) void {
         _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
-        if (self.activeQuicConn()) |conn| {
-            conn.close(false, 0, "");
-        }
+        self.closeActiveQuicConn(.normal, null);
+        self.wake();
     }
 
     pub fn requestClose(self: *Connection) void {
         _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
+        self.recordCloseStatus(.normal, null);
+        self.wake();
     }
 
     pub fn isClosing(self: *const Connection) bool {
         return self.close_requested.load(.acquire);
+    }
+
+    pub fn closeStatus(self: *const Connection) ?quic_close.Status {
+        return self.close_status;
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
@@ -297,9 +353,28 @@ pub const Connection = struct {
         }
     }
 
-    fn step(self: *Connection) !void {
+    pub fn step(self: *Connection) !void {
+        _ = try self.stepOnce(.wait);
+    }
+
+    pub fn stepOnce(self: *Connection, mode: StepMode) !StepResult {
         var now_us = self.nowUs();
-        try self.receiveOne(now_us);
+        const next_deadline_us = self.nextTimerDeadlineUs(now_us);
+        const waited_for = scheduler.receiveWaitDuration(.{
+            .mode = mode,
+            .receive_timeout = self.receive_timeout,
+            .now_us = now_us,
+            .next_deadline_us = next_deadline_us,
+            .immediate_work = self.hasImmediateWork(),
+            .wake_supported = self.hasWakeSupport(),
+        });
+        var result = StepResult{
+            .waited_for = waited_for,
+            .next_deadline_us = next_deadline_us,
+        };
+        const receive_result = try self.receiveOne(now_us, waited_for);
+        result.received_datagram = receive_result.received_datagram;
+        result.wake_drained = receive_result.wake_drained;
 
         now_us = self.nowUs();
         try self.advanceActive();
@@ -312,34 +387,59 @@ pub const Connection = struct {
         try self.drainOutgoingDatagrams(now_us);
 
         self.reapServerIfClosed();
+        result.closed = self.isTransportDrainedClosed();
+        if (result.closed) {
+            _ = self.close_requested.swap(true, .acq_rel);
+        }
+        return result;
     }
 
     fn flushCloseDatagram(self: *Connection) void {
         const conn = self.activeQuicConn() orelse return;
         if (!conn.isClosed()) {
-            conn.close(false, 0, "");
+            self.recordCloseStatus(.normal, null);
+            self.closeQuicConn(conn);
         }
         self.drainOutgoingDatagrams(self.nowUs()) catch |err| {
             log.debug("failed to flush QUIC close datagram: {}", .{err});
         };
     }
 
-    fn receiveOne(self: *Connection, now_us: u64) !void {
+    const ReceiveResult = struct {
+        received_datagram: bool = false,
+        wake_drained: bool = false,
+    };
+
+    fn receiveOne(self: *Connection, now_us: u64, wait_duration: std.Io.Duration) !ReceiveResult {
+        var result = ReceiveResult{};
+        if (self.consumeWakeRequested()) {
+            result.wake_drained = true;
+            return result;
+        }
+
+        var receive_timeout = wait_duration;
+        if (try self.waitForUdpOrWake(wait_duration)) |poll_result| {
+            result.wake_drained = poll_result.wake_drained;
+            if (!poll_result.socket_ready) return result;
+            receive_timeout = std.Io.Duration.zero;
+        }
+
         const msg = self.socket.receiveTimeout(self.io, self.udp_rx_buf, .{
             .duration = .{
-                .raw = self.receive_timeout,
+                .raw = receive_timeout,
                 .clock = .awake,
             },
         }) catch |err| switch (err) {
-            error.Timeout => return,
+            error.Timeout => return result,
             else => return err,
         };
         if (msg.flags.trunc) return error.DatagramTooLarge;
+        result.received_datagram = true;
 
         switch (self.endpoint) {
             .client => |*client| {
                 const remote = self.remote_addr.?;
-                if (!Net.IpAddress.eql(&msg.from, &remote)) return;
+                if (!Net.IpAddress.eql(&msg.from, &remote)) return result;
                 try client.conn.handle(msg.data, nullq_adapter.ipAddressToPathAddress(msg.from), now_us);
             },
             .server => |*server| {
@@ -349,6 +449,105 @@ pub const Connection = struct {
                 try self.drainStatelessResponses(server);
             },
         }
+        return result;
+    }
+
+    const PollResult = struct {
+        socket_ready: bool = false,
+        wake_drained: bool = false,
+    };
+
+    fn waitForUdpOrWake(self: *Connection, wait_duration: std.Io.Duration) !?PollResult {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return null;
+        const fds = self.wake_fds orelse return null;
+
+        var poll_fds = [2]std.posix.pollfd{
+            .{ .fd = self.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = fds[0], .events = std.posix.POLL.IN, .revents = 0 },
+        };
+        const timeout_ms = scheduler.durationToPollTimeoutMs(wait_duration);
+        while (true) {
+            const rc = std.posix.system.poll(@ptrCast(&poll_fds), poll_fds.len, timeout_ms);
+            if (rc > 0) break;
+            if (rc == 0) return PollResult{};
+            if (std.posix.errno(rc) == .INTR) continue;
+            return error.PollFailed;
+        }
+
+        var result = PollResult{};
+        if (poll_fds[1].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+            self.drainWakePipe();
+            _ = self.wake_requested.swap(false, .acq_rel);
+            result.wake_drained = true;
+        }
+        if (poll_fds[0].revents & std.posix.POLL.NVAL != 0) return error.BrokenPipe;
+        result.socket_ready =
+            poll_fds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR) != 0;
+        return result;
+    }
+
+    fn consumeWakeRequested(self: *Connection) bool {
+        if (!self.wake_requested.swap(false, .acq_rel)) return false;
+        self.drainWakePipe();
+        return true;
+    }
+
+    fn drainWakePipe(self: *Connection) void {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+        const fds = self.wake_fds orelse return;
+        var buf: [64]u8 = undefined;
+        while (true) {
+            const rc = std.posix.system.read(fds[0], &buf, buf.len);
+            if (rc > 0) continue;
+            if (rc == 0) return;
+            switch (std.posix.errno(rc)) {
+                .INTR => continue,
+                .AGAIN => return,
+                else => return,
+            }
+        }
+    }
+
+    fn writeWakeByte(fd: std.posix.fd_t) void {
+        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
+        const byte = [_]u8{1};
+        while (true) {
+            const rc = std.posix.system.write(fd, &byte, byte.len);
+            if (rc > 0) return;
+            if (rc == 0) return;
+            switch (std.posix.errno(rc)) {
+                .INTR => continue,
+                .AGAIN => return,
+                else => return,
+            }
+        }
+    }
+
+    fn hasWakeSupport(self: *const Connection) bool {
+        return self.wake_fds != null;
+    }
+
+    fn hasImmediateWork(self: *Connection) bool {
+        if (self.wake_requested.load(.acquire)) return true;
+        if (self.activeQuicConn()) |conn| {
+            if (conn.canSend()) return true;
+            if (!self.outbound.isEmpty()) {
+                if (self.baseline_ready) return true;
+                if (self.role == .client and conn.handshakeDone()) return true;
+            }
+        }
+        return false;
+    }
+
+    fn nextTimerDeadlineUs(self: *Connection, now_us: u64) ?u64 {
+        const conn = self.activeQuicConn() orelse return null;
+        const deadline = conn.nextTimerDeadline(now_us) orelse return null;
+        return deadline.at_us;
+    }
+
+    fn isTransportDrainedClosed(self: *Connection) bool {
+        const conn = self.activeQuicConn() orelse return false;
+        return conn.isClosed() and self.outbound.isEmpty();
     }
 
     fn advanceActive(self: *Connection) !void {
@@ -414,7 +613,7 @@ pub const Connection = struct {
             const bytes = frame orelse return;
             defer self.allocator.free(bytes);
             self.invokeMessageCallback(self.on_message.?, bytes) catch |err| {
-                self.invokeOnError(err);
+                self.terminateCallbackError(err);
                 return;
             };
             if (self.deinit_requested) return;
@@ -423,13 +622,74 @@ pub const Connection = struct {
 
     fn terminateFrameError(self: *Connection, err: anyerror) void {
         log.debug("fatal QUIC frame error, closing connection: {}", .{err});
+        self.closeActiveQuicConn(quic_close.codeForFrameError(err), err);
         _ = self.close_requested.swap(true, .acq_rel);
         self.outbound.close();
         self.inbound.reset();
         self.on_message = null;
         const on_error = self.on_error;
         self.on_error = null;
+        self.wake();
         if (on_error) |cb| self.invokeErrorCallback(cb, err);
+    }
+
+    fn terminateCallbackError(self: *Connection, err: anyerror) void {
+        log.debug("QUIC message callback failed, closing connection: {}", .{err});
+        self.closeActiveQuicConn(.peer_callback_failure, err);
+        _ = self.close_requested.swap(true, .acq_rel);
+        self.outbound.close();
+        self.on_message = null;
+        const on_error = self.on_error;
+        self.on_error = null;
+        self.wake();
+        if (on_error) |cb| self.invokeErrorCallback(cb, err);
+    }
+
+    fn terminateInternalError(self: *Connection, err: anyerror) void {
+        self.closeActiveQuicConn(quic_close.codeForStepError(err), err);
+        _ = self.close_requested.swap(true, .acq_rel);
+        self.outbound.close();
+        self.wake();
+        self.invokeOnError(err);
+    }
+
+    fn closeActiveQuicConn(
+        self: *Connection,
+        code: quic_close.ApplicationCloseCode,
+        err: ?anyerror,
+    ) void {
+        self.recordCloseStatus(code, err);
+        const conn = self.activeQuicConn() orelse return;
+        self.closeQuicConn(conn);
+    }
+
+    fn closeQuicConn(self: *Connection, conn: *nullq.Connection) void {
+        if (self.close_status == null) {
+            self.recordCloseStatus(.normal, null);
+        }
+        const status = self.close_status orelse return;
+        conn.close(false, status.codeValue(), self.close_reason_buf[0..self.close_reason_len]);
+    }
+
+    fn recordCloseStatus(
+        self: *Connection,
+        code: quic_close.ApplicationCloseCode,
+        err: ?anyerror,
+    ) void {
+        if (self.close_status != null) return;
+        const reason = quic_close.prepareWireReason(
+            &self.close_reason_buf,
+            code,
+            err,
+            self.reveal_close_reason_on_wire,
+        );
+        self.close_reason_len = reason.len;
+        self.close_status = .{
+            .code = code,
+            .err = err,
+            .reason_truncated = reason.truncated,
+            .reason_reveals_detail = reason.reveals_detail,
+        };
     }
 
     fn drainOutgoingDatagrams(self: *Connection, now_us: u64) !void {
@@ -444,11 +704,9 @@ pub const Connection = struct {
                 }
             },
             .server => |*server| {
-                const slot = server.slot orelse return;
-                while (try slot.conn.pollDatagram(self.udp_tx_buf, now_us)) |out| {
-                    const target = if (out.to) |addr| addr else slot.peer_addr orelse continue;
-                    const dest = nullq_adapter.pathAddressToIpAddress(target) orelse continue;
-                    try self.socket.send(self.io, &dest, self.udp_tx_buf[0..out.len]);
+                const session = server.session.handle() orelse return;
+                while (try session.pollDatagram(self.udp_tx_buf, now_us)) |out| {
+                    try self.socket.send(self.io, &out.dest, out.bytes);
                 }
             },
         }
@@ -464,7 +722,7 @@ pub const Connection = struct {
     fn activeQuicConn(self: *Connection) ?*nullq.Connection {
         return switch (self.endpoint) {
             .client => |*client| client.conn,
-            .server => |*server| if (server.slot) |slot| slot.conn else null,
+            .server => |*server| server.session.quicConnection(),
         };
     }
 
@@ -472,9 +730,7 @@ pub const Connection = struct {
         switch (self.endpoint) {
             .client => return,
             .server => |*server| {
-                if (server.slot != null) return;
-                const slots = server.server.iterator();
-                if (slots.len > 0) server.slot = slots[0];
+                _ = server.session.adoptFirstAccepted(&server.server);
             },
         }
     }
@@ -483,11 +739,11 @@ pub const Connection = struct {
         switch (self.endpoint) {
             .client => return,
             .server => |*server| {
-                if (server.slot) |slot| {
-                    if (!slot.conn.isClosed()) return;
+                if (server.session.handle()) |session| {
+                    if (!session.isClosed()) return;
                     const reaped = server.server.reap();
                     if (reaped > 0) {
-                        server.slot = null;
+                        server.session.clear();
                         _ = self.close_requested.swap(true, .acq_rel);
                     }
                 } else {
@@ -545,6 +801,33 @@ pub const Connection = struct {
     }
 };
 
+fn testRemoteAddr() Net.IpAddress {
+    return .{ .ip4 = .{
+        .bytes = .{ 127, 0, 0, 1 },
+        .port = 4433,
+    } };
+}
+
+fn initTestClient(allocator: std.mem.Allocator) !Connection {
+    return try Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = testRemoteAddr(),
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
+    });
+}
+
+test "QUIC sendFrame requests scheduler wake" {
+    var conn = try initTestClient(std.testing.allocator);
+    defer conn.deinit();
+
+    try std.testing.expect(!conn.wake_requested.load(.acquire));
+    try conn.sendFrame("abc");
+    try std.testing.expect(conn.wake_requested.load(.acquire));
+    try std.testing.expect(!conn.outbound.isEmpty());
+    try std.testing.expect(conn.consumeWakeRequested());
+    try std.testing.expect(!conn.wake_requested.load(.acquire));
+}
+
 test "QUIC dispatch treats malformed frames as terminal" {
     const Harness = struct {
         const State = struct {
@@ -562,29 +845,11 @@ test "QUIC dispatch treats malformed frames as terminal" {
     };
 
     var state = Harness.State{};
-    var udp_rx_buf: [0]u8 = .{};
-    var udp_tx_buf: [0]u8 = .{};
-    var stream_read_buf: [0]u8 = .{};
-    var conn = Connection{
-        .allocator = std.testing.allocator,
-        .io = std.testing.io,
-        .role = .client,
-        .socket = undefined,
-        .endpoint = undefined,
-        .start_timestamp = std.Io.Timestamp.now(std.testing.io, .awake),
-        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
-        .udp_rx_buf = &udp_rx_buf,
-        .udp_tx_buf = &udp_tx_buf,
-        .stream_read_buf = &stream_read_buf,
-        .max_message_bytes = 1024,
-        .inbound = LengthDelimitedFramer.init(std.testing.allocator, 1024),
-        .outbound = OutboundQueue.init(4, 1024),
-        .ctx = &state,
-        .on_message = Harness.onMessage,
-        .on_error = Harness.onError,
-    };
-    defer conn.inbound.deinit();
-    defer conn.outbound.drain(std.testing.allocator);
+    var conn = try initTestClient(std.testing.allocator);
+    defer conn.deinit();
+    conn.ctx = &state;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
     try conn.inbound.push(&bad_frame);
@@ -593,7 +858,33 @@ test "QUIC dispatch treats malformed frames as terminal" {
     try std.testing.expect(conn.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(quic_close.ApplicationCloseCode.frame_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
+    try std.testing.expectEqualStrings("rpc frame error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expect(!status.reason_reveals_detail);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
+test "QUIC dispatch can reveal sanitized frame error details when configured" {
+    const Harness = struct {
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+        fn onError(_: *Connection, _: anyerror) void {}
+    };
+
+    var conn = try initTestClient(std.testing.allocator);
+    defer conn.deinit();
+    conn.reveal_close_reason_on_wire = true;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
+
+    const bad_frame = [_]u8{ 0, 0, 0, 0 };
+    try conn.inbound.push(&bad_frame);
+    try conn.dispatchAvailableFrames();
+
+    const status = conn.closeStatus().?;
+    try std.testing.expect(status.reason_reveals_detail);
+    try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", conn.close_reason_buf[0..conn.close_reason_len]);
 }
 
 test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
@@ -614,29 +905,13 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
     var state = Harness.State{};
-    var udp_rx_buf: [0]u8 = .{};
-    var udp_tx_buf: [0]u8 = .{};
-    var stream_read_buf: [0]u8 = .{};
-    var conn = Connection{
-        .allocator = failing.allocator(),
-        .io = std.testing.io,
-        .role = .client,
-        .socket = undefined,
-        .endpoint = undefined,
-        .start_timestamp = std.Io.Timestamp.now(std.testing.io, .awake),
-        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
-        .udp_rx_buf = &udp_rx_buf,
-        .udp_tx_buf = &udp_tx_buf,
-        .stream_read_buf = &stream_read_buf,
-        .max_message_bytes = 1024,
-        .inbound = LengthDelimitedFramer.init(failing.allocator(), 1024),
-        .outbound = OutboundQueue.init(4, 1024),
-        .ctx = &state,
-        .on_message = Harness.onMessage,
-        .on_error = Harness.onError,
-    };
-    defer conn.inbound.deinit();
-    defer conn.outbound.drain(failing.allocator());
+    var conn = try initTestClient(std.testing.allocator);
+    defer conn.deinit();
+    conn.inbound.deinit();
+    conn.inbound = LengthDelimitedFramer.init(failing.allocator(), 1024);
+    conn.ctx = &state;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
 
     var encoded: [7]u8 = undefined;
     std.mem.writeInt(u32, encoded[0..4], 3, .little);
@@ -648,7 +923,52 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     try std.testing.expect(conn.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), state.last_error);
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(quic_close.ApplicationCloseCode.internal_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
+    try std.testing.expectEqualStrings("rpc transport error", conn.close_reason_buf[0..conn.close_reason_len]);
     try std.testing.expectEqual(@as(usize, 0), conn.inbound.buffer.items.len);
+    try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
+test "QUIC dispatch treats message callback failure as terminal" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {
+            return error.CallbackFailed;
+        }
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = try initTestClient(std.testing.allocator);
+    defer conn.deinit();
+    conn.ctx = &state;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
+
+    var encoded: [7]u8 = undefined;
+    std.mem.writeInt(u32, encoded[0..4], 3, .little);
+    @memcpy(encoded[4..7], "abc");
+
+    try conn.inbound.push(&encoded);
+    try conn.dispatchAvailableFrames();
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.CallbackFailed), state.last_error);
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(quic_close.ApplicationCloseCode.peer_callback_failure, status.code);
+    try std.testing.expectEqualStrings("rpc callback error", conn.close_reason_buf[0..conn.close_reason_len]);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 
@@ -676,30 +996,12 @@ test "QUIC deinit requested from error callback is deferred without panic" {
     };
 
     var state = Harness.State{};
-    var udp_rx_buf: [0]u8 = .{};
-    var udp_tx_buf: [0]u8 = .{};
-    var stream_read_buf: [0]u8 = .{};
-    var conn = Connection{
-        .allocator = std.testing.allocator,
-        .io = std.testing.io,
-        .role = .client,
-        .socket = undefined,
-        .endpoint = undefined,
-        .start_timestamp = std.Io.Timestamp.now(std.testing.io, .awake),
-        .receive_timeout = std.Io.Duration.fromMilliseconds(5),
-        .udp_rx_buf = &udp_rx_buf,
-        .udp_tx_buf = &udp_tx_buf,
-        .stream_read_buf = &stream_read_buf,
-        .max_message_bytes = 1024,
-        .inbound = LengthDelimitedFramer.init(std.testing.allocator, 1024),
-        .outbound = OutboundQueue.init(4, 1024),
-        .ctx = &state,
-        .on_message = Harness.onMessage,
-        .on_error = Harness.onError,
-        .on_close = Harness.onClose,
-    };
-    defer if (!conn.deinitialized) conn.inbound.deinit();
-    defer if (!conn.deinitialized) conn.outbound.drain(std.testing.allocator);
+    var conn = try initTestClient(std.testing.allocator);
+    defer conn.deinit();
+    conn.ctx = &state;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
+    conn.on_close = Harness.onClose;
 
     conn.terminateFrameError(error.InvalidFrame);
     if (conn.on_close) |cb| conn.invokeCloseCallback(cb);

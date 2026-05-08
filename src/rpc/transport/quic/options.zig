@@ -32,6 +32,11 @@ pub const default_quic_max_connection_memory: u64 = nullq.conn.state.default_max
 pub const default_quic_listener_rate_window_us: u64 = 1_000_000;
 pub const default_quic_max_log_events_per_source_per_window: ?u32 = 16;
 
+/// Current capnp-zig QUIC RPC server fanout. The listener/session split makes
+/// the next step visible, but peer dispatch still binds one active QUIC session
+/// to one server transport today.
+pub const supported_max_concurrent_sessions: u32 = 1;
+
 pub const ServerQlogCallback = nullq.QlogCallback;
 pub const ServerLogEvent = nullq.Server.LogEvent;
 pub const ServerLogCallback = nullq.Server.LogCallback;
@@ -182,7 +187,7 @@ pub fn nullqServerConfigFromOptions(
 fn validateServerOptions(options: ServerOptions) !void {
     if (options.alpn_protocols.len == 0) return error.InvalidConfig;
     if (options.tls_cert_pem.len == 0 or options.tls_key_pem.len == 0) return error.InvalidConfig;
-    if (options.max_concurrent_connections != 1) return error.InvalidConfig;
+    if (options.max_concurrent_connections != supported_max_concurrent_sessions) return error.InvalidConfig;
     if (options.local_cid_len == 0 or options.local_cid_len > 20) return error.InvalidConfig;
     if (options.udp_rx_buffer_size == 0 or
         options.udp_tx_buffer_size == 0 or

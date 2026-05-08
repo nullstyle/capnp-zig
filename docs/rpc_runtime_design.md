@@ -17,7 +17,7 @@ The runtime is organized into a small set of components, with strict ownership a
 - `rpc/Runtime` (`src/rpc/transport/tcp/runtime.zig`): listener and socket helpers for creating TCP connections.
 - `rpc/Connection` (`src/rpc/transport/tcp/connection.zig`): per-transport state machine for framing, parsing, dispatch, and write scheduling.
 - `rpc/Transport` (`src/rpc/transport/tcp/stream_transport.zig`): concurrent read/write transport, handling blocking I/O and exposing buffers to `Connection`.
-- `rpc/quic.Connection` (`src/rpc/transport/quic/connection.zig`): nullq-backed QUIC vat session using ALPN `capnp-rpc/1` and baseline bidirectional stream 0.
+- `rpc/quic.Connection` (`src/rpc/transport/quic/connection.zig`): optional nullq-backed QUIC vat session using ALPN `capnp-rpc/1` and baseline bidirectional stream 0.
 - `rpc/Protocol` (`src/rpc/wire/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
 - `rpc/CapTable` (`src/rpc/caps/table.zig`): export/import capability tracking with reference counting and lifetime management.
 - `rpc/Peer` (`src/rpc/peer/mod.zig` + `src/rpc/peer/*`): public peer facade, state limits, inbound/outbound call orchestration, return handling, and lifecycle dispatch.
@@ -34,6 +34,12 @@ Each connection uses a `Transport` with concurrent read/write I/O:
 5. Outbound messages are serialized and enqueued; a dedicated writer thread drains the write queue.
 
 ## QUIC Transport
+QUIC is opt-in at the build-module boundary. Default builds keep nullq/BoringSSL
+out of serialization and TCP-only applications; `rpc.quic` is a disabled facade
+that exposes only nullq-free framing helpers and a clear compile-time error for
+transport construction. Build with `-Dquic=true` to select the QUIC-enabled
+library root, import nullq, and expose the native transport implementation.
+
 The first QUIC transport is intentionally conservative and native to QUIC:
 
 - ALPN is `capnp-rpc/1`.
@@ -41,7 +47,7 @@ The first QUIC transport is intentionally conservative and native to QUIC:
 - Client-initiated bidirectional stream 0 carries the baseline Cap'n Proto RPC message stream.
 - Each RPC message is length-delimited with a 32-bit little-endian byte length, followed by the existing Cap'n Proto RPC message bytes.
 
-This gives the existing peer/protocol layers the same complete-message callback shape as TCP while letting QUIC handle handshake, loss recovery, stream flow control, and connection migration. The implementation is exposed as `rpc.quic.Connection` and uses the same `Peer.attachConnection` path as the TCP `rpc.connection.Connection`.
+This gives the existing peer/protocol layers the same complete-message callback shape as TCP while letting QUIC handle handshake, loss recovery, stream flow control, and connection migration. When QUIC is enabled, the implementation is exposed as `rpc.quic.Connection` and uses the same `Peer.attachConnection` path as the TCP `rpc.connection.Connection`.
 
 The next QUIC-native mode should keep the same ALPN and vat session model, but split traffic across streams: a control stream for bootstrap, exports/imports, disconnects, and routing metadata; data streams for large payloads or streaming method patterns; and DATAGRAM frames only for non-critical sideband telemetry.
 

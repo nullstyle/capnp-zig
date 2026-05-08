@@ -16,8 +16,4 @@ pub const worker_pool = base.worker_pool;
 pub const generated = base.generated;
 pub const _internal = base._internal;
 
-/// QUIC is optional at the build-module boundary. The default module exposes a
-/// nullq-free facade so tests and callers can use the length-delimited framer
-/// without pulling in BoringSSL/nullq; build with `-Dquic=true` for the native
-/// QUIC transport.
-pub const quic = @import("./transport/quic_disabled.zig");
+pub const quic = @import("./transport/quic/mod.zig");

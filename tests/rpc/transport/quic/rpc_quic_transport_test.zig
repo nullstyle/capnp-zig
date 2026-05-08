@@ -1,7 +1,13 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
+const protocol = capnpc.rpc.protocol;
 const quic = capnpc.rpc.quic;
+
+const loopback_cert_pem = @embedFile("loopback_cert.pem");
+const loopback_key_pem = @embedFile("loopback_key.pem");
+const loopback_timeout_ms: u64 = 3_000;
+const loopback_poll_ms: u64 = 5;
 
 fn testListenAddr() std.Io.net.IpAddress {
     return .{ .ip4 = .{
@@ -12,11 +18,118 @@ fn testListenAddr() std.Io.net.IpAddress {
 
 fn captureServerLog(_: ?*anyopaque, _: quic.ServerLogEvent) void {}
 
+const QuicEndpointState = struct {
+    messages: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    errors: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    closes: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    last_error: ?anyerror = null,
+    received: [256]u8 = undefined,
+    received_len: usize = 0,
+
+    fn recordMessage(self: *QuicEndpointState, frame: []const u8) !void {
+        if (frame.len > self.received.len) return error.QuicLoopbackPayloadTooLarge;
+        @memcpy(self.received[0..frame.len], frame);
+        self.received_len = frame.len;
+        _ = self.messages.fetchAdd(1, .acq_rel);
+    }
+
+    fn receivedSlice(self: *const QuicEndpointState) []const u8 {
+        return self.received[0..self.received_len];
+    }
+};
+
+fn buildBootstrapFrame(allocator: std.mem.Allocator, question_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildBootstrap(question_id);
+    return builder.finish();
+}
+
+fn sleepMs(ms: u64) void {
+    std.Io.sleep(std.testing.io, std.Io.Duration.fromMilliseconds(@intCast(ms)), .awake) catch {};
+}
+
+fn runQuicConnection(conn: *quic.Connection) void {
+    conn.run();
+}
+
+fn waitForClientMessageOrError(
+    client_state: *const QuicEndpointState,
+    server_state: *const QuicEndpointState,
+) bool {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback_timeout_ms) : (waited_ms += loopback_poll_ms) {
+        if (client_state.messages.load(.acquire) > 0) return true;
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) return false;
+        sleepMs(loopback_poll_ms);
+    }
+    return client_state.messages.load(.acquire) > 0;
+}
+
+fn waitForServerError(server_state: *const QuicEndpointState) bool {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback_timeout_ms) : (waited_ms += loopback_poll_ms) {
+        if (server_state.errors.load(.acquire) > 0) return true;
+        sleepMs(loopback_poll_ms);
+    }
+    return server_state.errors.load(.acquire) > 0;
+}
+
+fn echoQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    try state.recordMessage(frame);
+    try conn.sendFrame(frame);
+}
+
+fn captureQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    try state.recordMessage(frame);
+    conn.requestClose();
+}
+
+fn rejectUnexpectedQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    try state.recordMessage(frame);
+    return error.UnexpectedQuicLoopbackMessage;
+}
+
+fn recordQuicError(conn: *quic.Connection, err: anyerror) void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    state.last_error = err;
+    _ = state.errors.fetchAdd(1, .acq_rel);
+    conn.requestClose();
+}
+
+fn recordQuicClose(conn: *quic.Connection) void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    _ = state.closes.fetchAdd(1, .acq_rel);
+}
+
 test "quic transport exposes native Cap'n Proto RPC ALPN" {
     try std.testing.expectEqualStrings("capnp-rpc/1", quic.alpn);
     try std.testing.expectEqual(@as(u64, 0), quic.baseline_stream_id);
     try std.testing.expect(quic.default_max_outbound_queue_items > 0);
     try std.testing.expect(quic.default_max_outbound_queue_bytes > quic.default_max_message_bytes);
+    try std.testing.expectEqual(@as(u32, 1), quic.supported_max_concurrent_sessions);
+}
+
+test "quic transport exposes typed application close policy" {
+    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(quic.ApplicationCloseCode.normal));
+    try std.testing.expectEqual(@as(u64, 0x434e_5001), @intFromEnum(quic.ApplicationCloseCode.frame_error));
+
+    var reason_buf: [8]u8 = undefined;
+    const prepared = quic.close.sanitizeReason(&reason_buf, "bad\nframe!");
+
+    try std.testing.expect(prepared.truncated);
+    try std.testing.expectEqualStrings("bad?fram", reason_buf[0..prepared.len]);
+}
+
+test "quic exposes listener and session API boundary" {
+    try std.testing.expect(@hasDecl(quic, "Listener"));
+    try std.testing.expect(@hasDecl(quic, "Session"));
+    try std.testing.expect(@hasDecl(quic.listener, "Listener"));
+    try std.testing.expect(@hasDecl(quic.session, "Session"));
+    try std.testing.expect(@hasDecl(quic.endpoint, "Endpoint"));
 }
 
 test "quic server options propagate nullq hardening controls" {
@@ -142,6 +255,131 @@ test "quic path address conversion round-trips IPv4" {
     try std.testing.expectEqualSlices(u8, &addr.ip4.bytes, &round_trip.ip4.bytes);
 }
 
+test "quic localhost connection exchanges framed RPC bootstrap payload" {
+    const allocator = std.testing.allocator;
+    const frame = try buildBootstrapFrame(allocator, 0xC0DE);
+    defer allocator.free(frame);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const exchanged = waitForClientMessageOrError(&client_state, &server_state);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!exchanged) return error.QuicLoopbackTimedOut;
+
+    try std.testing.expectEqual(@as(usize, 1), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), client_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expect(client_state.closes.load(.acquire) > 0);
+    try std.testing.expect(server_state.closes.load(.acquire) > 0);
+    try std.testing.expectEqualSlices(u8, frame, client_state.receivedSlice());
+
+    var decoded = try protocol.DecodedMessage.init(allocator, client_state.receivedSlice());
+    defer decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.bootstrap, decoded.tag);
+    const bootstrap = try decoded.asBootstrap();
+    try std.testing.expectEqual(@as(u32, 0xC0DE), bootstrap.question_id);
+}
+
+test "quic localhost oversized baseline frame terminates server" {
+    const allocator = std.testing.allocator;
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .stream_read_buffer_size = 128,
+        .max_message_bytes = 32,
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_message_bytes = 128,
+        .max_outbound_queue_bytes = quic.length_prefix_bytes + 128,
+    });
+    defer client.deinit();
+
+    var oversized_payload: [64]u8 = @splat(0xa5);
+    try client.sendFrame(&oversized_payload);
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, rejectUnexpectedQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const rejected = waitForServerError(&server_state);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!rejected) return error.QuicLoopbackTimedOut;
+
+    try std.testing.expectEqual(@as(usize, 0), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(?anyerror, error.FrameTooLarge), server_state.last_error);
+    try std.testing.expect(server_state.closes.load(.acquire) > 0);
+    try std.testing.expect(server.isClosing());
+}
+
 test "quic client outbound queue enforces item and byte bounds" {
     const remote_addr: std.Io.net.IpAddress = .{ .ip4 = .{
         .bytes = .{ 127, 0, 0, 1 },
@@ -173,6 +411,13 @@ test "quic client outbound queue enforces item and byte bounds" {
 
 test "quic server rejects multi-connection option until fanout exists" {
     try std.testing.expectError(error.InvalidConfig, quic.nullqServerConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .max_concurrent_connections = 2,
+    }));
+
+    try std.testing.expectError(error.InvalidConfig, quic.Listener.init(std.testing.allocator, std.testing.io, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",

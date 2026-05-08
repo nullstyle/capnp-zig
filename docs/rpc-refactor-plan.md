@@ -30,6 +30,11 @@ domain`):
   `dispatch.zig`, `bootstrap.zig`, `finish.zig`, `resolve.zig`, and
   `disembargo.zig`. These currently wrap existing implementation helpers so the
   semantic paths exist before code is moved behind them.
+- QUIC is now an explicit build-module choice. The default `capnpc-zig` module
+  keeps nullq/BoringSSL out of serialization and TCP-only builds and exposes a
+  disabled `rpc.quic` facade for nullq-free framing helpers. Build with
+  `-Dquic=true` to select `src/lib_quic.zig`, import nullq, and expose the
+  native QUIC transport implementation.
 
 ## Goals
 
@@ -448,8 +453,8 @@ semantic changes:
 - Update `minimum_zig_version`, `mise.toml`, and docs together if moving.
 - Make module surfaces explicit:
   - core serialization/codegen
-  - RPC without QUIC where possible
-  - QUIC as an opt-in transport surface
+  - RPC without QUIC by default
+  - QUIC as an opt-in transport surface via `-Dquic=true`
 - Avoid unconditional nullq/BoringSSL instantiation for serialization-only users.
 - Revisit `std.Io.Evented` now that local Zig master exposes it on macOS/aarch64.
 - Isolate POSIX wake pipes, polling, and socket options inside `transport/tcp`.

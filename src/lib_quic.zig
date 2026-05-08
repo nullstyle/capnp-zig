@@ -1,10 +1,8 @@
 /// Pure Zig implementation of Cap'n Proto serialization, code generation, and RPC.
 ///
-/// This library provides a complete Cap'n Proto stack: wire-format message
-/// encoding/decoding, a compiler plugin for generating idiomatic Zig types
-/// from `.capnp` schemas, and an in-progress RPC runtime.
-/// Core wire-format primitives: segment management, pointer encoding/decoding,
-/// struct/list/text serialization, and packed encoding.
+/// This QUIC-enabled module includes the optional nullq-backed QUIC transport.
+/// Use the default `capnpc-zig` build without `-Dquic=true` when serialization
+/// or TCP RPC users should not depend on nullq/BoringSSL.
 pub const message = @import("serialization/message.zig");
 
 /// Cap'n Proto schema type definitions (Node, Field, Type, Value) used by
@@ -25,11 +23,8 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
-/// Cap'n Proto RPC runtime: connection management, capability tables,
-/// message framing, and peer protocol implementation. The default build keeps
-/// the nullq-backed QUIC transport disabled; pass `-Dquic=true` to expose the
-/// native QUIC transport as `rpc.quic`.
-pub const rpc = @import("rpc/mod.zig");
+/// Cap'n Proto RPC runtime with TCP plus optional native QUIC transport.
+pub const rpc = @import("rpc/mod_quic.zig");
 
 /// Switchable `std.Io` backend selection. Centralises the choice between
 /// `std.Io.Threaded` and (eventually) `std.Io.Evented` so applications can

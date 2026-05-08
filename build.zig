@@ -37,15 +37,28 @@ fn addMainTest(
     return b.addRunArtifact(t);
 }
 
+fn addQuicImport(module: *std.Build.Module, nullq_module: ?*std.Build.Module) void {
+    if (nullq_module) |m| module.addImport("nullq", m);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const nullq_dep = b.dependency("nullq", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const nullq_module = nullq_dep.module("nullq");
+    const enable_quic = b.option(
+        bool,
+        "quic",
+        "Enable nullq-backed QUIC RPC transport (default: false)",
+    ) orelse false;
+    const lib_root = if (enable_quic) "src/lib_quic.zig" else "src/lib.zig";
+
+    const nullq_module: ?*std.Build.Module = if (enable_quic) blk: {
+        const nullq_dep = b.dependency("nullq", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        break :blk nullq_dep.module("nullq");
+    } else null;
 
     // Selects which std.Io backend RPC entry points should construct. See
     // src/io_backend.zig for the full list of accepted spellings; the
@@ -64,13 +77,13 @@ pub fn build(b: *std.Build) void {
 
     // Create the library module
     const lib_module = b.addModule("capnpc-zig", .{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = optimize,
         .imports = &.{},
     });
     lib_module.addImport("capnpc-zig", lib_module);
-    lib_module.addImport("nullq", nullq_module);
+    addQuicImport(lib_module, nullq_module);
 
     const core_module = b.addModule("capnpc-zig-core", .{
         .root_source_file = b.path("src/lib_core.zig"),
@@ -143,13 +156,13 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const docs_module = b.createModule(.{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = optimize,
         .imports = &.{},
     });
     docs_module.addImport("capnpc-zig", docs_module);
-    docs_module.addImport("nullq", nullq_module);
+    addQuicImport(docs_module, nullq_module);
     const docs_obj = b.addObject(.{
         .name = "capnpc-zig-docs",
         .root_module = docs_module,
@@ -328,15 +341,15 @@ pub fn build(b: *std.Build) void {
 
     const run_main_tests = b.addRunArtifact(main_tests);
 
+    const lib_tests_module = b.createModule(.{
+        .root_source_file = b.path(lib_root),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{},
+    });
+    addQuicImport(lib_tests_module, nullq_module);
     const lib_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nullq", .module = nullq_module },
-            },
-        }),
+        .root_module = lib_tests_module,
     });
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
@@ -377,7 +390,10 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_cleanup_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_cleanup_test.zig", target, optimize, lib_module);
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/integration/rpc_worker_pool_test.zig", target, optimize, lib_module);
-    const run_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module);
+    const run_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
+        addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module)
+    else
+        null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
@@ -511,8 +527,11 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(run_rpc_peer_cleanup_tests);
     test_rpc_level2_step.dependOn(run_rpc_connection_failure_tests);
     test_rpc_level2_step.dependOn(run_rpc_worker_pool_tests);
-    test_rpc_level2_step.dependOn(run_rpc_quic_transport_tests);
+    if (run_rpc_quic_transport_tests) |step| test_rpc_level2_step.dependOn(step);
     test_rpc_level2_step.dependOn(run_rpc_raw_frame_security_tests);
+
+    const test_rpc_quic_step = b.step("test-rpc-quic", "Run nullq-backed QUIC RPC transport tests (requires -Dquic=true)");
+    if (run_rpc_quic_transport_tests) |step| test_rpc_quic_step.dependOn(step);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run cumulative RPC peer semantics tests");
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
@@ -540,7 +559,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(run_schema_validation_tests);
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
-    test_resource_budgets_step.dependOn(run_rpc_quic_transport_tests);
+    if (run_rpc_quic_transport_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
     test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
 
@@ -559,19 +578,21 @@ pub fn build(b: *std.Build) void {
     test_lib_step.dependOn(&run_lib_tests.step);
 
     const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
-    const release_safe_nullq_dep = b.dependency("nullq", .{
-        .target = target,
-        .optimize = release_safe_optimize,
-    });
-    const release_safe_nullq_module = release_safe_nullq_dep.module("nullq");
+    const release_safe_nullq_module: ?*std.Build.Module = if (enable_quic) blk: {
+        const release_safe_nullq_dep = b.dependency("nullq", .{
+            .target = target,
+            .optimize = release_safe_optimize,
+        });
+        break :blk release_safe_nullq_dep.module("nullq");
+    } else null;
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
-        .root_source_file = b.path("src/lib.zig"),
+        .root_source_file = b.path(lib_root),
         .target = target,
         .optimize = release_safe_optimize,
         .imports = &.{},
     });
     release_safe_lib_module.addImport("capnpc-zig", release_safe_lib_module);
-    release_safe_lib_module.addImport("nullq", release_safe_nullq_module);
+    addQuicImport(release_safe_lib_module, release_safe_nullq_module);
 
     const run_release_safe_main_tests = addMainTest(b, "src/main.zig", target, release_safe_optimize);
     const run_release_safe_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -582,7 +603,10 @@ pub fn build(b: *std.Build) void {
     const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
+        addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module)
+    else
+        null;
     const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
 
     const test_release_safe_step = b.step("test-release-safe", "Run key hardening gates under ReleaseSafe");
@@ -595,7 +619,7 @@ pub fn build(b: *std.Build) void {
     test_release_safe_step.dependOn(run_release_safe_schema_validation_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
-    test_release_safe_step.dependOn(run_release_safe_rpc_quic_transport_tests);
+    if (run_release_safe_rpc_quic_transport_tests) |step| test_release_safe_step.dependOn(step);
     test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);
 
     // Test step runs all tests
