@@ -376,6 +376,9 @@ First local pass:
 - `peer/mod.zig` now routes those message families through the new facade
   names, while `peer_control.zig` remains as the compatibility implementation
   holder for the still-unsplit helpers.
+- Bootstrap, abort, and unimplemented-message logic has moved into
+  `peer/bootstrap.zig`; `peer_control.zig` re-exports those names for existing
+  tests and compatibility.
 
 ### Tranche 9: Split Provide/Accept/Join And Third-Party Helpers
 
