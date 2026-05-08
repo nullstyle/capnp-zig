@@ -108,6 +108,20 @@ fn recordQuicClose(conn: *quic.Connection) void {
 test "quic transport exposes native Cap'n Proto RPC ALPN" {
     try std.testing.expectEqualStrings("capnp-rpc/1", quic.alpn);
     try std.testing.expectEqual(@as(u64, 0), quic.baseline_stream_id);
+    const default_client_options = quic.ClientOptions{
+        .remote_addr = testListenAddr(),
+        .server_name = "localhost",
+    };
+    const default_server_options = quic.ServerOptions{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+    };
+    try std.testing.expectEqual(quic.TransportMode.baseline, default_client_options.mode);
+    try std.testing.expectEqual(quic.TransportMode.baseline, default_server_options.mode);
+    try std.testing.expect(quic.default_native_inline_frame_threshold > 0);
+    try std.testing.expect(quic.default_native_max_control_frame_bytes > quic.default_native_inline_frame_threshold);
+    try std.testing.expect(quic.default_native_max_pending_data_streams > 0);
     try std.testing.expect(quic.default_max_outbound_queue_items > 0);
     try std.testing.expect(quic.default_max_outbound_queue_bytes > quic.default_max_message_bytes);
     try std.testing.expectEqual(@as(u32, 1), quic.supported_max_concurrent_sessions);
@@ -318,6 +332,191 @@ test "quic localhost connection exchanges framed RPC bootstrap payload" {
     try std.testing.expectEqual(protocol.MessageTag.bootstrap, decoded.tag);
     const bootstrap = try decoded.asBootstrap();
     try std.testing.expectEqual(@as(u32, 0xC0DE), bootstrap.question_id);
+}
+
+test "quic native localhost connection exchanges inline RPC bootstrap payload" {
+    const allocator = std.testing.allocator;
+    const frame = try buildBootstrapFrame(allocator, 0xCAFE);
+    defer allocator.free(frame);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+    });
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const exchanged = waitForClientMessageOrError(&client_state, &server_state);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!exchanged) return error.QuicLoopbackTimedOut;
+
+    try std.testing.expectEqual(@as(usize, 1), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), client_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame, client_state.receivedSlice());
+}
+
+test "quic native localhost routes large RPC frame over data stream" {
+    const allocator = std.testing.allocator;
+    const frame = try buildBootstrapFrame(allocator, 0xDADA);
+    defer allocator.free(frame);
+
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 4096,
+    };
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, echoQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const exchanged = waitForClientMessageOrError(&client_state, &server_state);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!exchanged) return error.QuicLoopbackTimedOut;
+
+    try std.testing.expectEqual(@as(usize, 1), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), client_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame, client_state.receivedSlice());
+}
+
+test "quic native mode mismatch closes baseline peer cleanly" {
+    const allocator = std.testing.allocator;
+    const frame = try buildBootstrapFrame(allocator, 0xBAD);
+    defer allocator.free(frame);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+    });
+    defer client.deinit();
+
+    var server_state = QuicEndpointState{};
+    var client_state = QuicEndpointState{};
+    server.start(&server_state, rejectUnexpectedQuicMessage, recordQuicError, recordQuicClose);
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const rejected = waitForServerError(&server_state);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!rejected) return error.QuicLoopbackTimedOut;
+
+    try std.testing.expectEqual(@as(usize, 0), server_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), server_state.errors.load(.acquire));
+    const last_error = server_state.last_error orelse return error.QuicLoopbackMissingError;
+    try std.testing.expect(last_error == error.FrameTooLarge or last_error == error.InvalidFrame);
+    try std.testing.expect(server.isClosing());
 }
 
 test "quic localhost oversized baseline frame terminates server" {

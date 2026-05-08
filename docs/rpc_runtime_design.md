@@ -17,7 +17,7 @@ The runtime is organized into a small set of components, with strict ownership a
 - `rpc/Runtime` (`src/rpc/transport/tcp/runtime.zig`): listener and socket helpers for creating TCP connections.
 - `rpc/Connection` (`src/rpc/transport/tcp/connection.zig`): per-transport state machine for framing, parsing, dispatch, and write scheduling.
 - `rpc/Transport` (`src/rpc/transport/tcp/stream_transport.zig`): concurrent read/write transport, handling blocking I/O and exposing buffers to `Connection`.
-- `rpc/quic.Connection` (`src/rpc/transport/quic/connection.zig`): optional nullq-backed QUIC vat session using ALPN `capnp-rpc/1` and baseline bidirectional stream 0.
+- `rpc/quic.Connection` (`src/rpc/transport/quic/connection.zig`): optional nullq-backed QUIC vat session using ALPN `capnp-rpc/1`, with baseline stream mode by default and an opt-in native control/data-stream mode.
 - `rpc/Protocol` (`src/rpc/wire/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
 - `rpc/CapTable` (`src/rpc/caps/table.zig`): export/import capability tracking with reference counting and lifetime management.
 - `rpc/Peer` (`src/rpc/peer/mod.zig` + `src/rpc/peer/*`): public peer facade, state limits, inbound/outbound call orchestration, return handling, and lifecycle dispatch.
@@ -40,7 +40,7 @@ that exposes only nullq-free framing helpers and a clear compile-time error for
 transport construction. Build with `-Dquic=true` to select the QUIC-enabled
 library root, import nullq, and expose the native transport implementation.
 
-The first QUIC transport is intentionally conservative and native to QUIC:
+The default QUIC transport is intentionally conservative:
 
 - ALPN is `capnp-rpc/1`.
 - One QUIC connection represents one authenticated vat-to-vat RPC session.
@@ -49,7 +49,13 @@ The first QUIC transport is intentionally conservative and native to QUIC:
 
 This gives the existing peer/protocol layers the same complete-message callback shape as TCP while letting QUIC handle handshake, loss recovery, stream flow control, and connection migration. When QUIC is enabled, the implementation is exposed as `rpc.quic.Connection` and uses the same `Peer.attachConnection` path as the TCP `rpc.connection.Connection`.
 
-The next QUIC-native mode should keep the same ALPN and vat session model, but split traffic across streams: a control stream for bootstrap, exports/imports, disconnects, and routing metadata; data streams for large payloads or streaming method patterns; and DATAGRAM frames only for non-critical sideband telemetry.
+`rpc.quic.TransportMode.native` keeps the same ALPN and vat session model but changes the QUIC stream layout while preserving standard `rpc.capnp` messages as the canonical RPC payload:
+
+- Bidirectional stream 0 starts with a native preface plus versioned hello, then carries ordered control envelopes.
+- Small RPC frames are sent inline in `inline_rpc` control envelopes.
+- Larger RPC frames are written to one-shot unidirectional data streams and referenced by ordered `data_rpc` control envelopes.
+- Inbound control envelopes are dispatched in strict control-stream order. If a `data_rpc` envelope is next but its referenced data stream is incomplete, later control envelopes remain buffered until the data frame is complete.
+- QUIC DATAGRAM is intentionally unused for RPC or telemetry in this phase; sideband telemetry should be designed as a transport-general facility later.
 
 ## Framing and Parsing
 - RPC messages are Cap’n Proto messages with standard segment framing (and optional packing in future).

@@ -3,6 +3,7 @@ const nullq = @import("nullq");
 
 const framing = @import("../../wire/framing.zig");
 const length_framer = @import("length_framer.zig");
+const native_framer = @import("native_framer.zig");
 
 const Net = std.Io.net;
 
@@ -21,6 +22,10 @@ pub const default_stream_read_buffer_size: usize = 64 * 1024;
 pub const default_max_message_bytes: usize = framing.Framer.max_frame_words * 8;
 pub const default_max_outbound_queue_items: usize = 1024;
 pub const default_max_outbound_queue_bytes: usize = default_max_message_bytes + length_framer.length_prefix_bytes;
+pub const default_native_inline_frame_threshold: usize = 64 * 1024;
+pub const default_native_max_control_frame_bytes: usize = native_framer.rpc_header_bytes + default_native_inline_frame_threshold;
+pub const default_native_max_pending_data_streams: usize = 16;
+pub const default_native_max_pending_data_bytes: usize = default_max_message_bytes;
 pub const default_quic_local_cid_len: u8 = 8;
 pub const default_quic_source_rate_window_us: u64 = 1_000_000;
 pub const default_quic_source_rate_table_capacity: u32 = 4096;
@@ -36,6 +41,18 @@ pub const default_quic_max_log_events_per_source_per_window: ?u32 = 16;
 /// the next step visible, but peer dispatch still binds one active QUIC session
 /// to one server transport today.
 pub const supported_max_concurrent_sessions: u32 = 1;
+
+pub const TransportMode = enum {
+    baseline,
+    native,
+};
+
+pub const NativeOptions = struct {
+    inline_frame_threshold: usize = default_native_inline_frame_threshold,
+    max_control_frame_bytes: usize = default_native_max_control_frame_bytes,
+    max_pending_data_streams: usize = default_native_max_pending_data_streams,
+    max_pending_data_bytes: usize = default_native_max_pending_data_bytes,
+};
 
 pub const ServerQlogCallback = nullq.QlogCallback;
 pub const ServerLogEvent = nullq.Server.LogEvent;
@@ -72,6 +89,8 @@ pub const ClientOptions = struct {
     max_message_bytes: usize = default_max_message_bytes,
     max_outbound_queue_items: usize = default_max_outbound_queue_items,
     max_outbound_queue_bytes: usize = default_max_outbound_queue_bytes,
+    mode: TransportMode = .baseline,
+    native: NativeOptions = .{},
     ca_pem: ?[]const u8 = null,
 };
 
@@ -112,6 +131,8 @@ pub const ServerOptions = struct {
     max_message_bytes: usize = default_max_message_bytes,
     max_outbound_queue_items: usize = default_max_outbound_queue_items,
     max_outbound_queue_bytes: usize = default_max_outbound_queue_bytes,
+    mode: TransportMode = .baseline,
+    native: NativeOptions = .{},
 };
 
 pub const ServerProductionHardening = struct {
@@ -215,4 +236,36 @@ fn validateServerOptions(options: ServerOptions) !void {
     if (options.max_bytes_per_window) |cap| if (cap == 0) return error.InvalidConfig;
     if (options.max_bytes_per_source_per_second) |cap| if (cap == 0) return error.InvalidConfig;
     if (options.max_log_events_per_source_per_window) |cap| if (cap == 0) return error.InvalidConfig;
+    try validateNativeOptions(options.mode, options.native, options.max_message_bytes);
+}
+
+pub fn validateClientOptions(options: ClientOptions) !void {
+    if (options.alpn_protocols.len == 0) return error.InvalidConfig;
+    if (options.udp_rx_buffer_size == 0 or
+        options.udp_tx_buffer_size == 0 or
+        options.stream_read_buffer_size == 0 or
+        options.max_message_bytes == 0 or
+        options.max_outbound_queue_items == 0 or
+        options.max_outbound_queue_bytes == 0)
+    {
+        return error.InvalidConfig;
+    }
+    try validateNativeOptions(options.mode, options.native, options.max_message_bytes);
+}
+
+fn validateNativeOptions(
+    mode: TransportMode,
+    native: NativeOptions,
+    max_message_bytes: usize,
+) !void {
+    if (mode == .baseline) return;
+    if (native.max_control_frame_bytes < native_framer.common_header_bytes) return error.InvalidConfig;
+    if (native.max_pending_data_streams == 0 or native.max_pending_data_bytes == 0) return error.InvalidConfig;
+
+    const inline_payload_limit = @min(native.inline_frame_threshold, max_message_bytes);
+    if (inline_payload_limit > 0) {
+        const required_control = std.math.add(usize, native_framer.rpc_header_bytes, inline_payload_limit) catch return error.InvalidConfig;
+        if (required_control > native.max_control_frame_bytes) return error.InvalidConfig;
+    }
+    if (native.max_control_frame_bytes > std.math.maxInt(u32)) return error.InvalidConfig;
 }
