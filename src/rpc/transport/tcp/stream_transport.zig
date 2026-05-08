@@ -205,8 +205,7 @@ pub const Transport = struct {
     pub fn read(self: *Transport) ReadError!usize {
         if (self.close_requested.load(.acquire)) return 0;
         var bufs: [1][]u8 = .{self.read_buf};
-        var stream = net.Stream{ .socket = .{ .handle = self.fd, .address = undefined } };
-        return stream.read(self.io, &bufs);
+        return ioReadVec(self.io, self.fd, &bufs);
     }
 
     /// Blocking write of all bytes. Retries partial writes until the
@@ -354,6 +353,14 @@ fn ioWrite(io: std.Io, fd: net.Socket.Handle, bytes: []const u8) Transport.Write
     return io.vtable.netWrite(io.userdata, fd, &.{}, &data, 0);
 }
 
+fn ioReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8) Transport.ReadError!usize {
+    if (comptime @hasDecl(net.Stream, "read")) {
+        var stream = net.Stream{ .socket = .{ .handle = fd, .address = undefined } };
+        return stream.read(io, bufs);
+    }
+    return io.vtable.netRead(io.userdata, fd, bufs);
+}
+
 /// Shut down a socket for both reading and writing via Io. Ignores errors.
 fn ioShutdown(io: std.Io, fd: net.Socket.Handle) void {
     io.vtable.netShutdown(io.userdata, fd, .both) catch {};
@@ -377,8 +384,7 @@ fn createSocketPair() !struct { [2]std.posix.fd_t } {
 /// Read from a socket handle via Io into a buffer.
 fn ioRead(io: std.Io, fd: net.Socket.Handle, buf: []u8) Transport.ReadError!usize {
     var bufs: [1][]u8 = .{buf};
-    var stream = net.Stream{ .socket = .{ .handle = fd, .address = undefined } };
-    return stream.read(io, &bufs);
+    return ioReadVec(io, fd, &bufs);
 }
 
 test "transport init and deinit" {

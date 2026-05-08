@@ -3,20 +3,12 @@ const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
-/// Replacement for milliTimestamp() (removed in 0.16).
-fn milliTimestamp() i64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(.REALTIME, &ts);
-    return @as(i64, ts.sec) * 1000 + @divFloor(@as(i64, ts.nsec), 1_000_000);
+fn milliTimestamp(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .awake).toMilliseconds();
 }
 
-/// Replacement for std.Thread.sleep() (removed in 0.16).
-fn nanosleep(ns: u64) void {
-    var ts = std.c.timespec{
-        .sec = @intCast(ns / std.time.ns_per_s),
-        .nsec = @intCast(ns % std.time.ns_per_s),
-    };
-    _ = std.c.nanosleep(&ts, null);
+fn sleepNs(io: std.Io, ns: u64) void {
+    std.Io.sleep(io, std.Io.Duration.fromNanoseconds(@intCast(ns)), .awake) catch {};
 }
 
 const Backend = enum {
@@ -458,19 +450,8 @@ fn runCapture(
     };
 }
 
-fn termFromWaitStatus(status: u32) std.process.Child.Term {
-    return if (std.posix.W.IFEXITED(status))
-        .{ .exited = std.posix.W.EXITSTATUS(status) }
-    else if (std.posix.W.IFSIGNALED(status))
-        .{ .signal = std.posix.W.TERMSIG(status) }
-    else if (std.posix.W.IFSTOPPED(status))
-        .{ .stopped = std.posix.W.STOPSIG(status) }
-    else
-        .{ .unknown = status };
-}
-
 const PipeReaderCtx = struct {
-    fd: i32,
+    fd: std.posix.fd_t,
     allocator: Allocator,
     buf: std.ArrayList(u8) = .empty,
 };
@@ -478,35 +459,22 @@ const PipeReaderCtx = struct {
 fn pipeReaderThread(ctx: *PipeReaderCtx) void {
     var tmp: [4096]u8 = undefined;
     while (true) {
-        const n = std.c.read(ctx.fd, &tmp, tmp.len);
-        if (n <= 0) break;
+        const n = std.posix.read(ctx.fd, &tmp) catch break;
+        if (n == 0) break;
         ctx.buf.appendSlice(ctx.allocator, tmp[0..@intCast(n)]) catch break;
     }
 }
 
 const WaitThreadCtx = struct {
-    pid: std.posix.pid_t,
+    child: *std.process.Child,
+    io: std.Io,
     term: std.process.Child.Term = .{ .unknown = 0 },
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
 fn waitThread(ctx: *WaitThreadCtx) void {
-    var status: c_int = 0;
-    while (true) {
-        const rc = std.c.waitpid(ctx.pid, &status, 0);
-        if (rc == ctx.pid) {
-            ctx.term = termFromWaitStatus(@bitCast(status));
-            ctx.done.store(true, .release);
-            return;
-        }
-        if (rc >= 0) {
-            // Unexpected pid — treat as unknown error.
-            ctx.term = .{ .unknown = @bitCast(status) };
-            ctx.done.store(true, .release);
-            return;
-        }
-        // rc < 0: typically EINTR on POSIX, retry.
-    }
+    ctx.term = ctx.child.wait(ctx.io) catch .{ .unknown = 0 };
+    ctx.done.store(true, .release);
 }
 
 fn runCaptureWithTimeout(
@@ -548,24 +516,24 @@ fn runCaptureWithTimeout(
     else
         null;
 
-    // Start a wait thread that blocks on waitpid
-    var wait_ctx = WaitThreadCtx{ .pid = pid };
+    // Start a wait thread so the main thread can enforce a timeout.
+    var wait_ctx = WaitThreadCtx{ .child = &child, .io = io };
     const waiter = try std.Thread.spawn(.{}, waitThread, .{&wait_ctx});
 
     // Wait for child with timeout
-    const deadline = milliTimestamp() + timeout_ms;
+    const deadline = milliTimestamp(io) + timeout_ms;
     var timed_out = false;
 
     while (!wait_ctx.done.load(.acquire)) {
-        if (milliTimestamp() >= deadline) {
+        if (milliTimestamp(io) >= deadline) {
             timed_out = true;
             // Send SIGTERM first
             std.posix.kill(pid, std.posix.SIG.TERM) catch {};
 
             // Wait up to 5s for graceful exit
-            const kill_deadline = milliTimestamp() + 5 * 1000;
-            while (!wait_ctx.done.load(.acquire) and milliTimestamp() < kill_deadline) {
-                nanosleep(20 * std.time.ns_per_ms);
+            const kill_deadline = milliTimestamp(io) + 5 * 1000;
+            while (!wait_ctx.done.load(.acquire) and milliTimestamp(io) < kill_deadline) {
+                sleepNs(io, 20 * std.time.ns_per_ms);
             }
 
             // Force kill if still running
@@ -574,7 +542,7 @@ fn runCaptureWithTimeout(
             }
             break;
         }
-        nanosleep(20 * std.time.ns_per_ms);
+        sleepNs(io, 20 * std.time.ns_per_ms);
     }
 
     // Join all threads
@@ -627,17 +595,17 @@ fn printCommandFailure(label: []const u8, res: RunResult) void {
     if (res.stderr.len > 0) std.debug.print("stderr:\n{s}\n", .{res.stderr});
 }
 
-fn waitForPort(port: u16, timeout_ms: i64) !bool {
+fn waitForPort(io: std.Io, port: u16, timeout_ms: i64) !bool {
     const addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
-    const start = milliTimestamp();
+    const start = milliTimestamp(io);
 
     while (true) {
         if (rawTcpConnect(addr)) |fd| {
             closeFd(fd);
             return true;
         } else |_| {
-            if (milliTimestamp() - start > timeout_ms) return false;
-            nanosleep(100 * std.time.ns_per_ms);
+            if (milliTimestamp(io) - start > timeout_ms) return false;
+            sleepNs(io, 100 * std.time.ns_per_ms);
         }
     }
 }
@@ -729,7 +697,7 @@ fn startRefServer(allocator: Allocator, io: std.Io, paths: Paths, backend: Backe
         return error.ServerStartFailed;
     }
 
-    const ready = try waitForPort(backendPort(backend), server_timeout_ms);
+    const ready = try waitForPort(io, backendPort(backend), server_timeout_ms);
     if (!ready) {
         try dockerRmForce(allocator, io, container_name);
         return error.ServerStartTimeout;
@@ -932,7 +900,7 @@ fn startZigServer(
         });
     } else unreachable;
 
-    const ready = try waitForPort(port, server_timeout_ms);
+    const ready = try waitForPort(io, port, server_timeout_ms);
     if (!ready) {
         child.kill(io);
         return error.ServerStartTimeout;
