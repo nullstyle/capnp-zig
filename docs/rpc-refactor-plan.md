@@ -4,9 +4,10 @@ This is a planning note for the large-scale RPC refactor discussed in the
 hardening session. It is intentionally not a design-complete spec. Its job is
 to preserve the agreed direction across long sessions and context compaction.
 
-## Current Working-Tree Status
+## Current Status
 
-As of the current uncommitted work, Option 1 source rehome has been executed:
+Option 1 source rehome was committed as `50daa66` (`rpc: organize runtime by
+domain`):
 
 - RPC implementation files have moved from `level0`/`level1`/`level2`/`level3`
   into domain folders under `wire/`, `caps/`, `promises/`, `transport/`,
@@ -20,7 +21,11 @@ As of the current uncommitted work, Option 1 source rehome has been executed:
 - `zig build check --summary all`, `zig build test --summary all`,
   `zig build test-e2e-security --summary all`, and
   `zig build hardening --summary all` have passed during the refactor.
-- Option 3 has not started.
+- Option 3 Tranche 7 has started locally. The first pass keeps `peer/mod.zig`
+  as the public facade while extracting state vocabulary, named peer error
+  groups, and the peer-facing transport callback facade into
+  `src/rpc/peer/state.zig`, `src/rpc/peer/errors.zig`, and
+  `src/rpc/peer/transport.zig`.
 
 ## Goals
 
@@ -331,6 +336,17 @@ Move state structs, maps, counters, lifecycle flags, and transport callback glue
 out of the public `Peer` implementation where possible.
 
 This tranche should not change dispatch behavior.
+
+First local pass:
+
+- `PeerLimits`, small state record types, `Question`, pending third-party await
+  records, and thread-affinity helpers moved behind `peer/state.zig`.
+- Peer error names are grouped in `peer/errors.zig`; the current public peer
+  entry points still return inferred error unions.
+- The peer-to-transport binding aliases now flow through `peer/transport.zig`,
+  which also facades the peer transport callback/state helpers.
+- `rpc.peer.PeerLimits` and the public transport aliases remain compatibility
+  re-exports.
 
 ### Tranche 8: Extract Peer Dispatch
 

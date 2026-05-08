@@ -49,6 +49,9 @@ suite and generated-code support, but that surface is intentionally unstable.
 | Peer dispatch | `src/rpc/peer/peer_dispatch.zig` | Inbound message dispatch logic. |
 | Peer control | `src/rpc/peer/peer_control.zig` | Peer lifecycle control. |
 | Peer cleanup | `src/rpc/peer/peer_cleanup.zig` | Resource cleanup on peer teardown. |
+| Peer state | `src/rpc/peer/state.zig` | Peer limits, small state record types, and debug thread-affinity helpers. |
+| Peer errors | `src/rpc/peer/errors.zig` | Named error groups for future peer API narrowing. |
+| Peer transport facade | `src/rpc/peer/transport.zig` | Peer-facing transport binding aliases plus callback/state helper facades. |
 | Peer transport callbacks | `src/rpc/peer/peer_transport_callbacks.zig` | Transport event wiring. |
 | Peer transport state | `src/rpc/peer/peer_transport_state.zig` | Transport-level state tracking. |
 | Peer call targets | `src/rpc/peer/call/peer_call_targets.zig` | Call target resolution. |

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_peer);
 const protocol = @import("../wire/protocol.zig");
 const cap_table = @import("../caps/table.zig");
@@ -25,12 +24,14 @@ const peer_third_party_adoption = @import("./third_party/peer_third_party_adopti
 const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
 const peer_third_party_returns = @import("./third_party/peer_third_party_returns.zig");
 const peer_return_send_helpers = @import("../promises/return_send_helpers.zig");
-const peer_transport_callbacks = @import("./peer_transport_callbacks.zig");
-const peer_transport_state = @import("./peer_transport_state.zig");
+const peer_transport = @import("./transport.zig");
+const peer_transport_callbacks = peer_transport.callbacks;
+const peer_transport_state = peer_transport.state;
 const peer_question_state = @import("./peer_question_state.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
-const peer_state_types = @import("./peer_state_types.zig");
-const transport_binding = @import("../transport/binding.zig");
+
+pub const errors = @import("./errors.zig");
+pub const state = @import("./state.zig");
 
 /// Callback invoked to populate a `CallBuilder` before sending an outbound call.
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
@@ -49,83 +50,27 @@ pub const Export = struct {
     on_call: CallHandler,
 };
 
-const ExportEntry = struct {
-    handler: ?Export = null,
-    ref_count: u32,
-    is_promise: bool = false,
-    resolved: ?cap_table.ResolvedCap = null,
-};
+const ExportEntry = state.ExportEntry(Export);
+const ResolvedAnswer = state.ResolvedAnswer;
+const PendingCall = state.PendingCall;
 
-const ResolvedAnswer = struct {
-    frame: []u8,
-};
-
-const PendingCall = struct {
-    frame: []u8,
-    caps: cap_table.InboundCapTable,
-};
-
-const ProvideTarget = peer_state_types.ProvideTarget;
-const ProvideEntry = peer_state_types.ProvideEntry;
-const JoinKeyPart = peer_state_types.JoinKeyPart;
-const JoinPartEntry = peer_state_types.JoinPartEntry;
-const JoinState = peer_state_types.JoinState;
-const PendingJoinQuestion = peer_state_types.PendingJoinQuestion;
-const PendingEmbargoedAccept = peer_state_types.PendingEmbargoedAccept;
+const ProvideTarget = state.ProvideTarget;
+const ProvideEntry = state.ProvideEntry;
+const JoinKeyPart = state.JoinKeyPart;
+const JoinPartEntry = state.JoinPartEntry;
+const JoinState = state.JoinState;
+const PendingJoinQuestion = state.PendingJoinQuestion;
+const PendingEmbargoedAccept = state.PendingEmbargoedAccept;
 
 const ForwardReturnMode = peer_forward_orchestration.ForwardReturnMode;
 
-const ResolvedImport = struct {
-    cap: ?cap_table.ResolvedCap,
-    embargo_id: ?u32 = null,
-    embargoed: bool = false,
-};
+const ResolvedImport = state.ResolvedImport;
 
-pub const PeerLimits = struct {
-    max_outbound_questions: usize = 4096,
-    max_active_inbound_questions: usize = 4096,
-    max_resolved_answers: usize = 4096,
-    max_pending_promises: usize = 4096,
-    max_pending_export_promises: usize = 4096,
-    max_pending_queued_calls: usize = 8192,
-    max_pending_queued_call_bytes: usize = 16 * 1024 * 1024,
-    max_resolved_imports: usize = 4096,
-    max_pending_embargoes: usize = 4096,
-    max_loopback_questions: usize = 4096,
-    max_send_results_to_yourself: usize = 4096,
-    max_send_results_to_third_party: usize = 4096,
-    max_send_results_to_third_party_bytes: usize = 1024 * 1024,
-    max_pending_third_party_returns: usize = 4096,
-    max_pending_third_party_return_bytes: usize = 16 * 1024 * 1024,
-    max_pending_accepts: usize = 4096,
-    max_pending_accept_embargo_buckets: usize = 4096,
-    max_pending_accept_embargo_bytes: usize = 1024 * 1024,
-    max_active_provides: usize = 4096,
-    max_active_provide_key_bytes: usize = 1024 * 1024,
-    max_pending_joins: usize = 4096,
-    max_pending_join_questions: usize = 4096,
-    max_pending_third_party_awaits: usize = 4096,
-    max_pending_third_party_answers: usize = 4096,
-    max_pending_third_party_completion_bytes: usize = 1024 * 1024,
-    max_adopted_third_party_answers: usize = 4096,
-    max_remote_abort_reason_bytes: usize = 4096,
-};
+pub const PeerLimits = state.PeerLimits;
 
-const QuestionDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
-
-const Question = struct {
-    ctx: *anyopaque,
-    on_return: QuestionCallback,
-    deinit_ctx: ?QuestionDeinitCtxFn = null,
-    is_loopback: bool = false,
-    suppress_auto_finish: bool = false,
-    restore_on_return_error: bool = true,
-};
-
-const PendingThirdPartyAwait = struct {
-    question_id: u32,
-    question: Question,
-};
+const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
+const Question = state.Question(QuestionCallback);
+const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
 
 const ForwardCallContext = struct {
     peer: *Peer,
@@ -244,7 +189,7 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
 ///   corresponding answer resolves, never left dangling.
 /// Grouped transport callback bindings. Set/cleared atomically by
 /// `Peer.attachTransportBinding` / `Peer.detachTransport`.
-pub const TransportBinding = transport_binding.Binding(Peer);
+pub const TransportBinding = peer_transport.Binding(Peer);
 pub const TransportStartFn = TransportBinding.StartFn;
 pub const TransportSendFn = TransportBinding.SendFn;
 pub const TransportCloseFn = TransportBinding.CloseFn;
@@ -383,14 +328,7 @@ pub const Peer = struct {
     /// This is a no-op in release builds. In debug builds, it panics
     /// with a clear message if the current thread is not the owner.
     pub fn assertThreadAffinity(self: *const Peer) void {
-        if (comptime builtin.target.os.tag == .freestanding) return;
-        if (builtin.mode == .Debug) {
-            const owner = self.owner_thread_id orelse return;
-            const current = std.Thread.getCurrentId();
-            if (current != owner) {
-                @panic("Peer method called from wrong thread: Peer is not thread-safe, all calls must be on the owner thread");
-            }
-        }
+        state.assertThreadAffinity(self.owner_thread_id);
     }
 
     /// Create a peer and immediately attach it to a connection/transport.
@@ -413,7 +351,7 @@ pub const Peer = struct {
         return .{
             .allocator = allocator,
             .limits = limits,
-            .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
+            .owner_thread_id = state.initialOwnerThreadId(),
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),

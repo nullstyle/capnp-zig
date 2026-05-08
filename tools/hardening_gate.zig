@@ -39,7 +39,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/serialization/schema_validation.zig", .kind = .optional_unwrap, .needle = "field.discriminant_value != discriminant_value.?", .reason = "preceded by discriminant_value != null guard" },
     .{ .path = "src/serialization/schema_validation.zig", .kind = .optional_unwrap, .needle = "field.discriminant_value != discriminant_value.?", .reason = "preceded by discriminant_value != null guard" },
 
-    .{ .path = "src/rpc/peer/mod.zig", .kind = .panic_call, .needle = "Peer method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
+    .{ .path = "src/rpc/peer/state.zig", .kind = .panic_call, .needle = "Peer method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .panic_call, .needle = "attachConnection called while a transport is already attached", .reason = "programmer misuse guard" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .panic_call, .needle = "attachTransportBinding called while a transport is already attached", .reason = "programmer misuse guard" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "guarded by resolved export state check" },

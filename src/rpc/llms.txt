@@ -16,8 +16,10 @@
 - `transport/tcp/` is the POSIX TCP/runtime backend.
 - `transport/quic/` is the nullq-backed native QUIC backend using ALPN
   `capnp-rpc/1` and baseline bidirectional stream 0.
-- `peer/mod.zig` is the composition root; `peer/*` splits behavior by domain
-  (`call`, `return`, `forward`, `provide`, `third_party`, lifecycle/control).
+- `peer/mod.zig` is the public `Peer` facade; `peer/state.zig`,
+  `peer/errors.zig`, and `peer/transport.zig` hold the first extracted Option 3
+  boundaries, while `peer/*` continues to split behavior by domain (`call`,
+  `return`, `forward`, `provide`, `third_party`, lifecycle/control).
 - `integration/` provides host-facing adapters (`HostPeer`, `WorkerPool`) and is
   intentionally separate from protocol-core code.
 - Source `.capnp` files live in [capnp/](capnp/); generated Zig bindings live
@@ -37,7 +39,8 @@
   listener/runtime helpers.
 - [transport/quic/](transport/quic/): QUIC connection, options, baseline framer,
   outbound queue, and nullq adapter helpers.
-- [peer/](peer/): Top-level peer and peer orchestration split by domain.
+- [peer/](peer/): Public peer facade, peer state vocabulary, transport
+  callbacks, and orchestration split by domain.
 - [integration/](integration/): Host-neutral peer wrapper and worker pool.
 - [capnp/](capnp/): RPC schema source files.
 - [gen/capnp/](gen/capnp/): Generated schema bindings used by protocol helpers.
@@ -45,6 +48,12 @@
 ## Key Files
 
 - [peer/mod.zig](peer/mod.zig): Primary `Peer` API and state transitions.
+- [peer/state.zig](peer/state.zig): Peer-owned limits, small state records, and
+  thread-affinity helpers.
+- [peer/errors.zig](peer/errors.zig): Named peer error groups for future API
+  narrowing.
+- [peer/transport.zig](peer/transport.zig): Peer-facing transport binding
+  facade and transport callback/state helper modules.
 - [peer/peer_control.zig](peer/peer_control.zig): Control-path handlers
   (`finish`, `resolve`, embargo, provide/accept/join).
 - [peer/call/peer_call_orchestration.zig](peer/call/peer_call_orchestration.zig):
