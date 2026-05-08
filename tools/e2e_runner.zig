@@ -177,7 +177,7 @@ fn zigSchemaPort(s: Schema) u16 {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level socket helpers (matching src/rpc/level2/runtime.zig patterns)
+// Low-level socket helpers (matching src/rpc/transport/tcp/runtime.zig patterns)
 // ---------------------------------------------------------------------------
 
 const SockAddrStorage = extern union {

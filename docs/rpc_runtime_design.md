@@ -14,14 +14,14 @@
 ## Architecture Overview
 The runtime is organized into a small set of components, with strict ownership and lifetime rules:
 
-- `rpc/Runtime` (`src/rpc/level2/runtime.zig`): listener and socket helpers for creating TCP connections.
-- `rpc/Connection` (`src/rpc/level2/connection.zig`): per-transport state machine for framing, parsing, dispatch, and write scheduling.
-- `rpc/Transport` (`src/rpc/level2/transport.zig`): concurrent read/write transport, handling blocking I/O and exposing buffers to `Connection`.
-- `rpc/quic.Connection` (`src/rpc/level2/quic_transport.zig`): nullq-backed QUIC vat session using ALPN `capnp-rpc/1` and baseline bidirectional stream 0.
-- `rpc/Protocol` (`src/rpc/level0/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
-- `rpc/CapTable` (`src/rpc/level0/cap_table.zig`): export/import capability tracking with reference counting and lifetime management.
-- `rpc/Peer` (`src/rpc/level3/peer.zig` + `src/rpc/level3/peer/*`): inbound/outbound call orchestration, return handling, and lifecycle dispatch.
-- `rpc/Promise Pipeline` (`src/rpc/common/promise_pipeline.zig`, `src/rpc/level1/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
+- `rpc/Runtime` (`src/rpc/transport/tcp/runtime.zig`): listener and socket helpers for creating TCP connections.
+- `rpc/Connection` (`src/rpc/transport/tcp/connection.zig`): per-transport state machine for framing, parsing, dispatch, and write scheduling.
+- `rpc/Transport` (`src/rpc/transport/tcp/stream_transport.zig`): concurrent read/write transport, handling blocking I/O and exposing buffers to `Connection`.
+- `rpc/quic.Connection` (`src/rpc/transport/quic/connection.zig`): nullq-backed QUIC vat session using ALPN `capnp-rpc/1` and baseline bidirectional stream 0.
+- `rpc/Protocol` (`src/rpc/wire/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
+- `rpc/CapTable` (`src/rpc/caps/table.zig`): export/import capability tracking with reference counting and lifetime management.
+- `rpc/Peer` (`src/rpc/peer/mod.zig` + `src/rpc/peer/*`): inbound/outbound call orchestration, return handling, and lifecycle dispatch.
+- `rpc/Promise Pipeline` (`src/rpc/promises/pipeline.zig`, `src/rpc/promises/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
 
 All runtime types are single-threaded unless explicitly documented. Each connection uses a dedicated writer thread for outbound I/O and blocking reads on the main connection thread.
 
@@ -82,15 +82,15 @@ Outbound call:
 - Application errors are serialized as RPC exceptions.
 
 ## Current Module Layout
-- `src/rpc/level2/runtime.zig`
-- `src/rpc/level2/connection.zig`
-- `src/rpc/level2/transport.zig`
-- `src/rpc/level0/protocol.zig`
-- `src/rpc/level0/cap_table.zig`
-- `src/rpc/level0/framing.zig`
-- `src/rpc/common/promise_pipeline.zig`
-- `src/rpc/level1/peer_promises.zig`
-- `src/rpc/level3/peer.zig`
+- `src/rpc/transport/tcp/runtime.zig`
+- `src/rpc/transport/tcp/connection.zig`
+- `src/rpc/transport/tcp/stream_transport.zig`
+- `src/rpc/wire/protocol.zig`
+- `src/rpc/caps/table.zig`
+- `src/rpc/wire/framing.zig`
+- `src/rpc/promises/pipeline.zig`
+- `src/rpc/promises/peer_promises.zig`
+- `src/rpc/peer/mod.zig`
 
 ## Test Plan
 - Unit tests for framing and state machines.

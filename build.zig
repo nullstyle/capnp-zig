@@ -364,26 +364,26 @@ pub fn build(b: *std.Build) void {
     const run_capnp_test_vendor_tests = addLibTest(b, "tests/serialization/capnp_test_vendor_test.zig", target, optimize, lib_module);
     const run_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, optimize, lib_module);
 
-    // RPC tests (level 0–3)
-    const run_rpc_framing_tests = addLibTest(b, "tests/rpc/level0/rpc_framing_test.zig", target, optimize, lib_module);
-    const run_rpc_cap_table_tests = addLibTest(b, "tests/rpc/level0/rpc_cap_table_encode_test.zig", target, optimize, lib_module);
-    const run_rpc_release_and_failure_level0_tests = addLibTest(b, "tests/rpc/level0/rpc_release_and_failure_test.zig", target, optimize, lib_module);
-    const run_rpc_protocol_tests = addLibTest(b, "tests/rpc/level0/rpc_protocol_test.zig", target, optimize, lib_module);
-    const run_rpc_promised_answer_tests = addLibTest(b, "tests/rpc/level1/rpc_promised_answer_transform_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_return_send_helpers_tests = addLibTest(b, "tests/rpc/level1/rpc_peer_return_send_helpers_test.zig", target, optimize, lib_module);
-    const run_rpc_host_peer_tests = addLibTest(b, "tests/rpc/level2/rpc_host_peer_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_transport_callbacks_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_transport_callbacks_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_transport_state_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_transport_state_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_cleanup_tests = addLibTest(b, "tests/rpc/level2/rpc_peer_cleanup_test.zig", target, optimize, lib_module);
-    const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, optimize, lib_module);
-    const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/level2/rpc_worker_pool_test.zig", target, optimize, lib_module);
-    const run_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/level2/rpc_quic_transport_test.zig", target, optimize, lib_module);
-    const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/level2/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_control_from_peer_control_zig_tests = addLibTest(b, "tests/rpc/level3/rpc_peer_control_from_peer_control_zig_test.zig", target, optimize, lib_module);
-    const run_rpc_release_and_failure_level3_tests = addLibTest(b, "tests/rpc/level3/rpc_release_and_failure_test.zig", target, optimize, lib_module);
-    const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/level3/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
+    // RPC tests (domain-organized, compatibility steps remain cumulative)
+    const run_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, optimize, lib_module);
+    const run_rpc_cap_table_tests = addLibTest(b, "tests/rpc/caps/rpc_cap_table_encode_test.zig", target, optimize, lib_module);
+    const run_rpc_release_and_failure_level0_tests = addLibTest(b, "tests/rpc/caps/rpc_release_and_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_protocol_tests = addLibTest(b, "tests/rpc/wire/rpc_protocol_test.zig", target, optimize, lib_module);
+    const run_rpc_promised_answer_tests = addLibTest(b, "tests/rpc/promises/rpc_promised_answer_transform_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_return_send_helpers_tests = addLibTest(b, "tests/rpc/promises/rpc_peer_return_send_helpers_test.zig", target, optimize, lib_module);
+    const run_rpc_host_peer_tests = addLibTest(b, "tests/rpc/integration/rpc_host_peer_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_transport_callbacks_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_transport_callbacks_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_transport_state_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_transport_state_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_cleanup_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_cleanup_test.zig", target, optimize, lib_module);
+    const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/integration/rpc_worker_pool_test.zig", target, optimize, lib_module);
+    const run_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module);
+    const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_control_from_peer_control_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_control_from_peer_control_zig_test.zig", target, optimize, lib_module);
+    const run_rpc_release_and_failure_level3_tests = addLibTest(b, "tests/rpc/peer/rpc_release_and_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/peer/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
 
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
@@ -487,22 +487,23 @@ pub fn build(b: *std.Build) void {
     test_serialization_step.dependOn(run_schema_validation_tests);
 
     // Cumulative RPC levels:
-    // - level0: framing/protocol/cap-table encoding
-    // - level1: promise/pipelining primitives
-    // - level2: runtime plumbing and transport integration
-    // - level3: advanced peer semantics (provide/accept/join/third-party/disembargo)
-    const test_rpc_level0_step = b.step("test-rpc-level0", "Run RPC level 0 tests (framing/protocol/cap-table)");
+    // Compatibility names are cumulative; source and test files are domain-organized.
+    // - test-rpc-level0: wire/protocol/cap-table encoding
+    // - test-rpc-level1: promise/pipelining primitives
+    // - test-rpc-level2: runtime plumbing and transport integration
+    // - test-rpc-level3: advanced peer semantics (provide/accept/join/third-party/disembargo)
+    const test_rpc_level0_step = b.step("test-rpc-level0", "Run cumulative RPC wire/cap-table tests");
     test_rpc_level0_step.dependOn(run_rpc_framing_tests);
     test_rpc_level0_step.dependOn(run_rpc_protocol_tests);
     test_rpc_level0_step.dependOn(run_rpc_cap_table_tests);
     test_rpc_level0_step.dependOn(run_rpc_release_and_failure_level0_tests);
 
-    const test_rpc_level1_step = b.step("test-rpc-level1", "Run RPC level 1 tests (promises/pipelining)");
+    const test_rpc_level1_step = b.step("test-rpc-level1", "Run cumulative RPC promise/pipelining tests");
     test_rpc_level1_step.dependOn(test_rpc_level0_step);
     test_rpc_level1_step.dependOn(run_rpc_promised_answer_tests);
     test_rpc_level1_step.dependOn(run_rpc_peer_return_send_helpers_tests);
 
-    const test_rpc_level2_step = b.step("test-rpc-level2", "Run RPC level 2 tests (runtime plumbing)");
+    const test_rpc_level2_step = b.step("test-rpc-level2", "Run cumulative RPC transport/integration tests");
     test_rpc_level2_step.dependOn(test_rpc_level1_step);
     test_rpc_level2_step.dependOn(run_rpc_host_peer_tests);
     test_rpc_level2_step.dependOn(run_rpc_peer_transport_callbacks_tests);
@@ -513,7 +514,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(run_rpc_quic_transport_tests);
     test_rpc_level2_step.dependOn(run_rpc_raw_frame_security_tests);
 
-    const test_rpc_level3_step = b.step("test-rpc-level3", "Run RPC level 3+ tests (advanced peer semantics)");
+    const test_rpc_level3_step = b.step("test-rpc-level3", "Run cumulative RPC peer semantics tests");
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
     test_rpc_level3_step.dependOn(run_rpc_peer_tests);
     test_rpc_level3_step.dependOn(run_rpc_peer_from_peer_zig_tests);
@@ -579,10 +580,10 @@ pub fn build(b: *std.Build) void {
     const run_release_safe_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/level0/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/level2/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/level2/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/level2/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_quic_transport_tests = addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
 
     const test_release_safe_step = b.step("test-release-safe", "Run key hardening gates under ReleaseSafe");
     test_release_safe_step.dependOn(&run_release_safe_main_tests.step);

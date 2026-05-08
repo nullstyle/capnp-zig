@@ -90,7 +90,7 @@ Returned by `MessageBuilder` and `StructBuilder` methods during message construc
 
 ## RPC Framing Errors
 
-Returned by `Framer` (in `src/rpc/level0/framing.zig`) when parsing incoming RPC message frames.
+Returned by `Framer` (in `src/rpc/wire/framing.zig`) when parsing incoming RPC message frames.
 
 | Error | When it occurs | What to do |
 |---|---|---|
@@ -99,7 +99,7 @@ Returned by `Framer` (in `src/rpc/level0/framing.zig`) when parsing incoming RPC
 
 ## RPC Protocol Errors
 
-Returned by protocol message decoders in `src/rpc/level0/protocol.zig`.
+Returned by protocol message decoders in `src/rpc/wire/protocol.zig`.
 
 | Error | When it occurs | What to do |
 |---|---|---|
@@ -115,7 +115,7 @@ Returned by protocol message decoders in `src/rpc/level0/protocol.zig`.
 
 ## RPC Capability Table Errors
 
-Returned by `CapTable` in `src/rpc/level0/cap_table.zig`.
+Returned by `CapTable` in `src/rpc/caps/table.zig`.
 
 | Error | When it occurs | What to do |
 |---|---|---|
@@ -128,7 +128,7 @@ Returned by `CapTable` in `src/rpc/level0/cap_table.zig`.
 
 ## RPC Peer Errors
 
-Returned by the peer state machine in `src/rpc/level3/peer.zig` and its submodules under `src/rpc/level3/peer/`.
+Returned by the peer state machine in `src/rpc/peer/mod.zig` and its submodules under `src/rpc/peer/`.
 
 ### Connection Lifecycle
 

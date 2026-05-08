@@ -1,11 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_worker_pool);
-const Connection = @import("../level2/connection.zig").Connection;
-const Listener = @import("../level2/runtime.zig").Listener;
-const runtime_helpers = @import("../level2/runtime.zig");
-const Runtime = @import("../level2/runtime.zig").Runtime;
-const Peer = @import("../level3/peer.zig").Peer;
+const Connection = @import("../transport/tcp/connection.zig").Connection;
+const Listener = @import("../transport/tcp/runtime.zig").Listener;
+const runtime_helpers = @import("../transport/tcp/runtime.zig");
+const Runtime = @import("../transport/tcp/runtime.zig").Runtime;
+const Peer = @import("../peer/mod.zig").Peer;
 const net = std.Io.net;
 
 /// A multi-threaded worker pool that accepts connections from a single

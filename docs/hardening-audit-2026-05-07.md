@@ -155,7 +155,7 @@ Progress in this tranche:
 
 **High: RPC ingress skips message validation**
 
-- Location: `src/rpc/level0/protocol.zig:284`
+- Location: `src/rpc/wire/protocol.zig:284`
 - Trigger: hostile frame with valid top-level tag but excessive, cyclic, or deep payload pointers.
 - Impact: no RPC-aware traversal/nesting validation before handlers mutate peer/capability state.
 - Fix: add cap-pointer-aware validation before exposing `DecodedMessage`.
@@ -163,7 +163,7 @@ Progress in this tranche:
 
 **High: inbound `receiverHosted` IDs are trusted without export lookup**
 
-- Location: `src/rpc/level0/cap_table.zig:307`
+- Location: `src/rpc/caps/table.zig:307`
 - Trigger: peer sends a cap table entry naming an arbitrary local export ID.
 - Impact: forged or stale local capability reference can enter `ResolvedCap.exported`.
 - Fix: require live export or promise-export membership before accepting the ID.
@@ -171,7 +171,7 @@ Progress in this tranche:
 
 **Medium: malformed list pointers become absent**
 
-- Location: `src/rpc/level0/protocol.zig:637`, `src/rpc/level0/protocol.zig:752`
+- Location: `src/rpc/wire/protocol.zig:637`, `src/rpc/wire/protocol.zig:752`
 - Trigger: non-null malformed promised-answer transform or payload cap-table pointer.
 - Impact: malformed protocol data is interpreted as "no transform" or "no caps".
 - Fix: only treat true null as absent; propagate malformed pointer errors.
@@ -179,7 +179,7 @@ Progress in this tranche:
 
 **Medium: promised-answer transforms have no resolve-time cap**
 
-- Location: `src/rpc/common/promise_pipeline.zig:67`
+- Location: `src/rpc/promises/pipeline.zig:67`
 - Trigger: peer supplies a huge promised-answer transform list.
 - Impact: CPU amplification up to frame-size limits.
 - Fix: enforce the same transform count limit during direct parse/resolve as clone paths.
@@ -187,7 +187,7 @@ Progress in this tranche:
 
 **Low: protocol builders still use `catch unreachable`**
 
-- Location: `src/rpc/level0/protocol.zig:92` and similar generated builder wrappers.
+- Location: `src/rpc/wire/protocol.zig:92` and similar generated builder wrappers.
 - Trigger: generated setter contract changes or invalid builder state on encode paths.
 - Impact: protocol-adjacent panic/undefined assumption remains in hardened surface.
 - Fix: propagate typed errors from helpers or narrow and document an audited allowlist.
@@ -197,7 +197,7 @@ Progress in this tranche:
 
 **High: over-release deletes live exports**
 
-- Location: `src/rpc/level3/peer/peer_cap_lifecycle.zig:111`
+- Location: `src/rpc/peer/peer_cap_lifecycle.zig:111`
 - Trigger: peer sends `Release(id, count)` where `count > ref_count`.
 - Impact: remote can prematurely remove local exports, promise exports, and queued calls.
 - Fix: reject over-release as a protocol error before mutating export tables.
@@ -205,7 +205,7 @@ Progress in this tranche:
 
 **High: duplicate inbound caller questions can run twice**
 
-- Location: `src/rpc/level3/peer.zig:2024`
+- Location: `src/rpc/peer/mod.zig:2024`
 - Trigger: duplicate `Call.question_id` while the first normal caller call is in flight.
 - Impact: duplicate handler execution and conflicting returns.
 - Fix: track all active inbound answer IDs until terminal Return/Finish handling.
@@ -213,7 +213,7 @@ Progress in this tranche:
 
 **High: Return removes question before validation/dispatch succeeds**
 
-- Location: `src/rpc/level3/peer/return/peer_return_orchestration.zig:167`
+- Location: `src/rpc/peer/return/peer_return_orchestration.zig:167`
 - Trigger: `Return` for a live question followed by OOM, invalid cap table, or callback failure.
 - Impact: question state is lost and shutdown/finish semantics can be wrong.
 - Fix: validate inbound caps first and remove only after commit, or restore on failure.
@@ -221,7 +221,7 @@ Progress in this tranche:
 
 **High: third-party handoff drops pending state before adoption commits**
 
-- Location: `src/rpc/level3/peer/third_party/peer_third_party_pending.zig:13`
+- Location: `src/rpc/peer/third_party/peer_third_party_pending.zig:13`
 - Trigger: matching `ThirdPartyAnswer` or `awaitFromThirdParty`, then duplicate adopted answer ID or OOM.
 - Impact: pending await/answer is removed and the callback path is orphaned.
 - Fix: prevalidate and reserve capacity, then remove pending state only after adoption succeeds.
@@ -229,7 +229,7 @@ Progress in this tranche:
 
 **Medium: resolve/embargo state leaks on partial failure**
 
-- Location: `src/rpc/level3/peer/peer_control.zig:327`
+- Location: `src/rpc/peer/peer_control.zig:327`
 - Trigger: `Resolve` to exported/promised cap followed by disembargo send or resolved-import store failure.
 - Impact: stale pending embargoes, blocked imports, or embargo ID exhaustion.
 - Fix: use staged state and rollback on failure.
@@ -237,7 +237,7 @@ Progress in this tranche:
 
 **Medium: resolved import overwrite is not atomic**
 
-- Location: `src/rpc/level3/peer/peer_cap_lifecycle.zig:139`
+- Location: `src/rpc/peer/peer_cap_lifecycle.zig:139`
 - Trigger: duplicate or late `Resolve` plus OOM during map update.
 - Impact: old resolution can be removed before the new one is stored.
 - Fix: reject duplicate resolve or use reserve/update with rollback.
@@ -245,7 +245,7 @@ Progress in this tranche:
 
 **Medium: return routing is cleared before send succeeds**
 
-- Location: `src/rpc/level3/peer/return/peer_return_dispatch.zig:217`
+- Location: `src/rpc/peer/return/peer_return_dispatch.zig:217`
 - Trigger: answering `sendResultsTo.yourself` or `thirdParty`, then send fails.
 - Impact: retry can send the wrong return shape or lose third-party routing.
 - Fix: clear routing after send success, or restore on failure.
@@ -253,7 +253,7 @@ Progress in this tranche:
 
 **Medium: embargoed Accept can overwrite question mapping**
 
-- Location: `src/rpc/level3/peer/peer_embargo_accepts.zig:20`
+- Location: `src/rpc/peer/peer_embargo_accepts.zig:20`
 - Trigger: duplicate embargoed `Accept.question_id`.
 - Impact: old list entries become orphaned or duplicate returns are emitted.
 - Fix: reject duplicate accept answer IDs before appending or inserting.
@@ -261,8 +261,8 @@ Progress in this tranche:
 
 **Medium: peer pending state lacks explicit resource budgets**
 
-- Location: `src/rpc/level3/peer.zig:1355`,
-  `src/rpc/level3/peer/third_party/peer_third_party_returns.zig:29`
+- Location: `src/rpc/peer/mod.zig:1355`,
+  `src/rpc/peer/third_party/peer_third_party_returns.zig:29`
 - Trigger: floods of unresolved promised calls, third-party returns, provides, joins, or large payloads.
 - Impact: unbounded memory and CPU growth.
 - Fix: add `PeerLimits` for pending counts, pending bytes, captured payload bytes, joins, embargo buckets, and abort reason length.
@@ -270,7 +270,7 @@ Progress in this tranche:
 
 **Low: remote error text is copied/logged and local error names are sent back**
 
-- Location: `src/rpc/level3/peer/peer_control.zig:63`, `src/rpc/level3/peer.zig:1678`
+- Location: `src/rpc/peer/peer_control.zig:63`, `src/rpc/peer/mod.zig:1678`
 - Trigger: large or hostile `Abort.reason`, malformed messages, or local error propagation.
 - Impact: memory/log injection and implementation fingerprinting.
 - Fix: cap and sanitize stored reasons; use generic external errors in production.
@@ -331,7 +331,7 @@ Progress in this tranche:
 
 **High: QUIC hardening controls are not exposed**
 
-- Location: `src/rpc/level2/quic_transport.zig:446`
+- Location: `src/rpc/transport/quic/connection.zig:446`
 - Trigger: public UDP server config only passes cert/key/ALPN/transport params/max connections to nullq.
 - Impact: capnp-zig cannot configure Retry, listener/source rate limits, token keys, per-connection memory caps, or logging rate limits.
 - Fix: add `ServerOptions` fields or a production preset and thread them into `nullq.Server.Config`.
@@ -347,8 +347,8 @@ Progress in this tranche:
 
 **Medium: send queue budgets are checked after allocating**
 
-- Location: `src/rpc/level2/transport.zig:227`,
-  `src/rpc/level2/quic_transport.zig:579`
+- Location: `src/rpc/transport/tcp/stream_transport.zig:227`,
+  `src/rpc/transport/quic/connection.zig:579`
 - Trigger: queue is already full, then a large frame is sent.
 - Impact: large allocation/copy happens before the budget rejection.
 - Fix: preflight/reserve queue capacity before copying.
@@ -356,7 +356,7 @@ Progress in this tranche:
 
 **Medium: TCP queue undercounts writer-owned bytes**
 
-- Location: `src/rpc/level2/transport.zig:111`
+- Location: `src/rpc/transport/tcp/stream_transport.zig:111`
 - Trigger: writer takes a large batch and blocks while producers enqueue another full queue.
 - Impact: resident outbound bytes can exceed `max_queued_bytes`.
 - Fix: track in-flight writer bytes until freed or release queue budget only after write/free.
@@ -364,7 +364,7 @@ Progress in this tranche:
 
 **Medium: TCP terminal frame errors invoke callbacks before closing**
 
-- Location: `src/rpc/level2/connection.zig:330`
+- Location: `src/rpc/transport/tcp/connection.zig:330`
 - Trigger: malformed frame invokes `on_error`, then shutdown happens after `handleRead` returns.
 - Impact: callbacks see the transport open and can enqueue writes on a corrupted stream.
 - Fix: mark closing/shutdown before invoking terminal error callbacks.
@@ -372,7 +372,7 @@ Progress in this tranche:
 
 **Medium: inbound OOM is retried indefinitely**
 
-- Location: `src/rpc/level2/connection.zig:331`, `src/rpc/level2/quic_transport.zig:724`
+- Location: `src/rpc/transport/tcp/connection.zig:331`, `src/rpc/transport/quic/connection.zig:724`
 - Trigger: peer sends a max-legal frame and allocator fails while copying it out.
 - Impact: buffered peer data remains and the connection can retry/log OOM repeatedly.
 - Fix: close with excessive-load/connection error after peer-driven OOM or use a small retry budget.
@@ -380,7 +380,7 @@ Progress in this tranche:
 
 **Medium: close idempotency has fd races**
 
-- Location: `src/rpc/level2/runtime.zig:99`, `src/rpc/level2/transport.zig:281`
+- Location: `src/rpc/transport/tcp/runtime.zig:99`, `src/rpc/transport/tcp/stream_transport.zig:281`
 - Trigger: concurrent close, shutdown, and deinit paths.
 - Impact: load-then-store guards can double-close or shutdown a reused fd.
 - Fix: compare-exchange guard or locked fd lifecycle enum.
@@ -388,7 +388,7 @@ Progress in this tranche:
 
 **Medium: panic-based cleanup guard is callback-reachable**
 
-- Location: `src/rpc/level2/connection.zig:149`, `src/rpc/level2/quic_transport.zig:514`
+- Location: `src/rpc/transport/tcp/connection.zig:149`, `src/rpc/transport/quic/connection.zig:514`
 - Trigger: malformed input invokes `on_error`; callback tries to deinit owner.
 - Impact: process panic instead of typed lifecycle error or deferred cleanup.
 - Fix: provide non-panicking deferred close/deinit path.
@@ -396,7 +396,7 @@ Progress in this tranche:
 
 **Medium: StreamState has no in-flight budget and unchecked increment**
 
-- Location: `src/rpc/level2/stream_state.zig:15`
+- Location: `src/rpc/transport/stream_state.zig:15`
 - Trigger: generated streaming client issues unbounded fire-and-forget calls.
 - Impact: `u32` overflow can panic/wrap and drain semantics become unreliable.
 - Fix: make `noteCallSent` return an error and enforce `max_in_flight`.

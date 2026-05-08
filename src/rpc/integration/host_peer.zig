@@ -1,9 +1,9 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_host);
 const message = @import("../../serialization/message.zig");
-const peer_mod = @import("../level3/peer.zig");
-const protocol = @import("../level0/protocol.zig");
-const cap_table = @import("../level0/cap_table.zig");
+const peer_mod = @import("../peer/mod.zig");
+const protocol = @import("../wire/protocol.zig");
+const cap_table = @import("../caps/table.zig");
 
 pub const HostPeer = struct {
     const MAX_CAPTURED_FRAME_BYTES: usize = 16 * 1024 * 1024;
