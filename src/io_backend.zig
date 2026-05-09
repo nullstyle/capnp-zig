@@ -3,14 +3,13 @@
 //! capnpc-zig's RPC runtime is polymorphic over `std.Io`: every entry point
 //! that opens sockets, schedules work, or runs the connection loop accepts a
 //! `std.Io` value. This module centralises the choice of which concrete
-//! backend to construct so that swapping (for example) `std.Io.Threaded` for
-//! `std.Io.Evented`) is a single-line change rather than a sweep through every
-//! `main`.
+//! backend to construct so that swapping concrete backends is a single-line
+//! change rather than a sweep through every `main`.
 //!
-//! The project currently builds against Zig 0.17-dev. Some 0.17-dev snapshots
-//! expose `std.Io.Evented`, but capnpc-zig still treats `.evented` as a
-//! reserved selector until the TCP wake, polling, and scheduling behavior has
-//! been validated end to end.
+//! The project currently builds against Zig 0.17-dev. On platforms where Zig
+//! exposes `std.Io.Evented`, the `.evented` selector constructs and owns that
+//! backend. On platforms where `std.Io.Evented == void`, initialization returns
+//! `error.EventedBackendUnsupported`.
 //!
 //! Typical usage:
 //!
@@ -36,18 +35,36 @@ pub const Kind = enum {
     /// instances in the same process.
     threaded,
 
-    /// Reserved for `std.Io.Evented`. Selecting this today returns
-    /// `error.EventedBackendNotImplemented`; once the RPC transport is
-    /// validated on Evented, the implementation can be filled in here without
-    /// changing callers.
+    /// Construct `std.Io.Evented` on platforms where Zig exposes it. On
+    /// unsupported platforms (`std.Io.Evented == void`), initialization returns
+    /// `error.EventedBackendUnsupported`.
     evented,
 };
 
+const EventedState = if (std.Io.Evented == void) void else struct {
+    allocator: std.mem.Allocator,
+    instance: *std.Io.Evented,
+};
+
+/// Platform-specific Evented options. This is `void` when Evented is not
+/// available in Zig's standard library for the target.
+pub const EventedInitOptions = if (std.Io.Evented == void) void else std.Io.Evented.InitOptions;
+
+const EventedInitError = if (std.Io.Evented == void) error{} else eventedInitError(std.Io.Evented);
+const evented_deinit_available = if (std.Io.Evented == void) false else std.Io.Evented != std.Io.Dispatch;
+
+fn eventedInitError(comptime Evented: type) type {
+    const Return = @typeInfo(@TypeOf(Evented.init)).@"fn".return_type orelse
+        @compileError("std.Io.Evented.init must return an error union");
+    return @typeInfo(Return).error_union.error_set;
+}
+
 /// Errors returned by `Backend.init`.
 pub const InitError = error{
-    /// capnpc-zig has not enabled its `std.Io.Evented` adapter yet.
-    EventedBackendNotImplemented,
-};
+    /// Zig's standard library does not provide `std.Io.Evented` for this
+    /// target.
+    EventedBackendUnsupported,
+} || std.mem.Allocator.Error || EventedInitError;
 
 /// Owns the concrete backend storage. Call `.io()` to obtain a `std.Io`
 /// suitable for passing into the RPC runtime (`rpc.transport.tcp.Listener`,
@@ -55,7 +72,7 @@ pub const InitError = error{
 pub const Backend = union(Kind) {
     process_init: std.Io,
     threaded: std.Io.Threaded,
-    evented: void,
+    evented: EventedState,
 
     /// Construct a backend of the requested kind.
     ///
@@ -63,8 +80,9 @@ pub const Backend = union(Kind) {
     ///   `init.io` from `std.process.Init`).
     /// - For `.threaded`, a fresh `std.Io.Threaded` is constructed with
     ///   default options using `gpa`.
-    /// - For `.evented`, returns `error.EventedBackendNotImplemented`
-    ///   until capnpc-zig enables its evented adapter.
+    /// - For `.evented`, constructs an owned `std.Io.Evented` when available,
+    ///   or returns `error.EventedBackendUnsupported` when Zig exposes
+    ///   `std.Io.Evented` as `void` for the target.
     pub fn init(
         kind: Kind,
         gpa: std.mem.Allocator,
@@ -73,7 +91,7 @@ pub const Backend = union(Kind) {
         return switch (kind) {
             .process_init => fromInit(default_io),
             .threaded => initThreaded(gpa, .{}),
-            .evented => error.EventedBackendNotImplemented,
+            .evented => initEvented(gpa, defaultEventedOptions()),
         };
     }
 
@@ -91,13 +109,38 @@ pub const Backend = union(Kind) {
         return .{ .threaded = std.Io.Threaded.init(gpa, options) };
     }
 
+    /// Construct a fresh `std.Io.Evented` with caller-controlled options.
+    pub fn initEvented(
+        gpa: std.mem.Allocator,
+        options: EventedInitOptions,
+    ) InitError!Backend {
+        if (comptime std.Io.Evented == void) {
+            return error.EventedBackendUnsupported;
+        } else {
+            const instance = try gpa.create(std.Io.Evented);
+            errdefer gpa.destroy(instance);
+            try instance.init(gpa, options);
+            return .{ .evented = .{ .allocator = gpa, .instance = instance } };
+        }
+    }
+
     /// Tear down any storage owned by this `Backend`. Safe to call for any
     /// variant; backends that borrow (`.process_init`) are no-ops.
     pub fn deinit(self: *Backend) void {
         switch (self.*) {
             .process_init => {},
             .threaded => |*t| t.deinit(),
-            .evented => {},
+            .evented => |state| {
+                if (comptime std.Io.Evented != void) {
+                    // Zig 0.17.0-dev.256 exposes Dispatch as Evented on
+                    // Darwin, but Dispatch.deinit currently does not compile
+                    // in std because it passes a pointer-to-array to
+                    // Allocator.free. Other Evented backends use their normal
+                    // deinitializer here.
+                    if (comptime evented_deinit_available) state.instance.deinit();
+                    state.allocator.destroy(state.instance);
+                }
+            },
         }
     }
 
@@ -106,10 +149,18 @@ pub const Backend = union(Kind) {
         return switch (self.*) {
             .process_init => |existing| existing,
             .threaded => |*t| t.io(),
-            .evented => unreachable,
+            .evented => |state| {
+                if (comptime std.Io.Evented == void) unreachable;
+                return state.instance.io();
+            },
         };
     }
 };
+
+fn defaultEventedOptions() EventedInitOptions {
+    if (comptime std.Io.Evented == void) return {};
+    return .{};
+}
 
 /// Parse a backend kind from a textual selector. Accepted spellings (case
 /// insensitive): `process_init` / `process-init` / `default`, `threaded`,
@@ -152,11 +203,24 @@ test "init dispatches by Kind" {
     try std.testing.expectEqual(Kind.threaded, std.meta.activeTag(t));
 }
 
-test "init returns error for evented" {
-    try std.testing.expectError(
-        error.EventedBackendNotImplemented,
-        Backend.init(.evented, std.testing.allocator, std.testing.io),
-    );
+test "init dispatches evented when supported" {
+    if (comptime std.Io.Evented == void) {
+        try std.testing.expectError(
+            error.EventedBackendUnsupported,
+            Backend.init(.evented, std.testing.allocator, std.testing.io),
+        );
+    } else {
+        const allocator = if (comptime evented_deinit_available)
+            std.testing.allocator
+        else
+            std.heap.page_allocator;
+        var backend = try Backend.init(.evented, allocator, std.testing.io);
+        defer backend.deinit();
+        try std.testing.expectEqual(Kind.evented, std.meta.activeTag(backend));
+
+        const io = backend.io();
+        try std.testing.expect(io.userdata == @as(*anyopaque, @ptrCast(backend.evented.instance)));
+    }
 }
 
 test "parseKind accepts canonical and friendly spellings" {

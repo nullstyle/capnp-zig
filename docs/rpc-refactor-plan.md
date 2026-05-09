@@ -474,7 +474,7 @@ semantic changes:
   - RPC without QUIC by default
   - QUIC as an opt-in transport surface via `-Dquic=true`
 - Avoid unconditional quic-zig/BoringSSL instantiation for serialization-only users.
-- Revisit `std.Io.Evented` now that local Zig master exposes it on macOS/aarch64.
+- Continue validating `std.Io.Evented` now that local Zig master exposes it on supported targets.
 - Isolate POSIX wake pipes, polling, and socket options inside `transport/tcp`.
 - Modernize examples/tools around `std.process.Init`, `init.gpa`, `init.io`, and
   current `std.Io` APIs.
@@ -483,9 +483,10 @@ Scoped modernization decision: this branch now targets Zig 0.17-dev
 (`0.17.0-dev.256+04481c76c` validated locally; minimum declared in
 `build.zig.zon`) and no longer documents Zig 0.16 as a supported build target.
 `mise.toml` does not manage Zig because active development uses a
-master/zvm-style toolchain supplied on `PATH`. `std.Io.Evented` remains a
-reserved backend selector until capnpc-zig validates
-transport wake/poll/scheduling behavior on it.
+master/zvm-style toolchain supplied on `PATH`. `std.Io.Evented` is wired through
+`src/io_backend.zig` on targets where Zig exposes it; unsupported targets return
+`error.EventedBackendUnsupported`. Transport wake/poll/scheduling behavior still
+needs end-to-end validation for each std Evented implementation.
 
 ## Quality Gates
 

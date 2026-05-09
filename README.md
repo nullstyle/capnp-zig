@@ -265,7 +265,7 @@ Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
 - **Capability-based security**: Each connection maintains export and import tables tracking capabilities by ID with reference counting. The runtime sends `Release` when a refcount reaches zero.
 - **Promise pipelining**: Calls can be pipelined on promised answers before results arrive, reducing round trips.
 - **Structured peer orchestration**: The `Peer` type handles the full lifecycle -- call dispatch, return handling, embargo management, capability forwarding, and third-party handoff.
-- **Backend-agnostic I/O**: Every socket op flows through `std.Io`, so the runtime is polymorphic over the concrete backend. `std.Io.Threaded` is enabled today; `std.Io.Evented` remains a reserved selector until the transport wake and scheduling semantics are validated.
+- **Backend-agnostic I/O**: Every socket op flows through `std.Io`, so the runtime is polymorphic over the concrete backend. `std.Io.Threaded` and `std.Io.Evented` are selected through the same helper when Zig exposes them for the target.
 
 ### Switchable Io Backend
 
@@ -286,18 +286,18 @@ pub fn main(init: std.process.Init) !void {
 
 - `.process_init` -- reuse the `std.Io` provided by `std.process.Init`.
 - `.threaded` -- explicitly construct a fresh `std.Io.Threaded` (useful for sizing your own thread pool or running multiple isolated I/O instances).
-- `.evented` -- reserved for `std.Io.Evented`; today returns `error.EventedBackendNotImplemented`.
+- `.evented` -- construct and own `std.Io.Evented` where Zig exposes it; returns `error.EventedBackendUnsupported` only when `std.Io.Evented == void` for the target.
 
 Bundled RPC executables (`example-rpc`, `e2e-zig-server`, `e2e-zig-client`) read the selection from a build option:
 
 ```bash
 zig build example-rpc -Dio-backend=process_init   # default
 zig build example-rpc -Dio-backend=threaded       # explicit Threaded
-zig build example-rpc -Dio-backend=evented        # errors at runtime today
+zig build example-rpc -Dio-backend=evented        # explicit Evented where supported
 ```
 
-When capnpc-zig enables its Evented adapter, switching remains a single change
-in `src/io_backend.zig` plus a rebuild with `-Dio-backend=evented`.
+Evented socket behavior depends on Zig's platform backend implementation; the
+selector itself now lives behind `src/io_backend.zig`.
 
 ### Running the RPC Example
 

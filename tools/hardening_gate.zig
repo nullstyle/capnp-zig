@@ -83,7 +83,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"stack trace\"", .reason = "defensive disclosure-marker filter data" },
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"Stack trace\"", .reason = "defensive disclosure-marker filter data" },
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"panicked at\"", .reason = "defensive disclosure-marker filter data" },
-    .{ .path = "src/io_backend.zig", .kind = .unchecked_unreachable, .needle = ".evented => unreachable", .reason = "evented enum path is rejected before switch until Zig ships std.Io.Evented" },
+    .{ .path = "src/io_backend.zig", .kind = .unchecked_unreachable, .needle = "if (comptime std.Io.Evented == void) unreachable;", .reason = "Backend.init rejects unsupported Evented targets; this is reachable only through manual union construction" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
 };
 
