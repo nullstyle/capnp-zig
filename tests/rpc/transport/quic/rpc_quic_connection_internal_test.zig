@@ -311,7 +311,7 @@ test "QUIC dispatch can reveal sanitized frame error details when configured" {
 
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
-    conn.close_state.reveal_detail_on_wire = true;
+    TestAccess.revealCloseDetailOnWire(&conn, true);
     TestAccess.setCallbacks(&conn, null, Harness.onMessage, Harness.onError, null);
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };

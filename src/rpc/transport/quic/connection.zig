@@ -4,6 +4,7 @@ const quic_zig = @import("quic_zig");
 
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
+const close_controller_mod = @import("close_controller.zig");
 const datagram_io = @import("datagram_io.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
@@ -46,6 +47,7 @@ pub const Connection = struct {
     pub const StepMode = scheduler.StepMode;
     pub const StepResult = scheduler.StepResult;
     const CallbackLifecycle = callback_lifecycle_mod.State(Connection);
+    const CloseController = close_controller_mod.Controller;
 
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -58,9 +60,8 @@ pub const Connection = struct {
     mode: TransportMode,
     baseline: BaselineEngine,
     native: NativeEngine,
-    close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    close_controller: CloseController = .{},
     wake_state: wake_mod.Handle = .{},
-    close_state: quic_close.State = .{},
 
     callback_lifecycle: CallbackLifecycle = .{},
 
@@ -165,7 +166,7 @@ pub const Connection = struct {
                 native_options,
             ),
             .wake_state = wake_mod.Handle.init(),
-            .close_state = quic_close.State.init(reveal_close_reason_on_wire),
+            .close_controller = CloseController.init(reveal_close_reason_on_wire),
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
     }
@@ -211,7 +212,7 @@ pub const Connection = struct {
     }
 
     pub fn run(self: *Connection) void {
-        while (!self.close_requested.load(.acquire)) {
+        while (!self.close_controller.isRequested()) {
             self.step() catch |err| {
                 log.debug("QUIC connection step failed: {}", .{err});
                 self.terminateInternalError(err);
@@ -219,19 +220,24 @@ pub const Connection = struct {
             };
             if (self.activeQuicConn()) |conn| {
                 if (conn.isClosed() and self.selectedOutboundEmpty()) {
-                    _ = self.close_requested.swap(true, .acq_rel);
+                    self.close_controller.request();
                 }
             }
         }
 
-        self.flushCloseDatagram();
-        self.closeEngines();
+        self.close_controller.flushCloseDatagram(
+            self.activeQuicConn(),
+            self.endpointDriver(),
+            self.udp_tx_buf,
+            self.nowUs(),
+        );
+        self.close_controller.closeEngines(&self.baseline, &self.native);
         if (self.callback_lifecycle.closeCallback()) |cb| self.callback_lifecycle.invokeClose(self, cb);
         if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
-        if (self.close_requested.load(.acquire)) return error.BrokenPipe;
+        if (self.close_controller.isRequested()) return error.BrokenPipe;
         if (frame.len == 0 or frame.len > self.max_message_bytes) return error.FrameTooLarge;
         if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
@@ -250,22 +256,21 @@ pub const Connection = struct {
 
     pub fn close(self: *Connection) void {
         self.enterClosing();
-        self.closeActiveQuicConn(.normal, null);
+        self.close_controller.closeActive(self.activeQuicConn(), .normal, null);
         self.wake();
     }
 
     pub fn requestClose(self: *Connection) void {
-        self.enterClosing();
-        self.recordCloseStatus(.normal, null);
+        self.close_controller.requestNormal(&self.baseline, &self.native);
         self.wake();
     }
 
     pub fn isClosing(self: *const Connection) bool {
-        return self.close_requested.load(.acquire);
+        return self.close_controller.isRequested();
     }
 
     pub fn closeStatus(self: *const Connection) ?quic_close.Status {
-        return self.close_state.status();
+        return self.close_controller.status();
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
@@ -326,20 +331,9 @@ pub const Connection = struct {
         self.reapServerIfClosed();
         result.closed = self.isTransportDrainedClosed();
         if (result.closed) {
-            _ = self.close_requested.swap(true, .acq_rel);
+            self.close_controller.request();
         }
         return result;
-    }
-
-    fn flushCloseDatagram(self: *Connection) void {
-        const conn = self.activeQuicConn() orelse return;
-        if (!conn.isClosed()) {
-            self.recordCloseStatus(.normal, null);
-            self.closeQuicConn(conn);
-        }
-        datagram_io.drainOutgoingDatagrams(self.endpointDriver(), self.udp_tx_buf, self.nowUs()) catch |err| {
-            log.debug("failed to flush QUIC close datagram: {}", .{err});
-        };
     }
 
     fn hasWakeSupport(self: *const Connection) bool {
@@ -434,7 +428,7 @@ pub const Connection = struct {
 
     fn ownerIsClosing(ptr: *anyopaque) bool {
         const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.close_requested.load(.acquire);
+        return self.close_controller.isRequested();
     }
 
     fn ownerCallbacksReady(ptr: *anyopaque) bool {
@@ -485,7 +479,7 @@ pub const Connection = struct {
         policy: TerminationPolicy,
         err: anyerror,
     ) void {
-        self.closeActiveQuicConn(policy.code, err);
+        self.close_controller.closeActive(self.activeQuicConn(), policy.code, err);
         self.enterClosing();
         if (policy.reset_inbound) self.resetInbound();
         if (policy.clear_message_callback) self.callback_lifecycle.clearMessageCallback();
@@ -500,13 +494,7 @@ pub const Connection = struct {
     }
 
     fn enterClosing(self: *Connection) void {
-        _ = self.close_requested.swap(true, .acq_rel);
-        self.closeEngines();
-    }
-
-    fn closeEngines(self: *Connection) void {
-        self.baseline.close();
-        self.native.close();
+        self.close_controller.enterClosing(&self.baseline, &self.native);
     }
 
     fn resetInbound(self: *Connection) void {
@@ -514,32 +502,8 @@ pub const Connection = struct {
         self.native.resetInbound(self.allocator);
     }
 
-    fn closeActiveQuicConn(
-        self: *Connection,
-        code: quic_close.ApplicationCloseCode,
-        err: ?anyerror,
-    ) void {
-        self.recordCloseStatus(code, err);
-        const conn = self.activeQuicConn() orelse return;
-        self.closeQuicConn(conn);
-    }
-
-    fn closeQuicConn(self: *Connection, conn: *quic_zig.Connection) void {
-        self.recordCloseStatus(.normal, null);
-        const status = self.close_state.status() orelse return;
-        conn.close(false, status.codeValue(), self.close_state.reason());
-    }
-
-    fn recordCloseStatus(
-        self: *Connection,
-        code: quic_close.ApplicationCloseCode,
-        err: ?anyerror,
-    ) void {
-        self.close_state.record(code, err);
-    }
-
     fn closeReason(self: *const Connection) []const u8 {
-        return self.close_state.reason();
+        return self.close_controller.reason();
     }
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
@@ -548,7 +512,7 @@ pub const Connection = struct {
 
     fn reapServerIfClosed(self: *Connection) void {
         if (self.endpointDriver().reapClosed()) {
-            _ = self.close_requested.swap(true, .acq_rel);
+            self.close_controller.request();
         }
     }
 
@@ -615,6 +579,10 @@ pub const TestAccess = struct {
 
     pub fn closeReason(conn: *const Connection) []const u8 {
         return conn.closeReason();
+    }
+
+    pub fn revealCloseDetailOnWire(conn: *Connection, reveal: bool) void {
+        conn.close_controller.setRevealDetailOnWire(reveal);
     }
 
     pub fn setCallbacks(
