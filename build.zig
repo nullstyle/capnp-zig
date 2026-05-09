@@ -417,6 +417,10 @@ pub fn build(b: *std.Build) void {
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, quic_zig_module.?)
     else
         null;
+    const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (enable_quic)
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    else
+        null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
@@ -551,10 +555,12 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(run_rpc_connection_failure_tests);
     test_rpc_level2_step.dependOn(run_rpc_worker_pool_tests);
     if (run_rpc_quic_transport_tests) |step| test_rpc_level2_step.dependOn(step);
+    if (run_rpc_quic_connection_internal_tests) |step| test_rpc_level2_step.dependOn(step);
     test_rpc_level2_step.dependOn(run_rpc_raw_frame_security_tests);
 
     const test_rpc_quic_step = b.step("test-rpc-quic", "Run quic-zig-backed QUIC RPC transport tests (requires -Dquic=true)");
     if (run_rpc_quic_transport_tests) |step| test_rpc_quic_step.dependOn(step);
+    if (run_rpc_quic_connection_internal_tests) |step| test_rpc_quic_step.dependOn(step);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run cumulative RPC peer semantics tests");
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
@@ -583,6 +589,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
     if (run_rpc_quic_transport_tests) |step| test_resource_budgets_step.dependOn(step);
+    if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
     test_resource_budgets_step.dependOn(&run_wasm_host_abi_tests.step);
 
@@ -627,7 +634,11 @@ pub fn build(b: *std.Build) void {
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
-        addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module)
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, release_safe_quic_zig_module.?)
+    else
+        null;
+    const run_release_safe_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (enable_quic)
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, release_safe_quic_zig_module.?)
     else
         null;
     const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -643,6 +654,7 @@ pub fn build(b: *std.Build) void {
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
     if (run_release_safe_rpc_quic_transport_tests) |step| test_release_safe_step.dependOn(step);
+    if (run_release_safe_rpc_quic_connection_internal_tests) |step| test_release_safe_step.dependOn(step);
     test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);
 
     // Test step runs all tests

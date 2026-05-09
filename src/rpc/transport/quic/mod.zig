@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const adapter = @import("quic_zig_adapter.zig");
 pub const close = @import("close.zig");
 const conn = @import("connection.zig");
@@ -30,6 +31,9 @@ pub const StepMode = scheduler_mod.StepMode;
 pub const StepResult = scheduler_mod.StepResult;
 pub const length_prefix_bytes = framer.length_prefix_bytes;
 pub const native = native_framer;
+pub const testing = if (builtin.is_test) struct {
+    pub const ConnectionAccess = conn.TestAccess;
+} else struct {};
 
 pub const alpn = options.alpn;
 pub const baseline_stream_id = options.baseline_stream_id;
