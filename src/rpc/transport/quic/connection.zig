@@ -157,6 +157,10 @@ pub const Connection = struct {
         return self.endpoint.getAddress();
     }
 
+    pub fn activeQuicConnection(self: *Connection) ?*quic_zig.Connection {
+        return self.endpoint.activeQuicConnection();
+    }
+
     pub fn assertThreadAffinity(self: *const Connection) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
         if (builtin.mode == .Debug) {
@@ -274,6 +278,6 @@ pub const Connection = struct {
     }
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
-        return self.endpoint.activeQuicConnection();
+        return self.activeQuicConnection();
     }
 };

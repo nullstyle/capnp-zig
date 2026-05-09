@@ -37,10 +37,13 @@ pub const default_quic_max_connection_memory: u64 = quic_zig.conn.state.default_
 pub const default_quic_listener_rate_window_us: u64 = 1_000_000;
 pub const default_quic_max_log_events_per_source_per_window: ?u32 = 16;
 
-/// Current capnp-zig QUIC RPC server fanout. The listener/session split makes
-/// the next step visible, but peer dispatch still binds one active QUIC session
-/// to one server transport today.
-pub const supported_max_concurrent_sessions: u32 = 1;
+/// Single-session compatibility capacity used by `Connection.initServer`.
+pub const compatibility_max_concurrent_sessions: u32 = 1;
+
+/// The fanout server delegates the actual live-slot cap to
+/// `ServerOptions.max_concurrent_connections`, so the public static limit is the
+/// full u32 range after rejecting zero.
+pub const supported_max_concurrent_sessions: u32 = std.math.maxInt(u32);
 
 pub const TransportMode = enum {
     baseline,
@@ -225,7 +228,7 @@ pub fn serverConfigFromOptions(
 fn validateServerOptions(options: ServerOptions) !void {
     if (options.alpn_protocols.len == 0) return error.InvalidConfig;
     if (options.tls_cert_pem.len == 0 or options.tls_key_pem.len == 0) return error.InvalidConfig;
-    if (options.max_concurrent_connections != supported_max_concurrent_sessions) return error.InvalidConfig;
+    if (options.max_concurrent_connections == 0) return error.InvalidConfig;
     if (options.local_cid_len == 0 or options.local_cid_len > 20) return error.InvalidConfig;
     if (options.udp_rx_buffer_size == 0 or
         options.udp_tx_buffer_size == 0 or

@@ -93,6 +93,10 @@ pub fn initServer(
 ) !Connection {
     // Compatibility path: bind a listener, then expose the first accepted
     // server session through the peer-facing Connection callbacks.
+    if (options.max_concurrent_connections != quic_options.compatibility_max_concurrent_sessions) {
+        return error.InvalidConfig;
+    }
+
     var created = try endpoint_factory.initServer(allocator, io, options);
     errdefer created.deinit(io);
 

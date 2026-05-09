@@ -163,6 +163,8 @@ pub const RawNativeFault = enum {
     malformed_preface,
     malformed_hello,
     malformed_control,
+    unknown_control_tag,
+    oversized_control_frame,
     data_final_size_mismatch,
     data_budget_violation,
 };
@@ -190,6 +192,23 @@ fn injectRawNativeFault(
             const hello_len = try quic.native.encodeHello(bytes[quic.native.preface.len..]);
             @memset(bytes[quic.native.preface.len + hello_len ..], 0);
             try client.writeAll(quic.baseline_stream_id, &bytes);
+        },
+        .unknown_control_tag => {
+            var control: [quic.native.length_prefix_bytes + quic.native.common_header_bytes]u8 = undefined;
+            std.mem.writeInt(u32, control[0..quic.native.length_prefix_bytes], quic.native.common_header_bytes, .little);
+            control[quic.native.length_prefix_bytes] = 0xff;
+            @memset(control[quic.native.length_prefix_bytes + 1 ..], 0);
+            try writeNativePreambleAndControl(client, &control);
+        },
+        .oversized_control_frame => {
+            const payload_len = quic.native.rpc_header_bytes + 128;
+            const control = try allocator.alloc(u8, quic.native.length_prefix_bytes + payload_len);
+            defer allocator.free(control);
+            std.mem.writeInt(u32, control[0..quic.native.length_prefix_bytes], @intCast(payload_len), .little);
+            control[quic.native.length_prefix_bytes] = @intFromEnum(quic.native.ControlFrameTag.inline_rpc);
+            @memset(control[quic.native.length_prefix_bytes + 1 .. quic.native.length_prefix_bytes + quic.native.rpc_header_bytes], 0);
+            @memset(control[quic.native.length_prefix_bytes + quic.native.rpc_header_bytes ..], 0xa5);
+            try writeNativePreambleAndControl(client, control);
         },
         .data_final_size_mismatch => {
             const data_rpc = try quic.native.encodeDataRpc(

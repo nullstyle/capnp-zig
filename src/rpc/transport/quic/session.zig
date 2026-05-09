@@ -66,10 +66,9 @@ pub const OutgoingDatagram = struct {
 /// Accepted server-side session selected by a listener.
 ///
 /// `AcceptedSession` keeps the borrowed `Session` handle together with the
-/// listener slot ordinal it came from. The ordinal is always zero for the
-/// compatibility transport today, but gives a future fanout accept loop a
-/// stable place to carry per-session identity without changing the transport
-/// driving methods.
+/// listener slot ordinal it came from. The compatibility transport always uses
+/// ordinal zero; the fanout `Server` refreshes ordinals as quic-zig reaps and
+/// compacts slots.
 pub const AcceptedSession = struct {
     ordinal: usize,
     session: Session,
@@ -106,9 +105,8 @@ pub const AcceptedSession = struct {
     }
 };
 
-/// Tracks the single server-side session used by the current compatibility
-/// transport. When fanout lands, this can become a table keyed by slot id while
-/// `Connection` keeps its one-session behavior.
+/// Tracks the single server-side session used by the compatibility transport.
+/// Multi-session fanout uses `ServerSession` values keyed by accepted slot.
 pub const SessionTracker = struct {
     slot: ?*quic_zig.Server.Slot = null,
 
@@ -141,10 +139,9 @@ pub const SessionTracker = struct {
 
 /// Drives the accepted session attached to the compatibility server transport.
 ///
-/// This is intentionally one-session-sized today. The methods mirror the
-/// operations a future accept loop needs: attach an accepted listener slot,
-/// surface the active QUIC connection, poll the selected session, and reap it
-/// when quic-zig reports closure.
+/// This is intentionally one-session-sized. The fanout `Server` owns its own
+/// table of independent session drivers while this helper keeps
+/// `Connection.initServer` small.
 pub const AcceptedSessionDriver = struct {
     tracker: SessionTracker = .{},
 

@@ -5,10 +5,11 @@
 //! * `Connection.initServer` is the compatibility path. It presents one
 //!   accepted QUIC session as the same peer-facing `Connection` abstraction used
 //!   by clients.
-//! * `Listener` plus `Session`/`AcceptedSession` is the fanout boundary. The
-//!   listener owns the UDP socket and QUIC server; sessions are borrowed handles
-//!   that can later be driven independently by a multi-session server accept
-//!   loop.
+//! * `Server` is the fanout path. It owns one listener, accepts multiple QUIC
+//!   sessions up to `ServerOptions.max_concurrent_connections`, and lets callers
+//!   drive each `ServerSession` independently.
+//! * `Listener` plus `Session`/`AcceptedSession` is the lower-level boundary for
+//!   tests and bespoke embedding.
 
 const builtin = @import("builtin");
 const adapter = @import("quic_zig_adapter.zig");
@@ -21,6 +22,7 @@ const native_framer = @import("native_framer.zig");
 pub const listener = @import("listener.zig");
 const options = @import("options.zig");
 const scheduler_mod = @import("scheduler.zig");
+const server_mod = @import("server.zig");
 pub const session = @import("session.zig");
 
 pub const enabled = true;
@@ -46,6 +48,12 @@ pub const Session = session.Session;
 pub const LengthDelimitedFramer = framer.LengthDelimitedFramer;
 pub const NativeControlFramer = native_framer.ControlFramer;
 pub const NativeControlFrame = native_framer.ControlFrame;
+/// Multi-session server/fanout root. Owns the UDP socket and per-session RPC
+/// transport drivers.
+pub const Server = server_mod.Server;
+/// Per-accepted-session RPC transport owned by `Server`.
+pub const ServerSession = server_mod.ServerSession;
+pub const ServerReceiveResult = server_mod.ReceiveResult;
 pub const scheduler = scheduler_mod;
 pub const StepMode = scheduler_mod.StepMode;
 pub const StepResult = scheduler_mod.StepResult;
@@ -77,6 +85,7 @@ pub const default_quic_new_token_lifetime_us = options.default_quic_new_token_li
 pub const default_quic_max_connection_memory = options.default_quic_max_connection_memory;
 pub const default_quic_listener_rate_window_us = options.default_quic_listener_rate_window_us;
 pub const default_quic_max_log_events_per_source_per_window = options.default_quic_max_log_events_per_source_per_window;
+pub const compatibility_max_concurrent_sessions = options.compatibility_max_concurrent_sessions;
 pub const supported_max_concurrent_sessions = options.supported_max_concurrent_sessions;
 
 pub const ServerQlogCallback = options.ServerQlogCallback;
