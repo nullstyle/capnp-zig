@@ -56,6 +56,35 @@ test "QUIC native sendFrame uses native outbound queue" {
     try std.testing.expect(!conn.native.outbound.isEmpty());
 }
 
+test "QUIC native sendFrame enforces data stream budgets separately from inline frames" {
+    var stream_limited = try initTestNativeClient(std.testing.allocator, .{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 1,
+        .max_pending_data_bytes = 16,
+    });
+    defer stream_limited.deinit();
+
+    try stream_limited.sendFrame("ab");
+    try std.testing.expectError(error.OutboundQueueFull, stream_limited.sendFrame("cd"));
+    try stream_limited.sendFrame("x");
+    try std.testing.expectEqual(@as(usize, 1), stream_limited.native.outbound.queued_data_items);
+    try std.testing.expectEqual(@as(usize, 2), stream_limited.native.outbound.queued_data_bytes);
+
+    var byte_limited = try initTestNativeClient(std.testing.allocator, .{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 3,
+    });
+    defer byte_limited.deinit();
+
+    try byte_limited.sendFrame("ab");
+    try std.testing.expectError(error.OutboundQueueFull, byte_limited.sendFrame("cd"));
+    try std.testing.expectEqual(@as(usize, 1), byte_limited.native.outbound.queued_data_items);
+    try std.testing.expectEqual(@as(usize, 2), byte_limited.native.outbound.queued_data_bytes);
+}
+
 test "QUIC native control dispatch preserves order behind pending data stream" {
     const Harness = struct {
         const State = struct {
@@ -148,6 +177,45 @@ test "QUIC native control rejects non-monotonic rpc sequences" {
     try std.testing.expectEqual(@as(u64, 1), conn.native.next_in_sequence);
 }
 
+test "QUIC native rejects invalid data rpc references from control stream" {
+    const Harness = struct {
+        const State = struct {
+            messages: usize = 0,
+        };
+
+        fn onMessage(conn: *Connection, _: []const u8) !void {
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
+            state.messages += 1;
+        }
+
+        fn onError(_: *Connection, _: anyerror) void {}
+    };
+
+    var conn = try initTestNativeClient(std.testing.allocator, .{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 1024,
+    });
+    defer conn.deinit();
+
+    var state = Harness.State{};
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
+    conn.native.hello_received = true;
+
+    const local_stream_ref = try native_framer.encodeDataRpc(std.testing.allocator, 0, 2, 4, 64);
+    defer std.testing.allocator.free(local_stream_ref);
+
+    try conn.native.inbound.push(local_stream_ref);
+    try std.testing.expectError(
+        error.InvalidFrame,
+        TestAccess.processNativeControlFrames(&conn),
+    );
+    try std.testing.expectEqual(@as(usize, 0), state.messages);
+    try std.testing.expect(conn.native.pending_data == null);
+    try std.testing.expectEqual(@as(u64, 0), conn.native.next_in_sequence);
+}
+
 test "QUIC native validates data stream references and budgets" {
     var conn = try initTestNativeClient(std.testing.allocator, .{
         .inline_frame_threshold = 1,
@@ -178,6 +246,21 @@ test "QUIC native validates data stream references and budgets" {
         .length = 9,
     }));
     try std.testing.expect(conn.native.pending_data == null);
+
+    try TestAccess.startNativePendingData(&conn, .{
+        .sequence = 0,
+        .stream_id = 3,
+        .length = 4,
+    });
+    try std.testing.expectError(error.InvalidFrame, TestAccess.startNativePendingData(&conn, .{
+        .sequence = 1,
+        .stream_id = 7,
+        .length = 4,
+    }));
+    try std.testing.expect(conn.native.pending_data != null);
+    try std.testing.expectEqual(@as(u64, 0), conn.native.pending_data.?.sequence);
+    try std.testing.expectEqual(@as(u64, 3), conn.native.pending_data.?.stream_id);
+    try std.testing.expectEqual(@as(usize, 4), conn.native.pending_data.?.bytes.len);
 }
 
 test "QUIC native frame errors record typed terminal close status" {
@@ -218,6 +301,53 @@ test "QUIC native frame errors record typed terminal close status" {
     try std.testing.expectEqual(TestAccess.ApplicationCloseCode.frame_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
     try std.testing.expectEqualStrings("rpc frame error", TestAccess.closeReason(&conn));
+    try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
+test "QUIC native order violations close with frame error status" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = try initTestNativeClient(std.testing.allocator, .{});
+    defer conn.deinit();
+    TestAccess.revealCloseDetailOnWire(&conn, true);
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
+    conn.native.hello_received = true;
+    conn.native.next_in_sequence = 1;
+
+    const stale_inline = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "stale", 64);
+    defer std.testing.allocator.free(stale_inline);
+
+    try conn.native.inbound.push(stale_inline);
+    TestAccess.processNativeControlFrames(&conn) catch |err| {
+        switch (err) {
+            error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory => TestAccess.terminateFrameError(&conn, err),
+            else => return err,
+        }
+    };
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+    try std.testing.expectEqual(@as(u64, 1), conn.native.next_in_sequence);
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(TestAccess.ApplicationCloseCode.frame_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
+    try std.testing.expect(status.reason_reveals_detail);
+    try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", TestAccess.closeReason(&conn));
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 
