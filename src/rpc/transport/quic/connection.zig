@@ -5,6 +5,7 @@ const quic_zig = @import("quic_zig");
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
 const close_controller_mod = @import("close_controller.zig");
+const connection_adapters = @import("connection_adapters.zig");
 const connection_init = @import("connection_init.zig");
 const connection_loop = @import("connection_loop.zig");
 const engine_owner = @import("engine_owner.zig");
@@ -32,7 +33,6 @@ const NativeEngine = native_engine.NativeEngine;
 const TerminationPolicy = termination.Policy;
 
 const Role = endpoint_mod.Role;
-const EndpointDriver = endpoint_mod.EndpointDriver;
 const EndpointRuntime = endpoint_mod.Runtime;
 
 /// A single vat-to-vat Cap'n Proto RPC session over QUIC.
@@ -46,6 +46,7 @@ pub const Connection = struct {
     pub const StepMode = connection_loop.StepMode;
     pub const StepResult = connection_loop.StepResult;
     const CallbackLifecycle = callback_lifecycle_mod.State(Connection);
+    const Adapters = connection_adapters.State(Connection);
     const CloseController = close_controller_mod.Controller;
 
     allocator: std.mem.Allocator,
@@ -207,16 +208,26 @@ pub const Connection = struct {
         return try connection_loop.stepOnce(self.loopOwner(), mode);
     }
 
+    pub const AdapterAccess = struct {
+        pub fn dispatchRpcFrame(conn: *Connection, frame: []const u8) !void {
+            try conn.dispatchRpcFrame(frame);
+        }
+
+        pub fn terminateFrameError(conn: *Connection, err: anyerror) void {
+            conn.terminateFrameError(err);
+        }
+
+        pub fn terminateInternalError(conn: *Connection, err: anyerror) void {
+            conn.terminateInternalError(err);
+        }
+
+        pub fn deinitNowUnchecked(conn: *Connection) void {
+            conn.deinitNow(false);
+        }
+    };
+
     fn wakeRequested(self: *const Connection) bool {
         return self.wake_state.isRequested();
-    }
-
-    fn endpointDriver(self: *Connection) EndpointDriver {
-        return self.endpoint.driver();
-    }
-
-    fn selectedOutboundEmpty(self: *Connection) bool {
-        return self.selectedMode().outboundEmpty();
     }
 
     fn selectedMode(self: *Connection) ModeRouter {
@@ -236,127 +247,11 @@ pub const Connection = struct {
     }
 
     fn engineOwner(self: *Connection) EngineOwner {
-        return .{
-            .ptr = self,
-            .allocator = self.allocator,
-            .role = self.role,
-            .max_message_bytes = self.max_message_bytes,
-            .stream_read_buf = self.stream_read_buf,
-            .is_closing = ownerIsClosing,
-            .callbacks_ready = ownerCallbacksReady,
-            .dispatch_rpc_frame = ownerDispatchRpcFrame,
-            .terminate_frame_error = ownerTerminateFrameError,
-            .deinit_requested = ownerDeinitRequested,
-        };
+        return Adapters.engineOwner(self);
     }
 
     fn loopOwner(self: *Connection) connection_loop.Owner {
-        return .{
-            .ptr = self,
-            .io = self.endpoint.io,
-            .role = self.role,
-            .udp_rx_buf = self.udp_rx_buf,
-            .udp_tx_buf = self.udp_tx_buf,
-            .wake = &self.wake_state,
-            .driver = loopDriver,
-            .selected_mode = loopSelectedMode,
-            .selected_outbound_empty = loopSelectedOutboundEmpty,
-            .engine_owner = loopEngineOwner,
-            .close_requested = loopCloseRequested,
-            .request_close = loopRequestClose,
-            .terminate_internal_error = loopTerminateInternalError,
-            .flush_close_datagram = loopFlushCloseDatagram,
-            .close_engines = loopCloseEngines,
-            .invoke_close_callback = loopInvokeCloseCallback,
-            .complete_deferred_deinit = loopCompleteDeferredDeinit,
-        };
-    }
-
-    fn loopDriver(ptr: *anyopaque) EndpointDriver {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.endpointDriver();
-    }
-
-    fn loopSelectedMode(ptr: *anyopaque) ModeRouter {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.selectedMode();
-    }
-
-    fn loopSelectedOutboundEmpty(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.selectedOutboundEmpty();
-    }
-
-    fn loopEngineOwner(ptr: *anyopaque) EngineOwner {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.engineOwner();
-    }
-
-    fn loopCloseRequested(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.close_controller.isRequested();
-    }
-
-    fn loopRequestClose(ptr: *anyopaque) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.close_controller.request();
-    }
-
-    fn loopTerminateInternalError(ptr: *anyopaque, err: anyerror) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.terminateInternalError(err);
-    }
-
-    fn loopFlushCloseDatagram(ptr: *anyopaque) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.close_controller.flushCloseDatagram(
-            self.activeQuicConn(),
-            self.endpointDriver(),
-            self.udp_tx_buf,
-            self.nowUs(),
-        );
-    }
-
-    fn loopCloseEngines(ptr: *anyopaque) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.close_controller.closeEngines(&self.baseline, &self.native);
-    }
-
-    fn loopInvokeCloseCallback(ptr: *anyopaque) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        if (self.callback_lifecycle.closeCallback()) |cb| {
-            self.callback_lifecycle.invokeClose(self, cb);
-        }
-    }
-
-    fn loopCompleteDeferredDeinit(ptr: *anyopaque) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
-    }
-
-    fn ownerIsClosing(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.close_controller.isRequested();
-    }
-
-    fn ownerCallbacksReady(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.callback_lifecycle.callbacksReady();
-    }
-
-    fn ownerDispatchRpcFrame(ptr: *anyopaque, frame: []const u8) !void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        try self.dispatchRpcFrame(frame);
-    }
-
-    fn ownerTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.terminateFrameError(err);
-    }
-
-    fn ownerDeinitRequested(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.callback_lifecycle.deinitRequested();
+        return Adapters.loopOwner(self);
     }
 
     fn dispatchRpcFrame(self: *Connection, frame: []const u8) !void {
