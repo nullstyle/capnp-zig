@@ -14,6 +14,7 @@ const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
 const scheduler = @import("scheduler.zig");
+const termination = @import("termination.zig");
 const wake_mod = @import("wake.zig");
 
 const log = std.log.scoped(.rpc_quic_transport);
@@ -28,6 +29,7 @@ const EngineOwner = engine_owner.Owner;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
 const NativeControlFramer = native_framer.ControlFramer;
 const NativeEngine = native_engine.NativeEngine;
+const TerminationPolicy = termination.Policy;
 
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
@@ -207,10 +209,8 @@ pub const Connection = struct {
         if (check_affinity) self.assertThreadAffinity();
         self.deinitialized = true;
         self.deinit_requested = false;
-        _ = self.close_requested.swap(true, .acq_rel);
-        self.baseline.close();
+        self.enterClosing();
         self.baseline.deinit(self.allocator);
-        self.native.close();
         self.native.deinit(self.allocator);
         self.ctx = null;
         self.on_message = null;
@@ -252,8 +252,7 @@ pub const Connection = struct {
         }
 
         self.flushCloseDatagram();
-        self.baseline.close();
-        self.native.close();
+        self.closeEngines();
         if (self.on_close) |cb| self.invokeCloseCallback(cb);
         self.completeDeferredDeinit();
     }
@@ -280,17 +279,13 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
-        _ = self.close_requested.swap(true, .acq_rel);
-        self.baseline.close();
-        self.native.close();
+        self.enterClosing();
         self.closeActiveQuicConn(.normal, null);
         self.wake();
     }
 
     pub fn requestClose(self: *Connection) void {
-        _ = self.close_requested.swap(true, .acq_rel);
-        self.baseline.close();
-        self.native.close();
+        self.enterClosing();
         self.recordCloseStatus(.normal, null);
         self.wake();
     }
@@ -503,39 +498,55 @@ pub const Connection = struct {
 
     fn terminateFrameError(self: *Connection, err: anyerror) void {
         log.debug("fatal QUIC frame error, closing connection: {}", .{err});
-        self.closeActiveQuicConn(quic_close.codeForFrameError(err), err);
-        _ = self.close_requested.swap(true, .acq_rel);
-        self.baseline.close();
-        self.native.close();
-        self.baseline.resetInbound();
-        self.native.resetInbound(self.allocator);
-        self.on_message = null;
-        const on_error = self.on_error;
-        self.on_error = null;
-        self.wake();
-        if (on_error) |cb| self.invokeErrorCallback(cb, err);
+        self.applyTermination(termination.policy(.frame_error, err), err);
     }
 
     fn terminateCallbackError(self: *Connection, err: anyerror) void {
         log.debug("QUIC message callback failed, closing connection: {}", .{err});
-        self.closeActiveQuicConn(.peer_callback_failure, err);
-        _ = self.close_requested.swap(true, .acq_rel);
-        self.baseline.close();
-        self.native.close();
-        self.on_message = null;
-        const on_error = self.on_error;
-        self.on_error = null;
-        self.wake();
-        if (on_error) |cb| self.invokeErrorCallback(cb, err);
+        self.applyTermination(termination.policy(.callback_error, err), err);
     }
 
     fn terminateInternalError(self: *Connection, err: anyerror) void {
-        self.closeActiveQuicConn(quic_close.codeForStepError(err), err);
+        self.applyTermination(termination.policy(.internal_error, err), err);
+    }
+
+    fn applyTermination(
+        self: *Connection,
+        policy: TerminationPolicy,
+        err: anyerror,
+    ) void {
+        self.closeActiveQuicConn(policy.code, err);
+        self.enterClosing();
+        if (policy.reset_inbound) self.resetInbound();
+        if (policy.clear_message_callback) self.on_message = null;
+        const on_error = if (policy.clear_error_callback) self.takeErrorCallback() else self.on_error;
+        self.wake();
+        if (policy.notify_error_callback) {
+            if (on_error) |cb| self.invokeErrorCallback(cb, err);
+        }
+    }
+
+    fn enterClosing(self: *Connection) void {
         _ = self.close_requested.swap(true, .acq_rel);
+        self.closeEngines();
+    }
+
+    fn closeEngines(self: *Connection) void {
         self.baseline.close();
         self.native.close();
-        self.wake();
-        self.invokeOnError(err);
+    }
+
+    fn resetInbound(self: *Connection) void {
+        self.baseline.resetInbound();
+        self.native.resetInbound(self.allocator);
+    }
+
+    fn takeErrorCallback(
+        self: *Connection,
+    ) ?*const fn (conn: *Connection, err: anyerror) void {
+        const cb = self.on_error;
+        self.on_error = null;
+        return cb;
     }
 
     fn closeActiveQuicConn(
@@ -578,11 +589,6 @@ pub const Connection = struct {
 
     fn nowUs(self: *Connection) u64 {
         return self.endpointDriver().nowUs();
-    }
-
-    fn invokeOnError(self: *Connection, err: anyerror) void {
-        const cb = self.on_error orelse return;
-        self.invokeErrorCallback(cb, err);
     }
 
     fn invokeErrorCallback(
