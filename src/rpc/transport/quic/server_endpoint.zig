@@ -5,6 +5,7 @@ const listener_mod = @import("listener.zig");
 const session = @import("session.zig");
 
 const Net = std.Io.net;
+const CompatibilitySessionDriver = session.AcceptedSessionDriver;
 
 /// Compatibility endpoint used by `Connection.initServer`.
 ///
@@ -14,7 +15,10 @@ const Net = std.Io.net;
 /// task without changing the existing client/peer callbacks.
 pub const ServerEndpoint = struct {
     listener: listener_mod.Listener,
-    session: session.AcceptedSessionDriver = .{},
+    /// The one accepted listener session attached to this compatibility
+    /// endpoint. A fanout server should keep session selection outside this
+    /// facade and drive each accepted session independently.
+    session: CompatibilitySessionDriver = .{},
 
     pub fn driver(self: *ServerEndpoint) Driver {
         return .{ .server = self };
@@ -68,6 +72,9 @@ pub const Driver = struct {
         now_us: u64,
     ) !bool {
         _ = try self.server.listener.feedDatagram(bytes, from, now_us);
+        // Compatibility path: bind the first accepted listener slot to this
+        // endpoint so the shared Connection loop can keep seeing one active
+        // QUIC connection.
         _ = self.server.session.attachFirstAccepted(&self.server.listener.server);
         try self.server.listener.drainStatelessResponses();
         return true;

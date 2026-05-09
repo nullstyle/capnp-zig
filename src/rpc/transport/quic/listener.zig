@@ -18,6 +18,10 @@ pub const StatelessResponse = quic_zig.Server.StatelessResponse;
 /// surfaced as borrowed `Session` handles, which is the boundary future
 /// multi-client fanout can grow through. The current implementation preserves
 /// the existing one-session guard in `ServerOptions`.
+///
+/// This type deliberately has no Cap'n Proto RPC callbacks. A fanout server is
+/// expected to accept/choose sessions here, then hand each selected session to a
+/// per-session transport driver.
 pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -72,6 +76,7 @@ pub const Listener = struct {
         return self.server.connectionCount();
     }
 
+    /// Compatibility helper for callers that only expect one accepted session.
     pub fn firstSession(self: *Listener) ?Session {
         return self.sessionAt(0);
     }
@@ -85,6 +90,10 @@ pub const Listener = struct {
         return self.acceptedSessionAt(0);
     }
 
+    /// Return the currently accepted listener session at `index`.
+    ///
+    /// Handles are borrowed from `quic_zig.Server`; callers must not retain them
+    /// past listener mutation that can reap or close the backing slot.
     pub fn acceptedSessionAt(self: *Listener, index: usize) ?AcceptedSession {
         const slots = self.server.iterator();
         if (index >= slots.len) return null;

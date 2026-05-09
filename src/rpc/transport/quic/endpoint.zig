@@ -12,6 +12,9 @@ pub const ServerEndpoint = server_endpoint.ServerEndpoint;
 
 pub const Endpoint = union(Role) {
     client: ClientEndpoint,
+    /// Server compatibility endpoint. Multi-session servers should own a
+    /// `Listener` directly and hand out `Session` handles instead of routing
+    /// every session through this one active endpoint.
     server: ServerEndpoint,
 
     pub fn driver(self: *Endpoint, io: std.Io) EndpointDriver {
@@ -68,11 +71,13 @@ pub const Runtime = struct {
     }
 };
 
-/// Role-specific QUIC endpoint operations used by the shared connection loop.
+/// Role-specific QUIC endpoint operations used by the shared one-session loop.
 ///
 /// `Connection` owns scheduling, callbacks, and Cap'n Proto framing. This driver
 /// is now a small facade over the concrete client and server endpoint drivers,
 /// keeping socket routing and accepted-session mechanics out of this module.
+/// On the server side it always points at the single accepted compatibility
+/// session selected by `ServerEndpoint`.
 pub const EndpointDriver = union(Role) {
     client: client_endpoint.Driver,
     server: server_endpoint.Driver,

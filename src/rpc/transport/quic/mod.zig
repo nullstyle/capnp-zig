@@ -1,3 +1,15 @@
+//! QUIC transport surface for Cap'n Proto RPC.
+//!
+//! There are two server-side shapes in this package:
+//!
+//! * `Connection.initServer` is the compatibility path. It presents one
+//!   accepted QUIC session as the same peer-facing `Connection` abstraction used
+//!   by clients.
+//! * `Listener` plus `Session`/`AcceptedSession` is the fanout boundary. The
+//!   listener owns the UDP socket and QUIC server; sessions are borrowed handles
+//!   that can later be driven independently by a multi-session server accept
+//!   loop.
+
 const builtin = @import("builtin");
 const adapter = @import("quic_zig_adapter.zig");
 pub const close = @import("close.zig");
@@ -12,17 +24,24 @@ const scheduler_mod = @import("scheduler.zig");
 pub const session = @import("session.zig");
 
 pub const enabled = true;
+/// Compatibility transport for a single vat-to-vat QUIC RPC session.
 pub const Connection = conn.Connection;
 pub const ApplicationCloseCode = close.ApplicationCloseCode;
 pub const CloseStatus = close.Status;
+/// Borrowed server-side session selected by a listener.
 pub const AcceptedSession = session.AcceptedSession;
+/// One-session driver used by the server `Connection` compatibility path.
 pub const AcceptedSessionDriver = session.AcceptedSessionDriver;
 pub const ClientEndpoint = endpoint.ClientEndpoint;
 pub const Endpoint = endpoint.Endpoint;
 pub const EndpointDriver = endpoint.EndpointDriver;
+/// Server listener/fanout root. Owns the UDP socket and `quic_zig.Server`.
 pub const Listener = listener.Listener;
 pub const Role = endpoint.Role;
+/// Endpoint facade used by `Connection.initServer` to attach one accepted
+/// listener session to peer-facing callbacks.
 pub const ServerEndpoint = endpoint.ServerEndpoint;
+/// Borrowed handle for one accepted server-side QUIC session.
 pub const Session = session.Session;
 pub const LengthDelimitedFramer = framer.LengthDelimitedFramer;
 pub const NativeControlFramer = native_framer.ControlFramer;
