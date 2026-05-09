@@ -84,6 +84,24 @@ one complete Cap'n Proto RPC frame, and inbound callbacks receive one complete
 RPC frame. Higher-level RPC code can therefore use the same `Peer` attachment
 path in both modes.
 
+## Listener And Session Boundary
+
+`rpc.quic.Connection.initServer()` is the compatibility entry point for the
+current one-session transport. Internally it owns a `rpc.quic.Listener`, accepts
+the first server-side `rpc.quic.Session`, and attaches that session to the
+existing `Connection.start()` callbacks.
+
+The lower-level boundary is also public for future fanout work:
+
+- `rpc.quic.Listener` owns the UDP socket and `quic_zig.Server`.
+- `rpc.quic.Session` is a borrowed handle for one accepted server slot.
+- `rpc.quic.ServerEndpoint` pairs a listener with the session currently attached
+  to the compatibility connection.
+
+`ServerOptions.max_concurrent_connections` must remain
+`rpc.quic.supported_max_concurrent_sessions` for now. Raising that value will
+need a separate accept loop that hands sessions to independent peer transports.
+
 ## Native Resource Budgets
 
 Native mode has the normal QUIC send queue budgets plus native-specific stream
@@ -138,9 +156,8 @@ const options = quic.withProductionServerHardening(.{
 
 ## Current Limits
 
-- One server `rpc.quic.Connection` represents one active QUIC session. The
-  listener/session split is in place, but broad server fanout is still a future
-  transport layer.
+- One server `rpc.quic.Connection` owns one listener and represents one active
+  QUIC session. Broad server fanout is still a future transport layer.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.

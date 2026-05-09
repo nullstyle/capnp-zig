@@ -19,6 +19,25 @@ pub const NativeControlFramer = native_framer.ControlFramer;
 pub const NativeControlFrame = native_framer.ControlFrame;
 pub const length_prefix_bytes = framer.length_prefix_bytes;
 pub const native = native_framer;
+pub const supported_max_concurrent_sessions: u32 = 1;
+
+pub const Role = enum { client, server };
+
+pub const ClientEndpoint = struct {};
+pub const ServerEndpoint = struct {};
+
+pub const Endpoint = union(Role) {
+    client: ClientEndpoint,
+    server: ServerEndpoint,
+};
+
+pub const Session = struct {};
+
+pub const Listener = struct {
+    pub fn init(_: anytype, _: anytype, _: anytype) noreturn {
+        @compileError(unavailable_message);
+    }
+};
 
 pub const TransportMode = enum {
     baseline,

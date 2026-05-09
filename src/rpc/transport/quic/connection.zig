@@ -4,6 +4,7 @@ const quic_zig = @import("quic_zig");
 
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
+const listener_mod = @import("listener.zig");
 const native_framer = @import("native_framer.zig");
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
@@ -24,7 +25,6 @@ const OutboundQueue = outbound_queue.OutboundQueue;
 
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
-const ServerEndpoint = endpoint_mod.ServerEndpoint;
 
 const NativeQueuedKind = enum {
     inline_rpc,
@@ -398,12 +398,11 @@ const NativeState = struct {
 
 /// A single vat-to-vat Cap'n Proto RPC session over QUIC.
 ///
-/// Client-side instances own one `quic_zig.Client` and one UDP socket. Server-side
-/// instances own one `quic_zig.Server` configured for one active QUIC connection by
-/// default; this intentionally models the first QUIC design step as "one QUIC
-/// connection equals one authenticated vat session". A future multi-client
-/// listener can fan out `quic_zig.Server.Slot`s to multiple `Connection`s without
-/// changing the peer-facing send/start/close shape.
+/// Client-side instances own one `ClientEndpoint`. Server-side compatibility
+/// instances own one `Listener` and attach the first accepted `Session` to the
+/// peer-facing callbacks. This intentionally preserves the first QUIC design
+/// step as "one QUIC connection equals one authenticated vat session" while
+/// making the future listener fanout boundary explicit.
 pub const Connection = struct {
     pub const StepMode = scheduler.StepMode;
     pub const StepResult = scheduler.StepResult;
@@ -411,11 +410,7 @@ pub const Connection = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     role: Role,
-    socket: Net.Socket,
     endpoint: Endpoint,
-    remote_addr: ?Net.IpAddress = null,
-    start_timestamp: std.Io.Timestamp,
-    receive_timeout: std.Io.Duration,
     udp_rx_buf: []u8,
     udp_tx_buf: []u8,
     stream_read_buf: []u8,
@@ -425,7 +420,6 @@ pub const Connection = struct {
     outbound: OutboundQueue = .{},
     native_state: NativeState,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    socket_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// POSIX-only run-loop wake pipe. [0] is read by the run loop; [1] is
     /// written by cross-thread `sendFrame()` / `requestClose()` calls.
@@ -473,9 +467,13 @@ pub const Connection = struct {
             allocator,
             io,
             .client,
-            socket,
-            .{ .client = client },
-            options.receive_timeout,
+            .{ .client = .{
+                .socket = socket,
+                .transport = client,
+                .remote_addr = options.remote_addr,
+                .start_timestamp = std.Io.Timestamp.now(io, .awake),
+                .receive_timeout = options.receive_timeout,
+            } },
             options.udp_rx_buffer_size,
             options.udp_tx_buffer_size,
             options.stream_read_buffer_size,
@@ -484,7 +482,6 @@ pub const Connection = struct {
             options.max_outbound_queue_bytes,
             options.mode,
             options.native,
-            options.remote_addr,
             false,
         );
     }
@@ -494,24 +491,14 @@ pub const Connection = struct {
         io: std.Io,
         options: ServerOptions,
     ) !Connection {
-        const server_config = try quic_options.serverConfigFromOptions(allocator, options);
-
-        const socket = try Net.IpAddress.bind(&options.listen_addr, io, .{
-            .mode = .dgram,
-            .protocol = .udp,
-        });
-        errdefer socket.close(io);
-
-        var server = try quic_zig.Server.init(server_config);
-        errdefer server.deinit();
+        var listener = try listener_mod.Listener.init(allocator, io, options);
+        errdefer listener.deinit();
 
         return try initCommon(
             allocator,
             io,
             .server,
-            socket,
-            .{ .server = .{ .server = server } },
-            options.receive_timeout,
+            .{ .server = .{ .listener = listener } },
             options.udp_rx_buffer_size,
             options.udp_tx_buffer_size,
             options.stream_read_buffer_size,
@@ -520,7 +507,6 @@ pub const Connection = struct {
             options.max_outbound_queue_bytes,
             options.mode,
             options.native,
-            null,
             options.reveal_close_reason_on_wire,
         );
     }
@@ -529,9 +515,7 @@ pub const Connection = struct {
         allocator: std.mem.Allocator,
         io: std.Io,
         role: Role,
-        socket: Net.Socket,
         endpoint: Endpoint,
-        receive_timeout: std.Io.Duration,
         udp_rx_buffer_size: usize,
         udp_tx_buffer_size: usize,
         stream_read_buffer_size: usize,
@@ -540,7 +524,6 @@ pub const Connection = struct {
         max_outbound_queue_bytes: usize,
         mode: TransportMode,
         native_options: NativeOptions,
-        remote_addr: ?Net.IpAddress,
         reveal_close_reason_on_wire: bool,
     ) !Connection {
         const udp_rx_buf = try allocator.alloc(u8, udp_rx_buffer_size);
@@ -554,11 +537,7 @@ pub const Connection = struct {
             .allocator = allocator,
             .io = io,
             .role = role,
-            .socket = socket,
             .endpoint = endpoint,
-            .remote_addr = remote_addr,
-            .start_timestamp = std.Io.Timestamp.now(io, .awake),
-            .receive_timeout = receive_timeout,
             .udp_rx_buf = udp_rx_buf,
             .udp_tx_buf = udp_tx_buf,
             .stream_read_buf = stream_read_buf,
@@ -626,12 +605,9 @@ pub const Connection = struct {
         self.on_error = null;
         self.on_close = null;
         self.closeWakeFds();
-        if (!self.socket_closed.swap(true, .acq_rel)) {
-            self.socket.close(self.io);
-        }
         switch (self.endpoint) {
-            .client => |*client| client.deinit(),
-            .server => |*server| server.server.deinit(),
+            .client => |*client| client.deinit(self.io),
+            .server => |*server| server.deinit(),
         }
         self.allocator.free(self.udp_rx_buf);
         self.allocator.free(self.udp_tx_buf);
@@ -729,7 +705,10 @@ pub const Connection = struct {
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
-        return self.socket.address;
+        return switch (self.endpoint) {
+            .client => |*client| client.getAddress(),
+            .server => |*server| server.listener.getAddress(),
+        };
     }
 
     pub fn assertThreadAffinity(self: *const Connection) void {
@@ -752,7 +731,7 @@ pub const Connection = struct {
         const next_deadline_us = self.nextTimerDeadlineUs(now_us);
         const waited_for = scheduler.receiveWaitDuration(.{
             .mode = mode,
-            .receive_timeout = self.receive_timeout,
+            .receive_timeout = self.receiveTimeout(),
             .now_us = now_us,
             .next_deadline_us = next_deadline_us,
             .immediate_work = self.hasImmediateWork(),
@@ -814,7 +793,8 @@ pub const Connection = struct {
             receive_timeout = std.Io.Duration.zero;
         }
 
-        const msg = self.socket.receiveTimeout(self.io, self.udp_rx_buf, .{
+        const socket = self.activeSocket();
+        const msg = socket.receiveTimeout(self.io, self.udp_rx_buf, .{
             .duration = .{
                 .raw = receive_timeout,
                 .clock = .awake,
@@ -828,15 +808,14 @@ pub const Connection = struct {
 
         switch (self.endpoint) {
             .client => |*client| {
-                const remote = self.remote_addr.?;
+                const remote = client.remote_addr;
                 if (!Net.IpAddress.eql(&msg.from, &remote)) return result;
-                try client.conn.handle(msg.data, quic_zig_adapter.ipAddressToPathAddress(msg.from), now_us);
+                try client.transport.conn.handle(msg.data, quic_zig_adapter.ipAddressToPathAddress(msg.from), now_us);
             },
             .server => |*server| {
-                const from = quic_zig_adapter.ipAddressToPathAddress(msg.from);
-                _ = try server.server.feed(msg.data, from, now_us);
+                _ = try server.listener.feedDatagram(msg.data, msg.from, now_us);
                 self.setServerSlotIfAccepted();
-                try self.drainStatelessResponses(server);
+                try server.listener.drainStatelessResponses();
             },
         }
         return result;
@@ -850,9 +829,10 @@ pub const Connection = struct {
     fn waitForUdpOrWake(self: *Connection, wait_duration: std.Io.Duration) !?PollResult {
         if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return null;
         const fds = self.wake_fds orelse return null;
+        const socket = self.activeSocket();
 
         var poll_fds = [2]std.posix.pollfd{
-            .{ .fd = self.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
+            .{ .fd = socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
             .{ .fd = fds[0], .events = std.posix.POLL.IN, .revents = 0 },
         };
         const timeout_ms = scheduler.durationToPollTimeoutMs(wait_duration);
@@ -915,6 +895,20 @@ pub const Connection = struct {
 
     fn hasWakeSupport(self: *const Connection) bool {
         return self.wake_fds != null;
+    }
+
+    fn receiveTimeout(self: *const Connection) std.Io.Duration {
+        return switch (self.endpoint) {
+            .client => |*client| client.receive_timeout,
+            .server => |*server| server.listener.receive_timeout,
+        };
+    }
+
+    fn activeSocket(self: *Connection) *Net.Socket {
+        return switch (self.endpoint) {
+            .client => |*client| &client.socket,
+            .server => |*server| &server.listener.socket,
+        };
     }
 
     fn hasImmediateWork(self: *Connection) bool {
@@ -1301,33 +1295,24 @@ pub const Connection = struct {
     fn drainOutgoingDatagrams(self: *Connection, now_us: u64) !void {
         switch (self.endpoint) {
             .client => |*client| {
-                while (try client.conn.pollDatagram(self.udp_tx_buf, now_us)) |out| {
+                while (try client.transport.conn.pollDatagram(self.udp_tx_buf, now_us)) |out| {
                     const dest = if (out.to) |addr|
-                        quic_zig_adapter.pathAddressToIpAddress(addr) orelse self.remote_addr.?
+                        quic_zig_adapter.pathAddressToIpAddress(addr) orelse client.remote_addr
                     else
-                        self.remote_addr.?;
-                    try self.socket.send(self.io, &dest, self.udp_tx_buf[0..out.len]);
+                        client.remote_addr;
+                    try client.socket.send(self.io, &dest, self.udp_tx_buf[0..out.len]);
                 }
             },
             .server => |*server| {
                 const session = server.session.handle() orelse return;
-                while (try session.pollDatagram(self.udp_tx_buf, now_us)) |out| {
-                    try self.socket.send(self.io, &out.dest, out.bytes);
-                }
+                try server.listener.drainSessionDatagrams(session, self.udp_tx_buf, now_us);
             },
-        }
-    }
-
-    fn drainStatelessResponses(self: *Connection, server: *ServerEndpoint) !void {
-        while (server.server.drainStatelessResponse()) |response| {
-            const dest = quic_zig_adapter.pathAddressToIpAddress(response.dst) orelse continue;
-            try self.socket.send(self.io, &dest, response.slice());
         }
     }
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
         return switch (self.endpoint) {
-            .client => |*client| client.conn,
+            .client => |*client| client.transport.conn,
             .server => |*server| server.session.quicConnection(),
         };
     }
@@ -1336,7 +1321,7 @@ pub const Connection = struct {
         switch (self.endpoint) {
             .client => return,
             .server => |*server| {
-                _ = server.session.adoptFirstAccepted(&server.server);
+                _ = server.session.adoptFirstAccepted(&server.listener.server);
             },
         }
     }
@@ -1347,23 +1332,23 @@ pub const Connection = struct {
             .server => |*server| {
                 if (server.session.handle()) |session| {
                     if (!session.isClosed()) return;
-                    const reaped = server.server.reap();
+                    const reaped = server.listener.reapClosedSessions();
                     if (reaped > 0) {
                         server.session.clear();
                         _ = self.close_requested.swap(true, .acq_rel);
                     }
                 } else {
-                    _ = server.server.reap();
+                    _ = server.listener.reapClosedSessions();
                 }
             },
         }
     }
 
     fn nowUs(self: *Connection) u64 {
-        const now = std.Io.Timestamp.now(self.io, .awake);
-        const delta = self.start_timestamp.durationTo(now).toMicroseconds();
-        if (delta <= 0) return 0;
-        return @intCast(delta);
+        return switch (self.endpoint) {
+            .client => |*client| client.nowUs(self.io),
+            .server => |*server| server.listener.nowUs(),
+        };
     }
 
     fn invokeOnError(self: *Connection, err: anyerror) void {
