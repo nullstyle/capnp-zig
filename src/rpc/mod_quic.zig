@@ -14,6 +14,9 @@ pub const peer = base.peer;
 pub const stream_state = base.stream_state;
 pub const worker_pool = base.worker_pool;
 pub const generated = base.generated;
+pub const testing = base.testing;
+
+/// Deprecated compatibility alias for old test imports. Use `rpc.testing`.
 pub const _internal = base._internal;
 
 pub const quic = @import("./transport/quic/mod.zig");

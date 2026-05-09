@@ -4,7 +4,7 @@ const capnpc = @import("capnpc-zig");
 const cap_table = capnpc.rpc.cap_table;
 const message = capnpc.message;
 const protocol = capnpc.rpc.protocol;
-const peer_control = capnpc.rpc._internal.peer_control;
+const peer_control = capnpc.rpc.testing.peer_control;
 
 const allocateEmbargoIdForPeerFn = peer_control.allocateEmbargoIdForPeerFn;
 const captureAnyPointerPayloadForPeerFn = peer_control.captureAnyPointerPayloadForPeerFn;
