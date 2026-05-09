@@ -55,10 +55,7 @@ pub const Connection = struct {
     native: NativeEngine,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_state: wake_mod.Handle = .{},
-    reveal_close_reason_on_wire: bool = false,
-    close_status: ?quic_close.Status = null,
-    close_reason_buf: [quic_close.max_wire_reason_bytes]u8 = undefined,
-    close_reason_len: usize = 0,
+    close_state: quic_close.State = .{},
 
     ctx: ?*anyopaque = null,
     on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
@@ -188,7 +185,7 @@ pub const Connection = struct {
                 native_options,
             ),
             .wake_state = wake_mod.Handle.init(),
-            .reveal_close_reason_on_wire = reveal_close_reason_on_wire,
+            .close_state = quic_close.State.init(reveal_close_reason_on_wire),
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
     }
@@ -301,7 +298,7 @@ pub const Connection = struct {
     }
 
     pub fn closeStatus(self: *const Connection) ?quic_close.Status {
-        return self.close_status;
+        return self.close_state.status();
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
@@ -613,11 +610,9 @@ pub const Connection = struct {
     }
 
     fn closeQuicConn(self: *Connection, conn: *quic_zig.Connection) void {
-        if (self.close_status == null) {
-            self.recordCloseStatus(.normal, null);
-        }
-        const status = self.close_status orelse return;
-        conn.close(false, status.codeValue(), self.close_reason_buf[0..self.close_reason_len]);
+        self.recordCloseStatus(.normal, null);
+        const status = self.close_state.status() orelse return;
+        conn.close(false, status.codeValue(), self.close_state.reason());
     }
 
     fn recordCloseStatus(
@@ -625,20 +620,11 @@ pub const Connection = struct {
         code: quic_close.ApplicationCloseCode,
         err: ?anyerror,
     ) void {
-        if (self.close_status != null) return;
-        const reason = quic_close.prepareWireReason(
-            &self.close_reason_buf,
-            code,
-            err,
-            self.reveal_close_reason_on_wire,
-        );
-        self.close_reason_len = reason.len;
-        self.close_status = .{
-            .code = code,
-            .err = err,
-            .reason_truncated = reason.truncated,
-            .reason_reveals_detail = reason.reveals_detail,
-        };
+        self.close_state.record(code, err);
+    }
+
+    fn closeReason(self: *const Connection) []const u8 {
+        return self.close_state.reason();
     }
 
     fn drainOutgoingDatagrams(self: *Connection, now_us: u64) !void {
@@ -912,7 +898,7 @@ test "QUIC native frame errors record typed terminal close status" {
     const status = conn.closeStatus().?;
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.frame_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
-    try std.testing.expectEqualStrings("rpc frame error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqualStrings("rpc frame error", conn.closeReason());
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 
@@ -963,7 +949,7 @@ test "QUIC native control allocation OOM is terminal when serviced" {
     const status = conn.closeStatus().?;
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.internal_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
-    try std.testing.expectEqualStrings("rpc transport error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqualStrings("rpc transport error", conn.closeReason());
     try std.testing.expectEqual(@as(usize, 0), conn.native.inbound.buffer.items.len);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
@@ -1001,7 +987,7 @@ test "QUIC dispatch treats malformed frames as terminal" {
     const status = conn.closeStatus().?;
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.frame_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
-    try std.testing.expectEqualStrings("rpc frame error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqualStrings("rpc frame error", conn.closeReason());
     try std.testing.expect(!status.reason_reveals_detail);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
@@ -1014,7 +1000,7 @@ test "QUIC dispatch can reveal sanitized frame error details when configured" {
 
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
-    conn.reveal_close_reason_on_wire = true;
+    conn.close_state.reveal_detail_on_wire = true;
     conn.on_message = Harness.onMessage;
     conn.on_error = Harness.onError;
 
@@ -1024,7 +1010,7 @@ test "QUIC dispatch can reveal sanitized frame error details when configured" {
 
     const status = conn.closeStatus().?;
     try std.testing.expect(status.reason_reveals_detail);
-    try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", conn.closeReason());
 }
 
 test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
@@ -1066,7 +1052,7 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     const status = conn.closeStatus().?;
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.internal_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
-    try std.testing.expectEqualStrings("rpc transport error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqualStrings("rpc transport error", conn.closeReason());
     try std.testing.expectEqual(@as(usize, 0), conn.baseline.inbound.buffer.items.len);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
@@ -1108,7 +1094,7 @@ test "QUIC dispatch treats message callback failure as terminal" {
     try std.testing.expectEqual(@as(?anyerror, error.CallbackFailed), state.last_error);
     const status = conn.closeStatus().?;
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.peer_callback_failure, status.code);
-    try std.testing.expectEqualStrings("rpc callback error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqualStrings("rpc callback error", conn.closeReason());
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 

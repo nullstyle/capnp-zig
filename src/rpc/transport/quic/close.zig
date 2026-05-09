@@ -26,6 +26,49 @@ pub const Status = struct {
     }
 };
 
+/// Tracks the first terminal close status and its sanitized wire reason.
+pub const State = struct {
+    reveal_detail_on_wire: bool = false,
+    status_value: ?Status = null,
+    reason_buf: [max_wire_reason_bytes]u8 = undefined,
+    reason_len: usize = 0,
+
+    pub fn init(reveal_detail_on_wire: bool) State {
+        return .{
+            .reveal_detail_on_wire = reveal_detail_on_wire,
+        };
+    }
+
+    pub fn status(self: *const State) ?Status {
+        return self.status_value;
+    }
+
+    pub fn reason(self: *const State) []const u8 {
+        return self.reason_buf[0..self.reason_len];
+    }
+
+    pub fn record(
+        self: *State,
+        code: ApplicationCloseCode,
+        err: ?anyerror,
+    ) void {
+        if (self.status_value != null) return;
+        const prepared = prepareWireReason(
+            &self.reason_buf,
+            code,
+            err,
+            self.reveal_detail_on_wire,
+        );
+        self.reason_len = prepared.len;
+        self.status_value = .{
+            .code = code,
+            .err = err,
+            .reason_truncated = prepared.truncated,
+            .reason_reveals_detail = prepared.reveals_detail,
+        };
+    }
+};
+
 pub const PreparedReason = struct {
     len: usize = 0,
     truncated: bool = false,
@@ -137,4 +180,17 @@ test "QUIC close reason preparation reveals sanitized details when configured" {
     try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", buf[0..prepared.len]);
     try std.testing.expect(!prepared.truncated);
     try std.testing.expect(prepared.reveals_detail);
+}
+
+test "QUIC close state records only the first status" {
+    var state = State.init(true);
+
+    state.record(.frame_error, error.InvalidFrame);
+    state.record(.internal_error, error.OutOfMemory);
+
+    const status_value = state.status().?;
+    try std.testing.expectEqual(ApplicationCloseCode.frame_error, status_value.code);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status_value.err);
+    try std.testing.expect(status_value.reason_reveals_detail);
+    try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", state.reason());
 }
