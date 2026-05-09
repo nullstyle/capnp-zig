@@ -3,18 +3,21 @@ const builtin = @import("builtin");
 
 const baseline_engine = @import("baseline_engine.zig");
 const close_controller = @import("close_controller.zig");
+const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_engine = @import("native_engine.zig");
 const quic_options = @import("options.zig");
 const wake_mod = @import("wake.zig");
 
 const BaselineEngine = baseline_engine.BaselineEngine;
+const ClientOptions = quic_options.ClientOptions;
 const CloseController = close_controller.Controller;
 const Endpoint = endpoint_mod.Endpoint;
 const EndpointRuntime = endpoint_mod.Runtime;
 const NativeEngine = native_engine.NativeEngine;
 const NativeOptions = quic_options.NativeOptions;
 const Role = endpoint_mod.Role;
+const ServerOptions = quic_options.ServerOptions;
 const TransportMode = quic_options.TransportMode;
 
 pub const Config = struct {
@@ -55,6 +58,46 @@ pub const Config = struct {
         };
     }
 };
+
+pub fn initClient(
+    comptime Connection: type,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ClientOptions,
+) !Connection {
+    try quic_options.validateClientOptions(options);
+
+    var created = try endpoint_factory.initClient(allocator, io, options);
+    errdefer created.deinit(io);
+
+    return try init(
+        Connection,
+        allocator,
+        io,
+        created.role,
+        created.endpoint,
+        Config.fromClient(options),
+    );
+}
+
+pub fn initServer(
+    comptime Connection: type,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    options: ServerOptions,
+) !Connection {
+    var created = try endpoint_factory.initServer(allocator, io, options);
+    errdefer created.deinit(io);
+
+    return try init(
+        Connection,
+        allocator,
+        io,
+        created.role,
+        created.endpoint,
+        Config.fromServer(options),
+    );
+}
 
 pub fn init(
     comptime Connection: type,

@@ -10,7 +10,6 @@ const connection_init = @import("connection_init.zig");
 const connection_loop = @import("connection_loop.zig");
 const connection_termination = @import("connection_termination.zig");
 const engine_owner = @import("engine_owner.zig");
-const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
 const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
@@ -68,19 +67,7 @@ pub const Connection = struct {
         io: std.Io,
         options: ClientOptions,
     ) !Connection {
-        try quic_options.validateClientOptions(options);
-
-        var created = try endpoint_factory.initClient(allocator, io, options);
-        errdefer created.deinit(io);
-
-        return try connection_init.init(
-            Connection,
-            allocator,
-            io,
-            created.role,
-            created.endpoint,
-            connection_init.Config.fromClient(options),
-        );
+        return try connection_init.initClient(Connection, allocator, io, options);
     }
 
     pub fn initServer(
@@ -88,17 +75,7 @@ pub const Connection = struct {
         io: std.Io,
         options: ServerOptions,
     ) !Connection {
-        var created = try endpoint_factory.initServer(allocator, io, options);
-        errdefer created.deinit(io);
-
-        return try connection_init.init(
-            Connection,
-            allocator,
-            io,
-            created.role,
-            created.endpoint,
-            connection_init.Config.fromServer(options),
-        );
+        return try connection_init.initServer(Connection, allocator, io, options);
     }
 
     pub fn deinit(self: *Connection) void {
