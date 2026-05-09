@@ -29,6 +29,7 @@ Requires **Zig 0.17-dev** on `PATH` (minimum declared in `build.zig.zon`; `mise.
 | Run all tests | `zig build test --summary all` or `just test` |
 | Format code | `zig fmt src/ tests/` or `just fmt` |
 | Check (no link) | `zig build check` or `just check` |
+| Docs/examples smoke | `zig build docs-smoke` or `just docs-smoke` |
 | Run example | `just example` (requires `capnp` CLI) |
 | Install plugin | `just install` (copies to `~/.local/bin/`) |
 

@@ -282,6 +282,19 @@ pub fn build(b: *std.Build) void {
     const hardening_step = b.step("hardening", "Run static hardening gates");
     hardening_step.dependOn(&run_hardening_gate.step);
 
+    const docs_examples_smoke = b.addExecutable(.{
+        .name = "docs-examples-smoke",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/docs_examples_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_docs_examples_smoke = b.addRunArtifact(docs_examples_smoke);
+    const docs_smoke_step = b.step("docs-smoke", "Run documentation and examples smoke checks");
+    docs_smoke_step.dependOn(&run_docs_examples_smoke.step);
+
     // RPC ping-pong example
     const rpc_pingpong_example = b.addExecutable(.{
         .name = "example-rpc-pingpong",
@@ -679,4 +692,5 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&e2e_zig_client.step);
     check_step.dependOn(&e2e_zig_server.step);
     check_step.dependOn(&wasm_host_module.step);
+    check_step.dependOn(docs_smoke_step);
 }

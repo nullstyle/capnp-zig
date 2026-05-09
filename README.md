@@ -458,6 +458,9 @@ just build
 # Run tests
 just test
 
+# Run RPC ping-pong example
+just example
+
 # Format code
 just fmt
 
@@ -466,6 +469,9 @@ just clean
 
 # Check for compilation errors
 just check
+
+# Check docs/examples for stale public API names and missing build recipes
+zig build docs-smoke
 
 # Generate API docs into zig-out/docs
 just docs

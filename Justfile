@@ -10,6 +10,10 @@ release:
 test:
     zig build test --summary all
 
+# Run the RPC ping-pong example
+example:
+    zig build example-rpc
+
 # Run static hardening gates
 hardening:
     zig build hardening
@@ -33,6 +37,10 @@ test-oom:
 # Run deterministic hardening fuzz/smoke coverage
 test-fuzz-smoke:
     zig build test-fuzz-smoke --summary all
+
+# Run documentation/example smoke coverage
+docs-smoke:
+    zig build docs-smoke --summary all
 
 # Run key hardening gates under ReleaseSafe
 test-release-safe:
@@ -97,6 +105,7 @@ ci:
     zig build test-resource-budgets --summary all
     zig build test-oom --summary all
     zig build test-e2e-security --summary all
+    zig build docs-smoke --summary all
     zig build test-release-safe --summary all
     just src/rpc/check-rpc
     zig build test --summary all
