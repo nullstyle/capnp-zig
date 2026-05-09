@@ -3,7 +3,7 @@ const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
 const rpc = capnpc.rpc;
-const protocol = rpc.protocol;
+const protocol = rpc.wire.protocol;
 const Peer = rpc.peer.Peer;
 
 const CompoundMessage = struct {
@@ -114,7 +114,7 @@ fn exerciseHostileMessageDecode(allocator: std.mem.Allocator) !void {
 }
 
 fn exerciseRpcFramer(allocator: std.mem.Allocator, frame: []const u8) !void {
-    var framer = rpc.framing.Framer.initWithOptions(allocator, .{ .max_buffered_bytes = 4096 });
+    var framer = rpc.wire.framing.Framer.initWithOptions(allocator, .{ .max_buffered_bytes = 4096 });
     defer framer.deinit();
 
     try framer.push(frame[0..3]);
@@ -131,7 +131,7 @@ fn exerciseRpcFramer(allocator: std.mem.Allocator, frame: []const u8) !void {
     };
 
     for (hostile_streams) |stream| {
-        var hostile = rpc.framing.Framer.initWithOptions(allocator, .{ .max_buffered_bytes = 64 });
+        var hostile = rpc.wire.framing.Framer.initWithOptions(allocator, .{ .max_buffered_bytes = 64 });
         defer hostile.deinit();
         hostile.push(stream) catch continue;
         _ = hostile.popFrame() catch {
@@ -175,7 +175,7 @@ fn exerciseQuicLengthFramer(allocator: std.mem.Allocator, frame: []const u8) !vo
     std.mem.writeInt(u32, bytes.items[second_prefix..][0..4], 3, .little);
     try bytes.appendSlice(allocator, "xyz");
 
-    var framer = rpc.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
+    var framer = rpc.transport.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
         .max_message_bytes = 1024,
         .max_buffered_bytes = 2048,
     });
@@ -194,7 +194,7 @@ fn exerciseQuicLengthFramer(allocator: std.mem.Allocator, frame: []const u8) !vo
     defer allocator.free(second);
     try std.testing.expectEqualStrings("xyz", second);
 
-    var hostile = rpc.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
+    var hostile = rpc.transport.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
         .max_message_bytes = 8,
         .max_buffered_bytes = 12,
     });

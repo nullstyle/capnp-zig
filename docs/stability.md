@@ -42,13 +42,11 @@ provides guidance for downstream consumers.
 
 These modules are implementation details and should not be imported directly by
 consumers. The project test suite uses the deliberately unstable `rpc.testing`
-facade for narrow white-box coverage. The older `rpc._internal` name remains as
-a deprecated compatibility alias to that same narrow test-support facade.
+facade for narrow white-box coverage.
 
 | Module | Path | Notes |
 |---|---|---|
 | RPC testing facade | `src/rpc/testing.zig` | Test-only access to the current white-box RPC helpers. |
-| RPC internal compatibility alias | `src/rpc/internal.zig` | Deprecated alias for `rpc.testing`; kept only for old test imports and compatibility fixtures. |
 | Peer dispatch | `src/rpc/peer/dispatch.zig` | Inbound message dispatch logic. |
 | Peer control | `src/rpc/peer/peer_control.zig` | Peer lifecycle control. |
 | Peer cleanup | `src/rpc/peer/peer_cleanup.zig` | Resource cleanup on peer teardown. |

@@ -574,7 +574,7 @@ fn onSpawnEntity(
     _: *rpc.peer.Peer,
     params: game_world.GameWorld.SpawnEntity.Params.Reader,
     results: *game_world.GameWorld.SpawnEntity.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *GameWorldService = @ptrCast(@alignCast(ctx_ptr));
     const request = try params.getRequest();
@@ -610,7 +610,7 @@ fn onDespawnEntity(
     _: *rpc.peer.Peer,
     params: game_world.GameWorld.DespawnEntity.Params.Reader,
     results: *game_world.GameWorld.DespawnEntity.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *GameWorldService = @ptrCast(@alignCast(ctx_ptr));
     const id_reader = try params.getId();
@@ -629,7 +629,7 @@ fn onGetEntity(
     _: *rpc.peer.Peer,
     params: game_world.GameWorld.GetEntity.Params.Reader,
     results: *game_world.GameWorld.GetEntity.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *GameWorldService = @ptrCast(@alignCast(ctx_ptr));
     const id_reader = try params.getId();
@@ -649,7 +649,7 @@ fn onMoveEntity(
     _: *rpc.peer.Peer,
     params: game_world.GameWorld.MoveEntity.Params.Reader,
     results: *game_world.GameWorld.MoveEntity.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *GameWorldService = @ptrCast(@alignCast(ctx_ptr));
     const id_reader = try params.getId();
@@ -678,7 +678,7 @@ fn onDamageEntity(
     _: *rpc.peer.Peer,
     params: game_world.GameWorld.DamageEntity.Params.Reader,
     results: *game_world.GameWorld.DamageEntity.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *GameWorldService = @ptrCast(@alignCast(ctx_ptr));
     const id_reader = try params.getId();
@@ -709,7 +709,7 @@ fn onQueryArea(
     _: *rpc.peer.Peer,
     params: game_world.GameWorld.QueryArea.Params.Reader,
     results: *game_world.GameWorld.QueryArea.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *GameWorldService = @ptrCast(@alignCast(ctx_ptr));
     const query = try params.getQuery();
@@ -794,7 +794,7 @@ fn onCreateRoom(
     peer: *rpc.peer.Peer,
     params: chat.ChatService.CreateRoom.Params.Reader,
     results: *chat.ChatService.CreateRoom.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *ChatService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -832,7 +832,7 @@ fn onJoinRoom(
     peer: *rpc.peer.Peer,
     params: chat.ChatService.JoinRoom.Params.Reader,
     results: *chat.ChatService.JoinRoom.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *ChatService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -861,7 +861,7 @@ fn onListRooms(
     _: *rpc.peer.Peer,
     _: chat.ChatService.ListRooms.Params.Reader,
     results: *chat.ChatService.ListRooms.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *ChatService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -884,7 +884,7 @@ fn onWhisper(
     _: *rpc.peer.Peer,
     params: chat.ChatService.Whisper.Params.Reader,
     results: *chat.ChatService.Whisper.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const from = try params.getFrom();
     const from_id = try (try from.getId()).getId();
@@ -918,7 +918,7 @@ fn onSendMessage(
     _: *rpc.peer.Peer,
     params: chat.ChatRoom.SendMessage.Params.Reader,
     results: *chat.ChatRoom.SendMessage.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const session: *ChatRoomSession = @ptrCast(@alignCast(ctx_ptr));
 
@@ -945,7 +945,7 @@ fn onSendEmote(
     _: *rpc.peer.Peer,
     params: chat.ChatRoom.SendEmote.Params.Reader,
     results: *chat.ChatRoom.SendEmote.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const session: *ChatRoomSession = @ptrCast(@alignCast(ctx_ptr));
 
@@ -972,7 +972,7 @@ fn onGetHistory(
     _: *rpc.peer.Peer,
     params: chat.ChatRoom.GetHistory.Params.Reader,
     results: *chat.ChatRoom.GetHistory.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const session: *ChatRoomSession = @ptrCast(@alignCast(ctx_ptr));
     const limit = try params.getLimit();
@@ -1001,7 +1001,7 @@ fn onGetInfo(
     _: *rpc.peer.Peer,
     _: chat.ChatRoom.GetInfo.Params.Reader,
     results: *chat.ChatRoom.GetInfo.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const session: *ChatRoomSession = @ptrCast(@alignCast(ctx_ptr));
     var info = try results.initInfo();
@@ -1013,7 +1013,7 @@ fn onLeave(
     _: *rpc.peer.Peer,
     _: chat.ChatRoom.Leave.Params.Reader,
     results: *chat.ChatRoom.Leave.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     try results.setStatus(statusOk(game_types.StatusCode));
 }
@@ -1044,7 +1044,7 @@ fn onGetInventory(
     _: *rpc.peer.Peer,
     params: inventory.InventoryService.GetInventory.Params.Reader,
     results: *inventory.InventoryService.GetInventory.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *InventoryService = @ptrCast(@alignCast(ctx_ptr));
     const player = try params.getPlayer();
@@ -1072,7 +1072,7 @@ fn onAddItem(
     _: *rpc.peer.Peer,
     params: inventory.InventoryService.AddItem.Params.Reader,
     results: *inventory.InventoryService.AddItem.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *InventoryService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1129,7 +1129,7 @@ fn onRemoveItem(
     _: *rpc.peer.Peer,
     params: inventory.InventoryService.RemoveItem.Params.Reader,
     results: *inventory.InventoryService.RemoveItem.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *InventoryService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1168,7 +1168,7 @@ fn onStartTrade(
     peer: *rpc.peer.Peer,
     params: inventory.InventoryService.StartTrade.Params.Reader,
     results: *inventory.InventoryService.StartTrade.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *InventoryService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1213,7 +1213,7 @@ fn onFilterByRarity(
     _: *rpc.peer.Peer,
     params: inventory.InventoryService.FilterByRarity.Params.Reader,
     results: *inventory.InventoryService.FilterByRarity.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *InventoryService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1272,7 +1272,7 @@ fn onOfferItems(
     _: *rpc.peer.Peer,
     params: inventory.TradeSession.OfferItems.Params.Reader,
     results: *inventory.TradeSession.OfferItems.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const state: *TradeSessionServerState = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1293,7 +1293,7 @@ fn onRemoveTradeItems(
     _: *rpc.peer.Peer,
     _: inventory.TradeSession.RemoveItems.Params.Reader,
     results: *inventory.TradeSession.RemoveItems.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const state: *TradeSessionServerState = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1310,7 +1310,7 @@ fn onAcceptTrade(
     _: *rpc.peer.Peer,
     _: inventory.TradeSession.Accept.Params.Reader,
     results: *inventory.TradeSession.Accept.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const state: *TradeSessionServerState = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1324,7 +1324,7 @@ fn onConfirmTrade(
     _: *rpc.peer.Peer,
     _: inventory.TradeSession.Confirm.Params.Reader,
     results: *inventory.TradeSession.Confirm.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const state: *TradeSessionServerState = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1338,7 +1338,7 @@ fn onCancelTrade(
     _: *rpc.peer.Peer,
     _: inventory.TradeSession.Cancel.Params.Reader,
     results: *inventory.TradeSession.Cancel.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const state: *TradeSessionServerState = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1351,7 +1351,7 @@ fn onViewOtherOffer(
     _: *rpc.peer.Peer,
     _: inventory.TradeSession.ViewOtherOffer.Params.Reader,
     results: *inventory.TradeSession.ViewOtherOffer.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     var offer = try results.initOffer();
     _ = try offer.initOfferedItems(0);
@@ -1363,7 +1363,7 @@ fn onGetTradeState(
     _: *rpc.peer.Peer,
     _: inventory.TradeSession.GetState.Params.Reader,
     results: *inventory.TradeSession.GetState.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const state: *TradeSessionServerState = @ptrCast(@alignCast(ctx_ptr));
     try results.setState(state.trade.state);
@@ -1404,7 +1404,7 @@ fn onEnqueue(
     _: *rpc.peer.Peer,
     params: matchmaking.MatchmakingService.Enqueue.Params.Reader,
     results: *matchmaking.MatchmakingService.Enqueue.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *MatchmakingService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1448,7 +1448,7 @@ fn onDequeue(
     _: *rpc.peer.Peer,
     params: matchmaking.MatchmakingService.Dequeue.Params.Reader,
     results: *matchmaking.MatchmakingService.Dequeue.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *MatchmakingService = @ptrCast(@alignCast(ctx_ptr));
     const ticket_id = try params.getTicketId();
@@ -1466,7 +1466,7 @@ fn onFindMatch(
     peer: *rpc.peer.Peer,
     params: matchmaking.MatchmakingService.FindMatch.Params.Reader,
     results: *matchmaking.MatchmakingService.FindMatch.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *MatchmakingService = @ptrCast(@alignCast(ctx_ptr));
 
@@ -1535,7 +1535,7 @@ fn onGetQueueStats(
     _: *rpc.peer.Peer,
     params: matchmaking.MatchmakingService.GetQueueStats.Params.Reader,
     results: *matchmaking.MatchmakingService.GetQueueStats.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *MatchmakingService = @ptrCast(@alignCast(ctx_ptr));
     const mode = try params.getMode();
@@ -1555,7 +1555,7 @@ fn onGetMatchResult(
     _: *rpc.peer.Peer,
     params: matchmaking.MatchmakingService.GetMatchResult.Params.Reader,
     results: *matchmaking.MatchmakingService.GetMatchResult.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const service: *MatchmakingService = @ptrCast(@alignCast(ctx_ptr));
     const id = try (try params.getId()).getId();
@@ -1589,7 +1589,7 @@ fn onControllerGetInfo(
     _: *rpc.peer.Peer,
     _: matchmaking.MatchController.GetInfo.Params.Reader,
     results: *matchmaking.MatchController.GetInfo.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const controller: *MatchControllerServerState = @ptrCast(@alignCast(ctx_ptr));
     const match_state = controller.service.matches.get(controller.match_id) orelse return;
@@ -1603,7 +1603,7 @@ fn onControllerSignalReady(
     _: *rpc.peer.Peer,
     params: matchmaking.MatchController.SignalReady.Params.Reader,
     results: *matchmaking.MatchController.SignalReady.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const controller: *MatchControllerServerState = @ptrCast(@alignCast(ctx_ptr));
     const match_state = controller.service.matches.get(controller.match_id) orelse {
@@ -1629,7 +1629,7 @@ fn onControllerReportResult(
     _: *rpc.peer.Peer,
     params: matchmaking.MatchController.ReportResult.Params.Reader,
     results: *matchmaking.MatchController.ReportResult.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const controller: *MatchControllerServerState = @ptrCast(@alignCast(ctx_ptr));
     const service = controller.service;
@@ -1688,7 +1688,7 @@ fn onControllerCancelMatch(
     _: *rpc.peer.Peer,
     _: matchmaking.MatchController.CancelMatch.Params.Reader,
     results: *matchmaking.MatchController.CancelMatch.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const controller: *MatchControllerServerState = @ptrCast(@alignCast(ctx_ptr));
     const match_state = controller.service.matches.get(controller.match_id) orelse {
@@ -1714,7 +1714,7 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
     _ = peer;
 }
 
-fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.connection.Connection, _: u32) anyerror!rpc.worker_pool.WorkerPool.AcceptDecision {
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Connection, _: u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision {
     const app: *App = @ptrCast(@alignCast(ctx_ptr));
 
     const bootstrap_result = switch (app.schema) {
@@ -1788,7 +1788,7 @@ pub fn main(init: std.process.Init) !void {
 
     const address = try parseIp4Address(args.host, args.port);
 
-    var pool = try rpc.worker_pool.WorkerPool.init(
+    var pool = try rpc.integration.worker_pool.WorkerPool.init(
         allocator,
         io,
         address,

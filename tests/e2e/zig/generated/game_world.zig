@@ -29,7 +29,6 @@ pub const EntityId = struct {
         pub fn getId(self: Reader) !u64 {
             return self._reader.readU64(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -47,7 +46,6 @@ pub const EntityId = struct {
         pub fn setId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
         }
-
     };
 };
 
@@ -105,7 +103,6 @@ pub const Entity = struct {
         pub fn getAlive(self: Reader) !bool {
             return self._reader.readBool(12, 0) != true;
         }
-
     };
 
     pub const Builder = struct {
@@ -153,7 +150,6 @@ pub const Entity = struct {
         pub fn setAlive(self: *Builder, value: bool) !void {
             self._builder.writeBool(12, 0, value != true);
         }
-
     };
 };
 
@@ -193,7 +189,6 @@ pub const SpawnRequest = struct {
             const value = raw ^ @as(u32, 100);
             return @bitCast(value);
         }
-
     };
 
     pub const Builder = struct {
@@ -229,7 +224,6 @@ pub const SpawnRequest = struct {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 100);
             self._builder.writeU32(4, stored);
         }
-
     };
 };
 
@@ -264,7 +258,6 @@ pub const AreaQuery = struct {
             pub fn getByFaction(self: @This()) !game_types.Faction {
                 return std.enums.fromInt(game_types.Faction, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
             }
-
         };
 
         pub const Builder = struct {
@@ -275,20 +268,19 @@ pub const AreaQuery = struct {
             }
 
             pub fn setAll(self: *@This(), value: void) !void {
-            self._builder.writeU16(4, 0);
+                self._builder.writeU16(4, 0);
                 _ = value;
             }
 
             pub fn setByKind(self: *@This(), value: EntityKind) !void {
-            self._builder.writeU16(4, 1);
+                self._builder.writeU16(4, 1);
                 self._builder.writeU16(6, @as(u16, @intFromEnum(value)));
             }
 
             pub fn setByFaction(self: *@This(), value: game_types.Faction) !void {
-            self._builder.writeU16(4, 2);
+                self._builder.writeU16(4, 2);
                 self._builder.writeU16(6, @as(u16, @intFromEnum(value)));
             }
-
         };
     };
 
@@ -316,7 +308,6 @@ pub const AreaQuery = struct {
         pub fn getFilter(self: Reader) Filter.Reader {
             return .{ ._reader = self._reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -343,7 +334,6 @@ pub const AreaQuery = struct {
         pub fn getFilter(self: *Builder) Filter.Builder {
             return .{ ._builder = self._builder };
         }
-
     };
 };
 
@@ -364,17 +354,17 @@ pub const GameWorld = struct {
         pub const Params = SpawnEntityParams;
         pub const Results = SpawnEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -387,14 +377,14 @@ pub const GameWorld = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -403,7 +393,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -415,7 +405,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -441,7 +431,7 @@ pub const GameWorld = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -459,11 +449,11 @@ pub const GameWorld = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.spawnEntity, server.vtable.spawnEntity_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -480,17 +470,17 @@ pub const GameWorld = struct {
         pub const Params = DespawnEntityParams;
         pub const Results = DespawnEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -503,14 +493,14 @@ pub const GameWorld = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -519,7 +509,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -531,7 +521,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -557,7 +547,7 @@ pub const GameWorld = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -575,11 +565,11 @@ pub const GameWorld = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.despawnEntity, server.vtable.despawnEntity_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -596,17 +586,17 @@ pub const GameWorld = struct {
         pub const Params = GetEntityParams;
         pub const Results = GetEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -619,14 +609,14 @@ pub const GameWorld = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -635,7 +625,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -647,7 +637,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -673,7 +663,7 @@ pub const GameWorld = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -691,11 +681,11 @@ pub const GameWorld = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.getEntity, server.vtable.getEntity_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -712,17 +702,17 @@ pub const GameWorld = struct {
         pub const Params = MoveEntityParams;
         pub const Results = MoveEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -735,14 +725,14 @@ pub const GameWorld = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -751,7 +741,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -763,7 +753,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -789,7 +779,7 @@ pub const GameWorld = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -807,11 +797,11 @@ pub const GameWorld = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.moveEntity, server.vtable.moveEntity_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -828,17 +818,17 @@ pub const GameWorld = struct {
         pub const Params = DamageEntityParams;
         pub const Results = DamageEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -851,14 +841,14 @@ pub const GameWorld = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -867,7 +857,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -879,7 +869,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -905,7 +895,7 @@ pub const GameWorld = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -923,11 +913,11 @@ pub const GameWorld = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.damageEntity, server.vtable.damageEntity_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -944,17 +934,17 @@ pub const GameWorld = struct {
         pub const Params = QueryAreaParams;
         pub const Results = QueryAreaResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -967,14 +957,14 @@ pub const GameWorld = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -983,7 +973,7 @@ pub const GameWorld = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -995,7 +985,7 @@ pub const GameWorld = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -1021,7 +1011,7 @@ pub const GameWorld = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -1039,11 +1029,11 @@ pub const GameWorld = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.queryArea, server.vtable.queryArea_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -1101,7 +1091,6 @@ pub const GameWorld = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const PipelinedClient = struct {
@@ -1112,44 +1101,43 @@ pub const GameWorld = struct {
         pub fn callSpawnEntity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?SpawnEntity.BuildFn, on_return: SpawnEntity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SpawnEntity.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SpawnEntity.ordinal, ctx, SpawnEntity.callBuild, SpawnEntity.callReturn);
         }
 
         pub fn callDespawnEntity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?DespawnEntity.BuildFn, on_return: DespawnEntity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(DespawnEntity.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DespawnEntity.ordinal, ctx, DespawnEntity.callBuild, DespawnEntity.callReturn);
         }
 
         pub fn callGetEntity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetEntity.BuildFn, on_return: GetEntity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetEntity.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetEntity.ordinal, ctx, GetEntity.callBuild, GetEntity.callReturn);
         }
 
         pub fn callMoveEntity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?MoveEntity.BuildFn, on_return: MoveEntity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(MoveEntity.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, MoveEntity.ordinal, ctx, MoveEntity.callBuild, MoveEntity.callReturn);
         }
 
         pub fn callDamageEntity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?DamageEntity.BuildFn, on_return: DamageEntity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(DamageEntity.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DamageEntity.ordinal, ctx, DamageEntity.callBuild, DamageEntity.callReturn);
         }
 
         pub fn callQueryArea(self: *PipelinedClient, user_ctx: *anyopaque, build: ?QueryArea.BuildFn, on_return: QueryArea.Callback) !u32 {
             const ctx = try self.peer.allocator.create(QueryArea.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, QueryArea.ordinal, ctx, QueryArea.callBuild, QueryArea.callReturn);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
         client: Client,
-        exception: rpc.protocol.Exception,
+        exception: rpc.wire.protocol.Exception,
         canceled,
         results_sent_elsewhere,
         take_from_other_question: u32,
@@ -1162,7 +1150,7 @@ pub const GameWorld = struct {
         callback: BootstrapCallback,
     };
 
-    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const ctx: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
         defer peer.allocator.destroy(ctx);
         var response: BootstrapResponse = undefined;
@@ -1227,7 +1215,7 @@ pub const GameWorld = struct {
         return peer.setBootstrap(.{ .ctx = server, .on_call = onCall });
     }
 
-    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const server: *Server = @ptrCast(@alignCast(ctx));
         switch (call.method_id) {
             SpawnEntity.ordinal => try SpawnEntity.handleCall(server, peer, call, caps),
@@ -1258,7 +1246,6 @@ pub const SpawnEntityParams = struct {
             const value = try self._reader.readStruct(0);
             return SpawnRequest.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1277,7 +1264,6 @@ pub const SpawnEntityParams = struct {
             const builder = try self._builder.initStruct(0, 1, 2);
             return SpawnRequest.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1302,7 +1288,6 @@ pub const SpawnEntityResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1325,7 +1310,6 @@ pub const SpawnEntityResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1346,7 +1330,6 @@ pub const DespawnEntityParams = struct {
             const value = try self._reader.readStruct(0);
             return EntityId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1365,7 +1348,6 @@ pub const DespawnEntityParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return EntityId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1385,7 +1367,6 @@ pub const DespawnEntityResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1403,7 +1384,6 @@ pub const DespawnEntityResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1424,7 +1404,6 @@ pub const GetEntityParams = struct {
             const value = try self._reader.readStruct(0);
             return EntityId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1443,7 +1422,6 @@ pub const GetEntityParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return EntityId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1468,7 +1446,6 @@ pub const GetEntityResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1491,7 +1468,6 @@ pub const GetEntityResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1517,7 +1493,6 @@ pub const MoveEntityParams = struct {
             const value = try self._reader.readStruct(1);
             return game_types.Position.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1541,7 +1516,6 @@ pub const MoveEntityParams = struct {
             const builder = try self._builder.initStruct(1, 2, 0);
             return game_types.Position.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1566,7 +1540,6 @@ pub const MoveEntityResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1589,7 +1562,6 @@ pub const MoveEntityResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1614,7 +1586,6 @@ pub const DamageEntityParams = struct {
         pub fn getAmount(self: Reader) !i32 {
             return @bitCast(self._reader.readU32(0));
         }
-
     };
 
     pub const Builder = struct {
@@ -1637,7 +1608,6 @@ pub const DamageEntityParams = struct {
         pub fn setAmount(self: *Builder, value: i32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
 
@@ -1666,7 +1636,6 @@ pub const DamageEntityResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1693,7 +1662,6 @@ pub const DamageEntityResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1714,7 +1682,6 @@ pub const QueryAreaParams = struct {
             const value = try self._reader.readStruct(0);
             return AreaQuery.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1733,7 +1700,6 @@ pub const QueryAreaParams = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return AreaQuery.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1761,7 +1727,6 @@ pub const QueryAreaResults = struct {
         pub fn getCount(self: Reader) !u32 {
             return self._reader.readU32(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1784,7 +1749,5 @@ pub const QueryAreaResults = struct {
         pub fn setCount(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
-

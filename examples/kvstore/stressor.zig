@@ -25,7 +25,7 @@ const KvStoreStressor = struct {
     value: []const u8,
 
     peer: ?*rpc.peer.Peer = null,
-    conn: ?*rpc.connection.Connection = null,
+    conn: ?*rpc.transport.tcp.Connection = null,
     client: ?KvStore.Client = null,
 
     operations_started: u64 = 0,
@@ -278,7 +278,7 @@ fn onWriteBatchReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: KvStore.WriteBatch.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const request_ctx: *RequestCtx = @ptrCast(@alignCast(ctx_ptr));
     const stressor: *KvStoreStressor = request_ctx.stressor;
@@ -425,7 +425,7 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
+    const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
 
     peer.deinit();
     allocator.destroy(peer);
@@ -453,15 +453,15 @@ fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress, io: s
         return;
     };
 
-    const conn = stressor.allocator.create(rpc.connection.Connection) catch {
-        rpc.runtime.closeFd(io, fd);
+    const conn = stressor.allocator.create(rpc.transport.tcp.Connection) catch {
+        rpc.transport.tcp.closeFd(io, fd);
         fail(stressor, error.OutOfMemory, null);
         return;
     };
 
-    conn.* = rpc.connection.Connection.init(stressor.allocator, io, fd, .{}) catch |err| {
+    conn.* = rpc.transport.tcp.Connection.init(stressor.allocator, io, fd, .{}) catch |err| {
         stressor.allocator.destroy(conn);
-        rpc.runtime.closeFd(io, fd);
+        rpc.transport.tcp.closeFd(io, fd);
         fail(stressor, err, null);
         return;
     };

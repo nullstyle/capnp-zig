@@ -18,11 +18,11 @@ fn noopLog(
 
 const log = std.log.scoped(.wasm_abi);
 
-const HostPeer = core.rpc.host_peer.HostPeer;
+const HostPeer = core.rpc.integration.host_peer.HostPeer;
 const message = core.message;
 const Peer = core.rpc.peer.Peer;
-const protocol = core.rpc.protocol;
-const cap_table = core.rpc.cap_table;
+const protocol = core.rpc.wire.protocol;
+const cap_table = core.rpc.caps.table;
 
 pub const AbiPtr = if (builtin.target.cpu.arch == .wasm32) u32 else usize;
 

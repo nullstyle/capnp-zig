@@ -2,7 +2,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
-const Framer = capnpc.rpc.framing.Framer;
+const Framer = capnpc.rpc.wire.framing.Framer;
 
 fn buildMessage(allocator: std.mem.Allocator, value: u32) ![]const u8 {
     var builder = message.MessageBuilder.init(allocator);

@@ -199,7 +199,7 @@ pub const io_backend         = @import("io_backend.zig");        // std.Io backe
 The default `capnpc-zig` module exposes serialization, codegen, TCP RPC, and a
 QUIC-disabled facade. Passing `-Dquic=true` selects `src/lib_quic.zig`, resolves
 the optional `quic_zig` dependency, and exposes the native QUIC transport at
-`rpc.quic`.
+`rpc.transport.quic`.
 
 ## External Dependencies
 

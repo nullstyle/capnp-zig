@@ -1,8 +1,8 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const protocol = capnpc.rpc.protocol;
-const cap_table = capnpc.rpc.cap_table;
+const protocol = capnpc.rpc.wire.protocol;
+const cap_table = capnpc.rpc.caps.table;
 const message = capnpc.message;
 
 test "promised answer getPointerField resolves to cap table entry" {

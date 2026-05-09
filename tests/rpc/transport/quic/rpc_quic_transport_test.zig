@@ -3,8 +3,8 @@ const capnpc = @import("capnpc-zig");
 const loopback = @import("loopback_test_support.zig");
 const raw_faults = @import("raw_fault_client.zig");
 
-const protocol = capnpc.rpc.protocol;
-const quic = capnpc.rpc.quic;
+const protocol = capnpc.rpc.wire.protocol;
+const quic = capnpc.rpc.transport.quic;
 
 const loopback_cert_pem = loopback.loopback_cert_pem;
 const loopback_key_pem = loopback.loopback_key_pem;

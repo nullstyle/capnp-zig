@@ -41,7 +41,7 @@ touching peer/capability/promise semantics.
 
 ## QUIC Transport
 QUIC is opt-in at the build-module boundary. Default builds keep quic-zig/BoringSSL
-out of serialization and TCP-only applications; `rpc.quic` is a disabled facade
+out of serialization and TCP-only applications; `rpc.transport.quic` is a disabled facade
 that exposes only QUIC-dependency-free framing helpers and a clear compile-time
 error for transport construction. The dependency remains declared in
 `build.zig.zon` for opt-in users, but `build.zig` resolves it only when
@@ -57,9 +57,9 @@ The default QUIC transport is intentionally conservative:
 - Client-initiated bidirectional stream 0 carries the baseline Cap'n Proto RPC message stream.
 - Each RPC message is length-delimited with a 32-bit little-endian byte length, followed by the existing Cap'n Proto RPC message bytes.
 
-This gives the existing peer/protocol layers the same complete-message callback shape as TCP while letting QUIC handle handshake, loss recovery, stream flow control, and connection migration. When QUIC is enabled, the implementation is exposed as `rpc.quic.Connection` and uses the same `Peer.attachConnection` path as the TCP `rpc.connection.Connection`.
+This gives the existing peer/protocol layers the same complete-message callback shape as TCP while letting QUIC handle handshake, loss recovery, stream flow control, and connection migration. When QUIC is enabled, the implementation is exposed as `rpc.transport.quic.Connection` and uses the same `Peer.attachConnection` path as the TCP `rpc.transport.tcp.Connection`.
 
-`rpc.quic.TransportMode.native` keeps the same ALPN and vat session model but changes the QUIC stream layout while preserving standard `rpc.capnp` messages as the canonical RPC payload:
+`rpc.transport.quic.TransportMode.native` keeps the same ALPN and vat session model but changes the QUIC stream layout while preserving standard `rpc.capnp` messages as the canonical RPC payload:
 
 - Bidirectional stream 0 starts with a native preface plus versioned hello, then carries ordered control envelopes.
 - Small RPC frames are sent inline in `inline_rpc` control envelopes.

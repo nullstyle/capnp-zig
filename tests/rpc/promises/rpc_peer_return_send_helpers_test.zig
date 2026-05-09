@@ -2,7 +2,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
-const protocol = capnpc.rpc.protocol;
+const protocol = capnpc.rpc.wire.protocol;
 const helpers = capnpc.rpc.testing.peer_return_send_helpers;
 
 test "peer_return_send_helpers clearSendResultsRoutingForPeer clears maps and frees payload" {

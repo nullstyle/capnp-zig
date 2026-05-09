@@ -2,12 +2,12 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
-const protocol = capnpc.rpc.protocol;
+const protocol = capnpc.rpc.wire.protocol;
 const peer_impl = capnpc.rpc.peer;
-const cap_table = capnpc.rpc.cap_table;
+const cap_table = capnpc.rpc.caps.table;
 const payload_remap = capnpc.rpc.testing.payload_remap;
 const peer_embargo_accepts = capnpc.rpc.testing.peer_embargo_accepts;
-const Connection = capnpc.rpc.connection.Connection;
+const Connection = capnpc.rpc.transport.tcp.Connection;
 const Peer = peer_impl.Peer;
 const peer_test_hooks = Peer.test_hooks;
 const ForwardCallContext = peer_test_hooks.ForwardCallContextType;

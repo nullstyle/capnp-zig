@@ -47,7 +47,7 @@ const ClientApp = struct {
     done: bool = false,
     err: ?anyerror = null,
     peer: ?*rpc.peer.Peer = null,
-    conn: ?*rpc.connection.Connection = null,
+    conn: ?*rpc.transport.tcp.Connection = null,
 };
 
 var g_client_app: ?*ClientApp = null;
@@ -117,7 +117,7 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
+    const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
 
     peer.deinit();
     allocator.destroy(peer);
@@ -166,7 +166,7 @@ fn onSpawnEntityReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: game_world.GameWorld.SpawnEntity.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
@@ -207,7 +207,7 @@ fn onCreateRoomReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: chat.ChatService.CreateRoom.Response,
-    caps: *const rpc.cap_table.InboundCapTable,
+    caps: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
@@ -252,7 +252,7 @@ fn onGetInventoryReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: inventory.InventoryService.GetInventory.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
@@ -298,7 +298,7 @@ fn onEnqueueReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: matchmaking.MatchmakingService.Enqueue.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
@@ -378,10 +378,10 @@ pub fn main(init: std.process.Init) !void {
     const address = try parseIp4Address(args.host, args.port);
     const fd = try rawTcpConnect(address, io);
 
-    const conn = try allocator.create(rpc.connection.Connection);
-    conn.* = rpc.connection.Connection.init(allocator, io, fd, .{}) catch |err| {
+    const conn = try allocator.create(rpc.transport.tcp.Connection);
+    conn.* = rpc.transport.tcp.Connection.init(allocator, io, fd, .{}) catch |err| {
         allocator.destroy(conn);
-        rpc.runtime.closeFd(io, fd);
+        rpc.transport.tcp.closeFd(io, fd);
         return err;
     };
     app.conn = conn;

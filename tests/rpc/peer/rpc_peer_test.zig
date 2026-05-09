@@ -2,11 +2,11 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
-const protocol = capnpc.rpc.protocol;
+const protocol = capnpc.rpc.wire.protocol;
 const peer_impl = capnpc.rpc.peer;
 const peer_dispatch = capnpc.rpc.testing.peer_dispatch;
-const cap_table = capnpc.rpc.cap_table;
-const Connection = capnpc.rpc.connection.Connection;
+const cap_table = capnpc.rpc.caps.table;
+const Connection = capnpc.rpc.transport.tcp.Connection;
 const Peer = peer_impl.Peer;
 
 const Capture = struct {

@@ -38,7 +38,6 @@ pub const InventorySlot = struct {
         pub fn getQuantity(self: Reader) !u32 {
             return self._reader.readU32(4);
         }
-
     };
 
     pub const Builder = struct {
@@ -65,7 +64,6 @@ pub const InventorySlot = struct {
         pub fn setQuantity(self: *Builder, value: u32) !void {
             self._builder.writeU32(4, @bitCast(value));
         }
-
     };
 };
 
@@ -102,7 +100,6 @@ pub const InventoryView = struct {
         pub fn getUsedSlots(self: Reader) !u16 {
             return self._reader.readU16(2);
         }
-
     };
 
     pub const Builder = struct {
@@ -134,7 +131,6 @@ pub const InventoryView = struct {
         pub fn setUsedSlots(self: *Builder, value: u16) !void {
             self._builder.writeU16(2, @bitCast(value));
         }
-
     };
 };
 
@@ -169,7 +165,6 @@ pub const TradeOffer = struct {
         pub fn getAccepted(self: Reader) !bool {
             return self._reader.readBool(0, 0) != false;
         }
-
     };
 
     pub const Builder = struct {
@@ -192,7 +187,6 @@ pub const TradeOffer = struct {
         pub fn setAccepted(self: *Builder, value: bool) !void {
             self._builder.writeBool(0, 0, value != false);
         }
-
     };
 };
 
@@ -214,17 +208,17 @@ pub const TradeSession = struct {
         pub const Params = OfferItemsParams;
         pub const Results = OfferItemsResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -237,14 +231,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -253,7 +247,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -265,7 +259,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -291,7 +285,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -309,11 +303,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.offerItems, server.vtable.offerItems_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -330,17 +324,17 @@ pub const TradeSession = struct {
         pub const Params = RemoveItemsParams;
         pub const Results = RemoveItemsResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -353,14 +347,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -369,7 +363,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -381,7 +375,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -407,7 +401,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -425,11 +419,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.removeItems, server.vtable.removeItems_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -446,17 +440,17 @@ pub const TradeSession = struct {
         pub const Params = AcceptParams;
         pub const Results = AcceptResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -469,14 +463,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -485,7 +479,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -497,7 +491,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -523,7 +517,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -541,11 +535,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.accept, server.vtable.accept_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -562,17 +556,17 @@ pub const TradeSession = struct {
         pub const Params = ConfirmParams;
         pub const Results = ConfirmResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -585,14 +579,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -601,7 +595,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -613,7 +607,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -639,7 +633,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -657,11 +651,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.confirm, server.vtable.confirm_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -678,17 +672,17 @@ pub const TradeSession = struct {
         pub const Params = CancelParams;
         pub const Results = CancelResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -701,14 +695,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -717,7 +711,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -729,7 +723,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -755,7 +749,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -773,11 +767,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.cancel, server.vtable.cancel_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -794,17 +788,17 @@ pub const TradeSession = struct {
         pub const Params = ViewOtherOfferParams;
         pub const Results = ViewOtherOfferResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -817,14 +811,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -833,7 +827,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -845,7 +839,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -871,7 +865,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -889,11 +883,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.viewOtherOffer, server.vtable.viewOtherOffer_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -910,17 +904,17 @@ pub const TradeSession = struct {
         pub const Params = GetStateParams;
         pub const Results = GetStateResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -933,14 +927,14 @@ pub const TradeSession = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -949,7 +943,7 @@ pub const TradeSession = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -961,7 +955,7 @@ pub const TradeSession = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -987,7 +981,7 @@ pub const TradeSession = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -1005,11 +999,11 @@ pub const TradeSession = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.getState, server.vtable.getState_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -1073,7 +1067,6 @@ pub const TradeSession = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const PipelinedClient = struct {
@@ -1084,50 +1077,49 @@ pub const TradeSession = struct {
         pub fn callOfferItems(self: *PipelinedClient, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback) !u32 {
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
         }
 
         pub fn callRemoveItems(self: *PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
         }
 
         pub fn callAccept(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Accept.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
         }
 
         pub fn callConfirm(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
         }
 
         pub fn callCancel(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
         }
 
         pub fn callViewOtherOffer(self: *PipelinedClient, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
         }
 
         pub fn callGetState(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetState.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
         client: Client,
-        exception: rpc.protocol.Exception,
+        exception: rpc.wire.protocol.Exception,
         canceled,
         results_sent_elsewhere,
         take_from_other_question: u32,
@@ -1140,7 +1132,7 @@ pub const TradeSession = struct {
         callback: BootstrapCallback,
     };
 
-    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const ctx: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
         defer peer.allocator.destroy(ctx);
         var response: BootstrapResponse = undefined;
@@ -1207,7 +1199,7 @@ pub const TradeSession = struct {
         return peer.setBootstrap(.{ .ctx = server, .on_call = onCall });
     }
 
-    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const server: *Server = @ptrCast(@alignCast(ctx));
         switch (call.method_id) {
             OfferItems.ordinal => try OfferItems.handleCall(server, peer, call, caps),
@@ -1238,7 +1230,6 @@ pub const OfferItemsParams = struct {
         pub fn getSlots(self: Reader) !message.U16ListReader {
             return try self._reader.readU16List(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1256,7 +1247,6 @@ pub const OfferItemsParams = struct {
         pub fn initSlots(self: *Builder, element_count: u32) !message.U16ListBuilder {
             return try self._builder.writeU16List(0, element_count);
         }
-
     };
 };
 
@@ -1281,7 +1271,6 @@ pub const OfferItemsResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1304,7 +1293,6 @@ pub const OfferItemsResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1324,7 +1312,6 @@ pub const RemoveItemsParams = struct {
         pub fn getSlots(self: Reader) !message.U16ListReader {
             return try self._reader.readU16List(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -1342,7 +1329,6 @@ pub const RemoveItemsParams = struct {
         pub fn initSlots(self: *Builder, element_count: u32) !message.U16ListBuilder {
             return try self._builder.writeU16List(0, element_count);
         }
-
     };
 };
 
@@ -1367,7 +1353,6 @@ pub const RemoveItemsResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1390,7 +1375,6 @@ pub const RemoveItemsResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1406,7 +1390,6 @@ pub const AcceptParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1420,7 +1403,6 @@ pub const AcceptParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1444,7 +1426,6 @@ pub const AcceptResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1466,7 +1447,6 @@ pub const AcceptResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1482,7 +1462,6 @@ pub const ConfirmParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1496,7 +1475,6 @@ pub const ConfirmParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1520,7 +1498,6 @@ pub const ConfirmResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1542,7 +1519,6 @@ pub const ConfirmResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1558,7 +1534,6 @@ pub const CancelParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1572,7 +1547,6 @@ pub const CancelParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1592,7 +1566,6 @@ pub const CancelResults = struct {
         pub fn getState(self: Reader) !TradeState {
             return std.enums.fromInt(TradeState, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1610,7 +1583,6 @@ pub const CancelResults = struct {
         pub fn setState(self: *Builder, value: TradeState) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1626,7 +1598,6 @@ pub const ViewOtherOfferParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1640,7 +1611,6 @@ pub const ViewOtherOfferParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1661,7 +1631,6 @@ pub const ViewOtherOfferResults = struct {
             const value = try self._reader.readStruct(0);
             return TradeOffer.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -1680,7 +1649,6 @@ pub const ViewOtherOfferResults = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return TradeOffer.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -1696,7 +1664,6 @@ pub const GetStateParams = struct {
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
         }
-
     };
 
     pub const Builder = struct {
@@ -1710,7 +1677,6 @@ pub const GetStateParams = struct {
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
         }
-
     };
 };
 
@@ -1730,7 +1696,6 @@ pub const GetStateResults = struct {
         pub fn getState(self: Reader) !TradeState {
             return std.enums.fromInt(TradeState, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -1748,7 +1713,6 @@ pub const GetStateResults = struct {
         pub fn setState(self: *Builder, value: TradeState) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -1768,17 +1732,17 @@ pub const InventoryService = struct {
         pub const Params = GetInventoryParams;
         pub const Results = GetInventoryResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -1791,14 +1755,14 @@ pub const InventoryService = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -1807,7 +1771,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -1819,7 +1783,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -1845,7 +1809,7 @@ pub const InventoryService = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -1863,11 +1827,11 @@ pub const InventoryService = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.getInventory, server.vtable.getInventory_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -1884,17 +1848,17 @@ pub const InventoryService = struct {
         pub const Params = AddItemParams;
         pub const Results = AddItemResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -1907,14 +1871,14 @@ pub const InventoryService = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -1923,7 +1887,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -1935,7 +1899,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -1961,7 +1925,7 @@ pub const InventoryService = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -1979,11 +1943,11 @@ pub const InventoryService = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.addItem, server.vtable.addItem_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -2000,17 +1964,17 @@ pub const InventoryService = struct {
         pub const Params = RemoveItemParams;
         pub const Results = RemoveItemResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -2023,14 +1987,14 @@ pub const InventoryService = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -2039,7 +2003,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2051,7 +2015,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -2077,7 +2041,7 @@ pub const InventoryService = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -2095,11 +2059,11 @@ pub const InventoryService = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.removeItem, server.vtable.removeItem_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -2116,17 +2080,17 @@ pub const InventoryService = struct {
         pub const Params = StartTradeParams;
         pub const Results = StartTradeResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -2139,14 +2103,14 @@ pub const InventoryService = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -2155,7 +2119,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2167,7 +2131,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -2193,7 +2157,7 @@ pub const InventoryService = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -2211,11 +2175,11 @@ pub const InventoryService = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.startTrade, server.vtable.startTrade_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -2232,17 +2196,17 @@ pub const InventoryService = struct {
         pub const Params = FilterByRarityParams;
         pub const Results = FilterByRarityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -2255,14 +2219,14 @@ pub const InventoryService = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -2271,7 +2235,7 @@ pub const InventoryService = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -2283,7 +2247,7 @@ pub const InventoryService = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -2309,7 +2273,7 @@ pub const InventoryService = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -2327,11 +2291,11 @@ pub const InventoryService = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.filterByRarity, server.vtable.filterByRarity_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -2388,7 +2352,6 @@ pub const InventoryService = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const StartTradePipeline = struct {
@@ -2398,7 +2361,6 @@ pub const InventoryService = struct {
         pub fn getSession(self: @This()) TradeSession.PipelinedClient {
             return .{ .peer = self.peer, .question_id = self.question_id, .pointer_index = 0 };
         }
-
     };
 
     pub const PipelinedClient = struct {
@@ -2409,38 +2371,37 @@ pub const InventoryService = struct {
         pub fn callGetInventory(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
         }
 
         pub fn callAddItem(self: *PipelinedClient, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback) !u32 {
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
         }
 
         pub fn callRemoveItem(self: *PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
         }
 
         pub fn callStartTrade(self: *PipelinedClient, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !u32 {
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
         }
 
         pub fn callFilterByRarity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
         client: Client,
-        exception: rpc.protocol.Exception,
+        exception: rpc.wire.protocol.Exception,
         canceled,
         results_sent_elsewhere,
         take_from_other_question: u32,
@@ -2453,7 +2414,7 @@ pub const InventoryService = struct {
         callback: BootstrapCallback,
     };
 
-    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const ctx: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
         defer peer.allocator.destroy(ctx);
         var response: BootstrapResponse = undefined;
@@ -2516,7 +2477,7 @@ pub const InventoryService = struct {
         return peer.setBootstrap(.{ .ctx = server, .on_call = onCall });
     }
 
-    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const server: *Server = @ptrCast(@alignCast(ctx));
         switch (call.method_id) {
             GetInventory.ordinal => try GetInventory.handleCall(server, peer, call, caps),
@@ -2546,7 +2507,6 @@ pub const GetInventoryParams = struct {
             const value = try self._reader.readStruct(0);
             return game_types.PlayerId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2565,7 +2525,6 @@ pub const GetInventoryParams = struct {
             const builder = try self._builder.initStruct(0, 1, 0);
             return game_types.PlayerId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2590,7 +2549,6 @@ pub const GetInventoryResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -2613,7 +2571,6 @@ pub const GetInventoryResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -2643,7 +2600,6 @@ pub const AddItemParams = struct {
         pub fn getQuantity(self: Reader) !u32 {
             return self._reader.readU32(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -2671,7 +2627,6 @@ pub const AddItemParams = struct {
         pub fn setQuantity(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
 
@@ -2696,7 +2651,6 @@ pub const AddItemResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -2719,7 +2673,6 @@ pub const AddItemResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -2748,7 +2701,6 @@ pub const RemoveItemParams = struct {
         pub fn getQuantity(self: Reader) !u32 {
             return self._reader.readU32(4);
         }
-
     };
 
     pub const Builder = struct {
@@ -2775,7 +2727,6 @@ pub const RemoveItemParams = struct {
         pub fn setQuantity(self: *Builder, value: u32) !void {
             self._builder.writeU32(4, @bitCast(value));
         }
-
     };
 };
 
@@ -2795,7 +2746,6 @@ pub const RemoveItemResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -2813,7 +2763,6 @@ pub const RemoveItemResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -2839,7 +2788,6 @@ pub const StartTradeParams = struct {
             const value = try self._reader.readStruct(1);
             return game_types.PlayerId.Reader{ ._reader = value };
         }
-
     };
 
     pub const Builder = struct {
@@ -2863,7 +2811,6 @@ pub const StartTradeParams = struct {
             const builder = try self._builder.initStruct(1, 1, 0);
             return game_types.PlayerId.Builder{ ._builder = builder };
         }
-
     };
 };
 
@@ -2884,7 +2831,7 @@ pub const StartTradeResults = struct {
             return try self._reader.readCapability(0);
         }
 
-        pub fn resolveSession(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !TradeSession.Client {
+        pub fn resolveSession(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !TradeSession.Client {
             const cap = try self._reader.readCapability(0);
             var mutable_caps = caps.*;
             try mutable_caps.retainCapability(cap);
@@ -2898,7 +2845,6 @@ pub const StartTradeResults = struct {
         pub fn getStatus(self: Reader) !game_types.StatusCode {
             return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -2941,7 +2887,6 @@ pub const StartTradeResults = struct {
         pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -2966,7 +2911,6 @@ pub const FilterByRarityParams = struct {
         pub fn getMinRarity(self: Reader) !game_types.Rarity {
             return std.enums.fromInt(game_types.Rarity, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
         }
-
     };
 
     pub const Builder = struct {
@@ -2989,7 +2933,6 @@ pub const FilterByRarityParams = struct {
         pub fn setMinRarity(self: *Builder, value: game_types.Rarity) !void {
             self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
         }
-
     };
 };
 
@@ -3013,7 +2956,6 @@ pub const FilterByRarityResults = struct {
             const raw = try self._reader.readStructList(0);
             return StructListReader(InventorySlot){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -3032,7 +2974,5 @@ pub const FilterByRarityResults = struct {
             const raw = try self._builder.writeStructList(0, element_count, 1, 1);
             return StructListBuilder(InventorySlot){ ._list = raw };
         }
-
     };
 };
-

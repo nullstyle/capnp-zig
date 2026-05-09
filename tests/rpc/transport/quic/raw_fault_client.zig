@@ -2,7 +2,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const quic_zig = @import("quic_zig");
 
-const quic = capnpc.rpc.quic;
+const quic = capnpc.rpc.transport.quic;
 const loopback = @import("loopback_test_support.zig");
 
 const raw_client_rx_buffer_size: usize = 64 * 1024;
