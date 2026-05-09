@@ -1,4 +1,5 @@
 pub const framing = @import("./wire/framing.zig");
+pub const events = @import("./events.zig");
 pub const transport = @import("./transport/tcp/stream_transport.zig");
 pub const connection = @import("./transport/tcp/connection.zig");
 pub const runtime = @import("./transport/tcp/runtime.zig");

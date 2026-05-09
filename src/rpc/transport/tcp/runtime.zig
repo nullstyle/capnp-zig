@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_runtime);
 const Connection = @import("./connection.zig").Connection;
+const events = @import("../../events.zig");
 const net = std.Io.net;
 
 /// Minimal RPC runtime context.
@@ -123,6 +124,7 @@ pub const Listener = struct {
             fd,
             self.conn_options,
         );
+        events.emitConnection(self.conn_options.observer, .tcp, .server, .accepted);
         return conn_ptr;
     }
 

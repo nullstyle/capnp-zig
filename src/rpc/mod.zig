@@ -1,6 +1,7 @@
 const base = @import("./mod_base.zig");
 
 pub const framing = base.framing;
+pub const events = base.events;
 pub const transport = base.transport;
 pub const connection = base.connection;
 pub const runtime = base.runtime;

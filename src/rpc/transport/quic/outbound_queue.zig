@@ -1,6 +1,7 @@
 const std = @import("std");
 const quic_zig = @import("quic_zig");
 
+const events = @import("../../events.zig");
 const length_framer = @import("length_framer.zig");
 const options = @import("options.zig");
 
@@ -89,6 +90,7 @@ pub const OutboundQueue = struct {
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
         conn: *quic_zig.Connection,
+        observer: ?events.Observer,
     ) !void {
         if (!self.beginFlush()) return;
         defer self.endFlush();
@@ -99,6 +101,13 @@ pub const OutboundQueue = struct {
                 const remaining = item.bytes[item.offset..];
                 if (remaining.len == 0) {
                     const item_len = item.bytes.len;
+                    events.emitFrame(
+                        observer,
+                        .quic_baseline,
+                        .unknown,
+                        .sent,
+                        item_len - length_framer.length_prefix_bytes,
+                    );
                     allocator.free(item.bytes);
                     self.releaseItem(item_len);
                     break;

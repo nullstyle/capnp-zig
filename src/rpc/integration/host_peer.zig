@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_host);
+const events = @import("../events.zig");
 const message = @import("../../serialization/message.zig");
 const peer_mod = @import("../peer/mod.zig");
 const protocol = @import("../wire/protocol.zig");
@@ -62,6 +63,7 @@ pub const HostPeer = struct {
     current_inbound_frame: ?[]const u8 = null,
     host_bridge_enabled: bool = false,
     wired_override: bool = false,
+    observer: ?events.Observer = null,
 
     pub fn init(allocator: std.mem.Allocator) HostPeer {
         return initWithOutgoingAllocator(allocator, allocator);
@@ -98,12 +100,20 @@ pub const HostPeer = struct {
     ) void {
         self.peer.assertThreadAffinity();
         self.ensureOverride();
+        events.emitConnection(self.observer, .host_peer, .unknown, .started);
         self.peer.start(on_error, on_close);
+    }
+
+    pub fn setObserver(self: *HostPeer, observer: ?events.Observer) void {
+        self.peer.assertThreadAffinity();
+        self.observer = observer;
+        self.peer.setObserver(observer);
     }
 
     pub fn pushFrame(self: *HostPeer, frame: []const u8) !void {
         self.peer.assertThreadAffinity();
         self.ensureOverride();
+        events.emitFrame(self.observer, .host_peer, .unknown, .received, frame.len);
         self.current_inbound_frame = frame;
         defer self.current_inbound_frame = null;
         log.debug("pushing inbound frame ({} bytes)", .{frame.len});
@@ -281,20 +291,56 @@ pub const HostPeer = struct {
 
         if (inbound_frame.len > MAX_CAPTURED_FRAME_BYTES) {
             log.debug("host call frame too large: {} bytes", .{inbound_frame.len});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .frame_bytes,
+                inbound_frame.len,
+                MAX_CAPTURED_FRAME_BYTES,
+                error.FrameTooLarge,
+            );
             return error.FrameTooLarge;
         }
         if (self.pending_host_call_questions.contains(call.question_id)) return error.DuplicateQuestionId;
         if (self.limits.host_call_count_limit != 0 and self.host_calls.items.len >= self.limits.host_call_count_limit) {
             log.debug("host call queue count limit exceeded", .{});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .host_call_frames,
+                self.host_calls.items.len + 1,
+                self.limits.host_call_count_limit,
+                error.HostCallQueueLimitExceeded,
+            );
             return error.HostCallQueueLimitExceeded;
         }
         if (self.limits.host_call_bytes_limit != 0) {
             const next = std.math.add(usize, self.host_call_bytes, inbound_frame.len) catch {
                 log.debug("host call bytes limit exceeded", .{});
+                events.emitResourceRejection(
+                    self.observer,
+                    .host_peer,
+                    .unknown,
+                    .host_call_bytes,
+                    inbound_frame.len,
+                    self.limits.host_call_bytes_limit,
+                    error.HostCallBytesLimitExceeded,
+                );
                 return error.HostCallBytesLimitExceeded;
             };
             if (next > self.limits.host_call_bytes_limit) {
                 log.debug("host call bytes limit exceeded", .{});
+                events.emitResourceRejection(
+                    self.observer,
+                    .host_peer,
+                    .unknown,
+                    .host_call_bytes,
+                    next,
+                    self.limits.host_call_bytes_limit,
+                    error.HostCallBytesLimitExceeded,
+                );
                 return error.HostCallBytesLimitExceeded;
             }
         }
@@ -320,11 +366,29 @@ pub const HostPeer = struct {
         const self: *HostPeer = @ptrCast(@alignCast(ctx));
         if (frame.len > MAX_CAPTURED_FRAME_BYTES) {
             log.debug("outgoing frame too large: {} bytes", .{frame.len});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .frame_bytes,
+                frame.len,
+                MAX_CAPTURED_FRAME_BYTES,
+                error.FrameTooLarge,
+            );
             return error.FrameTooLarge;
         }
 
         if (self.limits.outbound_count_limit != 0 and self.outgoing.items.len >= self.limits.outbound_count_limit) {
             log.debug("outgoing queue count limit exceeded", .{});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .host_outbound_frames,
+                self.outgoing.items.len + 1,
+                self.limits.outbound_count_limit,
+                error.OutgoingQueueLimitExceeded,
+            );
             return error.OutgoingQueueLimitExceeded;
         }
 
@@ -335,16 +399,35 @@ pub const HostPeer = struct {
 
         try self.outgoing.append(self.allocator, owned);
         self.outgoing_bytes += owned.len;
+        events.emitFrame(self.observer, .host_peer, .unknown, .enqueued, owned.len);
     }
 
     fn ensureOutgoingByteBudget(self: *HostPeer, added_len: usize) !void {
         if (self.limits.outbound_bytes_limit == 0) return;
         const next = std.math.add(usize, self.outgoing_bytes, added_len) catch {
             log.debug("outgoing bytes limit exceeded", .{});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .host_outbound_bytes,
+                added_len,
+                self.limits.outbound_bytes_limit,
+                error.OutgoingBytesLimitExceeded,
+            );
             return error.OutgoingBytesLimitExceeded;
         };
         if (next > self.limits.outbound_bytes_limit) {
             log.debug("outgoing bytes limit exceeded", .{});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .host_outbound_bytes,
+                next,
+                self.limits.outbound_bytes_limit,
+                error.OutgoingBytesLimitExceeded,
+            );
             return error.OutgoingBytesLimitExceeded;
         }
     }

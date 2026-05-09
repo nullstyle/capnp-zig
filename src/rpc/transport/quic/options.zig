@@ -1,6 +1,7 @@
 const std = @import("std");
 const quic_zig = @import("quic_zig");
 
+const events = @import("../../events.zig");
 const framing = @import("../../wire/framing.zig");
 const length_framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
@@ -109,6 +110,7 @@ pub const ClientOptions = struct {
     mode: TransportMode = .baseline,
     native: NativeOptions = .{},
     ca_pem: ?[]const u8 = null,
+    observer: ?events.Observer = null,
 };
 
 pub const ServerOptions = struct {
@@ -150,6 +152,7 @@ pub const ServerOptions = struct {
     max_outbound_queue_bytes: usize = default_max_outbound_queue_bytes,
     mode: TransportMode = .baseline,
     native: NativeOptions = .{},
+    observer: ?events.Observer = null,
 };
 
 pub const ServerProductionHardening = struct {

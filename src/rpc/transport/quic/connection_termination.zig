@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const events = @import("../../events.zig");
 const quic_close = @import("close.zig");
 const termination = @import("termination.zig");
 
@@ -25,6 +26,7 @@ pub fn State(comptime Connection: type) type {
         }
 
         pub fn requestClose(conn: *Connection) void {
+            events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .closing);
             conn.close_controller.requestNormal(&conn.baseline, &conn.native);
             conn.wake();
         }
@@ -73,6 +75,7 @@ pub fn State(comptime Connection: type) type {
                 policy.code,
                 err,
             );
+            events.emitProtocolError(conn.observer, eventSource(conn.mode), eventRole(conn.role), err, null);
             enterClosing(conn);
             if (policy.reset_inbound) resetInbound(conn);
             if (policy.clear_message_callback) {
@@ -91,6 +94,20 @@ pub fn State(comptime Connection: type) type {
         fn resetInbound(conn: *Connection) void {
             conn.baseline.resetInbound();
             conn.native.resetInbound(conn.allocator);
+        }
+
+        fn eventSource(mode: anytype) events.Source {
+            return switch (mode) {
+                .baseline => .quic_baseline,
+                .native => .quic_native,
+            };
+        }
+
+        fn eventRole(role: anytype) events.Role {
+            return switch (role) {
+                .client => .client,
+                .server => .server,
+            };
         }
     };
 }

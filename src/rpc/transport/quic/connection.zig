@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
+const events = @import("../../events.zig");
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
 const close_controller_mod = @import("close_controller.zig");
@@ -53,6 +54,7 @@ pub const Connection = struct {
     udp_rx_buf: []u8,
     udp_tx_buf: []u8,
     stream_read_buf: []u8,
+    observer: ?events.Observer = null,
     max_message_bytes: usize,
     mode: TransportMode,
     baseline: BaselineEngine,
@@ -114,6 +116,7 @@ pub const Connection = struct {
     ) void {
         self.assertThreadAffinity();
         self.callback_lifecycle.start(ctx, on_message, on_error, on_close);
+        events.emitConnection(self.observer, eventSource(self.mode), eventRole(self.role), .started);
     }
 
     pub fn context(self: *const Connection) ?*anyopaque {
@@ -138,6 +141,7 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
+        events.emitConnection(self.observer, eventSource(self.mode), eventRole(self.role), .closing);
         Termination.close(self);
     }
 
@@ -277,3 +281,17 @@ pub const Connection = struct {
         return self.endpoint.activeQuicConnection();
     }
 };
+
+fn eventSource(mode: TransportMode) events.Source {
+    return switch (mode) {
+        .baseline => .quic_baseline,
+        .native => .quic_native,
+    };
+}
+
+fn eventRole(role: Role) events.Role {
+    return switch (role) {
+        .client => .client,
+        .server => .server,
+    };
+}

@@ -416,6 +416,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_cleanup_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_cleanup_test.zig", target, optimize, lib_module);
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/integration/rpc_worker_pool_test.zig", target, optimize, lib_module);
+    const run_rpc_events_tests = addLibTest(b, "tests/rpc/transport/rpc_events_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, quic_zig_module.?)
     else
@@ -557,6 +558,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level2_step.dependOn(run_rpc_peer_cleanup_tests);
     test_rpc_level2_step.dependOn(run_rpc_connection_failure_tests);
     test_rpc_level2_step.dependOn(run_rpc_worker_pool_tests);
+    test_rpc_level2_step.dependOn(run_rpc_events_tests);
     if (run_rpc_quic_transport_tests) |step| test_rpc_level2_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_rpc_level2_step.dependOn(step);
     test_rpc_level2_step.dependOn(run_rpc_raw_frame_security_tests);
