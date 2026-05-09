@@ -12,10 +12,8 @@ const connection_termination = @import("connection_termination.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
-const length_framer = @import("length_framer.zig");
 const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
-const native_framer = @import("native_framer.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
 const wake_mod = @import("wake.zig");
@@ -222,6 +220,65 @@ pub const Connection = struct {
         }
     };
 
+    pub const TestingHooks = if (builtin.is_test) struct {
+        pub const CloseCallback = CallbackLifecycle.CloseCallback;
+        pub const ErrorCallback = CallbackLifecycle.ErrorCallback;
+        pub const MessageCallback = CallbackLifecycle.MessageCallback;
+
+        pub fn wakeRequested(conn: *const Connection) bool {
+            return conn.wakeRequested();
+        }
+
+        pub fn baselineOwner(conn: *Connection) baseline_engine.Owner {
+            return conn.baselineOwner();
+        }
+
+        pub fn nativeOwner(conn: *Connection) native_engine.Owner {
+            return conn.nativeOwner();
+        }
+
+        pub fn activeQuicConn(conn: *Connection) ?*quic_zig.Connection {
+            return conn.activeQuicConn();
+        }
+
+        pub fn terminateFrameError(conn: *Connection, err: anyerror) void {
+            Termination.frameError(conn, err);
+        }
+
+        pub fn closeReason(conn: *const Connection) []const u8 {
+            return Termination.reason(conn);
+        }
+
+        pub fn revealCloseDetailOnWire(conn: *Connection, reveal: bool) void {
+            Termination.revealDetailOnWire(conn, reveal);
+        }
+
+        pub fn setCallbacks(
+            conn: *Connection,
+            ctx: ?*anyopaque,
+            on_message: ?MessageCallback,
+            on_error: ?ErrorCallback,
+            on_close: ?CloseCallback,
+        ) void {
+            conn.callback_lifecycle.setCallbacks(ctx, on_message, on_error, on_close);
+        }
+
+        pub fn closeCallback(conn: *const Connection) ?CloseCallback {
+            return conn.callback_lifecycle.closeCallback();
+        }
+
+        pub fn deinitRequested(conn: *const Connection) bool {
+            return conn.callback_lifecycle.deinitRequested();
+        }
+
+        pub fn invokeCloseCallback(
+            conn: *Connection,
+            cb: *const fn (conn: *Connection) void,
+        ) void {
+            conn.callback_lifecycle.invokeClose(conn, cb);
+        }
+    } else struct {};
+
     fn wakeRequested(self: *const Connection) bool {
         return self.wake_state.isRequested();
     }
@@ -261,95 +318,5 @@ pub const Connection = struct {
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
         return self.endpoint.activeQuicConnection();
-    }
-};
-
-pub const TestAccess = struct {
-    pub const ApplicationCloseCode = quic_close.ApplicationCloseCode;
-    pub const CloseCallback = Connection.CallbackLifecycle.CloseCallback;
-    pub const ErrorCallback = Connection.CallbackLifecycle.ErrorCallback;
-    pub const MessageCallback = Connection.CallbackLifecycle.MessageCallback;
-    pub const NativeOptions = quic_options.NativeOptions;
-
-    pub fn wakeRequested(conn: *const Connection) bool {
-        return conn.wakeRequested();
-    }
-
-    pub fn consumeWakeRequested(conn: *Connection) bool {
-        return conn.wake_state.consumeRequested();
-    }
-
-    pub fn processNativeControlFrames(conn: *Connection) !void {
-        try conn.native.processControlFrames(conn.nativeOwner(), conn.activeQuicConn().?);
-    }
-
-    pub fn startNativePendingData(
-        conn: *Connection,
-        data: native_framer.DataRpc,
-    ) !void {
-        try conn.native.startPendingData(conn.nativeOwner(), data);
-    }
-
-    pub fn resetNativeInbound(
-        conn: *Connection,
-        allocator: std.mem.Allocator,
-        max_control_frame_bytes: usize,
-        max_rpc_frame_bytes: usize,
-    ) void {
-        conn.native.inbound.deinit();
-        conn.native.inbound = native_framer.ControlFramer.init(allocator, .{
-            .max_control_frame_bytes = max_control_frame_bytes,
-            .max_rpc_frame_bytes = max_rpc_frame_bytes,
-        });
-    }
-
-    pub fn dispatchBaselineFrames(conn: *Connection) !void {
-        try conn.baseline.dispatchAvailableFrames(conn.baselineOwner());
-    }
-
-    pub fn resetBaselineInbound(
-        conn: *Connection,
-        allocator: std.mem.Allocator,
-        max_message_bytes: usize,
-    ) void {
-        conn.baseline.inbound.deinit();
-        conn.baseline.inbound = length_framer.LengthDelimitedFramer.init(allocator, max_message_bytes);
-    }
-
-    pub fn terminateFrameError(conn: *Connection, err: anyerror) void {
-        Connection.Termination.frameError(conn, err);
-    }
-
-    pub fn closeReason(conn: *const Connection) []const u8 {
-        return Connection.Termination.reason(conn);
-    }
-
-    pub fn revealCloseDetailOnWire(conn: *Connection, reveal: bool) void {
-        Connection.Termination.revealDetailOnWire(conn, reveal);
-    }
-
-    pub fn setCallbacks(
-        conn: *Connection,
-        ctx: ?*anyopaque,
-        on_message: ?MessageCallback,
-        on_error: ?ErrorCallback,
-        on_close: ?CloseCallback,
-    ) void {
-        conn.callback_lifecycle.setCallbacks(ctx, on_message, on_error, on_close);
-    }
-
-    pub fn closeCallback(conn: *const Connection) ?CloseCallback {
-        return conn.callback_lifecycle.closeCallback();
-    }
-
-    pub fn deinitRequested(conn: *const Connection) bool {
-        return conn.callback_lifecycle.deinitRequested();
-    }
-
-    pub fn invokeCloseCallback(
-        conn: *Connection,
-        cb: *const fn (conn: *Connection) void,
-    ) void {
-        conn.callback_lifecycle.invokeClose(conn, cb);
     }
 };

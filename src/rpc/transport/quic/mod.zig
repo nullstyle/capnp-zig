@@ -2,6 +2,7 @@ const builtin = @import("builtin");
 const adapter = @import("quic_zig_adapter.zig");
 pub const close = @import("close.zig");
 const conn = @import("connection.zig");
+const connection_testing = @import("connection_testing.zig");
 pub const endpoint = @import("endpoint.zig");
 const framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
@@ -32,7 +33,7 @@ pub const StepResult = scheduler_mod.StepResult;
 pub const length_prefix_bytes = framer.length_prefix_bytes;
 pub const native = native_framer;
 pub const testing = if (builtin.is_test) struct {
-    pub const ConnectionAccess = conn.TestAccess;
+    pub const ConnectionAccess = connection_testing.Access(conn.Connection);
 } else struct {};
 
 pub const alpn = options.alpn;
