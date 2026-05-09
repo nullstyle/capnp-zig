@@ -30,6 +30,10 @@ domain`):
   `dispatch.zig`, `bootstrap.zig`, `finish.zig`, `resolve.zig`, and
   `disembargo.zig`. These currently wrap existing implementation helpers so the
   semantic paths exist before code is moved behind them.
+- Option 3 Tranche 10 has split capability lifecycle code into
+  `caps/descriptors.zig`, `caps/lifecycle.zig`, `caps/inbound.zig`, and
+  `caps/outbound.zig`, with `caps/table.zig` preserved as the compatibility
+  facade for `rpc.cap_table`.
 - QUIC is now an explicit build-module choice. The default `capnpc-zig` module
   keeps quic-zig/BoringSSL out of serialization and TCP-only builds and exposes a
   disabled `rpc.quic` facade for QUIC-dependency-free framing helpers. Build with

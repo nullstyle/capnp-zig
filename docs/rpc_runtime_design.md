@@ -19,7 +19,7 @@ The runtime is organized into a small set of components, with strict ownership a
 - `rpc/Transport` (`src/rpc/transport/tcp/stream_transport.zig`): concurrent read/write transport, handling blocking I/O and exposing buffers to `Connection`.
 - `rpc/quic.Connection` (`src/rpc/transport/quic/connection.zig`): optional quic-zig-backed QUIC vat session using ALPN `capnp-rpc/1`, with baseline stream mode by default and an opt-in native control/data-stream mode.
 - `rpc/Protocol` (`src/rpc/wire/protocol.zig`): Cap'n Proto RPC wire message definitions and parsing helpers.
-- `rpc/CapTable` (`src/rpc/caps/table.zig`): export/import capability tracking with reference counting and lifetime management.
+- `rpc/CapTable` (`src/rpc/caps/table.zig` facade over `caps/lifecycle.zig`, `caps/inbound.zig`, `caps/outbound.zig`, and `caps/descriptors.zig`): export/import capability tracking with reference counting and lifetime management.
 - `rpc/Peer` (`src/rpc/peer/mod.zig` + `src/rpc/peer/*`): public peer facade, state limits, inbound/outbound call orchestration, return handling, and lifecycle dispatch.
 - `rpc/Promise Pipeline` (`src/rpc/promises/pipeline.zig`, `src/rpc/promises/peer_promises.zig`): promised-answer transforms and queued pipelined-call replay.
 
@@ -101,6 +101,11 @@ Outbound call:
 - `src/rpc/transport/tcp/stream_transport.zig`
 - `src/rpc/wire/protocol.zig`
 - `src/rpc/caps/table.zig`
+- `src/rpc/caps/descriptors.zig`
+- `src/rpc/caps/lifecycle.zig`
+- `src/rpc/caps/inbound.zig`
+- `src/rpc/caps/outbound.zig`
+- `src/rpc/caps/payload_remap.zig`
 - `src/rpc/wire/framing.zig`
 - `src/rpc/promises/pipeline.zig`
 - `src/rpc/promises/peer_promises.zig`
