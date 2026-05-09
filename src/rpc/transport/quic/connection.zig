@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
 const baseline_engine = @import("baseline_engine.zig");
+const datagram_io = @import("datagram_io.zig");
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
 const listener_mod = @import("listener.zig");
@@ -25,7 +26,6 @@ const BaselineEngine = baseline_engine.BaselineEngine;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
 const NativeControlFramer = native_framer.ControlFramer;
 const NativeEngine = native_engine.NativeEngine;
-const PollResult = wake_mod.PollResult;
 
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
@@ -335,19 +335,26 @@ pub const Connection = struct {
             .waited_for = waited_for,
             .next_deadline_us = next_deadline_us,
         };
-        const receive_result = try self.receiveOne(now_us, waited_for);
+        const receive_result = try datagram_io.receiveOne(.{
+            .io = self.io,
+            .driver = self.endpointDriver(),
+            .wake = &self.wake_state,
+            .rx_buf = self.udp_rx_buf,
+            .now_us = now_us,
+            .wait_duration = waited_for,
+        });
         result.received_datagram = receive_result.received_datagram;
         result.wake_drained = receive_result.wake_drained;
 
         now_us = self.nowUs();
         try self.advanceActive();
         try self.serviceModeStreams();
-        try self.drainOutgoingDatagrams(now_us);
+        try datagram_io.drainOutgoingDatagrams(self.endpointDriver(), self.udp_tx_buf, now_us);
 
         now_us = self.nowUs();
         try self.tickActive(now_us);
         try self.serviceModeStreams();
-        try self.drainOutgoingDatagrams(now_us);
+        try datagram_io.drainOutgoingDatagrams(self.endpointDriver(), self.udp_tx_buf, now_us);
 
         self.reapServerIfClosed();
         result.closed = self.isTransportDrainedClosed();
@@ -363,54 +370,9 @@ pub const Connection = struct {
             self.recordCloseStatus(.normal, null);
             self.closeQuicConn(conn);
         }
-        self.drainOutgoingDatagrams(self.nowUs()) catch |err| {
+        datagram_io.drainOutgoingDatagrams(self.endpointDriver(), self.udp_tx_buf, self.nowUs()) catch |err| {
             log.debug("failed to flush QUIC close datagram: {}", .{err});
         };
-    }
-
-    const ReceiveResult = struct {
-        received_datagram: bool = false,
-        wake_drained: bool = false,
-    };
-
-    fn receiveOne(self: *Connection, now_us: u64, wait_duration: std.Io.Duration) !ReceiveResult {
-        var result = ReceiveResult{};
-        if (self.consumeWakeRequested()) {
-            result.wake_drained = true;
-            return result;
-        }
-
-        var receive_timeout = wait_duration;
-        if (try self.waitForUdpOrWake(wait_duration)) |poll_result| {
-            result.wake_drained = poll_result.wake_drained;
-            if (!poll_result.socket_ready) return result;
-            receive_timeout = std.Io.Duration.zero;
-        }
-
-        const socket = self.endpointDriver().activeSocket();
-        const msg = socket.receiveTimeout(self.io, self.udp_rx_buf, .{
-            .duration = .{
-                .raw = receive_timeout,
-                .clock = .awake,
-            },
-        }) catch |err| switch (err) {
-            error.Timeout => return result,
-            else => return err,
-        };
-        if (msg.flags.trunc) return error.DatagramTooLarge;
-        result.received_datagram = true;
-
-        _ = try self.endpointDriver().handleDatagram(msg.data, msg.from, now_us);
-        return result;
-    }
-
-    fn waitForUdpOrWake(self: *Connection, wait_duration: std.Io.Duration) !?PollResult {
-        const socket = self.endpointDriver().activeSocket();
-        return try self.wake_state.waitForSocket(socket.handle, wait_duration);
-    }
-
-    fn consumeWakeRequested(self: *Connection) bool {
-        return self.wake_state.consumeRequested();
     }
 
     fn hasWakeSupport(self: *const Connection) bool {
@@ -627,10 +589,6 @@ pub const Connection = struct {
         return self.close_state.reason();
     }
 
-    fn drainOutgoingDatagrams(self: *Connection, now_us: u64) !void {
-        try self.endpointDriver().drainOutgoingDatagrams(self.udp_tx_buf, now_us);
-    }
-
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
         return self.endpointDriver().quicConnection();
     }
@@ -719,7 +677,7 @@ test "QUIC sendFrame requests scheduler wake" {
     try conn.sendFrame("abc");
     try std.testing.expect(conn.wakeRequested());
     try std.testing.expect(!conn.baseline.outbound.isEmpty());
-    try std.testing.expect(conn.consumeWakeRequested());
+    try std.testing.expect(conn.wake_state.consumeRequested());
     try std.testing.expect(!conn.wakeRequested());
 }
 
