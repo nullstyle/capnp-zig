@@ -8,6 +8,7 @@ const engine_owner = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
 const listener_mod = @import("listener.zig");
+const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
 const native_framer = @import("native_framer.zig");
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
@@ -27,6 +28,7 @@ const NativeOptions = quic_options.NativeOptions;
 const BaselineEngine = baseline_engine.BaselineEngine;
 const EngineOwner = engine_owner.Owner;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
+const ModeRouter = mode_router.Router;
 const NativeControlFramer = native_framer.ControlFramer;
 const NativeEngine = native_engine.NativeEngine;
 const TerminationPolicy = termination.Policy;
@@ -262,10 +264,7 @@ pub const Connection = struct {
         if (frame.len == 0 or frame.len > self.max_message_bytes) return error.FrameTooLarge;
         if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
-        switch (self.mode) {
-            .baseline => try self.baseline.enqueue(self.allocator, frame),
-            .native => try self.native.enqueue(self.allocator, frame),
-        }
+        try self.selectedMode().enqueue(self.allocator, frame);
         self.wake();
     }
 
@@ -393,10 +392,7 @@ pub const Connection = struct {
         if (self.activeQuicConn()) |conn| {
             if (conn.canSend()) return true;
             if (!self.selectedOutboundEmpty()) {
-                switch (self.mode) {
-                    .baseline => if (self.baseline.hasImmediateWork(self.role, conn)) return true,
-                    .native => if (self.native.hasImmediateWork(self.role, conn)) return true,
-                }
+                return self.selectedMode().hasImmediateWork(self.role, conn);
             }
         }
         return false;
@@ -414,10 +410,7 @@ pub const Connection = struct {
     }
 
     fn selectedOutboundEmpty(self: *Connection) bool {
-        return switch (self.mode) {
-            .baseline => self.baseline.outboundEmpty(),
-            .native => self.native.outboundEmpty(),
-        };
+        return self.selectedMode().outboundEmpty();
     }
 
     fn advanceActive(self: *Connection) !void {
@@ -434,10 +427,15 @@ pub const Connection = struct {
 
     fn serviceModeStreams(self: *Connection) !void {
         const conn = self.activeQuicConn() orelse return;
-        switch (self.mode) {
-            .baseline => try self.baseline.service(self.baselineOwner(), conn),
-            .native => try self.native.service(self.nativeOwner(), conn),
-        }
+        try self.selectedMode().service(self.engineOwner(), conn);
+    }
+
+    fn selectedMode(self: *Connection) ModeRouter {
+        return .{
+            .mode = self.mode,
+            .baseline = &self.baseline,
+            .native = &self.native,
+        };
     }
 
     fn baselineOwner(self: *Connection) baseline_engine.Owner {
