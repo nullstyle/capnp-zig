@@ -8,6 +8,7 @@ const close_controller_mod = @import("close_controller.zig");
 const connection_adapters = @import("connection_adapters.zig");
 const connection_init = @import("connection_init.zig");
 const connection_loop = @import("connection_loop.zig");
+const connection_termination = @import("connection_termination.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
@@ -17,10 +18,8 @@ const native_engine = @import("native_engine.zig");
 const native_framer = @import("native_framer.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
-const termination = @import("termination.zig");
 const wake_mod = @import("wake.zig");
 
-const log = std.log.scoped(.rpc_quic_transport);
 const Net = std.Io.net;
 
 const ClientOptions = quic_options.ClientOptions;
@@ -30,7 +29,6 @@ const BaselineEngine = baseline_engine.BaselineEngine;
 const EngineOwner = engine_owner.Owner;
 const ModeRouter = mode_router.Router;
 const NativeEngine = native_engine.NativeEngine;
-const TerminationPolicy = termination.Policy;
 
 const Role = endpoint_mod.Role;
 const EndpointRuntime = endpoint_mod.Runtime;
@@ -48,6 +46,7 @@ pub const Connection = struct {
     const CallbackLifecycle = callback_lifecycle_mod.State(Connection);
     const Adapters = connection_adapters.State(Connection);
     const CloseController = close_controller_mod.Controller;
+    const Termination = connection_termination.State(Connection);
 
     allocator: std.mem.Allocator,
     role: Role,
@@ -118,7 +117,7 @@ pub const Connection = struct {
     fn deinitNow(self: *Connection, comptime check_affinity: bool) void {
         if (!self.callback_lifecycle.beginDeinit()) return;
         if (check_affinity) self.assertThreadAffinity();
-        self.enterClosing();
+        Termination.enterClosing(self);
         self.baseline.deinit(self.allocator);
         self.native.deinit(self.allocator);
         self.callback_lifecycle.clearCallbacks();
@@ -167,22 +166,19 @@ pub const Connection = struct {
     }
 
     pub fn close(self: *Connection) void {
-        self.enterClosing();
-        self.close_controller.closeActive(self.activeQuicConn(), .normal, null);
-        self.wake();
+        Termination.close(self);
     }
 
     pub fn requestClose(self: *Connection) void {
-        self.close_controller.requestNormal(&self.baseline, &self.native);
-        self.wake();
+        Termination.requestClose(self);
     }
 
     pub fn isClosing(self: *const Connection) bool {
-        return self.close_controller.isRequested();
+        return Termination.isClosing(self);
     }
 
     pub fn closeStatus(self: *const Connection) ?quic_close.Status {
-        return self.close_controller.status();
+        return Termination.status(self);
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
@@ -214,11 +210,11 @@ pub const Connection = struct {
         }
 
         pub fn terminateFrameError(conn: *Connection, err: anyerror) void {
-            conn.terminateFrameError(err);
+            Termination.frameError(conn, err);
         }
 
         pub fn terminateInternalError(conn: *Connection, err: anyerror) void {
-            conn.terminateInternalError(err);
+            Termination.internalError(conn, err);
         }
 
         pub fn deinitNowUnchecked(conn: *Connection) void {
@@ -258,63 +254,13 @@ pub const Connection = struct {
         if (!self.callback_lifecycle.callbacksReady()) return;
         const on_message = self.callback_lifecycle.messageCallback() orelse return;
         self.callback_lifecycle.invokeMessage(self, on_message, frame) catch |err| {
-            self.terminateCallbackError(err);
+            Termination.callbackError(self, err);
             return;
         };
     }
 
-    fn terminateFrameError(self: *Connection, err: anyerror) void {
-        log.debug("fatal QUIC frame error, closing connection: {}", .{err});
-        self.applyTermination(termination.policy(.frame_error, err), err);
-    }
-
-    fn terminateCallbackError(self: *Connection, err: anyerror) void {
-        log.debug("QUIC message callback failed, closing connection: {}", .{err});
-        self.applyTermination(termination.policy(.callback_error, err), err);
-    }
-
-    fn terminateInternalError(self: *Connection, err: anyerror) void {
-        self.applyTermination(termination.policy(.internal_error, err), err);
-    }
-
-    fn applyTermination(
-        self: *Connection,
-        policy: TerminationPolicy,
-        err: anyerror,
-    ) void {
-        self.close_controller.closeActive(self.activeQuicConn(), policy.code, err);
-        self.enterClosing();
-        if (policy.reset_inbound) self.resetInbound();
-        if (policy.clear_message_callback) self.callback_lifecycle.clearMessageCallback();
-        const on_error = if (policy.clear_error_callback)
-            self.callback_lifecycle.takeErrorCallback()
-        else
-            self.callback_lifecycle.errorCallback();
-        self.wake();
-        if (policy.notify_error_callback) {
-            if (on_error) |cb| self.callback_lifecycle.invokeError(self, cb, err);
-        }
-    }
-
-    fn enterClosing(self: *Connection) void {
-        self.close_controller.enterClosing(&self.baseline, &self.native);
-    }
-
-    fn resetInbound(self: *Connection) void {
-        self.baseline.resetInbound();
-        self.native.resetInbound(self.allocator);
-    }
-
-    fn closeReason(self: *const Connection) []const u8 {
-        return self.close_controller.reason();
-    }
-
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
         return self.endpoint.activeQuicConnection();
-    }
-
-    fn nowUs(self: *Connection) u64 {
-        return self.endpoint.nowUs();
     }
 };
 
@@ -371,15 +317,15 @@ pub const TestAccess = struct {
     }
 
     pub fn terminateFrameError(conn: *Connection, err: anyerror) void {
-        conn.terminateFrameError(err);
+        Connection.Termination.frameError(conn, err);
     }
 
     pub fn closeReason(conn: *const Connection) []const u8 {
-        return conn.closeReason();
+        return Connection.Termination.reason(conn);
     }
 
     pub fn revealCloseDetailOnWire(conn: *Connection, reveal: bool) void {
-        conn.close_controller.setRevealDetailOnWire(reveal);
+        Connection.Termination.revealDetailOnWire(conn, reveal);
     }
 
     pub fn setCallbacks(
