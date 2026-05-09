@@ -29,13 +29,15 @@ const NativeEngine = native_engine.NativeEngine;
 const Role = endpoint_mod.Role;
 const EndpointRuntime = endpoint_mod.Runtime;
 
-/// A single vat-to-vat Cap'n Proto RPC session over QUIC.
+/// Compatibility transport for a single vat-to-vat Cap'n Proto RPC session.
 ///
 /// Client-side instances own one `ClientEndpoint`. Server-side compatibility
 /// instances own one `Listener` and attach the first accepted `Session` to the
 /// peer-facing callbacks. This intentionally preserves the first QUIC design
 /// step as "one QUIC connection equals one authenticated vat session" while
-/// making the future listener fanout boundary explicit.
+/// making the future listener fanout boundary explicit. New multi-session
+/// server work should build around `Listener` and `Session`; this type should
+/// remain the one-session adapter used by the existing peer transport.
 pub const Connection = struct {
     pub const StepMode = connection_loop.StepMode;
     pub const StepResult = connection_loop.StepResult;

@@ -5,6 +5,13 @@ const quic_zig_adapter = @import("quic_zig_adapter.zig");
 
 const Net = std.Io.net;
 
+/// Listener slot ordinal used by the server `Connection` compatibility path.
+///
+/// The current peer transport exposes only one accepted server session. Fanout
+/// code should carry the listener-provided ordinal instead of assuming this
+/// value.
+pub const compatibility_session_ordinal: usize = 0;
+
 /// Borrowed handle for one accepted server-side QUIC session.
 ///
 /// The owning `Listener` or compatibility `Connection` keeps the UDP socket
@@ -147,7 +154,7 @@ pub const AcceptedSessionDriver = struct {
 
     pub fn current(self: *const AcceptedSessionDriver) ?AcceptedSession {
         const accepted = self.tracker.handle() orelse return null;
-        return AcceptedSession.fromSession(0, accepted);
+        return AcceptedSession.fromSession(compatibility_session_ordinal, accepted);
     }
 
     pub fn quicConnection(self: *const AcceptedSessionDriver) ?*quic_zig.Connection {

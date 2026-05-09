@@ -20,6 +20,11 @@ const Role = endpoint_mod.Role;
 const ServerOptions = quic_options.ServerOptions;
 const TransportMode = quic_options.TransportMode;
 
+/// Shared allocation/configuration for client connections and the server
+/// compatibility connection.
+///
+/// Server fanout should keep listener/session ownership outside `Connection`;
+/// this initializer intentionally builds only the one-session transport object.
 pub const Config = struct {
     udp_rx_buffer_size: usize,
     udp_tx_buffer_size: usize,
@@ -86,6 +91,8 @@ pub fn initServer(
     io: std.Io,
     options: ServerOptions,
 ) !Connection {
+    // Compatibility path: bind a listener, then expose the first accepted
+    // server session through the peer-facing Connection callbacks.
     var created = try endpoint_factory.initServer(allocator, io, options);
     errdefer created.deinit(io);
 
