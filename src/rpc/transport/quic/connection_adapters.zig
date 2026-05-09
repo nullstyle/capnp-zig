@@ -53,14 +53,6 @@ pub fn State(comptime Connection: type) type {
             return @ptrCast(@alignCast(ptr));
         }
 
-        fn selectedMode(conn: *Connection) mode_router.Router {
-            return .{
-                .mode = conn.mode,
-                .baseline = &conn.baseline,
-                .native = &conn.native,
-            };
-        }
-
         fn endpointDriver(conn: *Connection) endpoint_mod.EndpointDriver {
             return conn.endpoint.driver();
         }
@@ -97,12 +89,12 @@ pub fn State(comptime Connection: type) type {
 
         fn loopSelectedMode(ptr: *anyopaque) mode_router.Router {
             const conn = castConnection(ptr);
-            return selectedMode(conn);
+            return mode_router.fromConnection(conn);
         }
 
         fn loopSelectedOutboundEmpty(ptr: *anyopaque) bool {
             const conn = castConnection(ptr);
-            return selectedMode(conn).outboundEmpty();
+            return mode_router.fromConnection(conn).outboundEmpty();
         }
 
         fn loopEngineOwner(ptr: *anyopaque) engine_owner_mod.Owner {

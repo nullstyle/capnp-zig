@@ -58,3 +58,11 @@ pub const Router = struct {
         }
     }
 };
+
+pub fn fromConnection(conn: anytype) Router {
+    return .{
+        .mode = conn.mode,
+        .baseline = &conn.baseline,
+        .native = &conn.native,
+    };
+}

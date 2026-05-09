@@ -19,7 +19,7 @@ pub fn State(comptime Connection: type) type {
             }
             if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
-            try selectedMode(conn).enqueue(conn.allocator, frame);
+            try mode_router.fromConnection(conn).enqueue(conn.allocator, frame);
             conn.wake();
         }
 
@@ -29,14 +29,6 @@ pub fn State(comptime Connection: type) type {
             conn.callback_lifecycle.invokeMessage(conn, on_message, frame) catch |err| {
                 Termination.callbackError(conn, err);
                 return;
-            };
-        }
-
-        fn selectedMode(conn: *Connection) mode_router.Router {
-            return .{
-                .mode = conn.mode,
-                .baseline = &conn.baseline,
-                .native = &conn.native,
             };
         }
     };
