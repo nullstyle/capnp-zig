@@ -19,6 +19,7 @@ pub const promises = struct {
     pub const promised_answer = @import("./promises/promised_answer.zig");
 };
 
+pub const events = @import("./events.zig");
 pub const peer = @import("./peer/mod.zig");
 
 pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {

@@ -3,6 +3,7 @@ const base = @import("./mod_base.zig");
 pub const wire = base.wire;
 pub const caps = base.caps;
 pub const promises = base.promises;
+pub const events = base.events;
 pub const transport = base.transport;
 pub const peer = base.peer;
 pub const integration = base.integration;

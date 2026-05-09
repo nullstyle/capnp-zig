@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const events = @import("../../events.zig");
 const baseline_engine = @import("baseline_engine.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_engine = @import("native_engine.zig");
@@ -12,6 +13,7 @@ pub const Owner = struct {
     ptr: *anyopaque,
     allocator: std.mem.Allocator,
     role: Role,
+    observer: ?events.Observer,
     max_message_bytes: usize,
     stream_read_buf: []u8,
     is_closing: *const fn (ptr: *anyopaque) bool,
@@ -25,6 +27,7 @@ pub const Owner = struct {
             .ptr = self.ptr,
             .allocator = self.allocator,
             .role = self.role,
+            .observer = self.observer,
             .stream_read_buf = self.stream_read_buf,
             .is_closing = self.is_closing,
             .callbacks_ready = self.callbacks_ready,
@@ -39,6 +42,7 @@ pub const Owner = struct {
             .ptr = self.ptr,
             .allocator = self.allocator,
             .role = self.role,
+            .observer = self.observer,
             .max_message_bytes = self.max_message_bytes,
             .stream_read_buf = self.stream_read_buf,
             .is_closing = self.is_closing,

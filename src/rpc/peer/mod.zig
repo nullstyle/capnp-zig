@@ -1,5 +1,6 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_peer);
+const events = @import("../events.zig");
 const protocol = @import("../wire/protocol.zig");
 const cap_table = @import("../caps/table.zig");
 const message = @import("../../serialization/message.zig");
@@ -306,6 +307,7 @@ pub const Peer = struct {
 
     on_error: ?*const fn (peer: *Peer, err: anyerror) void = null,
     on_close: ?*const fn (peer: *Peer) void = null,
+    observer: ?events.Observer = null,
 
     // -- Diagnostics --------------------------------------------------------
 
@@ -634,7 +636,14 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         self.on_error = on_error;
         self.on_close = on_close;
+        events.emitConnection(self.observer, .peer, .unknown, .started);
         self.transport.startIfPresent(self);
+    }
+
+    /// Install or clear a redacted RPC observer for peer-level dispatch events.
+    pub fn setObserver(self: *Peer, observer: ?events.Observer) void {
+        self.assertThreadAffinity();
+        self.observer = observer;
     }
 
     /// Set a hook to intercept all outbound frames before they reach the transport.
@@ -1646,6 +1655,7 @@ pub const Peer = struct {
                 return error.MissingCallbackContext;
             };
             try cb(ctx, frame);
+            events.emitFrame(self.observer, .peer, .unknown, .enqueued, frame.len);
             return;
         }
         self.transport.sendFrame(frame) catch |err| {
@@ -1654,6 +1664,7 @@ pub const Peer = struct {
             }
             return err;
         };
+        events.emitFrame(self.observer, .peer, .unknown, .enqueued, frame.len);
     }
 
     fn onOutboundCap(ctx: *anyopaque, tag: protocol.CapDescriptorTag, id: u32) anyerror!void {
@@ -1851,6 +1862,8 @@ pub const Peer = struct {
 
     fn onConnectionClose(self: *Peer) void {
         log.debug("connection closed", .{});
+        events.emitClose(self.observer, .peer, .unknown, null);
+        events.emitConnection(self.observer, .peer, .unknown, .closed);
         if (self.on_close) |cb| cb(self);
     }
 
@@ -1861,9 +1874,11 @@ pub const Peer = struct {
     /// an Unimplemented response per the Cap'n Proto RPC spec.
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
+        events.emitFrame(self.observer, .peer, .unknown, .received, frame.len);
         var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| {
             if (err == error.InvalidMessageTag) {
                 log.debug("unknown message tag in frame, sending unimplemented", .{});
+                events.emitProtocolError(self.observer, .peer, .unknown, err, null);
                 try self.sendUnimplementedForFrame(frame);
                 return;
             }
@@ -1872,6 +1887,7 @@ pub const Peer = struct {
             } else {
                 log.warn("failed to decode inbound frame (len={}): {}", .{ frame.len, err });
             }
+            events.emitProtocolError(self.observer, .peer, .unknown, err, null);
             self.sendAbortForError(err);
             return err;
         };
@@ -1903,6 +1919,24 @@ pub const Peer = struct {
                 log.debug("dispatch error for {s}: {}", .{ @tagName(decoded.tag), err });
             } else {
                 log.warn("dispatch error for {s}: {}", .{ @tagName(decoded.tag), err });
+            }
+            switch (err) {
+                error.PeerLimitExceeded => events.emitResourceRejection(
+                    self.observer,
+                    .peer,
+                    .unknown,
+                    .peer_state,
+                    frame.len,
+                    null,
+                    err,
+                ),
+                else => events.emitProtocolError(
+                    self.observer,
+                    .peer,
+                    .unknown,
+                    err,
+                    @tagName(decoded.tag),
+                ),
             }
             return err;
         };

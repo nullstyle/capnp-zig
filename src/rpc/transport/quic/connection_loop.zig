@@ -29,6 +29,7 @@ pub const Owner = struct {
     terminate_internal_error: *const fn (ptr: *anyopaque, err: anyerror) void,
     flush_close_datagram: *const fn (ptr: *anyopaque) void,
     close_engines: *const fn (ptr: *anyopaque) void,
+    notify_closed: *const fn (ptr: *anyopaque) void,
     invoke_close_callback: *const fn (ptr: *anyopaque) void,
     complete_deferred_deinit: *const fn (ptr: *anyopaque) void,
 };
@@ -49,6 +50,7 @@ pub fn run(owner: Owner) void {
 
     owner.flush_close_datagram(owner.ptr);
     owner.close_engines(owner.ptr);
+    owner.notify_closed(owner.ptr);
     owner.invoke_close_callback(owner.ptr);
     owner.complete_deferred_deinit(owner.ptr);
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const quic_zig = @import("quic_zig");
 
+const events = @import("../../events.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_framer = @import("native_framer.zig");
 const options = @import("options.zig");
@@ -141,6 +142,7 @@ pub const OutboundQueue = struct {
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
         conn: *quic_zig.Connection,
+        observer: ?events.Observer,
     ) !void {
         if (!self.beginFlush()) return;
         defer self.endFlush();
@@ -155,7 +157,7 @@ pub const OutboundQueue = struct {
                 self.requeueFront(allocator, item);
                 return;
             }
-            self.releaseItem(allocator, item);
+            self.releaseItem(allocator, item, observer);
         }
     }
 
@@ -283,6 +285,7 @@ pub const OutboundQueue = struct {
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
         item: QueuedFrame,
+        observer: ?events.Observer,
     ) void {
         self.lock();
         self.subtractItemCounts(item);
@@ -290,6 +293,7 @@ pub const OutboundQueue = struct {
         self.mu.unlock();
 
         var owned = item;
+        events.emitFrame(observer, .quic_native, .unknown, .sent, owned.bytes.len);
         owned.free(allocator);
     }
 

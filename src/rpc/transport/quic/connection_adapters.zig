@@ -1,4 +1,5 @@
 const connection_loop = @import("connection_loop.zig");
+const events = @import("../../events.zig");
 const engine_owner_mod = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
 const mode_router = @import("mode_router.zig");
@@ -17,6 +18,7 @@ pub fn State(comptime Connection: type) type {
                 .ptr = conn,
                 .allocator = conn.allocator,
                 .role = conn.role,
+                .observer = conn.observer,
                 .max_message_bytes = conn.max_message_bytes,
                 .stream_read_buf = conn.stream_read_buf,
                 .is_closing = engineIsClosing,
@@ -44,6 +46,7 @@ pub fn State(comptime Connection: type) type {
                 .terminate_internal_error = loopTerminateInternalError,
                 .flush_close_datagram = loopFlushCloseDatagram,
                 .close_engines = loopCloseEngines,
+                .notify_closed = loopNotifyClosed,
                 .invoke_close_callback = loopInvokeCloseCallback,
                 .complete_deferred_deinit = loopCompleteDeferredDeinit,
             };
@@ -132,6 +135,12 @@ pub fn State(comptime Connection: type) type {
             conn.close_controller.closeEngines(&conn.baseline, &conn.native);
         }
 
+        fn loopNotifyClosed(ptr: *anyopaque) void {
+            const conn = castConnection(ptr);
+            events.emitClose(conn.observer, eventSource(conn.mode), eventRole(conn.role), closeErr(conn));
+            events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .closed);
+        }
+
         fn loopInvokeCloseCallback(ptr: *anyopaque) void {
             const conn = castConnection(ptr);
             if (conn.callback_lifecycle.closeCallback()) |cb| {
@@ -144,6 +153,25 @@ pub fn State(comptime Connection: type) type {
             if (conn.callback_lifecycle.shouldCompleteDeferredDeinit()) {
                 Connection.AdapterAccess.deinitNowUnchecked(conn);
             }
+        }
+
+        fn closeErr(conn: *const Connection) ?anyerror {
+            const status = conn.close_controller.status() orelse return null;
+            return status.err;
+        }
+
+        fn eventSource(mode: anytype) events.Source {
+            return switch (mode) {
+                .baseline => .quic_baseline,
+                .native => .quic_native,
+            };
+        }
+
+        fn eventRole(role: anytype) events.Role {
+            return switch (role) {
+                .client => .client,
+                .server => .server,
+            };
         }
     };
 }

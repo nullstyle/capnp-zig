@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const events = @import("../../events.zig");
 const baseline_engine = @import("baseline_engine.zig");
 const close_controller = @import("close_controller.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
@@ -35,6 +36,7 @@ pub const Config = struct {
     mode: TransportMode,
     native_options: NativeOptions,
     reveal_close_reason_on_wire: bool = false,
+    observer: ?events.Observer = null,
 
     pub fn fromClient(options: quic_options.ClientOptions) Config {
         return .{
@@ -46,6 +48,7 @@ pub const Config = struct {
             .max_outbound_queue_bytes = options.max_outbound_queue_bytes,
             .mode = options.mode,
             .native_options = options.native,
+            .observer = options.observer,
         };
     }
 
@@ -60,6 +63,7 @@ pub const Config = struct {
             .mode = options.mode,
             .native_options = options.native,
             .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
+            .observer = options.observer,
         };
     }
 };
@@ -125,13 +129,14 @@ pub fn init(
     const stream_read_buf = try allocator.alloc(u8, config.stream_read_buffer_size);
     errdefer allocator.free(stream_read_buf);
 
-    return .{
+    const conn = Connection{
         .allocator = allocator,
         .role = role,
         .endpoint = EndpointRuntime.init(endpoint, io),
         .udp_rx_buf = udp_rx_buf,
         .udp_tx_buf = udp_tx_buf,
         .stream_read_buf = stream_read_buf,
+        .observer = config.observer,
         .max_message_bytes = config.max_message_bytes,
         .mode = config.mode,
         .baseline = BaselineEngine.init(
@@ -152,9 +157,25 @@ pub fn init(
         .close_controller = CloseController.init(config.reveal_close_reason_on_wire),
         .owner_thread_id = ownerThreadId(),
     };
+    events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .initialized);
+    return conn;
 }
 
 fn ownerThreadId() ?std.Thread.Id {
     if (comptime builtin.target.os.tag == .freestanding) return null;
     return std.Thread.getCurrentId();
+}
+
+fn eventSource(mode: TransportMode) events.Source {
+    return switch (mode) {
+        .baseline => .quic_baseline,
+        .native => .quic_native,
+    };
+}
+
+fn eventRole(role: Role) events.Role {
+    return switch (role) {
+        .client => .client,
+        .server => .server,
+    };
 }

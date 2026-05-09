@@ -5,6 +5,7 @@ const framing = @import("../../wire/framing.zig");
 const transport_mod = @import("./stream_transport.zig");
 const runtime_helpers = @import("./runtime.zig");
 const message = @import("../../../serialization/message.zig");
+const events = @import("../../events.zig");
 
 /// A framed Cap'n Proto connection over TCP.
 ///
@@ -36,6 +37,7 @@ pub const Connection = struct {
     io: std.Io,
     transport: transport_mod.Transport,
     framer: framing.Framer,
+    observer: ?events.Observer = null,
     /// Opaque context pointer passed to `start()`. Must remain valid until
     /// `deinit`. All callbacks may dereference this pointer.
     ctx: ?*anyopaque = null,
@@ -53,6 +55,7 @@ pub const Connection = struct {
     callback_depth: usize = 0,
     deinit_requested: bool = false,
     deinitialized: bool = false,
+    last_error: ?anyerror = null,
 
     // -- Cross-thread wake support -------------------------------------------
 
@@ -89,6 +92,7 @@ pub const Connection = struct {
         read_buffer_size: usize = 64 * 1024,
         write_queue_max_items: usize = transport_mod.Transport.default_max_queued_items,
         write_queue_max_bytes: usize = transport_mod.Transport.default_max_queued_bytes,
+        observer: ?events.Observer = null,
     };
 
     pub fn init(
@@ -97,17 +101,21 @@ pub const Connection = struct {
         fd: std.posix.fd_t,
         options: Options,
     ) !Connection {
-        return .{
+        const conn = Connection{
             .allocator = allocator,
             .io = io,
             .transport = try transport_mod.Transport.initWithOptions(allocator, io, fd, .{
                 .read_buffer_size = options.read_buffer_size,
                 .write_queue_max_items = options.write_queue_max_items,
                 .write_queue_max_bytes = options.write_queue_max_bytes,
+                .observer = options.observer,
             }),
             .framer = framing.Framer.init(allocator),
+            .observer = options.observer,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
+        events.emitConnection(conn.observer, .tcp, .unknown, .initialized);
+        return conn;
     }
 
     /// Enable cross-thread wake support. Creates a pipe so that other
@@ -167,6 +175,7 @@ pub const Connection = struct {
         self.on_error = null;
         self.on_close = null;
         self.on_wake = null;
+        self.observer = null;
         if (self.wake_fds) |fds| {
             runtime_helpers.closeFd(self.io, fds[0]);
             runtime_helpers.closeFd(self.io, fds[1]);
@@ -193,6 +202,7 @@ pub const Connection = struct {
         self.on_message = on_message;
         self.on_error = on_error;
         self.on_close = on_close;
+        events.emitConnection(self.observer, .tcp, .unknown, .started);
     }
 
     pub fn context(self: *const Connection) ?*anyopaque {
@@ -220,7 +230,9 @@ pub const Connection = struct {
     pub fn run(self: *Connection) void {
         self.transport.startWriter() catch |err| {
             log.debug("failed to start writer thread: {}", .{err});
+            self.last_error = err;
             self.invokeOnError(err);
+            self.emitClosed();
             if (self.on_close) |cb| {
                 self.invokeCloseCallback(cb);
             }
@@ -270,6 +282,7 @@ pub const Connection = struct {
 
             const n = self.transport.read() catch |err| {
                 log.debug("transport read error: {}", .{err});
+                self.last_error = err;
                 self.invokeOnError(err);
                 self.on_message = null;
                 self.on_error = null;
@@ -290,6 +303,7 @@ pub const Connection = struct {
         self.transport.stopWriter();
 
         // Signal close to the owner (typically the Peer).
+        self.emitClosed();
         if (self.on_close) |cb| {
             self.invokeCloseCallback(cb);
         }
@@ -313,12 +327,14 @@ pub const Connection = struct {
     pub fn close(self: *Connection) void {
         self.assertThreadAffinity();
         log.debug("connection closing", .{});
+        events.emitConnection(self.observer, .tcp, .unknown, .closing);
         self.transport.close();
     }
 
     /// Signal the transport to stop from any thread. Wakes a blocked
     /// `run()` loop by shutting down the socket.
     pub fn requestClose(self: *Connection) void {
+        events.emitConnection(self.observer, .tcp, .unknown, .closing);
         self.transport.shutdown();
     }
 
@@ -334,6 +350,7 @@ pub const Connection = struct {
         if (push_result) |_| {} else |err| {
             log.debug("framer push failed: {}", .{err});
             self.framer.reset();
+            events.emitProtocolError(self.observer, .tcp, .unknown, err, null);
             self.invokeTerminalError(err);
             return false;
         }
@@ -348,6 +365,7 @@ pub const Connection = struct {
                 if (err == error.OutOfMemory) {
                     log.debug("popFrame OOM, closing connection", .{});
                     self.framer.reset();
+                    events.emitProtocolError(self.observer, .tcp, .unknown, err, null);
                     self.invokeTerminalError(err);
                     return false;
                 }
@@ -355,12 +373,14 @@ pub const Connection = struct {
                 // byte stream — reset the framer and null the callbacks.
                 log.debug("framing error, connection unrecoverable: {}", .{err});
                 self.framer.reset();
+                events.emitProtocolError(self.observer, .tcp, .unknown, err, null);
                 self.invokeTerminalError(err);
                 return false;
             };
             if (frame == null) break;
             const bytes = frame.?;
             defer self.allocator.free(bytes);
+            events.emitFrame(self.observer, .tcp, .unknown, .received, bytes.len);
 
             // Design note: message handler errors are treated as non-fatal.
             // Unlike framing errors (which corrupt the byte stream and make
@@ -385,6 +405,7 @@ pub const Connection = struct {
     }
 
     fn invokeTerminalError(self: *Connection, err: anyerror) void {
+        self.last_error = err;
         self.transport.shutdown();
         const on_error = self.on_error;
         if (on_error) |cb| {
@@ -427,6 +448,11 @@ pub const Connection = struct {
         if (self.deinit_requested and self.callback_depth == 0) {
             self.deinitNow(false);
         }
+    }
+
+    fn emitClosed(self: *Connection) void {
+        events.emitClose(self.observer, .tcp, .unknown, self.last_error);
+        events.emitConnection(self.observer, .tcp, .unknown, .closed);
     }
 };
 

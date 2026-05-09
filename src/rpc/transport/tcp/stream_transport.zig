@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_transport);
 const net = std.Io.net;
+const events = @import("../../events.zig");
 
 /// TCP transport layer with concurrent read/write support.
 ///
@@ -32,6 +33,7 @@ pub const Transport = struct {
     io: std.Io,
     fd: net.Socket.Handle,
     read_buf: []u8,
+    observer: ?events.Observer = null,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd_closed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     fd_mu: std.atomic.Mutex = .unlocked,
@@ -57,6 +59,7 @@ pub const Transport = struct {
         read_buffer_size: usize,
         write_queue_max_items: usize = default_max_queued_items,
         write_queue_max_bytes: usize = default_max_queued_bytes,
+        observer: ?events.Observer = null,
     };
 
     /// Thread-safe write queue. The queue state and condition wait use the
@@ -180,6 +183,7 @@ pub const Transport = struct {
             .io = io,
             .fd = fd,
             .read_buf = buf,
+            .observer = options.observer,
             .write_queue = .{
                 .max_items = options.write_queue_max_items,
                 .max_bytes = options.write_queue_max_bytes,
@@ -237,11 +241,34 @@ pub const Transport = struct {
         if (self.writer_thread == null) {
             // Writer not started yet — write synchronously.
             self.write(bytes) catch return error.BrokenPipe;
+            events.emitFrame(self.observer, .tcp, .unknown, .sent, bytes.len);
             return;
         }
         self.write_queue.enqueueCopy(self.io, self.allocator, bytes) catch |err| {
+            switch (err) {
+                error.WriteQueueFull => events.emitBackpressure(
+                    self.observer,
+                    .tcp,
+                    .unknown,
+                    .write_queue_items,
+                    bytes.len,
+                    self.write_queue.max_items,
+                    err,
+                ),
+                error.WriteQueueBytesExceeded => events.emitBackpressure(
+                    self.observer,
+                    .tcp,
+                    .unknown,
+                    .write_queue_bytes,
+                    bytes.len,
+                    self.write_queue.max_bytes,
+                    err,
+                ),
+                else => {},
+            }
             return err;
         };
+        events.emitFrame(self.observer, .tcp, .unknown, .enqueued, bytes.len);
     }
 
     /// Spawn the dedicated writer thread. Call before entering the read loop.
@@ -281,6 +308,9 @@ pub const Transport = struct {
                         self.shutdown();
                         write_failed = true;
                     };
+                    if (!write_failed) {
+                        events.emitFrame(self.observer, .tcp, .unknown, .sent, item.len);
+                    }
                 }
                 self.allocator.free(item);
             }

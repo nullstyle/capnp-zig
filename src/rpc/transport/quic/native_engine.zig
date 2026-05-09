@@ -1,6 +1,7 @@
 const std = @import("std");
 const quic_zig = @import("quic_zig");
 
+const events = @import("../../events.zig");
 const endpoint_mod = @import("endpoint.zig");
 const native_framer = @import("native_framer.zig");
 const native_outbound_queue = @import("native_outbound_queue.zig");
@@ -18,6 +19,7 @@ pub const Owner = struct {
     ptr: *anyopaque,
     allocator: std.mem.Allocator,
     role: Role,
+    observer: ?events.Observer,
     max_message_bytes: usize,
     stream_read_buf: []u8,
     is_closing: *const fn (ptr: *anyopaque) bool,
@@ -120,7 +122,7 @@ pub const NativeEngine = struct {
     ) !void {
         if (!try self.ensureControlStream(owner.role, conn)) return;
         if (!try self.flushPreamble(conn)) return;
-        try self.outbound.flush(owner.allocator, conn);
+        try self.outbound.flush(owner.allocator, conn, owner.observer);
         self.readControlStream(owner, conn) catch |err| {
             if (isNativeFrameError(err)) {
                 owner.terminate_frame_error(owner.ptr, err);
