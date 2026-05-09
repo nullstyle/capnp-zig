@@ -14,7 +14,11 @@ implementation of Cap'n Proto serialization, code generation, and RPC.
 |    connection.zig       Connection state machine                      |
 |    peer.zig             Call routing, bootstrap, capability lifecycle  |
 |    protocol.zig         RPC message types (Call, Return, Resolve, ..) |
-|    cap_table.zig        Capability export/import tables               |
+|    caps/table.zig       Compatibility facade for capability tables     |
+|    caps/lifecycle.zig   Import/export refcount lifecycle              |
+|    caps/inbound.zig     Inbound payload capability table resolution    |
+|    caps/outbound.zig    Outbound payload capability descriptor encoding|
+|    caps/descriptors.zig Capability descriptor vocabulary               |
 |    framing.zig          Segment-framed message reassembly             |
 |    transport.zig        Concurrent read/write I/O|
 |    host_peer.zig        Host-neutral peer transport (wasm-compatible) |
