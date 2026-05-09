@@ -48,7 +48,6 @@ facade for narrow white-box coverage.
 |---|---|---|
 | RPC testing facade | `src/rpc/testing.zig` | Test-only access to the current white-box RPC helpers. |
 | Peer dispatch | `src/rpc/peer/dispatch.zig` | Inbound message dispatch logic. |
-| Peer control | `src/rpc/peer/peer_control.zig` | Peer lifecycle control. |
 | Peer cleanup | `src/rpc/peer/peer_cleanup.zig` | Resource cleanup on peer teardown. |
 | Peer state | `src/rpc/peer/state.zig` | Peer limits, small state record types, and debug thread-affinity helpers. |
 | Peer errors | `src/rpc/peer/errors.zig` | Named error groups for future peer API narrowing. |

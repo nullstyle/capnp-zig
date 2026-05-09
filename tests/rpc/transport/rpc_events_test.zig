@@ -38,12 +38,12 @@ test "tcp observer reports frame send metadata without frame bytes" {
         fn netWrite(
             userdata: ?*anyopaque,
             _: net.Socket.Handle,
-            _: []const u8,
+            header: []const u8,
             data: []const []const u8,
             _: usize,
         ) net.Stream.Writer.Error!usize {
             const state: *State = @ptrCast(@alignCast(userdata.?));
-            var len: usize = 0;
+            var len: usize = header.len;
             for (data) |chunk| len += chunk.len;
             state.bytes_written += len;
             return len;

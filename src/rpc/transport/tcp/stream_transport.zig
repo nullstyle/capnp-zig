@@ -379,8 +379,9 @@ fn ignoreSigpipe() void {
 /// Write bytes to a socket handle via Io. Returns bytes written.
 fn ioWrite(io: std.Io, fd: net.Socket.Handle, bytes: []const u8) Transport.WriteError!usize {
     if (bytes.len == 0) return 0;
-    var data: [1][]const u8 = .{bytes};
-    return io.vtable.netWrite(io.userdata, fd, &.{}, &data, 0);
+    const pattern: []const u8 = &.{};
+    const data: [1][]const u8 = .{pattern};
+    return io.vtable.netWrite(io.userdata, fd, bytes, &data, 0);
 }
 
 fn ioReadVec(io: std.Io, fd: net.Socket.Handle, bufs: [][]u8) Transport.ReadError!usize {

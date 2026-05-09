@@ -1,8 +1,9 @@
-# RPC Refactor Plan: Domain Layout Then Protocol Split
+# Historical RPC Refactor Plan: Domain Layout Then Protocol Split
 
-This is a planning note for the large-scale RPC refactor discussed in the
-hardening session. It is intentionally not a design-complete spec. Its job is
-to preserve the agreed direction across long sessions and context compaction.
+This is a historical planning note for the large-scale RPC refactor discussed
+in the hardening session. The implementation has landed; references to the old
+`level*` layout or `peer_control.zig` describe the pre-refactor starting point
+or tranche history, not active source paths.
 
 ## Current Status
 
@@ -23,15 +24,10 @@ domain`):
 - `zig build check --summary all`, `zig build test --summary all`,
   `zig build test-e2e-security --summary all`, and
   `zig build hardening --summary all` have passed during the refactor.
-- Option 3 Tranche 7 has started locally. The first pass keeps `peer/mod.zig`
-  as the public facade while extracting state vocabulary, named peer error
-  groups, and the peer-facing transport callback facade into
-  `src/rpc/peer/state.zig`, `src/rpc/peer/errors.zig`, and
-  `src/rpc/peer/transport.zig`.
-- Option 3 Tranche 8 has started with protocol-family facades:
-  `dispatch.zig`, `bootstrap.zig`, `finish.zig`, `resolve.zig`, and
-  `disembargo.zig`. These currently wrap existing implementation helpers so the
-  semantic paths exist before code is moved behind them.
+- Option 3 peer splitting has completed. The public facade remains
+  `peer/mod.zig`, while state, errors, transport callbacks, dispatch,
+  bootstrap, finish, resolve, disembargo, return, forwarding, provide/join, and
+  third-party helper families now live in semantic modules.
 - Option 3 Tranche 10 has split capability lifecycle code into
   `caps/descriptors.zig`, `caps/lifecycle.zig`, `caps/inbound.zig`, and
   `caps/outbound.zig`, with `caps/table.zig` preserved as the compatibility
@@ -89,6 +85,7 @@ Keep these names exported from `src/rpc/mod.zig`:
 - `rpc.caps.table`
 - `rpc.promises.pipeline`
 - `rpc.caps.cap_pointer`
+- `rpc.events`
 - `rpc.transport.binding`
 - `rpc.transport.tcp`
 - `rpc.transport.quic`
@@ -390,15 +387,10 @@ First local pass:
 
 - Added facade modules for dispatch, bootstrap/abort/unimplemented, finish,
   resolve, and disembargo.
-- `peer/mod.zig` now routes those message families through the new facade
-  names, while `peer_control.zig` remains as the compatibility implementation
-  holder for the still-unsplit helpers.
-- Bootstrap, abort, and unimplemented-message logic has moved into
-  `peer/bootstrap.zig`; `peer_control.zig` re-exports those names for existing
-  tests and compatibility.
-- Finish cleanup and resolved-answer frame cleanup have moved into
-  `peer/finish.zig`; `peer_control.zig` re-exports those names for existing
-  tests and compatibility.
+- `peer/mod.zig` routes those message families through semantic module names.
+- Bootstrap, abort, and unimplemented-message logic lives in
+  `peer/bootstrap.zig`.
+- Finish cleanup and resolved-answer frame cleanup lives in `peer/finish.zig`.
 
 ### Tranche 9: Split Provide/Accept/Join And Third-Party Helpers
 
@@ -419,8 +411,8 @@ First local pass:
 - `peer/mod.zig` now routes provide/accept/join, third-party payload capture,
   sendResultsTo-thirdParty, and pending third-party return helpers through the
   semantic facades.
-- `peer_control.zig` keeps compatibility re-exports for existing tests/imports
-  while the moved helper implementations live in the semantic modules.
+- The old compatibility holder has been removed; helper implementations live in
+  the semantic modules.
 
 ### Tranche 10: Split Capability Lifecycle
 
@@ -466,9 +458,9 @@ removed; in-tree tests should import `rpc.testing` directly.
 Do these alongside or shortly after Option 1, not in the middle of delicate peer
 semantic changes:
 
-- Decide whether the project still supports Zig 0.16 or formally moves to
-  Zig 0.17-dev/master.
-- Update `minimum_zig_version`, `mise.toml`, and docs together if moving.
+- The project formally targets Zig 0.17-dev/master.
+- Keep `minimum_zig_version`, toolchain docs, and examples aligned with that
+  target.
 - Make module surfaces explicit:
   - core serialization/codegen
   - RPC without QUIC by default
@@ -507,17 +499,16 @@ zig build test-e2e-security --summary all
 zig build hardening --summary all
 ```
 
-If maintaining Zig 0.16 compatibility while developing on master, also run the
-same gates under the pinned toolchain before landing a tranche.
+Zig 0.16 compatibility is no longer a landing gate for this branch.
 
 ## Implementation Notes For Future Sessions
 
 - Start Option 1 with file moves and import updates only.
 - Avoid behavior changes until the domain tree is green.
-- Keep compatibility aliases in `src/rpc/mod.zig` and `src/rpc/mod_core.zig`.
+- Keep the public RPC facade domain-shaped; do not reintroduce top-level
+  compatibility aliases.
 - Update docs and path-based hardening tests in the same tranche as the path
   move that affects them.
 - Treat QUIC split as a second step after moving it under `transport/quic`.
-- Do not start Option 3 until Option 1 is committed, pushed, and stable.
-- In Option 3, extract state first, then dispatch families, then caps and
-  pipeline internals.
+- Option 3 is complete. Future work should preserve the semantic module split
+  unless a follow-up refactor has a narrower, documented reason.

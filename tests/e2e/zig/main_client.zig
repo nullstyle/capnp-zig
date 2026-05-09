@@ -118,18 +118,23 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
 fn onPeerClose(peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
     const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
+    var retained_conn: ?*rpc.transport.tcp.Connection = null;
 
     peer.deinit();
     allocator.destroy(peer);
 
     if (conn) |attached| {
         attached.deinit();
-        allocator.destroy(attached);
+        if (attached.deinitialized) {
+            allocator.destroy(attached);
+        } else {
+            retained_conn = attached;
+        }
     }
 
     if (g_client_app) |app| {
         app.peer = null;
-        app.conn = null;
+        app.conn = retained_conn;
         app.done = true;
     }
 }
@@ -406,7 +411,14 @@ pub fn main(init: std.process.Init) !void {
 
     conn.run();
 
-    // peer and conn are cleaned up by onPeerClose
+    // peer is cleaned up by onPeerClose. If onPeerClose runs on the
+    // connection callback stack, Connection.deinit() is deferred until run()
+    // can unwind, so destroy the connection storage here.
+    if (app.conn) |attached| {
+        if (!attached.deinitialized) attached.deinit();
+        allocator.destroy(attached);
+        app.conn = null;
+    }
 
     if (app.err) |err| return err;
 

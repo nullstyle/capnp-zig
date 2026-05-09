@@ -269,7 +269,7 @@ Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
 
 ### Switchable Io Backend
 
-The RPC runtime accepts a `std.Io` value at every entry point (`rpc.runtime.Listener.init`, `rpc.connection.Connection.init`, `rpc.transport.Transport.init`). To centralise backend selection, the library exports `capnpc.io_backend`:
+The RPC runtime accepts a `std.Io` value at every entry point (`rpc.transport.tcp.Listener.init`, `rpc.transport.tcp.Connection.init`, `rpc.transport.tcp.Transport.init`). To centralise backend selection, the library exports `capnpc.io_backend`:
 
 ```zig
 const capnpc = @import("capnpc-zig");
@@ -278,7 +278,7 @@ pub fn main(init: std.process.Init) !void {
     var backend = try capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
     defer backend.deinit();
     const io = backend.io();
-    // pass `io` to rpc.runtime.Listener / rpc.connection.Connection / etc.
+    // pass `io` to rpc.transport.tcp.Listener / rpc.transport.tcp.Connection / etc.
 }
 ```
 

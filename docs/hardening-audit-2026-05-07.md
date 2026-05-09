@@ -5,6 +5,10 @@ It applies the external HTTP/3/QUIC hardening guide at
 `/Users/nullstyle/prj/ai-workspace/hardening-guide.md` to capnp-zig's current
 Cap'n Proto serialization, RPC, QUIC, WASM, and codegen surfaces.
 
+Historical note: some issue locations below preserve the file paths that were
+current when the audit was written. Later refactors moved or deleted several of
+those files, including `src/rpc/peer/peer_control.zig`.
+
 The guide's main transferable principles are:
 
 - Treat every frame, schema, pointer, capability ID, and host ABI pointer as hostile input.

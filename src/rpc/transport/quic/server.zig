@@ -8,6 +8,8 @@ const connection_dispatch = @import("connection_dispatch.zig");
 const connection_init = @import("connection_init.zig");
 const connection_termination = @import("connection_termination.zig");
 const engine_owner_mod = @import("engine_owner.zig");
+const events = @import("../../events.zig");
+const endpoint_mod = @import("endpoint.zig");
 const listener_mod = @import("listener.zig");
 const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
@@ -23,6 +25,7 @@ const BaselineEngine = baseline_engine.BaselineEngine;
 const CloseController = close_controller_mod.Controller;
 const Config = connection_init.Config;
 const EngineOwner = engine_owner_mod.Owner;
+const Role = endpoint_mod.Role;
 const NativeEngine = native_engine.NativeEngine;
 const ServerOptions = quic_options.ServerOptions;
 
@@ -403,10 +406,12 @@ pub const ServerSession = struct {
     slot: *quic_zig.Server.Slot,
     id: u64,
     ordinal: usize,
+    role: Role,
     peer_addr: ?Net.IpAddress,
     stream_read_buf: []u8,
     max_message_bytes: usize,
     mode: quic_options.TransportMode,
+    observer: ?events.Observer,
     baseline: BaselineEngine,
     native: NativeEngine,
     close_controller: CloseController,
@@ -428,10 +433,12 @@ pub const ServerSession = struct {
             .slot = accepted.session.slot,
             .id = accepted.session.slot.slot_id,
             .ordinal = accepted.ordinal,
+            .role = .server,
             .peer_addr = accepted.peerAddress(),
             .stream_read_buf = stream_read_buf,
             .max_message_bytes = config.max_message_bytes,
             .mode = config.mode,
+            .observer = config.observer,
             .baseline = BaselineEngine.init(
                 allocator,
                 config.max_message_bytes,
@@ -541,6 +548,7 @@ pub const ServerSession = struct {
             .ptr = self,
             .allocator = self.allocator,
             .role = .server,
+            .observer = self.observer,
             .max_message_bytes = self.max_message_bytes,
             .stream_read_buf = self.stream_read_buf,
             .is_closing = engineIsClosing,
