@@ -92,16 +92,16 @@
 
 ## Development
 
-- From repo root: `just test-rpc-level0`, `just test-rpc-level1`,
-  `just test-rpc-level2`, `just test-rpc-level3`, or `just test-rpc`.
-- The test step names remain cumulative compatibility names even though source
-  files now live in domain folders.
+- From repo root: `just test-rpc-wire`, `just test-rpc-caps`,
+  `just test-rpc-promises`, `just test-rpc-transport`, `just test-rpc-peer`,
+  `just test-rpc-integration`, `just test-rpc-quic`, or `just test-rpc`.
+- The test step names follow the same domain folders as the source and tests.
 - From this directory: `just gen-rpc` to regenerate schema bindings (requires
   `../../zig-out/bin/capnpc-zig` and `capnpc`).
 - From this directory: `just check-rpc` to verify schema sync, `just sync-rpc`
   to update local schema copies from vendor.
-- After peer/control edits, run at least `test-rpc-level3` because higher
-  cumulative RPC steps include lower-level checks.
+- After peer/control edits, run at least `test-rpc-peer` plus any affected
+  protocol/domain suite, or the full `test-rpc` umbrella.
 
 ## Optional
 

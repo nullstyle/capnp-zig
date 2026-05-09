@@ -11,9 +11,9 @@ capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/)
 - `src/` holds the Zig library and plugin entry point.
 - `src/serialization/` contains wire-format, schema, and reader/validation modules.
 - `src/capnpc-zig/` contains codegen utilities and generators.
-- `src/rpc/level0`, `src/rpc/level1`, `src/rpc/level2`, and `src/rpc/level3` group RPC runtime modules by Cap'n Proto level.
-- `src/rpc/level1/` contains promise and pipelining primitives shared by higher-level peer flows.
-- `tests/serialization/` contains serialization-focused suites; `tests/rpc/level0..level3/` contain RPC suites by level.
+- `src/rpc/wire`, `src/rpc/caps`, `src/rpc/promises`, `src/rpc/transport`, `src/rpc/peer`, and `src/rpc/integration` group RPC runtime modules by domain.
+- `src/rpc/promises/` contains promise and pipelining primitives shared by peer flows.
+- `tests/serialization/` contains serialization-focused suites; `tests/rpc/` contains RPC suites by domain.
 - `tests/` also contains support assets; fixture schemas live in `tests/test_schemas/`.
 - `build.zig` defines build/test steps; `Justfile` wraps common tasks.
 - `zig-out/` and `.zig-cache/` are build artifacts.
@@ -36,8 +36,8 @@ Requires **Zig 0.17-dev** on `PATH` (minimum declared in `build.zig.zon`; `mise.
 
 - `zig build test-message`, `test-codegen`, `test-integration`, `test-interop`, `test-real-world`, `test-union`, `test-capnp-testdata`, `test-capnp-test-vendor`, `test-schema-validation`, `test-rpc`, `just e2e`
 - `just test-serialization` runs serialization-focused suites.
-- `just test-rpc`, `just test-rpc-level0`, `just test-rpc-level1`, `just test-rpc-level2`, `just test-rpc-level3` run RPC suites by level.
-- `zig build test-rpc-level0`, `test-rpc-level1`, `test-rpc-level2`, `test-rpc-level3` run cumulative RPC levels.
+- `just test-rpc`, `just test-rpc-wire`, `just test-rpc-caps`, `just test-rpc-promises`, `just test-rpc-transport`, `just test-rpc-peer`, `just test-rpc-integration`, and `just test-rpc-quic` run RPC suites by domain.
+- `zig build test-rpc-wire`, `test-rpc-caps`, `test-rpc-promises`, `test-rpc-transport`, `test-rpc-peer`, `test-rpc-integration`, and `-Dquic=true test-rpc-quic` run focused RPC domain suites.
 
 ### Benchmarks
 

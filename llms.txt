@@ -10,7 +10,9 @@ This file is optimized for LLM orientation. Use module-level `llms.txt` files fi
 - Two library export surfaces exist: [src/lib.zig](src/lib.zig) (full) and [src/lib_core.zig](src/lib_core.zig) (reduced core/runtime surface).
 - [src/main.zig](src/main.zig) is a Cap'n Proto plugin entrypoint that reads `CodeGeneratorRequest` from stdin and writes generated `.zig` files.
 - Codegen behavior can be tuned via option tokens and `CAPNPC_ZIG_*` environment variables (manifest emission, API profile, shape sharing).
-- RPC tests are cumulative by level (`test-rpc-level0` -> `test-rpc-level3`) and build on the lower-level protocol machinery.
+- RPC tests are grouped by domain (`test-rpc-wire`, `test-rpc-caps`,
+  `test-rpc-promises`, `test-rpc-transport`, `test-rpc-peer`,
+  `test-rpc-integration`, plus optional `test-rpc-quic`).
 - RPC and WASM host ABI are still evolving; check stability and contracts docs before changing runtime behavior.
 
 ## Structure
@@ -47,7 +49,7 @@ This file is optimized for LLM orientation. Use module-level `llms.txt` files fi
 - Release build: `just release`
 - Full tests: `just test`
 - Serialization tests: `just test-serialization`
-- RPC tests: `just test-rpc` or `just test-rpc-level0..3`
+- RPC tests: `just test-rpc` or focused `just test-rpc-*` domain recipes.
 - Format: `just fmt`
 - Compile-check only: `just check`
 - RPC schema sync/check helpers: `just src/rpc/check-rpc`, `just src/rpc/sync-rpc`

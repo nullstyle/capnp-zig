@@ -16,8 +16,8 @@ domain`):
 - QUIC has been split into `transport/quic/mod.zig`, `connection.zig`,
   `options.zig`, `length_framer.zig`, `outbound_queue.zig`, and
   `quic_zig_adapter.zig`.
-- RPC tests have moved from `tests/rpc/level*` into domain folders while the
-  cumulative `test-rpc-level*` build step names remain for compatibility.
+- RPC tests have moved from historical `tests/rpc/level*` folders into domain
+  folders, and the build graph now exposes matching `test-rpc-*` domain steps.
 - `zig build check --summary all`, `zig build test --summary all`,
   `zig build test-e2e-security --summary all`, and
   `zig build hardening --summary all` have passed during the refactor.
