@@ -4,6 +4,7 @@ const quic_zig = @import("quic_zig");
 
 const baseline_engine = @import("baseline_engine.zig");
 const datagram_io = @import("datagram_io.zig");
+const engine_owner = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
 const listener_mod = @import("listener.zig");
@@ -23,6 +24,7 @@ const ServerOptions = quic_options.ServerOptions;
 const TransportMode = quic_options.TransportMode;
 const NativeOptions = quic_options.NativeOptions;
 const BaselineEngine = baseline_engine.BaselineEngine;
+const EngineOwner = engine_owner.Owner;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
 const NativeControlFramer = native_framer.ControlFramer;
 const NativeEngine = native_engine.NativeEngine;
@@ -444,74 +446,49 @@ pub const Connection = struct {
     }
 
     fn baselineOwner(self: *Connection) baseline_engine.Owner {
-        return .{
-            .ptr = self,
-            .allocator = self.allocator,
-            .role = self.role,
-            .stream_read_buf = self.stream_read_buf,
-            .is_closing = baselineOwnerIsClosing,
-            .callbacks_ready = baselineOwnerCallbacksReady,
-            .dispatch_rpc_frame = baselineOwnerDispatchRpcFrame,
-            .terminate_frame_error = baselineOwnerTerminateFrameError,
-            .deinit_requested = baselineOwnerDeinitRequested,
-        };
-    }
-
-    fn baselineOwnerIsClosing(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.close_requested.load(.acquire);
-    }
-
-    fn baselineOwnerCallbacksReady(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.on_message != null and self.on_error != null;
-    }
-
-    fn baselineOwnerDispatchRpcFrame(ptr: *anyopaque, frame: []const u8) !void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        try self.dispatchRpcFrame(frame);
-    }
-
-    fn baselineOwnerTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.terminateFrameError(err);
-    }
-
-    fn baselineOwnerDeinitRequested(ptr: *anyopaque) bool {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.deinit_requested;
+        return self.engineOwner().baseline();
     }
 
     fn nativeOwner(self: *Connection) native_engine.Owner {
+        return self.engineOwner().native();
+    }
+
+    fn engineOwner(self: *Connection) EngineOwner {
         return .{
             .ptr = self,
             .allocator = self.allocator,
             .role = self.role,
             .max_message_bytes = self.max_message_bytes,
             .stream_read_buf = self.stream_read_buf,
-            .is_closing = nativeOwnerIsClosing,
-            .dispatch_rpc_frame = nativeOwnerDispatchRpcFrame,
-            .terminate_frame_error = nativeOwnerTerminateFrameError,
-            .deinit_requested = nativeOwnerDeinitRequested,
+            .is_closing = ownerIsClosing,
+            .callbacks_ready = ownerCallbacksReady,
+            .dispatch_rpc_frame = ownerDispatchRpcFrame,
+            .terminate_frame_error = ownerTerminateFrameError,
+            .deinit_requested = ownerDeinitRequested,
         };
     }
 
-    fn nativeOwnerIsClosing(ptr: *anyopaque) bool {
+    fn ownerIsClosing(ptr: *anyopaque) bool {
         const self: *Connection = @ptrCast(@alignCast(ptr));
         return self.close_requested.load(.acquire);
     }
 
-    fn nativeOwnerDispatchRpcFrame(ptr: *anyopaque, frame: []const u8) !void {
+    fn ownerCallbacksReady(ptr: *anyopaque) bool {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.on_message != null and self.on_error != null;
+    }
+
+    fn ownerDispatchRpcFrame(ptr: *anyopaque, frame: []const u8) !void {
         const self: *Connection = @ptrCast(@alignCast(ptr));
         try self.dispatchRpcFrame(frame);
     }
 
-    fn nativeOwnerTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
+    fn ownerTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
         const self: *Connection = @ptrCast(@alignCast(ptr));
         self.terminateFrameError(err);
     }
 
-    fn nativeOwnerDeinitRequested(ptr: *anyopaque) bool {
+    fn ownerDeinitRequested(ptr: *anyopaque) bool {
         const self: *Connection = @ptrCast(@alignCast(ptr));
         return self.deinit_requested;
     }
