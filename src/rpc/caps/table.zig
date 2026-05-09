@@ -3,7 +3,7 @@ const log = std.log.scoped(.rpc_cap_table);
 const message = @import("../../serialization/message.zig");
 const bounds = @import("../../serialization/message/bounds.zig");
 const protocol = @import("../wire/protocol.zig");
-const promise_pipeline = @import("../promises/pipeline.zig");
+const promised_answer = @import("../promises/promised_answer.zig");
 const capability_remap = message.capability_remap;
 
 const makeCapabilityPointer = capability_remap.makeCapabilityPointer;
@@ -32,7 +32,7 @@ pub const ResolvedCap = union(enum) {
 };
 
 /// A heap-owned copy of a `PromisedAnswer` (question ID + transform ops).
-pub const OwnedPromisedAnswer = promise_pipeline.OwnedPromisedAnswer;
+pub const OwnedPromisedAnswer = promised_answer.OwnedPromisedAnswer;
 
 /// Tracks capability import/export state for an RPC connection.
 ///
@@ -641,7 +641,7 @@ pub fn resolvePromisedAnswer(
     payload: protocol.Payload,
     transform: protocol.PromisedAnswerTransform,
 ) !ResolvedCap {
-    const resolved = try promise_pipeline.resolvePromisedAnswer(payload, transform);
+    const resolved = try promised_answer.resolvePromisedAnswer(payload, transform);
     return switch (resolved) {
         .none => .none,
         .exported_id => |id| .{ .exported = .{ .id = id } },

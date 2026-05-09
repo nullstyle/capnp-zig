@@ -35,6 +35,10 @@ domain`):
   disabled `rpc.quic` facade for QUIC-dependency-free framing helpers. Build with
   `-Dquic=true` to select `src/lib_quic.zig`, import quic-zig, and expose the
   native QUIC transport implementation.
+- Option 3 Tranche 11 has split the promise/pipeline helpers under the existing
+  `src/rpc/promises/` domain into `promised_answer.zig`, `pending_calls.zig`,
+  `return_routing.zig`, and `return_send.zig`, while keeping the older
+  promise/return helper filenames as compatibility facades.
 
 ## Goals
 
@@ -421,14 +425,17 @@ Keep `caps/table.zig` as the compatibility facade for names such as
 Move promised answer and return-routing logic into:
 
 ```text
-src/rpc/pipeline/promised_answer.zig
-src/rpc/pipeline/pending_calls.zig
-src/rpc/pipeline/return_routing.zig
-src/rpc/pipeline/return_send.zig
+src/rpc/promises/promised_answer.zig
+src/rpc/promises/pending_calls.zig
+src/rpc/promises/return_routing.zig
+src/rpc/promises/return_send.zig
 ```
 
 The aim is to make pipelining and return handling searchable by protocol
-concept, not by historic implementation level.
+concept, not by historic implementation level. The repository has standardized
+on `promises/` as the domain folder, so `pipeline.zig`, `peer_promises.zig`,
+`promised_answer_copy.zig`, and `return_send_helpers.zig` remain as
+compatibility facades instead of forcing a disruptive directory rename.
 
 ### Tranche 12: Narrow Internal API
 

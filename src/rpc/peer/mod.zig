@@ -18,7 +18,7 @@ const peer_disembargo = disembargo;
 const peer_call_targets = @import("./call/peer_call_targets.zig");
 const peer_call_sender = @import("./call/peer_call_sender.zig");
 const payload_remap = @import("../caps/payload_remap.zig");
-const peer_promises = @import("../promises/peer_promises.zig");
+const pending_calls = @import("../promises/pending_calls.zig");
 const peer_inbound_release = @import("./peer_inbound_release.zig");
 const peer_embargo_accepts = @import("./peer_embargo_accepts.zig");
 const peer_join_state = @import("./provide/peer_join_state.zig");
@@ -33,7 +33,8 @@ const peer_return_orchestration = @import("./return/peer_return_orchestration.zi
 const peer_third_party_adoption = @import("./third_party/peer_third_party_adoption.zig");
 const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
 const peer_third_party_returns = @import("./third_party/peer_third_party_returns.zig");
-const peer_return_send_helpers = @import("../promises/return_send_helpers.zig");
+const return_routing = @import("../promises/return_routing.zig");
+const return_send = @import("../promises/return_send.zig");
 const peer_transport = @import("./transport.zig");
 const peer_transport_callbacks = peer_transport.callbacks;
 const peer_transport_state = peer_transport.state;
@@ -1428,7 +1429,7 @@ pub const Peer = struct {
     }
 
     fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {
-        peer_return_send_helpers.clearSendResultsRoutingForPeer(
+        return_routing.clearSendResultsRoutingForPeer(
             Peer,
             self,
             answer_id,
@@ -1437,7 +1438,7 @@ pub const Peer = struct {
     }
 
     fn sendReturnFrameWithLoopback(self: *Peer, answer_id: u32, bytes: []const u8) !void {
-        try peer_return_send_helpers.sendReturnFrameWithLoopbackForPeer(
+        try return_send.sendReturnFrameWithLoopbackForPeer(
             Peer,
             self,
             answer_id,
@@ -1477,7 +1478,7 @@ pub const Peer = struct {
     }
 
     fn noteOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
-        try peer_return_send_helpers.noteOutboundReturnCapRefsForPeer(
+        try return_send.noteOutboundReturnCapRefsForPeer(
             Peer,
             self,
             ret,
@@ -1486,7 +1487,7 @@ pub const Peer = struct {
     }
 
     fn rollbackOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
-        try peer_return_send_helpers.rollbackOutboundReturnCapRefsForPeer(
+        try return_send.rollbackOutboundReturnCapRefsForPeer(
             Peer,
             self,
             ret,
@@ -1544,7 +1545,7 @@ pub const Peer = struct {
             self.send_results_to_yourself.count(),
             self.limits.max_send_results_to_yourself,
         );
-        try peer_return_send_helpers.noteSendResultsToYourselfForPeer(
+        try return_routing.noteSendResultsToYourselfForPeer(
             Peer,
             self,
             answer_id,
@@ -1695,7 +1696,7 @@ pub const Peer = struct {
             id,
             count,
             peer_cap_lifecycle.clearExportForPeerFn(Peer),
-            peer_promises.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
     }
 
@@ -2393,7 +2394,7 @@ pub const Peer = struct {
             self.resolved_answers.count(),
             self.limits.max_resolved_answers,
         );
-        try peer_promises.recordResolvedAnswer(
+        try pending_calls.recordResolvedAnswer(
             Peer,
             ResolvedAnswer,
             PendingCall,
@@ -2419,7 +2420,7 @@ pub const Peer = struct {
             frame.len,
             self.limits.max_pending_promises,
         );
-        try peer_promises.queuePendingCall(
+        try pending_calls.queuePendingCall(
             PendingCall,
             cap_table.InboundCapTable,
             self.allocator,
@@ -2437,7 +2438,7 @@ pub const Peer = struct {
             frame.len,
             self.limits.max_pending_export_promises,
         );
-        try peer_promises.queuePendingCall(
+        try pending_calls.queuePendingCall(
             PendingCall,
             cap_table.InboundCapTable,
             self.allocator,
@@ -2449,7 +2450,7 @@ pub const Peer = struct {
     }
 
     fn replayResolvedPromiseExport(self: *Peer, export_id: u32, resolved: cap_table.ResolvedCap) !void {
-        try peer_promises.replayResolvedPromiseExport(
+        try pending_calls.replayResolvedPromiseExport(
             Peer,
             PendingCall,
             cap_table.InboundCapTable,
