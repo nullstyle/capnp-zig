@@ -1497,6 +1497,184 @@ test "QUIC native control dispatch preserves order behind pending data stream" {
     try std.testing.expect(conn.native_state.inbound.buffer.items.len > 0);
 }
 
+test "QUIC native control rejects missing and duplicate hello frames" {
+    {
+        var conn = try initTestNativeClient(std.testing.allocator, .{});
+        defer conn.deinit();
+
+        const inline_control = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "rpc", 64);
+        defer std.testing.allocator.free(inline_control);
+
+        try conn.native_state.inbound.push(inline_control);
+        try std.testing.expectError(
+            error.InvalidFrame,
+            conn.processNativeControlFrames(conn.activeQuicConn().?),
+        );
+    }
+
+    {
+        var conn = try initTestNativeClient(std.testing.allocator, .{});
+        defer conn.deinit();
+
+        var hello: [native_framer.encodedHelloLen()]u8 = undefined;
+        const hello_len = try native_framer.encodeHello(&hello);
+
+        try conn.native_state.inbound.push(hello[0..hello_len]);
+        try conn.processNativeControlFrames(conn.activeQuicConn().?);
+        try std.testing.expect(conn.native_state.hello_received);
+
+        try conn.native_state.inbound.push(hello[0..hello_len]);
+        try std.testing.expectError(
+            error.InvalidFrame,
+            conn.processNativeControlFrames(conn.activeQuicConn().?),
+        );
+    }
+}
+
+test "QUIC native control rejects non-monotonic rpc sequences" {
+    var conn = try initTestNativeClient(std.testing.allocator, .{});
+    defer conn.deinit();
+    conn.native_state.hello_received = true;
+    conn.native_state.next_in_sequence = 1;
+
+    const stale_inline = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "stale", 64);
+    defer std.testing.allocator.free(stale_inline);
+
+    try conn.native_state.inbound.push(stale_inline);
+    try std.testing.expectError(
+        error.InvalidFrame,
+        conn.processNativeControlFrames(conn.activeQuicConn().?),
+    );
+    try std.testing.expectEqual(@as(u64, 1), conn.native_state.next_in_sequence);
+}
+
+test "QUIC native validates data stream references and budgets" {
+    var conn = try initTestNativeClient(std.testing.allocator, .{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 8,
+    });
+    defer conn.deinit();
+
+    try std.testing.expectError(error.InvalidFrame, conn.startPendingNativeData(.{
+        .sequence = 0,
+        .stream_id = 0,
+        .length = 4,
+    }));
+    try std.testing.expectError(error.InvalidFrame, conn.startPendingNativeData(.{
+        .sequence = 0,
+        .stream_id = 2,
+        .length = 4,
+    }));
+    try std.testing.expectError(error.FrameTooLarge, conn.startPendingNativeData(.{
+        .sequence = 0,
+        .stream_id = 3,
+        .length = 0,
+    }));
+    try std.testing.expectError(error.FrameTooLarge, conn.startPendingNativeData(.{
+        .sequence = 0,
+        .stream_id = 3,
+        .length = 9,
+    }));
+    try std.testing.expect(conn.native_state.pending_data == null);
+}
+
+test "QUIC native frame errors record typed terminal close status" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var state = Harness.State{};
+    var conn = try initTestNativeClient(std.testing.allocator, .{});
+    defer conn.deinit();
+    conn.ctx = &state;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
+
+    const pending_bytes = try std.testing.allocator.alloc(u8, 4);
+    conn.native_state.pending_data = .{
+        .sequence = 0,
+        .stream_id = 3,
+        .bytes = pending_bytes,
+    };
+
+    conn.terminateFrameError(error.InvalidFrame);
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expect(conn.native_state.pending_data == null);
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(quic_close.ApplicationCloseCode.frame_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
+    try std.testing.expectEqualStrings("rpc frame error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
+test "QUIC native control allocation OOM is terminal when serviced" {
+    const Harness = struct {
+        const State = struct {
+            error_count: usize = 0,
+            last_error: ?anyerror = null,
+        };
+
+        fn onMessage(_: *Connection, _: []const u8) !void {}
+
+        fn onError(conn: *Connection, err: anyerror) void {
+            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            state.error_count += 1;
+            state.last_error = err;
+        }
+    };
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var state = Harness.State{};
+    var conn = try initTestNativeClient(std.testing.allocator, .{});
+    defer conn.deinit();
+    conn.native_state.inbound.deinit();
+    conn.native_state.inbound = NativeControlFramer.init(failing.allocator(), .{
+        .max_control_frame_bytes = 64,
+        .max_rpc_frame_bytes = 64,
+    });
+    conn.ctx = &state;
+    conn.on_message = Harness.onMessage;
+    conn.on_error = Harness.onError;
+    conn.native_state.hello_received = true;
+
+    const inline_control = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "abc", 64);
+    defer std.testing.allocator.free(inline_control);
+
+    try conn.native_state.inbound.push(inline_control);
+    conn.processNativeControlFrames(conn.activeQuicConn().?) catch |err| {
+        switch (err) {
+            error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory => conn.terminateFrameError(err),
+            else => return err,
+        }
+    };
+
+    try std.testing.expect(conn.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), state.error_count);
+    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), state.last_error);
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(quic_close.ApplicationCloseCode.internal_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
+    try std.testing.expectEqualStrings("rpc transport error", conn.close_reason_buf[0..conn.close_reason_len]);
+    try std.testing.expectEqual(@as(usize, 0), conn.native_state.inbound.buffer.items.len);
+    try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
+}
+
 test "QUIC dispatch treats malformed frames as terminal" {
     const Harness = struct {
         const State = struct {

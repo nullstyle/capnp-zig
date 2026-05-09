@@ -291,3 +291,141 @@ test "native QUIC control framer rejects malformed frames" {
     try framer.push(bad_reserved);
     try std.testing.expectError(error.InvalidFrame, framer.popFrame());
 }
+
+test "native QUIC control framer rejects malformed envelope headers" {
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 8,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var zero_len: [length_prefix_bytes]u8 = @splat(0);
+        try framer.push(&zero_len);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 8,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var unknown_tag: [length_prefix_bytes + common_header_bytes]u8 = @splat(0);
+        std.mem.writeInt(u32, unknown_tag[0..length_prefix_bytes], common_header_bytes, .little);
+        unknown_tag[length_prefix_bytes] = 0xff;
+        try framer.push(&unknown_tag);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 8,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var bad_hello: [encodedHelloLen()]u8 = undefined;
+        _ = try encodeHello(&bad_hello);
+        bad_hello[7] = 1;
+        try framer.push(&bad_hello);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 8,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var bad_version: [encodedHelloLen()]u8 = undefined;
+        _ = try encodeHello(&bad_version);
+        std.mem.writeInt(u16, bad_version[5..7], version + 1, .little);
+        try framer.push(&bad_version);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+}
+
+test "native QUIC control framer enforces rpc payload limits" {
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 32,
+            .max_rpc_frame_bytes = 8,
+            .max_buffered_bytes = 8,
+        });
+        defer framer.deinit();
+
+        const too_much_buffer: [9]u8 = @splat(0);
+        try std.testing.expectError(error.FrameTooLarge, framer.push(&too_much_buffer));
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 32,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var empty_inline: [length_prefix_bytes + rpc_header_bytes]u8 = @splat(0);
+        std.mem.writeInt(u32, empty_inline[0..length_prefix_bytes], rpc_header_bytes, .little);
+        empty_inline[length_prefix_bytes] = @intFromEnum(ControlFrameTag.inline_rpc);
+        try framer.push(&empty_inline);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 32,
+            .max_rpc_frame_bytes = 4,
+        });
+        defer framer.deinit();
+
+        const too_large_inline = try encodeInlineRpc(std.testing.allocator, 0, "abcde", 32);
+        defer std.testing.allocator.free(too_large_inline);
+        try framer.push(too_large_inline);
+        try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 32,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var bad_reserved = try encodeDataRpc(std.testing.allocator, 0, 2, 8, 32);
+        defer std.testing.allocator.free(bad_reserved);
+        bad_reserved[5] = 1;
+        try framer.push(bad_reserved);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 32,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        var zero_len_data: [length_prefix_bytes + data_rpc_payload_bytes]u8 = @splat(0);
+        std.mem.writeInt(u32, zero_len_data[0..length_prefix_bytes], data_rpc_payload_bytes, .little);
+        zero_len_data[length_prefix_bytes] = @intFromEnum(ControlFrameTag.data_rpc);
+        try framer.push(&zero_len_data);
+        try std.testing.expectError(error.InvalidFrame, framer.popFrame());
+    }
+
+    {
+        var framer = ControlFramer.init(std.testing.allocator, .{
+            .max_control_frame_bytes = 32,
+            .max_rpc_frame_bytes = 8,
+        });
+        defer framer.deinit();
+
+        const too_large_data = try encodeDataRpc(std.testing.allocator, 0, 2, 9, 32);
+        defer std.testing.allocator.free(too_large_data);
+        try framer.push(too_large_data);
+        try std.testing.expectError(error.FrameTooLarge, framer.popFrame());
+    }
+}
