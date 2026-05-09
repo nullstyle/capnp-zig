@@ -18,17 +18,17 @@ pub const PingPong = struct {
         pub const Params = PingParams;
         pub const Results = PingResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
-        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
         const CallContext = struct {
             user_ctx: *anyopaque,
@@ -41,14 +41,14 @@ pub const PingPong = struct {
             ctx: *anyopaque,
             peer: *rpc.peer.Peer,
             params: Params.Reader,
-            caps: *const rpc.cap_table.InboundCapTable,
+            caps: *const rpc.caps.table.InboundCapTable,
         };
 
         pub const ReturnSender = struct {
             peer: *rpc.peer.Peer,
             question_id: u32,
 
-            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
                 try self.peer.sendReturnResults(self.question_id, ctx, build);
             }
 
@@ -57,7 +57,7 @@ pub const PingPong = struct {
             }
         };
 
-        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try call.payloadTyped();
             var params_any = try payload.initContent();
@@ -69,7 +69,7 @@ pub const PingPong = struct {
             _ = try call.initCapTableTyped(0);
         }
 
-        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
@@ -95,7 +95,7 @@ pub const PingPong = struct {
             try ctx.callback(ctx.user_ctx, peer, response, caps);
         }
 
-        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const params_struct = try call.params.content.getStruct();
             const params = Params.Reader.wrap(params_struct);
             if (deferred_handler) |deferred_fn| {
@@ -113,11 +113,11 @@ pub const PingPong = struct {
             }
         }
 
-        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             try handleCallDirect(server.vtable.ping, server.vtable.ping_deferred, server.ctx, peer, call, caps);
         }
 
-        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
             const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
             var payload = try ret.payloadTyped();
             var results_any = try payload.initContent();
@@ -149,7 +149,7 @@ pub const PingPong = struct {
 
     pub const BootstrapResponse = union(enum) {
         client: Client,
-        exception: rpc.protocol.Exception,
+        exception: rpc.wire.protocol.Exception,
         canceled,
         results_sent_elsewhere,
         take_from_other_question: u32,
@@ -162,7 +162,7 @@ pub const PingPong = struct {
         callback: BootstrapCallback,
     };
 
-    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const ctx: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
         defer peer.allocator.destroy(ctx);
         var response: BootstrapResponse = undefined;
@@ -217,7 +217,7 @@ pub const PingPong = struct {
         return peer.setBootstrap(.{ .ctx = server, .on_call = onCall });
     }
 
-    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {
+    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
         const server: *Server = @ptrCast(@alignCast(ctx));
         switch (call.method_id) {
             Ping.ordinal => try Ping.handleCall(server, peer, call, caps),

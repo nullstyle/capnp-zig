@@ -4,9 +4,9 @@ const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
 const rpc = capnpc.rpc;
-const protocol = rpc.protocol;
-const HostPeer = rpc.host_peer.HostPeer;
-const TcpConnection = rpc.connection.Connection;
+const protocol = rpc.wire.protocol;
+const HostPeer = rpc.integration.host_peer.HostPeer;
+const TcpConnection = rpc.transport.tcp.Connection;
 
 fn buildAbortFrame(allocator: std.mem.Allocator, reason: []const u8) ![]const u8 {
     var builder = protocol.MessageBuilder.init(allocator);
@@ -57,7 +57,7 @@ fn writeAll(fd: std.posix.fd_t, bytes: []const u8) !void {
 fn oversizedSegmentHeader() [8]u8 {
     var header: [8]u8 = undefined;
     std.mem.writeInt(u32, header[0..4], 0, .little);
-    std.mem.writeInt(u32, header[4..8], @intCast(rpc.framing.Framer.max_frame_words + 1), .little);
+    std.mem.writeInt(u32, header[4..8], @intCast(rpc.wire.framing.Framer.max_frame_words + 1), .little);
     return header;
 }
 
@@ -254,7 +254,7 @@ test "raw host peer malformed complete frame emits sanitized abort" {
 test "raw QUIC length-delimited client rejects empty oversized budget and OOM frames" {
     const allocator = std.testing.allocator;
 
-    var empty = rpc.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
+    var empty = rpc.transport.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
         .max_message_bytes = 8,
         .max_buffered_bytes = 12,
     });
@@ -271,7 +271,7 @@ test "raw QUIC length-delimited client rejects empty oversized budget and OOM fr
     try std.testing.expectError(error.FrameTooLarge, empty.popFrame());
     empty.reset();
 
-    var budget = rpc.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
+    var budget = rpc.transport.quic.LengthDelimitedFramer.initWithOptions(allocator, .{
         .max_message_bytes = 8,
         .max_buffered_bytes = 4,
     });
@@ -285,7 +285,7 @@ test "raw QUIC length-delimited client rejects empty oversized budget and OOM fr
     try std.testing.expectEqual(@as(usize, 4), budget.buffer.items.len);
 
     var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
-    var oom = rpc.quic.LengthDelimitedFramer.init(failing.allocator(), 1024);
+    var oom = rpc.transport.quic.LengthDelimitedFramer.init(failing.allocator(), 1024);
     defer oom.deinit();
 
     var encoded: [7]u8 = undefined;

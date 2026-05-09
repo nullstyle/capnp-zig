@@ -2,7 +2,7 @@
 
 capnp-zig's QUIC transport is optional. Normal builds keep `quic-zig` and
 BoringSSL out of the resolved dependency graph; build with `-Dquic=true` when an
-application wants `rpc.quic.Connection`. The package manifest declares
+application wants `rpc.transport.quic.Connection`. The package manifest declares
 `quic_zig` so opt-in builds are reproducible, but default builds do not
 instantiate that dependency.
 
@@ -16,14 +16,14 @@ standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
 The public API is intentionally close to the TCP transport while the QUIC layer
-is still maturing. Applications should treat `rpc.quic.Connection` as the stable
+is still maturing. Applications should treat `rpc.transport.quic.Connection` as the stable
 entry point for one client/server session, and use the lower-level listener,
 endpoint, and session helpers only when experimenting with future server fanout
 or writing focused transport tests.
 
 ## Modes
 
-`rpc.quic.ClientOptions.mode` and `rpc.quic.ServerOptions.mode` default to
+`rpc.transport.quic.ClientOptions.mode` and `rpc.transport.quic.ServerOptions.mode` default to
 `.baseline`. Both sides must choose the same mode explicitly when using
 `.native`; the mode is not negotiated with a separate ALPN.
 
@@ -59,7 +59,7 @@ Use the defaults unless you have a concrete reason to diverge:
 - Keep `mode = .baseline` for production rollouts and mixed-version fleets.
 - Set `mode = .native` only when both peers are deployed from builds that
   intentionally support the native QUIC wire shape.
-- Leave `alpn_protocols = &.{rpc.quic.alpn}` unless you are integrating with a
+- Leave `alpn_protocols = &.{rpc.transport.quic.alpn}` unless you are integrating with a
   private deployment that has a documented ALPN policy.
 - Keep 0-RTT disabled for RPC servers unless every bootstrap operation and
   early call path is safe to replay.
@@ -67,13 +67,13 @@ Use the defaults unless you have a concrete reason to diverge:
 
 ## Opting Into Native Mode
 
-Use `rpc.quic.NativeOptions` on both client and server:
+Use `rpc.transport.quic.NativeOptions` on both client and server:
 
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const quic = capnpc.rpc.quic;
+const quic = capnpc.rpc.transport.quic;
 
 fn initServer(allocator: std.mem.Allocator, io: std.Io) !quic.Connection {
     return try quic.Connection.initServer(allocator, io, .{
@@ -119,24 +119,24 @@ path in both modes.
 
 ## Listener And Session Boundary
 
-`rpc.quic.Connection.initServer()` is the compatibility entry point for the
-current one-session transport. Internally it owns a `rpc.quic.Listener`, accepts
-the first server-side `rpc.quic.AcceptedSession`, and drives that session through
+`rpc.transport.quic.Connection.initServer()` is the compatibility entry point for the
+current one-session transport. Internally it owns a `rpc.transport.quic.Listener`, accepts
+the first server-side `rpc.transport.quic.AcceptedSession`, and drives that session through
 the existing `Connection.start()` callbacks.
 
 The lower-level boundary is also public for future fanout work. These helpers
 split ownership and event-loop responsibilities, but they do not yet make a
 multi-session RPC server:
 
-- `rpc.quic.Listener` owns the UDP socket and `quic_zig.Server`.
-- `rpc.quic.Session` is a borrowed handle for one accepted server slot.
-- `rpc.quic.AcceptedSession` carries the borrowed session plus its listener slot
+- `rpc.transport.quic.Listener` owns the UDP socket and `quic_zig.Server`.
+- `rpc.transport.quic.Session` is a borrowed handle for one accepted server slot.
+- `rpc.transport.quic.AcceptedSession` carries the borrowed session plus its listener slot
   ordinal.
-- `rpc.quic.AcceptedSessionDriver` attaches, drives, and reaps the one accepted
+- `rpc.transport.quic.AcceptedSessionDriver` attaches, drives, and reaps the one accepted
   session used by the compatibility connection.
-- `rpc.quic.EndpointDriver` is the shared run-loop boundary for endpoint-specific
+- `rpc.transport.quic.EndpointDriver` is the shared run-loop boundary for endpoint-specific
   socket, timer, inbound datagram, outbound datagram, and session-reaping work.
-- `rpc.quic.ServerEndpoint` pairs a listener with the accepted-session driver
+- `rpc.transport.quic.ServerEndpoint` pairs a listener with the accepted-session driver
   currently attached to the compatibility connection.
 
 Internally, the transport keeps the mode-specific frame mechanics behind narrow
@@ -157,7 +157,7 @@ helper modules:
   knobs there instead of threading private constants through examples.
 
 `ServerOptions.max_concurrent_connections` must remain
-`rpc.quic.supported_max_concurrent_sessions` for now. Raising that value will
+`rpc.transport.quic.supported_max_concurrent_sessions` for now. Raising that value will
 need a separate accept loop that hands sessions to independent peer transports.
 
 ## Native Resource Budgets
@@ -187,7 +187,7 @@ specific error:
 - `error.NativeControlFrameLimitExceedsWireLimit`
 
 Runtime native frame violations close the QUIC connection with
-`rpc.quic.ApplicationCloseCode.frame_error`. Locally, `Connection.closeStatus()`
+`rpc.transport.quic.ApplicationCloseCode.frame_error`. Locally, `Connection.closeStatus()`
 records the typed close code and the underlying error. Detailed close reasons
 are hidden on the wire by default; enable `ServerOptions.reveal_close_reason_on_wire`
 only in controlled debugging environments.
@@ -195,7 +195,7 @@ only in controlled debugging environments.
 ## Production Defaults
 
 For internet-facing QUIC servers, start from
-`rpc.quic.withProductionServerHardening()` and then opt into native mode if the
+`rpc.transport.quic.withProductionServerHardening()` and then opt into native mode if the
 peer also supports it. The hardening preset enables Retry/NEW_TOKEN and listener
 rate gates while keeping 0-RTT and detailed wire close reasons disabled.
 
@@ -234,7 +234,7 @@ Recommended hardening posture:
 
 ## Current Limits
 
-- One server `rpc.quic.Connection` owns one listener and represents one active
+- One server `rpc.transport.quic.Connection` owns one listener and represents one active
   QUIC session. Broad server fanout is still a future transport layer.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.

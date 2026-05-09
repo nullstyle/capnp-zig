@@ -48,14 +48,14 @@ pub const Calculator = struct {
         pub const Params = AddParams;
         pub const Results = AddResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const Response = union(enum) {
             results: Results.Reader,
-            exception: rpc.protocol.Exception,
+            exception: rpc.wire.protocol.Exception,
             canceled,
             // ...
         };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
     };
 
     // Client — for making outbound calls
@@ -107,7 +107,7 @@ fn handleAdd(
     _: *rpc.peer.Peer,
     params: Calculator.Add.Params.Reader,
     results: *Calculator.Add.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     _ = ctx_ptr;
     const a = try params.getA();
@@ -120,7 +120,7 @@ fn handleMultiply(
     _: *rpc.peer.Peer,
     params: Calculator.Multiply.Params.Reader,
     results: *Calculator.Multiply.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     _ = ctx_ptr;
     const a = try params.getA();
@@ -176,12 +176,12 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 
 ```zig
 const ServerCtx = struct {
-    listener: rpc.runtime.Listener,
+    listener: rpc.transport.tcp.Listener,
     state: *State,
     server: Calculator.Server,
 };
 
-fn onAccept(listener: *rpc.runtime.Listener, conn: *rpc.connection.Connection) void {
+fn onAccept(listener: *rpc.transport.tcp.Listener, conn: *rpc.transport.tcp.Connection) void {
     const server_ctx: *ServerCtx = @fieldParentPtr("listener", listener);
     const state = server_ctx.state;
 
@@ -208,7 +208,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var runtime = try rpc.runtime.Runtime.init(allocator);
+    var runtime = try rpc.transport.tcp.Runtime.init(allocator);
     defer runtime.deinit();
 
     var state = State{ .allocator = allocator };
@@ -225,7 +225,7 @@ pub fn main() !void {
                 .multiply = handleMultiply,
             },
         },
-        .listener = try rpc.runtime.Listener.init(
+        .listener = try rpc.transport.tcp.Listener.init(
             allocator, &runtime.loop, addr, onAccept, .{},
         ),
     };
@@ -267,8 +267,8 @@ fn onBootstrap(
 Initiate the connection (inside an xev connect callback):
 
 ```zig
-const conn = try allocator.create(rpc.connection.Connection);
-conn.* = try rpc.connection.Connection.init(allocator, loop, socket, .{});
+const conn = try allocator.create(rpc.transport.tcp.Connection);
+conn.* = try rpc.transport.tcp.Connection.init(allocator, loop, socket, .{});
 
 const peer = try allocator.create(rpc.peer.Peer);
 peer.* = rpc.peer.Peer.init(allocator, conn);
@@ -301,7 +301,7 @@ fn onAddReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: Calculator.Add.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const ctx: *CallCtx = @ptrCast(@alignCast(ctx_ptr));
     defer peer.allocator.destroy(ctx);

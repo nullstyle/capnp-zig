@@ -1,19 +1,65 @@
-pub const framing = @import("./wire/framing.zig");
-pub const transport = @import("./transport/tcp/stream_transport.zig");
-pub const connection = @import("./transport/tcp/connection.zig");
-pub const runtime = @import("./transport/tcp/runtime.zig");
-pub const host_peer = @import("./integration/host_peer.zig");
-pub const protocol = @import("./wire/protocol.zig");
-pub const cap_table = @import("./caps/table.zig");
-pub const promise_pipeline = @import("./promises/pipeline.zig");
-pub const cap_pointer = @import("./caps/cap_pointer.zig");
-pub const transport_binding = @import("./transport/binding.zig");
+const quic_disabled = @import("./transport/quic_disabled.zig");
+
+pub const wire = struct {
+    pub const framing = @import("./wire/framing.zig");
+    pub const protocol = @import("./wire/protocol.zig");
+};
+
+pub const caps = struct {
+    pub const table = @import("./caps/table.zig");
+    pub const cap_pointer = @import("./caps/cap_pointer.zig");
+    pub const descriptors = @import("./caps/descriptors.zig");
+    pub const lifecycle = @import("./caps/lifecycle.zig");
+    pub const inbound = @import("./caps/inbound.zig");
+    pub const outbound = @import("./caps/outbound.zig");
+};
+
+pub const promises = struct {
+    pub const pipeline = @import("./promises/pipeline.zig");
+    pub const promised_answer = @import("./promises/promised_answer.zig");
+};
+
 pub const peer = @import("./peer/mod.zig");
-pub const stream_state = @import("./transport/stream_state.zig");
-pub const worker_pool = @import("./integration/worker_pool.zig");
+
+pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
+    return struct {
+        pub const binding = @import("./transport/binding.zig");
+        pub const stream_state = @import("./transport/stream_state.zig");
+        pub const quic = quic_impl;
+
+        pub const tcp = if (include_tcp) struct {
+            pub const stream = @import("./transport/tcp/stream_transport.zig");
+            pub const connection = @import("./transport/tcp/connection.zig");
+            pub const runtime = @import("./transport/tcp/runtime.zig");
+
+            pub const Transport = stream.Transport;
+            pub const Connection = connection.Connection;
+            pub const Runtime = runtime.Runtime;
+            pub const Listener = runtime.Listener;
+            pub const SockAddrStorage = runtime.SockAddrStorage;
+            pub const closeFd = runtime.closeFd;
+            pub const createListenSocket = runtime.createListenSocket;
+            pub const ipAddressToSockaddr = runtime.ipAddressToSockaddr;
+        } else struct {};
+    };
+}
+
+pub const transport = Transport(quic_disabled, true);
+
+pub fn Integration(comptime include_worker_pool: bool) type {
+    return struct {
+        pub const host_peer = @import("./integration/host_peer.zig");
+        pub const HostPeer = host_peer.HostPeer;
+
+        pub const worker_pool = if (include_worker_pool) @import("./integration/worker_pool.zig") else struct {};
+        pub const WorkerPool = if (include_worker_pool) worker_pool.WorkerPool else void;
+    };
+}
+
+pub const integration = Integration(true);
+
 pub const generated = struct {
     pub const rpc = @import("./gen/capnp/rpc.zig");
     pub const persistent = @import("./gen/capnp/persistent.zig");
 };
 pub const testing = @import("./testing.zig");
-pub const _internal = @import("./internal.zig");

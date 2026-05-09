@@ -1,10 +1,10 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig-core");
 
-const host_peer_mod = capnpc.rpc.host_peer;
-const protocol = capnpc.rpc.protocol;
+const host_peer_mod = capnpc.rpc.integration.host_peer;
+const protocol = capnpc.rpc.wire.protocol;
 const peer_mod = capnpc.rpc.peer;
-const cap_table = capnpc.rpc.cap_table;
+const cap_table = capnpc.rpc.caps.table;
 
 const BootstrapStubHandler = struct {
     fn onCall(

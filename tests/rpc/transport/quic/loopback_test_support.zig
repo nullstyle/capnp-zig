@@ -1,8 +1,8 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const protocol = capnpc.rpc.protocol;
-const quic = capnpc.rpc.quic;
+const protocol = capnpc.rpc.wire.protocol;
+const quic = capnpc.rpc.transport.quic;
 
 pub const loopback_cert_pem = @embedFile("loopback_cert.pem");
 pub const loopback_key_pem = @embedFile("loopback_key.pem");

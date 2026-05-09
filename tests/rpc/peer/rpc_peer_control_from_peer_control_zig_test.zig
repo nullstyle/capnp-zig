@@ -1,9 +1,9 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const cap_table = capnpc.rpc.cap_table;
+const cap_table = capnpc.rpc.caps.table;
 const message = capnpc.message;
-const protocol = capnpc.rpc.protocol;
+const protocol = capnpc.rpc.wire.protocol;
 const peer_control = capnpc.rpc.testing.peer_control;
 
 const allocateEmbargoIdForPeerFn = peer_control.allocateEmbargoIdForPeerFn;

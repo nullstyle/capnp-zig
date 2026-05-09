@@ -1,10 +1,10 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 
-const cap_table = capnpc.rpc.cap_table;
-const HostPeer = capnpc.rpc.host_peer.HostPeer;
+const cap_table = capnpc.rpc.caps.table;
+const HostPeer = capnpc.rpc.integration.host_peer.HostPeer;
 const Peer = capnpc.rpc.peer.Peer;
-const protocol = capnpc.rpc.protocol;
+const protocol = capnpc.rpc.wire.protocol;
 
 const default_host_error_reason = HostPeer.ErrorDisclosurePolicy.default_generic_reason;
 

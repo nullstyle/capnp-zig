@@ -469,7 +469,7 @@ pub const StructGenerator = struct {
                     // Generate typed resolve helper for List(Interface) fields
                     if (try self.interfaceTypeName(list_info.element_type.interface.type_id)) |iface_name| {
                         defer self.allocator.free(iface_name);
-                        try writer.print("        pub fn resolve{s}(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+                        try writer.print("        pub fn resolve{s}(self: Reader, index: u32, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
                         try writer.print("            const raw_list = try self._reader.readPointerList({});\n", .{slot.offset});
                         try writer.writeAll("            const cap = try raw_list.getCapability(index);\n");
                         try writer.writeAll("            var mutable_caps = caps.*;\n");
@@ -570,7 +570,7 @@ pub const StructGenerator = struct {
         if (slot.type == .interface) {
             const iface_name = try self.interfaceTypeName(slot.type.interface.type_id) orelse return;
             defer self.allocator.free(iface_name);
-            try writer.print("        pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+            try writer.print("        pub fn resolve{s}(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("            const cap = try self._reader.readCapability({});\n", .{slot.offset});
             try writer.writeAll("            var mutable_caps = caps.*;\n");
             try writer.writeAll("            try mutable_caps.retainCapability(cap);\n");
@@ -893,7 +893,7 @@ pub const StructGenerator = struct {
         if (slot.type == .interface) {
             const iface_name = try self.interfaceTypeName(slot.type.interface.type_id) orelse return;
             defer self.allocator.free(iface_name);
-            try writer.print("            pub fn resolve{s}(self: @This(), peer: *rpc.peer.Peer, caps: *const rpc.cap_table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
+            try writer.print("            pub fn resolve{s}(self: @This(), peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !{s}.Client {{\n", .{ cap_name, iface_name });
             try writer.print("                const cap = try self._reader.readCapability({});\n", .{slot.offset});
             try writer.writeAll("                var mutable_caps = caps.*;\n");
             try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");

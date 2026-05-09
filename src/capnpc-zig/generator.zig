@@ -1334,7 +1334,7 @@ pub const Generator = struct {
         // --- Bootstrap ---
         try writer.writeAll("    pub const BootstrapResponse = union(enum) {\n");
         try writer.writeAll("        client: Client,\n");
-        try writer.writeAll("        exception: rpc.protocol.Exception,\n");
+        try writer.writeAll("        exception: rpc.wire.protocol.Exception,\n");
         try writer.writeAll("        canceled,\n");
         try writer.writeAll("        results_sent_elsewhere,\n");
         try writer.writeAll("        take_from_other_question: u32,\n");
@@ -1347,7 +1347,7 @@ pub const Generator = struct {
         try writer.writeAll("        callback: BootstrapCallback,\n");
         try writer.writeAll("    };\n\n");
 
-        try writer.writeAll("    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+        try writer.writeAll("    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
         try writer.writeAll("        const ctx: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n");
         try writer.writeAll("        defer peer.allocator.destroy(ctx);\n");
         try writer.writeAll("        var response: BootstrapResponse = undefined;\n");
@@ -1412,7 +1412,7 @@ pub const Generator = struct {
         try writer.writeAll("    }\n\n");
 
         // --- onCall dispatch ---
-        try writer.writeAll("    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+        try writer.writeAll("    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
         try writer.writeAll("        const server: *Server = @ptrCast(@alignCast(ctx));\n");
 
         var dispatch_method_count: usize = interface_info.methods.len;
@@ -1510,21 +1510,21 @@ pub const Generator = struct {
         try writer.writeAll("        pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;\n");
 
         if (is_streaming) {
-            try writer.writeAll("        pub const StreamHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;\n");
+            try writer.writeAll("        pub const StreamHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n");
         } else {
-            try writer.writeAll("        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;\n");
-            try writer.writeAll("        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.cap_table.InboundCapTable, sender: ReturnSender) anyerror!void;\n");
+            try writer.writeAll("        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n");
+            try writer.writeAll("        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;\n");
         }
 
         try writer.writeAll("        pub const Response = union(enum) {\n");
         try writer.writeAll("            results: Results.Reader,\n");
-        try writer.writeAll("            exception: rpc.protocol.Exception,\n");
+        try writer.writeAll("            exception: rpc.wire.protocol.Exception,\n");
         try writer.writeAll("            canceled,\n");
         try writer.writeAll("            results_sent_elsewhere,\n");
         try writer.writeAll("            take_from_other_question: u32,\n");
         try writer.writeAll("            accept_from_third_party,\n");
         try writer.writeAll("        };\n");
-        try writer.writeAll("        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.cap_table.InboundCapTable) anyerror!void;\n\n");
+        try writer.writeAll("        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n\n");
 
         try writer.writeAll("        const CallContext = struct {\n");
         try writer.writeAll("            user_ctx: *anyopaque,\n");
@@ -1538,13 +1538,13 @@ pub const Generator = struct {
             try writer.writeAll("            ctx: *anyopaque,\n");
             try writer.writeAll("            peer: *rpc.peer.Peer,\n");
             try writer.writeAll("            params: Params.Reader,\n");
-            try writer.writeAll("            caps: *const rpc.cap_table.InboundCapTable,\n");
+            try writer.writeAll("            caps: *const rpc.caps.table.InboundCapTable,\n");
             try writer.writeAll("        };\n\n");
 
             try writer.writeAll("        pub const ReturnSender = struct {\n");
             try writer.writeAll("            peer: *rpc.peer.Peer,\n");
             try writer.writeAll("            question_id: u32,\n\n");
-            try writer.writeAll("            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void) !void {\n");
+            try writer.writeAll("            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {\n");
             try writer.writeAll("                try self.peer.sendReturnResults(self.question_id, ctx, build);\n");
             try writer.writeAll("            }\n\n");
             try writer.writeAll("            pub fn sendException(self: ReturnSender, reason: []const u8) !void {\n");
@@ -1553,7 +1553,7 @@ pub const Generator = struct {
             try writer.writeAll("        };\n\n");
         }
 
-        try writer.writeAll("        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {\n");
+        try writer.writeAll("        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
         try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
         try writer.writeAll("            var payload = try call.payloadTyped();\n");
         try writer.writeAll("            var params_any = try payload.initContent();\n");
@@ -1568,7 +1568,7 @@ pub const Generator = struct {
         try writer.writeAll("            _ = try call.initCapTableTyped(0);\n");
         try writer.writeAll("        }\n\n");
 
-        try writer.writeAll("        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+        try writer.writeAll("        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
         try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
         try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
         try writer.writeAll("            var response: Response = undefined;\n");
@@ -1596,7 +1596,7 @@ pub const Generator = struct {
 
         if (is_streaming) {
             // handleCallDirect: takes StreamHandler + ctx directly
-            try writer.writeAll("        pub fn handleCallDirect(handler: StreamHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("        pub fn handleCallDirect(handler: StreamHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.writeAll("            const params_struct = try call.params.content.getStruct();\n");
             try writer.writeAll("            const params = Params.Reader.wrap(params_struct);\n");
             try writer.writeAll("            try handler(ctx, peer, params, caps);\n");
@@ -1604,18 +1604,18 @@ pub const Generator = struct {
             try writer.writeAll("        }\n\n");
 
             // handleCall delegates to handleCallDirect
-            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.print("            try handleCallDirect(server.vtable.{s}, server.ctx, peer, call, caps);\n", .{escaped_method_field});
             try writer.writeAll("        }\n\n");
 
             // StreamCallContext + streamCallBuild + streamCallReturn for fire-and-forget streaming
             try writer.writeAll("        pub const StreamCallContext = struct {\n");
-            try writer.writeAll("            stream: *rpc.stream_state.StreamState,\n");
+            try writer.writeAll("            stream: *rpc.transport.stream_state.StreamState,\n");
             try writer.writeAll("            build_ctx: *anyopaque,\n");
             try writer.writeAll("            build: ?BuildFn,\n");
             try writer.writeAll("        };\n\n");
 
-            try writer.writeAll("        fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.protocol.CallBuilder) anyerror!void {\n");
+            try writer.writeAll("        fn streamCallBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {\n");
             try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("            var payload = try call.payloadTyped();\n");
             try writer.writeAll("            var params_any = try payload.initContent();\n");
@@ -1628,7 +1628,7 @@ pub const Generator = struct {
             try writer.writeAll("            _ = try call.initCapTableTyped(0);\n");
             try writer.writeAll("        }\n\n");
 
-            try writer.writeAll("        fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.protocol.Return, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("        fn streamCallReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.writeAll("            const ctx: *StreamCallContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
             try writer.writeAll("            _ = caps;\n");
@@ -1636,7 +1636,7 @@ pub const Generator = struct {
             try writer.writeAll("        }\n");
         } else {
             // handleCallDirect: takes Handler + ?DeferredHandler + ctx directly
-            try writer.writeAll("        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             try writer.writeAll("            const params_struct = try call.params.content.getStruct();\n");
             try writer.writeAll("            const params = Params.Reader.wrap(params_struct);\n");
             try writer.writeAll("            if (deferred_handler) |deferred_fn| {\n");
@@ -1655,7 +1655,7 @@ pub const Generator = struct {
             try writer.writeAll("        }\n\n");
 
             // handleCall delegates to handleCallDirect
-            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.protocol.Call, caps: *const rpc.cap_table.InboundCapTable) anyerror!void {\n");
+            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
             const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
             defer self.allocator.free(deferred_field);
             const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
@@ -1663,7 +1663,7 @@ pub const Generator = struct {
             try writer.print("            try handleCallDirect(server.vtable.{s}, server.vtable.{s}, server.ctx, peer, call, caps);\n", .{ escaped_method_field, escaped_deferred_field });
             try writer.writeAll("        }\n\n");
 
-            try writer.writeAll("        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.protocol.ReturnBuilder) anyerror!void {\n");
+            try writer.writeAll("        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {\n");
             try writer.writeAll("            const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));\n");
             try writer.writeAll("            var payload = try ret.payloadTyped();\n");
             try writer.writeAll("            var results_any = try payload.initContent();\n");
@@ -1773,7 +1773,7 @@ pub const Generator = struct {
         _ = node;
         try writer.writeAll("    pub const StreamClient = struct {\n");
         try writer.writeAll("        client: Client,\n");
-        try writer.writeAll("        stream: rpc.stream_state.StreamState = .{},\n\n");
+        try writer.writeAll("        stream: rpc.transport.stream_state.StreamState = .{},\n\n");
 
         try writer.writeAll("        pub fn init(client: Client) StreamClient {\n");
         try writer.writeAll("            return .{ .client = client };\n");
@@ -1790,7 +1790,7 @@ pub const Generator = struct {
             }
         }
 
-        try writer.writeAll("        pub fn waitStreaming(self: *StreamClient, ctx: *anyopaque, callback: rpc.stream_state.StreamState.DrainCallback) void {\n");
+        try writer.writeAll("        pub fn waitStreaming(self: *StreamClient, ctx: *anyopaque, callback: rpc.transport.stream_state.StreamState.DrainCallback) void {\n");
         try writer.writeAll("            self.stream.waitStreaming(ctx, callback);\n");
         try writer.writeAll("        }\n");
 
@@ -1897,7 +1897,7 @@ pub const Generator = struct {
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
-        try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
+        try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
             p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.writeAll("        }\n\n");

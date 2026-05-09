@@ -15,7 +15,7 @@ fn handlePing(
     _: *rpc.peer.Peer,
     params: PingPong.Ping.Params.Reader,
     results: *PingPong.Ping.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const value = try params.getCount();
     try results.setCount(value + 1);
@@ -31,7 +31,7 @@ fn onPeerError(peer: *rpc.peer.Peer, _: anyerror) void {
 
 fn onPeerClose(peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.connection.Connection);
+    const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
 
     peer.deinit();
     allocator.destroy(peer);
@@ -46,7 +46,7 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 // Server thread: accept one connection, serve it
 // ---------------------------------------------------------------------------
 
-fn serverThread(listener: *rpc.runtime.Listener, server: *PingPong.Server) void {
+fn serverThread(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
     const conn = listener.accept() catch return;
     const peer_ptr = conn.allocator.create(rpc.peer.Peer) catch return;
     peer_ptr.* = rpc.peer.Peer.init(conn.allocator, conn);
@@ -80,7 +80,7 @@ fn onPingReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
     response: PingPong.Ping.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const ctx: *CallCtx = @ptrCast(@alignCast(ctx_ptr));
     defer peer.allocator.destroy(ctx);
@@ -143,15 +143,15 @@ fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) 
         return;
     };
 
-    const conn = allocator.create(rpc.connection.Connection) catch {
-        rpc.runtime.closeFd(io, fd);
+    const conn = allocator.create(rpc.transport.tcp.Connection) catch {
+        rpc.transport.tcp.closeFd(io, fd);
         state.err = error.OutOfMemory;
         state.done = true;
         return;
     };
-    conn.* = rpc.connection.Connection.init(allocator, io, fd, .{}) catch |err| {
+    conn.* = rpc.transport.tcp.Connection.init(allocator, io, fd, .{}) catch |err| {
         allocator.destroy(conn);
-        rpc.runtime.closeFd(io, fd);
+        rpc.transport.tcp.closeFd(io, fd);
         state.err = err;
         state.done = true;
         return;
@@ -195,10 +195,10 @@ pub fn main(init: std.process.Init) !void {
 
     const address = parseIp4Address("127.0.0.1", 7001);
 
-    var listener = rpc.runtime.Listener.initFd(
+    var listener = rpc.transport.tcp.Listener.initFd(
         allocator,
         io,
-        (try rpc.runtime.createListenSocket(io, address, 1, false)).socket.handle,
+        (try rpc.transport.tcp.createListenSocket(io, address, 1, false)).socket.handle,
         .{},
     );
     defer listener.close();

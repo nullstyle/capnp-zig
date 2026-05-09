@@ -1,7 +1,7 @@
 const std = @import("std");
 const capnp = @import("capnpc-zig");
 
-const quic = capnp.rpc.quic;
+const quic = capnp.rpc.transport.quic;
 const native_framer = quic.native;
 
 const Net = std.Io.net;

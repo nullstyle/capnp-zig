@@ -2,8 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
-const WorkerPool = capnpc.rpc.worker_pool.WorkerPool;
-const Connection = capnpc.rpc.connection.Connection;
+const WorkerPool = capnpc.rpc.integration.worker_pool.WorkerPool;
+const Connection = capnpc.rpc.transport.tcp.Connection;
 const Peer = capnpc.rpc.peer.Peer;
 const net = std.Io.net;
 
@@ -190,8 +190,8 @@ const posix_helpers = if (builtin.target.os.tag != .windows) struct {
         }
     }
 
-    const SockAddrStorage = capnpc.rpc.runtime.SockAddrStorage;
-    const ipAddressToSockaddr = capnpc.rpc.runtime.ipAddressToSockaddr;
+    const SockAddrStorage = capnpc.rpc.transport.tcp.SockAddrStorage;
+    const ipAddressToSockaddr = capnpc.rpc.transport.tcp.ipAddressToSockaddr;
 
     fn getSockPort(fd: std.posix.fd_t) !u16 {
         var storage: std.posix.sockaddr.storage = undefined;

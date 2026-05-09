@@ -126,7 +126,7 @@ test "Codegen emits streaming method types and handlers" {
     // --- StreamClient ---
     // StreamClient should be generated (interface has streaming methods)
     try expectContains(output, "pub const StreamClient = struct");
-    try expectContains(output, "stream: rpc.stream_state.StreamState");
+    try expectContains(output, "stream: rpc.transport.stream_state.StreamState");
 
     // Find the StreamClient section
     const sc_start = std.mem.indexOf(u8, output, "pub const StreamClient = struct") orelse return error.MissingExpectedOutput;

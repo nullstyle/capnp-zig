@@ -19,7 +19,7 @@
 //!     var backend = try io_backend.Backend.init(.process_init, init.gpa, init.io);
 //!     defer backend.deinit();
 //!     const io = backend.io();
-//!     // ... pass `io` to rpc.runtime.Listener / rpc.connection.Connection / etc.
+//!     // ... pass `io` to rpc.transport.tcp.Listener / rpc.transport.tcp.Connection / etc.
 //! }
 //! ```
 
@@ -50,8 +50,8 @@ pub const InitError = error{
 };
 
 /// Owns the concrete backend storage. Call `.io()` to obtain a `std.Io`
-/// suitable for passing into the RPC runtime (`rpc.runtime.Listener`,
-/// `rpc.connection.Connection`, `rpc.transport.Transport`, etc.).
+/// suitable for passing into the RPC runtime (`rpc.transport.tcp.Listener`,
+/// `rpc.transport.tcp.Connection`, `rpc.transport.tcp.Transport`, etc.).
 pub const Backend = union(Kind) {
     process_init: std.Io,
     threaded: std.Io.Threaded,

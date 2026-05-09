@@ -3,7 +3,7 @@ const abi = @import("capnp-wasm-host-abi");
 const capnpc = @import("capnpc-zig");
 const rpc_fixtures = @import("rpc-fixture-tool");
 
-const protocol = capnpc.rpc.protocol;
+const protocol = capnpc.rpc.wire.protocol;
 
 fn toAbiPtr(ptr: anytype) abi.AbiPtr {
     return @intCast(@intFromPtr(ptr));

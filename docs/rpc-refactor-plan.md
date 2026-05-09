@@ -12,7 +12,9 @@ domain`):
 - RPC implementation files have moved from `level0`/`level1`/`level2`/`level3`
   into domain folders under `wire/`, `caps/`, `promises/`, `transport/`,
   `transport/tcp/`, `transport/quic/`, and `peer/`.
-- `src/rpc/mod.zig` and `src/rpc/mod_core.zig` preserve compatibility exports.
+- `src/rpc/mod.zig` and `src/rpc/mod_core.zig` now expose the domain-shaped
+  public surface (`rpc.wire`, `rpc.caps`, `rpc.promises`, `rpc.transport`,
+  `rpc.peer`, `rpc.integration`, `rpc.generated`, and `rpc.testing`).
 - QUIC has been split into `transport/quic/mod.zig`, `connection.zig`,
   `options.zig`, `length_framer.zig`, `outbound_queue.zig`, and
   `quic_zig_adapter.zig`.
@@ -33,10 +35,10 @@ domain`):
 - Option 3 Tranche 10 has split capability lifecycle code into
   `caps/descriptors.zig`, `caps/lifecycle.zig`, `caps/inbound.zig`, and
   `caps/outbound.zig`, with `caps/table.zig` preserved as the compatibility
-  facade for `rpc.cap_table`.
+  facade for `rpc.caps.table`.
 - QUIC is now an explicit build-module choice. The default `capnpc-zig` module
   keeps quic-zig/BoringSSL out of serialization and TCP-only builds and exposes a
-  disabled `rpc.quic` facade for QUIC-dependency-free framing helpers. Build with
+  disabled `rpc.transport.quic` facade for QUIC-dependency-free framing helpers. Build with
   `-Dquic=true` to select `src/lib_quic.zig`, import quic-zig, and expose the
   native QUIC transport implementation.
 - Option 3 Tranche 11 has split the promise/pipeline helpers under the existing
@@ -49,7 +51,7 @@ domain`):
 - Replace the `level0`, `level1`, `level2`, `level3` implementation layout with
   names that match how contributors search for the code.
 - Make the QUIC transport easy to find and evolve.
-- Preserve current behavior and public API during the first wave.
+- Preserve current behavior while narrowing the public facade to domain modules.
 - Keep generated code working while internals move.
 - Move toward idiomatic Zig 0.17-dev structure: explicit module surfaces,
   isolated optional dependencies, and clearer `std.Io` boundaries.
@@ -60,7 +62,7 @@ domain`):
 - Do not redesign Cap'n Proto RPC semantics.
 - Do not change wire formats.
 - Do not change QUIC behavior while moving files.
-- Do not remove public compatibility exports immediately.
+- Do not rename build steps or change wire-format behavior.
 - Do not make a broad generic transport abstraction for TCP, QUIC, host peers,
   and future stream transports.
 
@@ -80,25 +82,27 @@ This boundary should become easier to see, not more abstract.
 
 ## Public Names To Preserve
 
-Keep these names exported from `src/rpc/mod.zig` during Option 1:
+Keep these names exported from `src/rpc/mod.zig`:
 
-- `rpc.framing`
-- `rpc.protocol`
-- `rpc.cap_table`
-- `rpc.promise_pipeline`
-- `rpc.cap_pointer`
-- `rpc.transport_binding`
-- `rpc.transport`
-- `rpc.connection`
-- `rpc.runtime`
-- `rpc.quic`
+- `rpc.wire.framing`
+- `rpc.wire.protocol`
+- `rpc.caps.table`
+- `rpc.promises.pipeline`
+- `rpc.caps.cap_pointer`
+- `rpc.transport.binding`
+- `rpc.transport.tcp`
+- `rpc.transport.quic`
+- `rpc.transport.stream_state`
 - `rpc.peer`
-- `rpc.stream_state`
-- `rpc.host_peer`
-- `rpc.worker_pool`
+- `rpc.integration.host_peer`
+- `rpc.integration.worker_pool`
+- `rpc.generated`
+- `rpc.testing`
 
-Generated code and tests currently rely on several of these names. If any name
-is retired later, do it only after a separate compatibility decision.
+Generated code and tests rely on these names. The deprecated top-level aliases
+(`rpc.protocol`, `rpc.cap_table`, `rpc.connection`, `rpc.runtime`,
+`rpc.transport_binding`, `rpc.host_peer`, `rpc.worker_pool`, and
+`rpc._internal`) have been removed from the facade.
 
 ## Option 1: Domain-First Rehome
 
@@ -432,7 +436,7 @@ src/rpc/caps/payload_remap.zig
 ```
 
 Keep `caps/table.zig` as the compatibility facade for names such as
-`InboundCapTable`. Generated code should keep working through `rpc.cap_table`.
+`InboundCapTable`. Generated code should keep working through `rpc.caps.table`.
 
 ### Tranche 11: Split Pipeline And Return Routing
 
@@ -453,21 +457,9 @@ compatibility facades instead of forcing a disruptive directory rename.
 
 ### Tranche 12: Narrow Internal API
 
-After semantic modules exist, revisit `rpc._internal`.
-
-Options:
-
-- Remove it from the public module surface.
-- Replace it with a deliberately unstable `rpc.testing` support surface.
-- Keep an explicit `rpc.internal` only if docs say it is not stable.
-
-This should be a separate compatibility decision, not a side effect of moving
-files.
-
 Decision (2026-05-09): use `rpc.testing` as the deliberately unstable
-test-support facade. The public `rpc._internal` name remains only as a
-deprecated, narrow compatibility alias to that facade; in-tree tests should not
-import `_internal` directly.
+test-support facade. The public `rpc._internal` compatibility alias has been
+removed; in-tree tests should import `rpc.testing` directly.
 
 ## Zig 0.17-Dev Modernization Work To Weave In
 

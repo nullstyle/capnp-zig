@@ -204,7 +204,7 @@ const OwnedNotifyChange = union(enum) {
 const KvService = struct {
     const Subscriber = struct {
         peer: *rpc.peer.Peer,
-        conn: *rpc.connection.Connection,
+        conn: *rpc.transport.tcp.Connection,
         notifier: KvClientNotifier.Client,
         watched_keys: std.ArrayListUnmanaged([]u8) = .{},
         /// Pending notifications queued from other worker threads.
@@ -495,7 +495,7 @@ const KvService = struct {
         return target_backup_id;
     }
 
-    fn addOrUpdateSubscriber(self: *KvService, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, notifier: KvClientNotifier.Client) !void {
+    fn addOrUpdateSubscriber(self: *KvService, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection, notifier: KvClientNotifier.Client) !void {
         for (self.subscribers.items) |*subscriber| {
             if (subscriber.peer == peer) {
                 subscriber.notifier = notifier;
@@ -761,7 +761,7 @@ fn onWakeKeysChangedReturn(
     _: *anyopaque,
     _: *rpc.peer.Peer,
     response: KvClientNotifier.KeysChanged.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     switch (response) {
         .exception => |ex| {
@@ -776,7 +776,7 @@ fn onWakeStateResetReturn(
     _: *anyopaque,
     _: *rpc.peer.Peer,
     response: KvClientNotifier.StateResetRequired.Response,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     switch (response) {
         .exception => |ex| {
@@ -790,7 +790,7 @@ fn onWakeStateResetReturn(
 /// Called on the connection's own thread when woken by another thread.
 /// Drains the subscriber's pending notification queue and sends each
 /// notification via the Peer (which is thread-affine to this thread).
-fn onConnectionWake(conn: *rpc.connection.Connection) void {
+fn onConnectionWake(conn: *rpc.transport.tcp.Connection) void {
     const svc = g_service orelse return;
 
     // Find the subscriber for this connection under the service lock.
@@ -866,7 +866,7 @@ fn handleGet(
     _: *rpc.peer.Peer,
     params: KvStore.Get.Params.Reader,
     results: *KvStore.Get.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -905,7 +905,7 @@ fn handleWriteBatch(
     caller_peer: *rpc.peer.Peer,
     params: KvStore.WriteBatch.Params.Reader,
     results: *KvStore.WriteBatch.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -1054,7 +1054,7 @@ fn handleList(
     _: *rpc.peer.Peer,
     params: KvStore.List.Params.Reader,
     results: *KvStore.List.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -1136,13 +1136,13 @@ fn handleSubscribe(
     peer: *rpc.peer.Peer,
     params: KvStore.Subscribe.Params.Reader,
     _: *KvStore.Subscribe.Results.Builder,
-    caps: *const rpc.cap_table.InboundCapTable,
+    caps: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
     defer svc.mu.unlock();
     const notifier = try params.resolveNotifier(peer, caps);
-    const conn = peer.getAttachedConnection(*rpc.connection.Connection) orelse return error.NoPeerConnection;
+    const conn = peer.getAttachedConnection(*rpc.transport.tcp.Connection) orelse return error.NoPeerConnection;
     try svc.addOrUpdateSubscriber(peer, conn, notifier);
     std.log.debug("SUBSCRIBE", .{});
 }
@@ -1152,7 +1152,7 @@ fn handleSetWatchedKeys(
     peer: *rpc.peer.Peer,
     params: KvStore.SetWatchedKeys.Params.Reader,
     _: *KvStore.SetWatchedKeys.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -1174,7 +1174,7 @@ fn handleCreateBackup(
     _: *rpc.peer.Peer,
     params: KvStore.CreateBackup.Params.Reader,
     results: *KvStore.CreateBackup.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -1192,7 +1192,7 @@ fn handleListBackups(
     _: *rpc.peer.Peer,
     _: KvStore.ListBackups.Params.Reader,
     results: *KvStore.ListBackups.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -1212,7 +1212,7 @@ fn handleRestoreFromBackup(
     caller_peer: *rpc.peer.Peer,
     params: KvStore.RestoreFromBackup.Params.Reader,
     results: *KvStore.RestoreFromBackup.Results.Builder,
-    _: *const rpc.cap_table.InboundCapTable,
+    _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
@@ -1250,7 +1250,7 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 // Listener (WorkerPool)
 // ---------------------------------------------------------------------------
 
-fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.connection.Connection, _: u32) anyerror!rpc.worker_pool.WorkerPool.AcceptDecision {
+fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection, _: u32) anyerror!rpc.integration.worker_pool.WorkerPool.AcceptDecision {
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
 
     // Enable cross-thread wake so notifications can be sent on this
@@ -1409,7 +1409,7 @@ pub fn main(init: std.process.Init) !void {
 
     const address = try parseIp4Address(args.host, args.port);
 
-    var pool = try rpc.worker_pool.WorkerPool.init(
+    var pool = try rpc.integration.worker_pool.WorkerPool.init(
         allocator,
         io,
         address,
