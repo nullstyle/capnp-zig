@@ -5,7 +5,7 @@ const quic_zig = @import("quic_zig");
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
 const close_controller_mod = @import("close_controller.zig");
-const datagram_io = @import("datagram_io.zig");
+const connection_loop = @import("connection_loop.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
@@ -15,7 +15,6 @@ const native_engine = @import("native_engine.zig");
 const native_framer = @import("native_framer.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
-const scheduler = @import("scheduler.zig");
 const termination = @import("termination.zig");
 const wake_mod = @import("wake.zig");
 
@@ -44,8 +43,8 @@ const EndpointDriver = endpoint_mod.EndpointDriver;
 /// step as "one QUIC connection equals one authenticated vat session" while
 /// making the future listener fanout boundary explicit.
 pub const Connection = struct {
-    pub const StepMode = scheduler.StepMode;
-    pub const StepResult = scheduler.StepResult;
+    pub const StepMode = connection_loop.StepMode;
+    pub const StepResult = connection_loop.StepResult;
     const CallbackLifecycle = callback_lifecycle_mod.State(Connection);
     const CloseController = close_controller_mod.Controller;
 
@@ -212,28 +211,7 @@ pub const Connection = struct {
     }
 
     pub fn run(self: *Connection) void {
-        while (!self.close_controller.isRequested()) {
-            self.step() catch |err| {
-                log.debug("QUIC connection step failed: {}", .{err});
-                self.terminateInternalError(err);
-                break;
-            };
-            if (self.activeQuicConn()) |conn| {
-                if (conn.isClosed() and self.selectedOutboundEmpty()) {
-                    self.close_controller.request();
-                }
-            }
-        }
-
-        self.close_controller.flushCloseDatagram(
-            self.activeQuicConn(),
-            self.endpointDriver(),
-            self.udp_tx_buf,
-            self.nowUs(),
-        );
-        self.close_controller.closeEngines(&self.baseline, &self.native);
-        if (self.callback_lifecycle.closeCallback()) |cb| self.callback_lifecycle.invokeClose(self, cb);
-        if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
+        connection_loop.run(self.loopOwner());
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
@@ -293,106 +271,19 @@ pub const Connection = struct {
     }
 
     pub fn stepOnce(self: *Connection, mode: StepMode) !StepResult {
-        var now_us = self.nowUs();
-        const next_deadline_us = self.nextTimerDeadlineUs(now_us);
-        const waited_for = scheduler.receiveWaitDuration(.{
-            .mode = mode,
-            .receive_timeout = self.receiveTimeout(),
-            .now_us = now_us,
-            .next_deadline_us = next_deadline_us,
-            .immediate_work = self.hasImmediateWork(),
-            .wake_supported = self.hasWakeSupport(),
-        });
-        var result = StepResult{
-            .waited_for = waited_for,
-            .next_deadline_us = next_deadline_us,
-        };
-        const receive_result = try datagram_io.receiveOne(.{
-            .io = self.io,
-            .driver = self.endpointDriver(),
-            .wake = &self.wake_state,
-            .rx_buf = self.udp_rx_buf,
-            .now_us = now_us,
-            .wait_duration = waited_for,
-        });
-        result.received_datagram = receive_result.received_datagram;
-        result.wake_drained = receive_result.wake_drained;
-
-        now_us = self.nowUs();
-        try self.advanceActive();
-        try self.serviceModeStreams();
-        try datagram_io.drainOutgoingDatagrams(self.endpointDriver(), self.udp_tx_buf, now_us);
-
-        now_us = self.nowUs();
-        try self.tickActive(now_us);
-        try self.serviceModeStreams();
-        try datagram_io.drainOutgoingDatagrams(self.endpointDriver(), self.udp_tx_buf, now_us);
-
-        self.reapServerIfClosed();
-        result.closed = self.isTransportDrainedClosed();
-        if (result.closed) {
-            self.close_controller.request();
-        }
-        return result;
-    }
-
-    fn hasWakeSupport(self: *const Connection) bool {
-        return self.wake_state.isSupported();
+        return try connection_loop.stepOnce(self.loopOwner(), mode);
     }
 
     fn wakeRequested(self: *const Connection) bool {
         return self.wake_state.isRequested();
     }
 
-    fn receiveTimeout(self: *const Connection) std.Io.Duration {
-        return self.endpoint.receiveTimeout();
-    }
-
     fn endpointDriver(self: *Connection) EndpointDriver {
         return self.endpoint.driver(self.io);
     }
 
-    fn hasImmediateWork(self: *Connection) bool {
-        if (self.wakeRequested()) return true;
-        if (self.activeQuicConn()) |conn| {
-            if (conn.canSend()) return true;
-            if (!self.selectedOutboundEmpty()) {
-                return self.selectedMode().hasImmediateWork(self.role, conn);
-            }
-        }
-        return false;
-    }
-
-    fn nextTimerDeadlineUs(self: *Connection, now_us: u64) ?u64 {
-        const conn = self.activeQuicConn() orelse return null;
-        const deadline = conn.nextTimerDeadline(now_us) orelse return null;
-        return deadline.at_us;
-    }
-
-    fn isTransportDrainedClosed(self: *Connection) bool {
-        const conn = self.activeQuicConn() orelse return false;
-        return conn.isClosed() and self.selectedOutboundEmpty();
-    }
-
     fn selectedOutboundEmpty(self: *Connection) bool {
         return self.selectedMode().outboundEmpty();
-    }
-
-    fn advanceActive(self: *Connection) !void {
-        const conn = self.activeQuicConn() orelse return;
-        if (!conn.handshakeDone()) {
-            try conn.advance();
-        }
-    }
-
-    fn tickActive(self: *Connection, now_us: u64) !void {
-        const conn = self.activeQuicConn() orelse return;
-        try conn.tick(now_us);
-    }
-
-    fn serviceModeStreams(self: *Connection) !void {
-        const conn = self.activeQuicConn() orelse return;
-        try self.selectedMode().service(self.engineOwner(), conn);
     }
 
     fn selectedMode(self: *Connection) ModeRouter {
@@ -424,6 +315,114 @@ pub const Connection = struct {
             .terminate_frame_error = ownerTerminateFrameError,
             .deinit_requested = ownerDeinitRequested,
         };
+    }
+
+    fn loopOwner(self: *Connection) connection_loop.Owner {
+        return .{
+            .ptr = self,
+            .io = self.io,
+            .role = self.role,
+            .udp_rx_buf = self.udp_rx_buf,
+            .udp_tx_buf = self.udp_tx_buf,
+            .wake = &self.wake_state,
+            .driver = loopDriver,
+            .active_quic_conn = loopActiveQuicConn,
+            .receive_timeout = loopReceiveTimeout,
+            .selected_mode = loopSelectedMode,
+            .selected_outbound_empty = loopSelectedOutboundEmpty,
+            .engine_owner = loopEngineOwner,
+            .close_requested = loopCloseRequested,
+            .request_close = loopRequestClose,
+            .terminate_internal_error = loopTerminateInternalError,
+            .flush_close_datagram = loopFlushCloseDatagram,
+            .close_engines = loopCloseEngines,
+            .invoke_close_callback = loopInvokeCloseCallback,
+            .complete_deferred_deinit = loopCompleteDeferredDeinit,
+            .reap_server_if_closed = loopReapServerIfClosed,
+            .now_us = loopNowUs,
+        };
+    }
+
+    fn loopDriver(ptr: *anyopaque) EndpointDriver {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.endpointDriver();
+    }
+
+    fn loopActiveQuicConn(ptr: *anyopaque) ?*quic_zig.Connection {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.activeQuicConn();
+    }
+
+    fn loopReceiveTimeout(ptr: *anyopaque) std.Io.Duration {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.endpoint.receiveTimeout();
+    }
+
+    fn loopSelectedMode(ptr: *anyopaque) ModeRouter {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.selectedMode();
+    }
+
+    fn loopSelectedOutboundEmpty(ptr: *anyopaque) bool {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.selectedOutboundEmpty();
+    }
+
+    fn loopEngineOwner(ptr: *anyopaque) EngineOwner {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.engineOwner();
+    }
+
+    fn loopCloseRequested(ptr: *anyopaque) bool {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.close_controller.isRequested();
+    }
+
+    fn loopRequestClose(ptr: *anyopaque) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        self.close_controller.request();
+    }
+
+    fn loopTerminateInternalError(ptr: *anyopaque, err: anyerror) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        self.terminateInternalError(err);
+    }
+
+    fn loopFlushCloseDatagram(ptr: *anyopaque) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        self.close_controller.flushCloseDatagram(
+            self.activeQuicConn(),
+            self.endpointDriver(),
+            self.udp_tx_buf,
+            self.nowUs(),
+        );
+    }
+
+    fn loopCloseEngines(ptr: *anyopaque) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        self.close_controller.closeEngines(&self.baseline, &self.native);
+    }
+
+    fn loopInvokeCloseCallback(ptr: *anyopaque) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        if (self.callback_lifecycle.closeCallback()) |cb| {
+            self.callback_lifecycle.invokeClose(self, cb);
+        }
+    }
+
+    fn loopCompleteDeferredDeinit(ptr: *anyopaque) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
+    }
+
+    fn loopReapServerIfClosed(ptr: *anyopaque) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        self.reapServerIfClosed();
+    }
+
+    fn loopNowUs(ptr: *anyopaque) u64 {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.nowUs();
     }
 
     fn ownerIsClosing(ptr: *anyopaque) bool {
