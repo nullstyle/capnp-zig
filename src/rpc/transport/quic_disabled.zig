@@ -32,6 +32,18 @@ pub const Endpoint = union(Role) {
 };
 
 pub const Session = struct {};
+pub const AcceptedSession = struct {};
+pub const AcceptedSessionDriver = struct {
+    pub fn isAttached(_: *const AcceptedSessionDriver) bool {
+        return false;
+    }
+
+    pub fn current(_: *const AcceptedSessionDriver) ?AcceptedSession {
+        return null;
+    }
+
+    pub fn clear(_: *AcceptedSessionDriver) void {}
+};
 
 pub const Listener = struct {
     pub fn init(_: anytype, _: anytype, _: anytype) noreturn {

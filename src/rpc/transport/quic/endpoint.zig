@@ -46,7 +46,7 @@ pub const ClientEndpoint = struct {
 /// task without changing the existing client/peer callbacks.
 pub const ServerEndpoint = struct {
     listener: listener_mod.Listener,
-    session: session.SessionTracker = .{},
+    session: session.AcceptedSessionDriver = .{},
 
     pub fn deinit(self: *ServerEndpoint) void {
         self.listener.deinit();

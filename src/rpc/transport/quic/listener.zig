@@ -8,6 +8,7 @@ const session_mod = @import("session.zig");
 const Net = std.Io.net;
 
 pub const Session = session_mod.Session;
+pub const AcceptedSession = session_mod.AcceptedSession;
 pub const FeedOutcome = quic_zig.Server.FeedOutcome;
 pub const StatelessResponse = quic_zig.Server.StatelessResponse;
 
@@ -76,9 +77,18 @@ pub const Listener = struct {
     }
 
     pub fn sessionAt(self: *Listener, index: usize) ?Session {
+        const accepted = self.acceptedSessionAt(index) orelse return null;
+        return accepted.session;
+    }
+
+    pub fn firstAcceptedSession(self: *Listener) ?AcceptedSession {
+        return self.acceptedSessionAt(0);
+    }
+
+    pub fn acceptedSessionAt(self: *Listener, index: usize) ?AcceptedSession {
         const slots = self.server.iterator();
         if (index >= slots.len) return null;
-        return Session.fromSlot(slots[index]);
+        return AcceptedSession.fromSession(index, Session.fromSlot(slots[index]));
     }
 
     pub fn feedDatagram(
@@ -123,6 +133,17 @@ pub const Listener = struct {
         now_us: u64,
     ) !void {
         while (try session.pollDatagram(tx_buf, now_us)) |out| {
+            try self.socket.send(self.io, &out.dest, out.bytes);
+        }
+    }
+
+    pub fn drainAcceptedSessionDatagrams(
+        self: *Listener,
+        accepted: AcceptedSession,
+        tx_buf: []u8,
+        now_us: u64,
+    ) !void {
+        while (try accepted.pollDatagram(tx_buf, now_us)) |out| {
             try self.socket.send(self.io, &out.dest, out.bytes);
         }
     }

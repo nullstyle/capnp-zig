@@ -1304,8 +1304,8 @@ pub const Connection = struct {
                 }
             },
             .server => |*server| {
-                const session = server.session.handle() orelse return;
-                try server.listener.drainSessionDatagrams(session, self.udp_tx_buf, now_us);
+                const accepted = server.session.current() orelse return;
+                try server.listener.drainAcceptedSessionDatagrams(accepted, self.udp_tx_buf, now_us);
             },
         }
     }
@@ -1321,7 +1321,7 @@ pub const Connection = struct {
         switch (self.endpoint) {
             .client => return,
             .server => |*server| {
-                _ = server.session.adoptFirstAccepted(&server.listener.server);
+                _ = server.session.attachFirstAccepted(&server.listener.server);
             },
         }
     }
@@ -1330,15 +1330,8 @@ pub const Connection = struct {
         switch (self.endpoint) {
             .client => return,
             .server => |*server| {
-                if (server.session.handle()) |session| {
-                    if (!session.isClosed()) return;
-                    const reaped = server.listener.reapClosedSessions();
-                    if (reaped > 0) {
-                        server.session.clear();
-                        _ = self.close_requested.swap(true, .acq_rel);
-                    }
-                } else {
-                    _ = server.listener.reapClosedSessions();
+                if (server.session.reapClosed(&server.listener.server)) {
+                    _ = self.close_requested.swap(true, .acq_rel);
                 }
             },
         }

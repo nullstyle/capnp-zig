@@ -515,15 +515,24 @@ test "quic transport exposes typed application close policy" {
 test "quic exposes listener and session API boundary" {
     try std.testing.expect(@hasDecl(quic, "Listener"));
     try std.testing.expect(@hasDecl(quic, "Session"));
+    try std.testing.expect(@hasDecl(quic, "AcceptedSession"));
+    try std.testing.expect(@hasDecl(quic, "AcceptedSessionDriver"));
     try std.testing.expect(@hasDecl(quic, "ClientEndpoint"));
     try std.testing.expect(@hasDecl(quic, "ServerEndpoint"));
     try std.testing.expect(@hasDecl(quic.listener, "Listener"));
     try std.testing.expect(@hasDecl(quic.session, "Session"));
+    try std.testing.expect(@hasDecl(quic.session, "AcceptedSession"));
+    try std.testing.expect(@hasDecl(quic.session, "AcceptedSessionDriver"));
     try std.testing.expect(@hasDecl(quic.endpoint, "Endpoint"));
     try std.testing.expect(@hasField(quic.ServerEndpoint, "listener"));
     try std.testing.expect(@hasField(quic.ServerEndpoint, "session"));
     try std.testing.expect(@hasField(quic.ClientEndpoint, "socket"));
     try std.testing.expect(@hasField(quic.ClientEndpoint, "transport"));
+
+    var driver = quic.AcceptedSessionDriver{};
+    try std.testing.expect(!driver.isAttached());
+    try std.testing.expect(driver.current() == null);
+    try std.testing.expect(driver.quicConnection() == null);
 }
 
 test "quic listener owns server endpoint before session attachment" {
@@ -540,7 +549,9 @@ test "quic listener owns server endpoint before session attachment" {
     try std.testing.expectEqual(quic.supported_max_concurrent_sessions, listener.sessionCapacity());
     try std.testing.expectEqual(@as(usize, 0), listener.sessionCount());
     try std.testing.expect(listener.firstSession() == null);
+    try std.testing.expect(listener.firstAcceptedSession() == null);
     try std.testing.expect(listener.sessionAt(0) == null);
+    try std.testing.expect(listener.acceptedSessionAt(0) == null);
 }
 
 test "quic server options propagate quic_zig hardening controls" {

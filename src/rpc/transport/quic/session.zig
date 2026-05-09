@@ -56,6 +56,49 @@ pub const OutgoingDatagram = struct {
     bytes: []const u8,
 };
 
+/// Accepted server-side session selected by a listener.
+///
+/// `AcceptedSession` keeps the borrowed `Session` handle together with the
+/// listener slot ordinal it came from. The ordinal is always zero for the
+/// compatibility transport today, but gives a future fanout accept loop a
+/// stable place to carry per-session identity without changing the transport
+/// driving methods.
+pub const AcceptedSession = struct {
+    ordinal: usize,
+    session: Session,
+
+    pub fn fromSession(ordinal: usize, accepted: Session) AcceptedSession {
+        return .{
+            .ordinal = ordinal,
+            .session = accepted,
+        };
+    }
+
+    pub fn quicConnection(self: AcceptedSession) *quic_zig.Connection {
+        return self.session.quicConnection();
+    }
+
+    pub fn peerAddress(self: AcceptedSession) ?Net.IpAddress {
+        return self.session.peerAddress();
+    }
+
+    pub fn isClosed(self: AcceptedSession) bool {
+        return self.session.isClosed();
+    }
+
+    pub fn close(self: AcceptedSession) void {
+        self.session.close();
+    }
+
+    pub fn pollDatagram(
+        self: AcceptedSession,
+        tx_buf: []u8,
+        now_us: u64,
+    ) !?OutgoingDatagram {
+        return try self.session.pollDatagram(tx_buf, now_us);
+    }
+};
+
 /// Tracks the single server-side session used by the current compatibility
 /// transport. When fanout lands, this can become a table keyed by slot id while
 /// `Connection` keeps its one-session behavior.
@@ -86,5 +129,50 @@ pub const SessionTracker = struct {
 
     pub fn clear(self: *SessionTracker) void {
         self.slot = null;
+    }
+};
+
+/// Drives the accepted session attached to the compatibility server transport.
+///
+/// This is intentionally one-session-sized today. The methods mirror the
+/// operations a future accept loop needs: attach an accepted listener slot,
+/// surface the active QUIC connection, poll the selected session, and reap it
+/// when quic-zig reports closure.
+pub const AcceptedSessionDriver = struct {
+    tracker: SessionTracker = .{},
+
+    pub fn isAttached(self: *const AcceptedSessionDriver) bool {
+        return self.tracker.isAccepted();
+    }
+
+    pub fn current(self: *const AcceptedSessionDriver) ?AcceptedSession {
+        const accepted = self.tracker.handle() orelse return null;
+        return AcceptedSession.fromSession(0, accepted);
+    }
+
+    pub fn quicConnection(self: *const AcceptedSessionDriver) ?*quic_zig.Connection {
+        const accepted = self.current() orelse return null;
+        return accepted.quicConnection();
+    }
+
+    pub fn attachFirstAccepted(self: *AcceptedSessionDriver, server: *quic_zig.Server) bool {
+        return self.tracker.adoptFirstAccepted(server);
+    }
+
+    pub fn reapClosed(self: *AcceptedSessionDriver, server: *quic_zig.Server) bool {
+        if (self.current()) |accepted| {
+            if (!accepted.isClosed()) return false;
+            const reaped = server.reap();
+            if (reaped == 0) return false;
+            self.clear();
+            return true;
+        }
+
+        _ = server.reap();
+        return false;
+    }
+
+    pub fn clear(self: *AcceptedSessionDriver) void {
+        self.tracker.clear();
     }
 };

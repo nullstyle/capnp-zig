@@ -88,15 +88,19 @@ path in both modes.
 
 `rpc.quic.Connection.initServer()` is the compatibility entry point for the
 current one-session transport. Internally it owns a `rpc.quic.Listener`, accepts
-the first server-side `rpc.quic.Session`, and attaches that session to the
-existing `Connection.start()` callbacks.
+the first server-side `rpc.quic.AcceptedSession`, and drives that session through
+the existing `Connection.start()` callbacks.
 
 The lower-level boundary is also public for future fanout work:
 
 - `rpc.quic.Listener` owns the UDP socket and `quic_zig.Server`.
 - `rpc.quic.Session` is a borrowed handle for one accepted server slot.
-- `rpc.quic.ServerEndpoint` pairs a listener with the session currently attached
-  to the compatibility connection.
+- `rpc.quic.AcceptedSession` carries the borrowed session plus its listener slot
+  ordinal.
+- `rpc.quic.AcceptedSessionDriver` attaches, drives, and reaps the one accepted
+  session used by the compatibility connection.
+- `rpc.quic.ServerEndpoint` pairs a listener with the accepted-session driver
+  currently attached to the compatibility connection.
 
 `ServerOptions.max_concurrent_connections` must remain
 `rpc.quic.supported_max_concurrent_sessions` for now. Raising that value will
