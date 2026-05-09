@@ -28,8 +28,8 @@ pub const schema_validation = @import("serialization/schema_validation.zig");
 pub const rpc = @import("rpc/mod_quic.zig");
 
 /// Switchable `std.Io` backend selection. Centralises the choice between
-/// `std.Io.Threaded` and the reserved `std.Io.Evented` selector so
-/// applications can flip backends in one place once Evented is enabled here.
+/// `std.Io.Threaded`, `std.Io.Evented` when Zig exposes it for the target, and
+/// the process-provided default backend.
 pub const io_backend = @import("io_backend.zig");
 
 test {

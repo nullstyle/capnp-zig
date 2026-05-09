@@ -89,8 +89,8 @@ pub fn build(b: *std.Build) void {
     // Selects which std.Io backend RPC entry points should construct. See
     // src/io_backend.zig for the full list of accepted spellings; the
     // default `process_init` reuses the std.Io that std.process.Init
-    // already provides. The `evented` selector is reserved until this project
-    // adopts and validates std.Io.Evented's scheduling/wake semantics.
+    // already provides. The `evented` selector constructs std.Io.Evented on
+    // targets where Zig exposes it, and fails clearly on unsupported targets.
     const io_backend_kind = b.option(
         []const u8,
         "io-backend",
