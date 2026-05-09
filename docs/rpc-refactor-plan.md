@@ -464,6 +464,11 @@ Options:
 This should be a separate compatibility decision, not a side effect of moving
 files.
 
+Decision (2026-05-09): use `rpc.testing` as the deliberately unstable
+test-support facade. The public `rpc._internal` name remains only as a
+deprecated, narrow compatibility alias to that facade; in-tree tests should not
+import `_internal` directly.
+
 ## Zig 0.17-Dev Modernization Work To Weave In
 
 Do these alongside or shortly after Option 1, not in the middle of delicate peer

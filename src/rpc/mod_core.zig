@@ -10,6 +10,7 @@ pub const cap_pointer = @import("./caps/cap_pointer.zig");
 pub const transport_binding = @import("./transport/binding.zig");
 pub const peer = @import("./peer/mod.zig");
 pub const host_peer = @import("./integration/host_peer.zig");
+pub const testing = @import("./testing.zig");
 pub const generated = struct {
     pub const rpc = @import("./gen/capnp/rpc.zig");
     pub const persistent = @import("./gen/capnp/persistent.zig");

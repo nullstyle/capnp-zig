@@ -9,7 +9,7 @@ provides guidance for downstream consumers.
 |---|---|
 | **Stable** | API is settled. Breaking changes follow semver (major bump). Bug fixes and additive changes only within a minor version. |
 | **Experimental** | Functional but the API may change across any release. Use at your own risk; pin to an exact version. |
-| **Internal** | Implementation detail. Not exported through `src/lib.zig`. May change or be removed without notice. |
+| **Internal** | Implementation detail. Not part of the supported consumer API. May change or be removed without notice, even when exposed through a test-only facade. |
 
 ## Module Status
 
@@ -41,12 +41,15 @@ provides guidance for downstream consumers.
 ### Internal
 
 These modules are implementation details and should not be imported directly by
-consumers. Some are re-exported through `rpc._internal` for the project test
-suite and generated-code support, but that surface is intentionally unstable.
+consumers. The project test suite uses the deliberately unstable `rpc.testing`
+facade for narrow white-box coverage. The older `rpc._internal` name remains as
+a deprecated compatibility alias to that same narrow test-support facade.
 
 | Module | Path | Notes |
 |---|---|---|
-| Peer dispatch | `src/rpc/peer/peer_dispatch.zig` | Inbound message dispatch logic. |
+| RPC testing facade | `src/rpc/testing.zig` | Test-only access to the current white-box RPC helpers. |
+| RPC internal compatibility alias | `src/rpc/internal.zig` | Deprecated alias for `rpc.testing`; kept only for old test imports and compatibility fixtures. |
+| Peer dispatch | `src/rpc/peer/dispatch.zig` | Inbound message dispatch logic. |
 | Peer control | `src/rpc/peer/peer_control.zig` | Peer lifecycle control. |
 | Peer cleanup | `src/rpc/peer/peer_cleanup.zig` | Resource cleanup on peer teardown. |
 | Peer state | `src/rpc/peer/state.zig` | Peer limits, small state record types, and debug thread-affinity helpers. |
