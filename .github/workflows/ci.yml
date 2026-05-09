@@ -49,6 +49,35 @@ jobs:
       - name: Check formatting
         run: just fmt-check
 
+  evented-check:
+    name: Evented backend check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - name: Check evented backend compilation
+        run: zig build -Dio-backend=evented check --summary all
+
+  docs-smoke:
+    name: Docs smoke and snippets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - name: Compile documentation snippet fixtures
+        run: zig build test-docs-snippets --summary all
+
+      - name: Run documentation/examples smoke gate
+        run: zig build docs-smoke --summary all
+
   hardening:
     name: Hardening gate
     runs-on: ubuntu-latest

@@ -2,11 +2,11 @@
 gen:
     capnpc -ozig:gen kvstore.capnp
 
-# Build kvstore server + client.
+# Build kvstore server + stressor.
 build: gen
     zig build
 
-# Run local compile tests for server + client modules.
+# Run local compile tests for the server module.
 test: gen
     zig build test
 
@@ -14,6 +14,10 @@ test: gen
 server host="127.0.0.1" port="9000" db_path="kvstore-data" backup_dir="kvstore-backups" opts="":
     zig build server -Doptimize=ReleaseSafe -- --host {{ host }} --port {{ port }} --db-path {{ db_path }} --backup-dir {{ backup_dir }} {{ opts }}
 
+# Run the Go TUI client.
+client host="127.0.0.1" port="9000":
+    cd go-client && go run . -host {{ host }} -port {{ port }}
+
 # Run the KVStore stressor client.
-stressor host="127.0.0.1" port="9000" operations="10000" batch_size="1000" value_size="512" concurrency="64":
+stressor host="127.0.0.1" port="9000" operations="10000" batch_size="1" value_size="256" concurrency="32":
     zig build stressor -Doptimize=ReleaseFast -- --host {{ host }} --port {{ port }} --operations {{ operations }} --batch-size {{ batch_size }} --value-size {{ value_size }} --concurrency {{ concurrency }}

@@ -295,8 +295,10 @@ pub fn build(b: *std.Build) void {
     const docs_smoke_step = b.step("docs-smoke", "Run documentation and examples smoke checks");
     docs_smoke_step.dependOn(&run_docs_examples_smoke.step);
     const run_rpc_getting_started_snippet_tests = addLibTest(b, "tests/docs/rpc_getting_started_snippets_test.zig", target, optimize, lib_module);
+    const run_serialization_getting_started_snippet_tests = addLibTest(b, "tests/docs/serialization_getting_started_snippets_test.zig", target, optimize, lib_module);
     const test_docs_snippets_step = b.step("test-docs-snippets", "Compile documentation snippet fixtures");
     test_docs_snippets_step.dependOn(run_rpc_getting_started_snippet_tests);
+    test_docs_snippets_step.dependOn(run_serialization_getting_started_snippet_tests);
     docs_smoke_step.dependOn(test_docs_snippets_step);
 
     // RPC ping-pong example

@@ -8,10 +8,6 @@
         .rocksdb = .{
             .path = "vendor/rocksdb-zig",
         },
-        .zigzag = .{
-            .url = "git+https://github.com/meszmate/zigzag.git#40e75f19185d08fc4b23605f05f7532623b2baa2",
-            .hash = "zigzag-0.1.0-YXwYS_f5BQB5yna7zCiQNd0hWcmmCHtnSorDtpR2a7nJ",
-        },
     },
     .paths = .{""},
     .fingerprint = 0x2124e4f37c596927,

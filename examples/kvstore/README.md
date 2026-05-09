@@ -1,8 +1,9 @@
 # KVStore Example
 
-**WARNING: this shit was entirely vibed into existence.  pretty cool it actually works though**
+**Status:** experimental example. It is useful for exercising a realistic RPC
+service shape, but it is not a production-ready database service.
 
-Cap'n Proto RPC key/value service backed by RocksDB, with an interactive Zig TUI client.
+Cap'n Proto RPC key/value service backed by RocksDB, with a Go TUI client and Zig stressor.
 
 This example is intentionally close to a real service shape:
 
@@ -15,7 +16,8 @@ This example is intentionally close to a real service shape:
 ## What You Get
 
 - `server.zig`: TCP RPC server that hosts `KvStore`
-- `client.zig`: interactive browser + REPL client built with `zigzag`
+- `stressor.zig`: RPC load generator for write batches
+- `go-client/`: interactive browser + REPL client
 - `kvstore.capnp`: protocol schema
 - `gen/kvstore.zig`: generated Zig bindings
 
@@ -65,6 +67,7 @@ Run from `examples/kvstore/`.
 just gen
 just build
 just test
+zig build test
 ```
 
 ### Start server
@@ -93,6 +96,13 @@ just client
 just client host=127.0.0.1 port=9000
 ```
 
+The client recipe runs the Go TUI from `go-client/`. You can also run it directly:
+
+```bash
+cd go-client
+go run . -host 127.0.0.1 -port 9000
+```
+
 ### Start stressor
 
 ```bash
@@ -109,10 +119,10 @@ Use `kvstore-stressor --help` for the full flag set:
 - `--concurrency` (default `32`)
 - `--prefix` (default `kvstore-stress`)
 
-Client flags:
+Go client flags:
 
-- `--host` (default `127.0.0.1`)
-- `--port` (default `9000`)
+- `-host` (default `127.0.0.1`)
+- `-port` (default `9000`)
 
 ## Client UI
 

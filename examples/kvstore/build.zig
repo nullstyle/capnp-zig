@@ -60,7 +60,7 @@ pub fn build(b: *std.Build) void {
     const stressor_step = b.step("stressor", "Run the KVStore stressor");
     stressor_step.dependOn(&run_stressor.step);
 
-    // Compile smoke tests for server/client modules.
+    // Compile smoke tests for the server module.
     const server_tests = b.addTest(.{
         .name = "kvstore-server-tests",
         .root_module = b.createModule(.{
