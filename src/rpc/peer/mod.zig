@@ -8,6 +8,8 @@ pub const bootstrap = @import("./bootstrap.zig");
 pub const finish = @import("./finish.zig");
 pub const resolve = @import("./resolve.zig");
 pub const disembargo = @import("./disembargo.zig");
+pub const provide_accept_join = @import("./provide_accept_join.zig");
+pub const third_party = @import("./third_party.zig");
 
 const peer_dispatch = dispatch;
 const peer_bootstrap = bootstrap;
@@ -15,24 +17,26 @@ const peer_control = @import("./peer_control.zig");
 const peer_finish = finish;
 const peer_resolve = resolve;
 const peer_disembargo = disembargo;
+const peer_provide_accept_join = provide_accept_join;
+const peer_third_party = third_party;
 const peer_call_targets = @import("./call/peer_call_targets.zig");
 const peer_call_sender = @import("./call/peer_call_sender.zig");
 const payload_remap = @import("../caps/payload_remap.zig");
 const peer_promises = @import("../promises/peer_promises.zig");
 const peer_inbound_release = @import("./peer_inbound_release.zig");
-const peer_embargo_accepts = @import("./peer_embargo_accepts.zig");
-const peer_join_state = @import("./provide/peer_join_state.zig");
-const peer_provides_state = @import("./provide/peer_provides_state.zig");
-const peer_provide_join_orchestration = @import("./provide/peer_provide_join_orchestration.zig");
+const peer_embargo_accepts = peer_provide_accept_join.embargo_accepts;
+const peer_join_state = peer_provide_accept_join.join_state;
+const peer_provides_state = peer_provide_accept_join.provides_state;
+const peer_provide_join_orchestration = peer_provide_accept_join.orchestration;
 const peer_forward_orchestration = @import("./forward/peer_forward_orchestration.zig");
 const peer_forward_return_callbacks = @import("./forward/peer_forward_return_callbacks.zig");
 const peer_cap_lifecycle = @import("./peer_cap_lifecycle.zig");
 const peer_outbound_control = @import("./peer_outbound_control.zig");
 const peer_call_orchestration = @import("./call/peer_call_orchestration.zig");
 const peer_return_orchestration = @import("./return/peer_return_orchestration.zig");
-const peer_third_party_adoption = @import("./third_party/peer_third_party_adoption.zig");
+const peer_third_party_adoption = peer_third_party.adoption;
 const peer_return_dispatch = @import("./return/peer_return_dispatch.zig");
-const peer_third_party_returns = @import("./third_party/peer_third_party_returns.zig");
+const peer_third_party_returns = peer_third_party.returns;
 const peer_return_send_helpers = @import("../promises/return_send_helpers.zig");
 const peer_transport = @import("./transport.zig");
 const peer_transport_callbacks = peer_transport.callbacks;
@@ -1170,7 +1174,7 @@ pub const Peer = struct {
             self,
             mode,
             call.send_results_to.third_party,
-            peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
         );
         ctx.send_results_to = forwarded_plan.send_results_to;
         ctx.send_results_to_third_party_payload = forwarded_plan.send_results_to_third_party_payload;
@@ -1206,13 +1210,13 @@ pub const Peer = struct {
 
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
         const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, ctx_ptr);
-        try peer_control.applyForwardedCallSendResults(
+        try peer_third_party.applyForwardedCallSendResults(
             Peer,
             ctx.peer,
             call_builder,
             ctx.send_results_to,
             ctx.send_results_to_third_party_payload,
-            peer_control.setForwardedCallThirdPartyFromPayloadForPeerFn(Peer),
+            peer_third_party.setForwardedCallThirdPartyFromPayloadForPeerFn(Peer),
         );
 
         const payload_builder = try call_builder.payloadTyped();
@@ -1247,7 +1251,7 @@ pub const Peer = struct {
             ctx.answer_id,
             ret,
             inbound_caps,
-            peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             peer_control.freeOwnedFrameForPeerFn(Peer),
             ctx.send_results_to_third_party_payload,
             sendReturnTag,
@@ -1775,12 +1779,12 @@ pub const Peer = struct {
     }
 
     fn handleMissingReturnQuestion(self: *Peer, frame: []const u8, answer_id: u32) !void {
-        try peer_control.handleMissingReturnQuestion(
+        try peer_third_party.handleMissingReturnQuestion(
             Peer,
             self,
             frame,
             answer_id,
-            peer_control.isThirdPartyAnswerId,
+            peer_third_party.isThirdPartyAnswerId,
             peer_third_party_returns.hasPendingReturnForPeerFn(Peer),
             Peer.bufferPendingThirdPartyReturn,
         );
@@ -2180,15 +2184,15 @@ pub const Peer = struct {
             &self.provides_by_key,
             peer_provide_join_orchestration.captureProvideRecipientForPeerFn(
                 Peer,
-                peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
             peer_control.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             Peer.ensureProvideBudget,
-            peer_control.resolveProvideTargetForPeerFn(
+            peer_provide_accept_join.resolveProvideTargetForPeerFn(
                 Peer,
-                peer_control.resolveProvideImportedCapForPeerFn(Peer),
-                peer_control.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
+                peer_provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
+                peer_provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
             ),
             makeProvideTarget,
             ProvideTarget.deinit,
@@ -2206,7 +2210,7 @@ pub const Peer = struct {
             &self.provides_by_key,
             peer_provide_join_orchestration.captureAcceptProvisionForPeerFn(
                 Peer,
-                peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
             peer_control.freeOwnedFrameForPeerFn(Peer),
             Peer.queueEmbargoedAccept,
@@ -2228,10 +2232,10 @@ pub const Peer = struct {
             &self.pending_joins,
             &self.pending_join_questions,
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
-            peer_control.resolveProvideTargetForPeerFn(
+            peer_provide_accept_join.resolveProvideTargetForPeerFn(
                 Peer,
-                peer_control.resolveProvideImportedCapForPeerFn(Peer),
-                peer_control.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
+                peer_provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
+                peer_provide_accept_join.resolveProvidePromisedAnswerForPeerFn(Peer, Peer.resolvePromisedAnswer),
             ),
             makeProvideTarget,
             ProvideTarget.deinit,
@@ -2262,7 +2266,7 @@ pub const Peer = struct {
             &self.pending_third_party_answers,
             peer_third_party_adoption.captureThirdPartyCompletionForPeerFn(
                 Peer,
-                peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
             peer_control.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
@@ -2328,7 +2332,7 @@ pub const Peer = struct {
                 Peer.queuePromiseExportCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
-                peer_control.noteCallSendResultsForPeerFn(
+                peer_third_party.noteCallSendResultsForPeerFn(
                     Peer,
                     Peer.noteSendResultsToYourself,
                     Peer.noteSendResultsToThirdParty,
@@ -2370,7 +2374,7 @@ pub const Peer = struct {
             peer_call_orchestration.handleResolvedExportedCallForPeerFn(
                 Peer,
                 cap_table.InboundCapTable,
-                peer_control.noteCallSendResultsForPeerFn(
+                peer_third_party.noteCallSendResultsForPeerFn(
                     Peer,
                     Peer.noteSendResultsToYourself,
                     Peer.noteSendResultsToThirdParty,
@@ -2511,7 +2515,7 @@ pub const Peer = struct {
                 Question,
                 PendingThirdPartyAwait,
                 cap_table.InboundCapTable,
-                peer_control.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
                 peer_control.freeOwnedFrameForPeerFn(Peer),
                 peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
                 Peer.ensurePendingThirdPartyAwaitBudget,

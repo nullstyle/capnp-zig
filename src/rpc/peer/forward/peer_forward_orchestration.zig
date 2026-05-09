@@ -2,6 +2,7 @@ const std = @import("std");
 const cap_table = @import("../../caps/table.zig");
 const message = @import("../../../serialization/message.zig");
 const peer_control = @import("../peer_control.zig");
+const peer_third_party = @import("../third_party.zig");
 const protocol = @import("../../wire/protocol.zig");
 
 pub const ForwardReturnMode = enum {
@@ -11,7 +12,7 @@ pub const ForwardReturnMode = enum {
     propagate_accept_from_third_party,
 };
 
-pub fn toControlMode(mode: ForwardReturnMode) peer_control.ForwardedReturnMode {
+pub fn toControlMode(mode: ForwardReturnMode) peer_third_party.ForwardedReturnMode {
     return switch (mode) {
         .translate_to_caller => .translate_to_caller,
         .sent_elsewhere => .sent_elsewhere,
@@ -40,7 +41,7 @@ pub fn buildForwardCallPlan(
     third_party: ?message.AnyPointerReader,
     capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
 ) !ForwardCallPlan {
-    const destination = try peer_control.buildForwardedCallDestination(
+    const destination = try peer_third_party.buildForwardedCallDestination(
         PeerType,
         peer,
         toControlMode(mode),
