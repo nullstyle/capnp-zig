@@ -1,19 +1,19 @@
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
-const nullq_adapter = @import("nullq_adapter.zig");
+const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
 const session_mod = @import("session.zig");
 
 const Net = std.Io.net;
 
 pub const Session = session_mod.Session;
-pub const FeedOutcome = nullq.Server.FeedOutcome;
-pub const StatelessResponse = nullq.Server.StatelessResponse;
+pub const FeedOutcome = quic_zig.Server.FeedOutcome;
+pub const StatelessResponse = quic_zig.Server.StatelessResponse;
 
 /// Server-side QUIC endpoint owner.
 ///
-/// `Listener` owns the UDP socket and `nullq.Server`. Accepted QUIC sessions are
+/// `Listener` owns the UDP socket and `quic_zig.Server`. Accepted QUIC sessions are
 /// surfaced as borrowed `Session` handles, which is the boundary future
 /// multi-client fanout can grow through. The current implementation preserves
 /// the existing one-session guard in `ServerOptions`.
@@ -21,7 +21,7 @@ pub const Listener = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     socket: Net.Socket,
-    server: nullq.Server,
+    server: quic_zig.Server,
     start_timestamp: std.Io.Timestamp,
     receive_timeout: std.Io.Duration,
     max_concurrent_sessions: u32,
@@ -31,7 +31,7 @@ pub const Listener = struct {
         io: std.Io,
         options: quic_options.ServerOptions,
     ) !Listener {
-        const server_config = try quic_options.nullqServerConfigFromOptions(allocator, options);
+        const server_config = try quic_options.serverConfigFromOptions(allocator, options);
 
         const socket = try Net.IpAddress.bind(&options.listen_addr, io, .{
             .mode = .dgram,
@@ -39,7 +39,7 @@ pub const Listener = struct {
         });
         errdefer socket.close(io);
 
-        var server = try nullq.Server.init(server_config);
+        var server = try quic_zig.Server.init(server_config);
         errdefer server.deinit();
 
         return .{
@@ -87,7 +87,7 @@ pub const Listener = struct {
         from: Net.IpAddress,
         now_us: u64,
     ) !FeedOutcome {
-        return try self.server.feed(bytes, nullq_adapter.ipAddressToPathAddress(from), now_us);
+        return try self.server.feed(bytes, quic_zig_adapter.ipAddressToPathAddress(from), now_us);
     }
 
     pub fn receiveOne(
@@ -111,7 +111,7 @@ pub const Listener = struct {
 
     pub fn drainStatelessResponses(self: *Listener) !void {
         while (self.server.drainStatelessResponse()) |response| {
-            const dest = nullq_adapter.pathAddressToIpAddress(response.dst) orelse continue;
+            const dest = quic_zig_adapter.pathAddressToIpAddress(response.dst) orelse continue;
             try self.socket.send(self.io, &dest, response.slice());
         }
     }

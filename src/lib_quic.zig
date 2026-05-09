@@ -1,8 +1,8 @@
 /// Pure Zig implementation of Cap'n Proto serialization, code generation, and RPC.
 ///
-/// This QUIC-enabled module includes the optional nullq-backed QUIC transport.
+/// This QUIC-enabled module includes the optional quic-zig-backed QUIC transport.
 /// Use the default `capnpc-zig` build without `-Dquic=true` when serialization
-/// or TCP RPC users should not depend on nullq/BoringSSL.
+/// or TCP RPC users should not depend on quic-zig/BoringSSL.
 pub const message = @import("serialization/message.zig");
 
 /// Cap'n Proto schema type definitions (Node, Field, Type, Value) used by

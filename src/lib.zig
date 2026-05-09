@@ -27,7 +27,7 @@ pub const schema_validation = @import("serialization/schema_validation.zig");
 
 /// Cap'n Proto RPC runtime: connection management, capability tables,
 /// message framing, and peer protocol implementation. The default build keeps
-/// the nullq-backed QUIC transport disabled; pass `-Dquic=true` to expose the
+/// the quic-zig-backed QUIC transport disabled; pass `-Dquic=true` to expose the
 /// native QUIC transport as `rpc.quic`.
 pub const rpc = @import("rpc/mod.zig");
 

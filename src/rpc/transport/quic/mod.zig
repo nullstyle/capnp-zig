@@ -1,4 +1,4 @@
-const adapter = @import("nullq_adapter.zig");
+const adapter = @import("quic_zig_adapter.zig");
 pub const close = @import("close.zig");
 const conn = @import("connection.zig");
 pub const endpoint = @import("endpoint.zig");
@@ -64,7 +64,7 @@ pub const NativeOptions = options.NativeOptions;
 pub const ServerProductionHardening = options.ServerProductionHardening;
 pub const defaultTransportParams = options.defaultTransportParams;
 pub const withProductionServerHardening = options.withProductionServerHardening;
-pub const nullqServerConfigFromOptions = options.nullqServerConfigFromOptions;
+pub const serverConfigFromOptions = options.serverConfigFromOptions;
 
 pub const defaultClientBindAddress = adapter.defaultClientBindAddress;
 pub const ipAddressToPathAddress = adapter.ipAddressToPathAddress;

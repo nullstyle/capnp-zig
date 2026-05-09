@@ -15,7 +15,7 @@ domain`):
 - `src/rpc/mod.zig` and `src/rpc/mod_core.zig` preserve compatibility exports.
 - QUIC has been split into `transport/quic/mod.zig`, `connection.zig`,
   `options.zig`, `length_framer.zig`, `outbound_queue.zig`, and
-  `nullq_adapter.zig`.
+  `quic_zig_adapter.zig`.
 - RPC tests have moved from `tests/rpc/level*` into domain folders while the
   cumulative `test-rpc-level*` build step names remain for compatibility.
 - `zig build check --summary all`, `zig build test --summary all`,
@@ -31,9 +31,9 @@ domain`):
   `disembargo.zig`. These currently wrap existing implementation helpers so the
   semantic paths exist before code is moved behind them.
 - QUIC is now an explicit build-module choice. The default `capnpc-zig` module
-  keeps nullq/BoringSSL out of serialization and TCP-only builds and exposes a
-  disabled `rpc.quic` facade for nullq-free framing helpers. Build with
-  `-Dquic=true` to select `src/lib_quic.zig`, import nullq, and expose the
+  keeps quic-zig/BoringSSL out of serialization and TCP-only builds and exposes a
+  disabled `rpc.quic` facade for QUIC-dependency-free framing helpers. Build with
+  `-Dquic=true` to select `src/lib_quic.zig`, import quic-zig, and expose the
   native QUIC transport implementation.
 
 ## Goals
@@ -128,7 +128,7 @@ src/rpc/
       options.zig
       length_framer.zig
       outbound_queue.zig
-      nullq_adapter.zig
+      quic_zig_adapter.zig
   peer/
     mod.zig
     ...
@@ -251,7 +251,7 @@ src/rpc/transport/quic/connection.zig
 src/rpc/transport/quic/options.zig
 src/rpc/transport/quic/length_framer.zig
 src/rpc/transport/quic/outbound_queue.zig
-src/rpc/transport/quic/nullq_adapter.zig
+src/rpc/transport/quic/quic_zig_adapter.zig
 ```
 
 Suggested responsibilities:
@@ -261,7 +261,7 @@ Suggested responsibilities:
 - `options.zig`: public options, limits, hardening knobs, defaults.
 - `length_framer.zig`: baseline stream length-delimited RPC frames.
 - `outbound_queue.zig`: queued outbound frame storage and accounting.
-- `nullq_adapter.zig`: nullq-specific config mapping, error mapping, path helpers.
+- `quic_zig_adapter.zig`: quic-zig-specific config mapping, error mapping, path helpers.
 
 Do not introduce QUIC-native multistream semantics here. This split should keep
 the current baseline stream behavior.
@@ -455,7 +455,7 @@ semantic changes:
   - core serialization/codegen
   - RPC without QUIC by default
   - QUIC as an opt-in transport surface via `-Dquic=true`
-- Avoid unconditional nullq/BoringSSL instantiation for serialization-only users.
+- Avoid unconditional quic-zig/BoringSSL instantiation for serialization-only users.
 - Revisit `std.Io.Evented` now that local Zig master exposes it on macOS/aarch64.
 - Isolate POSIX wake pipes, polling, and socket options inside `transport/tcp`.
 - Modernize examples/tools around `std.process.Init`, `init.gpa`, `init.io`, and

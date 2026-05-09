@@ -65,10 +65,10 @@ Progress in this tranche:
   frame has been sent successfully.
 - Embargoed Accept queuing now rejects duplicate answer IDs before mutating
   either lookup map.
-- QUIC `ServerOptions` now exposes nullq Retry/NEW_TOKEN keys, source and
+- QUIC `ServerOptions` now exposes quic-zig Retry/NEW_TOKEN keys, source and
   listener rate limits, per-connection memory caps, 0-RTT controls, close
   reason redaction, and log/qlog hooks; a production hardening preset and
-  config propagation regressions cover the translation into `nullq.Server.Config`.
+  config propagation regressions cover the translation into `quic-zig.Server.Config`.
 - Third-party pending-await and pending-answer adoption now leave pending state
   intact if the adopter fails.
 - Inbound Return handling now validates inbound caps before removing the
@@ -332,9 +332,9 @@ Progress in this tranche:
 **High: QUIC hardening controls are not exposed**
 
 - Location: `src/rpc/transport/quic/connection.zig:446`
-- Trigger: public UDP server config only passes cert/key/ALPN/transport params/max connections to nullq.
+- Trigger: public UDP server config only passes cert/key/ALPN/transport params/max connections to quic-zig.
 - Impact: capnp-zig cannot configure Retry, listener/source rate limits, token keys, per-connection memory caps, or logging rate limits.
-- Fix: add `ServerOptions` fields or a production preset and thread them into `nullq.Server.Config`.
+- Fix: add `ServerOptions` fields or a production preset and thread them into `quic-zig.Server.Config`.
 - Tests: config propagation and production preset tests.
 
 **High: host bridge queues inbound calls without limits**

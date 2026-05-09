@@ -3,7 +3,7 @@ const native_framer = @import("./quic/native_framer.zig");
 
 pub const enabled = false;
 pub const unavailable_message =
-    "capnpc-zig QUIC support is disabled; build with -Dquic=true to enable the nullq-backed transport";
+    "capnpc-zig QUIC support is disabled; build with -Dquic=true to enable the quic-zig-backed transport";
 
 pub const Error = error{QuicSupportDisabled};
 

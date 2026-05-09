@@ -1,11 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
 const native_framer = @import("native_framer.zig");
-const nullq_adapter = @import("nullq_adapter.zig");
+const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
 const outbound_queue = @import("outbound_queue.zig");
@@ -159,7 +159,7 @@ const NativeOutboundQueue = struct {
     pub fn flush(
         self: *NativeOutboundQueue,
         allocator: std.mem.Allocator,
-        conn: *nullq.Connection,
+        conn: *quic_zig.Connection,
     ) !void {
         if (!self.beginFlush()) return;
         defer self.endFlush();
@@ -195,7 +195,7 @@ const NativeOutboundQueue = struct {
     fn flushItem(
         self: *NativeOutboundQueue,
         allocator: std.mem.Allocator,
-        conn: *nullq.Connection,
+        conn: *quic_zig.Connection,
         item: *NativeQueuedFrame,
     ) !bool {
         if (item.kind == .data_rpc) {
@@ -223,7 +223,7 @@ const NativeOutboundQueue = struct {
 
     fn flushDataStream(
         self: *NativeOutboundQueue,
-        conn: *nullq.Connection,
+        conn: *quic_zig.Connection,
         item: *NativeQueuedFrame,
     ) !bool {
         if (item.stream_id == null) {
@@ -252,7 +252,7 @@ const NativeOutboundQueue = struct {
         return true;
     }
 
-    fn writeQueuedControl(conn: *nullq.Connection, item: *NativeQueuedFrame) !bool {
+    fn writeQueuedControl(conn: *quic_zig.Connection, item: *NativeQueuedFrame) !bool {
         const control = item.control orelse return error.InvalidFrame;
         while (item.control_offset < control.len) {
             const written = conn.streamWrite(quic_options.baseline_stream_id, control[item.control_offset..]) catch |err| switch (err) {
@@ -398,11 +398,11 @@ const NativeState = struct {
 
 /// A single vat-to-vat Cap'n Proto RPC session over QUIC.
 ///
-/// Client-side instances own one `nullq.Client` and one UDP socket. Server-side
-/// instances own one `nullq.Server` configured for one active QUIC connection by
+/// Client-side instances own one `quic_zig.Client` and one UDP socket. Server-side
+/// instances own one `quic_zig.Server` configured for one active QUIC connection by
 /// default; this intentionally models the first QUIC design step as "one QUIC
 /// connection equals one authenticated vat session". A future multi-client
-/// listener can fan out `nullq.Server.Slot`s to multiple `Connection`s without
+/// listener can fan out `quic_zig.Server.Slot`s to multiple `Connection`s without
 /// changing the peer-facing send/start/close shape.
 pub const Connection = struct {
     pub const StepMode = scheduler.StepMode;
@@ -453,14 +453,14 @@ pub const Connection = struct {
     ) !Connection {
         try quic_options.validateClientOptions(options);
 
-        const local_addr = options.local_addr orelse nullq_adapter.defaultClientBindAddress(options.remote_addr);
+        const local_addr = options.local_addr orelse quic_zig_adapter.defaultClientBindAddress(options.remote_addr);
         const socket = try Net.IpAddress.bind(&local_addr, io, .{
             .mode = .dgram,
             .protocol = .udp,
         });
         errdefer socket.close(io);
 
-        var client = try nullq.Client.connect(.{
+        var client = try quic_zig.Client.connect(.{
             .allocator = allocator,
             .server_name = options.server_name,
             .alpn_protocols = options.alpn_protocols,
@@ -494,7 +494,7 @@ pub const Connection = struct {
         io: std.Io,
         options: ServerOptions,
     ) !Connection {
-        const server_config = try quic_options.nullqServerConfigFromOptions(allocator, options);
+        const server_config = try quic_options.serverConfigFromOptions(allocator, options);
 
         const socket = try Net.IpAddress.bind(&options.listen_addr, io, .{
             .mode = .dgram,
@@ -502,7 +502,7 @@ pub const Connection = struct {
         });
         errdefer socket.close(io);
 
-        var server = try nullq.Server.init(server_config);
+        var server = try quic_zig.Server.init(server_config);
         errdefer server.deinit();
 
         return try initCommon(
@@ -830,10 +830,10 @@ pub const Connection = struct {
             .client => |*client| {
                 const remote = self.remote_addr.?;
                 if (!Net.IpAddress.eql(&msg.from, &remote)) return result;
-                try client.conn.handle(msg.data, nullq_adapter.ipAddressToPathAddress(msg.from), now_us);
+                try client.conn.handle(msg.data, quic_zig_adapter.ipAddressToPathAddress(msg.from), now_us);
             },
             .server => |*server| {
-                const from = nullq_adapter.ipAddressToPathAddress(msg.from);
+                const from = quic_zig_adapter.ipAddressToPathAddress(msg.from);
                 _ = try server.server.feed(msg.data, from, now_us);
                 self.setServerSlotIfAccepted();
                 try self.drainStatelessResponses(server);
@@ -981,7 +981,7 @@ pub const Connection = struct {
         try self.readBaselineStream(conn);
     }
 
-    fn ensureBaselineStream(self: *Connection, conn: *nullq.Connection) !bool {
+    fn ensureBaselineStream(self: *Connection, conn: *quic_zig.Connection) !bool {
         if (self.baseline_ready) return true;
         if (conn.stream(quic_options.baseline_stream_id) != null) {
             self.baseline_ready = true;
@@ -999,7 +999,7 @@ pub const Connection = struct {
         return false;
     }
 
-    fn readBaselineStream(self: *Connection, conn: *nullq.Connection) !void {
+    fn readBaselineStream(self: *Connection, conn: *quic_zig.Connection) !void {
         while (!self.close_requested.load(.acquire)) {
             const n = conn.streamRead(quic_options.baseline_stream_id, self.stream_read_buf) catch |err| switch (err) {
                 error.StreamNotFound => return,
@@ -1058,7 +1058,7 @@ pub const Connection = struct {
         };
     }
 
-    fn ensureNativeControlStream(self: *Connection, conn: *nullq.Connection) !bool {
+    fn ensureNativeControlStream(self: *Connection, conn: *quic_zig.Connection) !bool {
         if (self.native_state.control_ready) return true;
         if (conn.stream(quic_options.baseline_stream_id) != null) {
             self.native_state.control_ready = true;
@@ -1076,7 +1076,7 @@ pub const Connection = struct {
         return false;
     }
 
-    fn flushNativePreamble(self: *Connection, conn: *nullq.Connection) !bool {
+    fn flushNativePreamble(self: *Connection, conn: *quic_zig.Connection) !bool {
         var native_state = &self.native_state;
         if (native_state.preamble_offset == native_state.preamble_len and native_state.preamble_len != 0) return true;
         if (native_state.preamble_len == 0) {
@@ -1097,7 +1097,7 @@ pub const Connection = struct {
         return true;
     }
 
-    fn readNativeControlStream(self: *Connection, conn: *nullq.Connection) !void {
+    fn readNativeControlStream(self: *Connection, conn: *quic_zig.Connection) !void {
         while (!self.close_requested.load(.acquire)) {
             const n = conn.streamRead(quic_options.baseline_stream_id, self.stream_read_buf) catch |err| switch (err) {
                 error.StreamNotFound => return,
@@ -1127,7 +1127,7 @@ pub const Connection = struct {
         }
     }
 
-    fn processNativeControlFrames(self: *Connection, conn: *nullq.Connection) !void {
+    fn processNativeControlFrames(self: *Connection, conn: *quic_zig.Connection) !void {
         while (!self.close_requested.load(.acquire)) {
             if (self.native_state.pending_data != null) {
                 if (!try self.readPendingNativeData(conn)) return;
@@ -1177,7 +1177,7 @@ pub const Connection = struct {
         };
     }
 
-    fn readPendingNativeData(self: *Connection, conn: *nullq.Connection) !bool {
+    fn readPendingNativeData(self: *Connection, conn: *quic_zig.Connection) !bool {
         if (self.native_state.pending_data == null) return true;
         var pending = &self.native_state.pending_data.?;
         const stream = conn.stream(pending.stream_id) orelse return false;
@@ -1269,7 +1269,7 @@ pub const Connection = struct {
         self.closeQuicConn(conn);
     }
 
-    fn closeQuicConn(self: *Connection, conn: *nullq.Connection) void {
+    fn closeQuicConn(self: *Connection, conn: *quic_zig.Connection) void {
         if (self.close_status == null) {
             self.recordCloseStatus(.normal, null);
         }
@@ -1303,7 +1303,7 @@ pub const Connection = struct {
             .client => |*client| {
                 while (try client.conn.pollDatagram(self.udp_tx_buf, now_us)) |out| {
                     const dest = if (out.to) |addr|
-                        nullq_adapter.pathAddressToIpAddress(addr) orelse self.remote_addr.?
+                        quic_zig_adapter.pathAddressToIpAddress(addr) orelse self.remote_addr.?
                     else
                         self.remote_addr.?;
                     try self.socket.send(self.io, &dest, self.udp_tx_buf[0..out.len]);
@@ -1320,12 +1320,12 @@ pub const Connection = struct {
 
     fn drainStatelessResponses(self: *Connection, server: *ServerEndpoint) !void {
         while (server.server.drainStatelessResponse()) |response| {
-            const dest = nullq_adapter.pathAddressToIpAddress(response.dst) orelse continue;
+            const dest = quic_zig_adapter.pathAddressToIpAddress(response.dst) orelse continue;
             try self.socket.send(self.io, &dest, response.slice());
         }
     }
 
-    fn activeQuicConn(self: *Connection) ?*nullq.Connection {
+    fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
         return switch (self.endpoint) {
             .client => |*client| client.conn,
             .server => |*server| server.session.quicConnection(),

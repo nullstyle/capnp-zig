@@ -1,5 +1,5 @@
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 const Net = std.Io.net;
 
@@ -10,8 +10,8 @@ pub fn defaultClientBindAddress(remote_addr: Net.IpAddress) Net.IpAddress {
     };
 }
 
-pub fn ipAddressToPathAddress(addr: Net.IpAddress) nullq.conn.path.Address {
-    var out: nullq.conn.path.Address = .{};
+pub fn ipAddressToPathAddress(addr: Net.IpAddress) quic_zig.conn.path.Address {
+    var out: quic_zig.conn.path.Address = .{};
     switch (addr) {
         .ip4 => |ip4| {
             out.bytes[0] = 4;
@@ -30,7 +30,7 @@ pub fn ipAddressToPathAddress(addr: Net.IpAddress) nullq.conn.path.Address {
     return out;
 }
 
-pub fn pathAddressToIpAddress(addr: nullq.conn.path.Address) ?Net.IpAddress {
+pub fn pathAddressToIpAddress(addr: quic_zig.conn.path.Address) ?Net.IpAddress {
     switch (addr.bytes[0]) {
         4 => {
             var ip4_bytes: [4]u8 = undefined;

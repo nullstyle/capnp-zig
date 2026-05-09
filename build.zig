@@ -37,8 +37,8 @@ fn addMainTest(
     return b.addRunArtifact(t);
 }
 
-fn addQuicImport(module: *std.Build.Module, nullq_module: ?*std.Build.Module) void {
-    if (nullq_module) |m| module.addImport("nullq", m);
+fn addQuicImport(module: *std.Build.Module, quic_zig_module: ?*std.Build.Module) void {
+    if (quic_zig_module) |m| module.addImport("quic_zig", m);
 }
 
 pub fn build(b: *std.Build) void {
@@ -48,16 +48,16 @@ pub fn build(b: *std.Build) void {
     const enable_quic = b.option(
         bool,
         "quic",
-        "Enable nullq-backed QUIC RPC transport (default: false)",
+        "Enable quic-zig-backed QUIC RPC transport (default: false)",
     ) orelse false;
     const lib_root = if (enable_quic) "src/lib_quic.zig" else "src/lib.zig";
 
-    const nullq_module: ?*std.Build.Module = if (enable_quic) blk: {
-        const nullq_dep = b.dependency("nullq", .{
+    const quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
+        const quic_zig_dep = b.dependency("quic_zig", .{
             .target = target,
             .optimize = optimize,
         });
-        break :blk nullq_dep.module("nullq");
+        break :blk quic_zig_dep.module("quic_zig");
     } else null;
 
     // Selects which std.Io backend RPC entry points should construct. See
@@ -83,7 +83,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{},
     });
     lib_module.addImport("capnpc-zig", lib_module);
-    addQuicImport(lib_module, nullq_module);
+    addQuicImport(lib_module, quic_zig_module);
 
     const core_module = b.addModule("capnpc-zig-core", .{
         .root_source_file = b.path("src/lib_core.zig"),
@@ -162,7 +162,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{},
     });
     docs_module.addImport("capnpc-zig", docs_module);
-    addQuicImport(docs_module, nullq_module);
+    addQuicImport(docs_module, quic_zig_module);
     const docs_obj = b.addObject(.{
         .name = "capnpc-zig-docs",
         .root_module = docs_module,
@@ -347,7 +347,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{},
     });
-    addQuicImport(lib_tests_module, nullq_module);
+    addQuicImport(lib_tests_module, quic_zig_module);
     const lib_tests = b.addTest(.{
         .root_module = lib_tests_module,
     });
@@ -530,7 +530,7 @@ pub fn build(b: *std.Build) void {
     if (run_rpc_quic_transport_tests) |step| test_rpc_level2_step.dependOn(step);
     test_rpc_level2_step.dependOn(run_rpc_raw_frame_security_tests);
 
-    const test_rpc_quic_step = b.step("test-rpc-quic", "Run nullq-backed QUIC RPC transport tests (requires -Dquic=true)");
+    const test_rpc_quic_step = b.step("test-rpc-quic", "Run quic-zig-backed QUIC RPC transport tests (requires -Dquic=true)");
     if (run_rpc_quic_transport_tests) |step| test_rpc_quic_step.dependOn(step);
 
     const test_rpc_level3_step = b.step("test-rpc-level3", "Run cumulative RPC peer semantics tests");
@@ -578,12 +578,12 @@ pub fn build(b: *std.Build) void {
     test_lib_step.dependOn(&run_lib_tests.step);
 
     const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
-    const release_safe_nullq_module: ?*std.Build.Module = if (enable_quic) blk: {
-        const release_safe_nullq_dep = b.dependency("nullq", .{
+    const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
+        const release_safe_quic_zig_dep = b.dependency("quic_zig", .{
             .target = target,
             .optimize = release_safe_optimize,
         });
-        break :blk release_safe_nullq_dep.module("nullq");
+        break :blk release_safe_quic_zig_dep.module("quic_zig");
     } else null;
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
         .root_source_file = b.path(lib_root),
@@ -592,7 +592,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{},
     });
     release_safe_lib_module.addImport("capnpc-zig", release_safe_lib_module);
-    addQuicImport(release_safe_lib_module, release_safe_nullq_module);
+    addQuicImport(release_safe_lib_module, release_safe_quic_zig_module);
 
     const run_release_safe_main_tests = addMainTest(b, "src/main.zig", target, release_safe_optimize);
     const run_release_safe_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, release_safe_optimize, release_safe_lib_module);

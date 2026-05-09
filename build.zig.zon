@@ -3,9 +3,9 @@
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .nullq = .{
-            .url = "https://github.com/nullstyle/nullq/archive/4b23beca8ec401f8434bbdacf4f127100324f1a9.tar.gz",
-            .hash = "nullq-0.2.0-FWe2SQzvFwAWLurAXDHD8E6ewlfoc0L1CE39gm6U7R23",
+        .quic_zig = .{
+            .url = "https://github.com/nullstyle/quic-zig/archive/f46137b2a12e5f108fd28c58a6ab4e85a5d806ee.tar.gz",
+            .hash = "quic_zig-0.2.0-jMbGHWwIGwCHnlPXRjv0fxf4G-3nv9MlGUfTnDL5VWqC",
         },
     },
     .paths = .{

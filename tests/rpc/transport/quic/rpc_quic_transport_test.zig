@@ -146,12 +146,12 @@ test "quic exposes listener and session API boundary" {
     try std.testing.expect(@hasDecl(quic.endpoint, "Endpoint"));
 }
 
-test "quic server options propagate nullq hardening controls" {
+test "quic server options propagate quic_zig hardening controls" {
     const retry_key: quic.ServerRetryTokenKey = @splat(0x11);
     const new_token_key: quic.ServerNewTokenKey = @splat(0x22);
     var log_user_data: u8 = 0;
 
-    const config = try quic.nullqServerConfigFromOptions(std.testing.allocator, .{
+    const config = try quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
@@ -223,7 +223,7 @@ test "quic production hardening preset enables retry and rate gates" {
     try std.testing.expect(!options.enable_0rtt);
     try std.testing.expect(!options.reveal_close_reason_on_wire);
 
-    const config = try quic.nullqServerConfigFromOptions(std.testing.allocator, options);
+    const config = try quic.serverConfigFromOptions(std.testing.allocator, options);
     try std.testing.expectEqual(retry_key, config.retry_token_key.?);
     try std.testing.expectEqual(new_token_key, config.new_token_key.?);
     try std.testing.expectEqual(options.max_initials_per_source_per_window, config.max_initials_per_source_per_window);
@@ -609,7 +609,7 @@ test "quic client outbound queue enforces item and byte bounds" {
 }
 
 test "quic server rejects multi-connection option until fanout exists" {
-    try std.testing.expectError(error.InvalidConfig, quic.nullqServerConfigFromOptions(std.testing.allocator, .{
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
@@ -625,21 +625,21 @@ test "quic server rejects multi-connection option until fanout exists" {
 }
 
 test "quic server options reject unusable hardening limits" {
-    try std.testing.expectError(error.InvalidConfig, quic.nullqServerConfigFromOptions(std.testing.allocator, .{
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
         .local_cid_len = 0,
     }));
 
-    try std.testing.expectError(error.InvalidConfig, quic.nullqServerConfigFromOptions(std.testing.allocator, .{
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
         .max_datagrams_per_window = 0,
     }));
 
-    try std.testing.expectError(error.InvalidConfig, quic.nullqServerConfigFromOptions(std.testing.allocator, .{
+    try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",

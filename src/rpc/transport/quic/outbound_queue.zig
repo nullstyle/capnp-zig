@@ -1,5 +1,5 @@
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 const length_framer = @import("length_framer.zig");
 const options = @import("options.zig");
@@ -88,7 +88,7 @@ pub const OutboundQueue = struct {
     pub fn flush(
         self: *OutboundQueue,
         allocator: std.mem.Allocator,
-        conn: *nullq.Connection,
+        conn: *quic_zig.Connection,
     ) !void {
         if (!self.beginFlush()) return;
         defer self.endFlush();

@@ -1,5 +1,5 @@
 const std = @import("std");
-const nullq = @import("nullq");
+const quic_zig = @import("quic_zig");
 
 const framing = @import("../../wire/framing.zig");
 const length_framer = @import("length_framer.zig");
@@ -7,7 +7,7 @@ const native_framer = @import("native_framer.zig");
 
 const Net = std.Io.net;
 
-/// Native QUIC ALPN for Cap'n Proto RPC over nullq.
+/// Native QUIC ALPN for Cap'n Proto RPC over quic_zig.
 pub const alpn = "capnp-rpc/1";
 
 /// The first client-initiated bidirectional stream carries the baseline RPC
@@ -33,7 +33,7 @@ pub const default_quic_max_vn_per_source_per_window: ?u32 = 8;
 pub const default_quic_retry_token_lifetime_us: u64 = 10_000_000;
 pub const default_quic_retry_state_table_capacity: u32 = 4096;
 pub const default_quic_new_token_lifetime_us: u64 = 24 * 3600 * 1_000_000;
-pub const default_quic_max_connection_memory: u64 = nullq.conn.state.default_max_connection_memory;
+pub const default_quic_max_connection_memory: u64 = quic_zig.conn.state.default_max_connection_memory;
 pub const default_quic_listener_rate_window_us: u64 = 1_000_000;
 pub const default_quic_max_log_events_per_source_per_window: ?u32 = 16;
 
@@ -54,14 +54,14 @@ pub const NativeOptions = struct {
     max_pending_data_bytes: usize = default_native_max_pending_data_bytes,
 };
 
-pub const ServerQlogCallback = nullq.QlogCallback;
-pub const ServerLogEvent = nullq.Server.LogEvent;
-pub const ServerLogCallback = nullq.Server.LogCallback;
-pub const ServerRetryTokenKey = nullq.conn.RetryTokenKey;
-pub const ServerNewTokenKey = nullq.conn.NewTokenKey;
-pub const ServerAntiReplayTracker = nullq.tls.AntiReplayTracker;
+pub const ServerQlogCallback = quic_zig.QlogCallback;
+pub const ServerLogEvent = quic_zig.Server.LogEvent;
+pub const ServerLogCallback = quic_zig.Server.LogCallback;
+pub const ServerRetryTokenKey = quic_zig.conn.RetryTokenKey;
+pub const ServerNewTokenKey = quic_zig.conn.NewTokenKey;
+pub const ServerAntiReplayTracker = quic_zig.tls.AntiReplayTracker;
 
-pub fn defaultTransportParams() nullq.tls.TransportParams {
+pub fn defaultTransportParams() quic_zig.tls.TransportParams {
     return .{
         .max_idle_timeout_ms = 30_000,
         .initial_max_data = 16 * 1024 * 1024,
@@ -81,7 +81,7 @@ pub const ClientOptions = struct {
     remote_addr: Net.IpAddress,
     server_name: []const u8,
     alpn_protocols: []const []const u8 = &.{alpn},
-    transport_params: nullq.tls.TransportParams = defaultTransportParams(),
+    transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     receive_timeout: std.Io.Duration = std.Io.Duration.fromMilliseconds(5),
     udp_rx_buffer_size: usize = default_udp_rx_buffer_size,
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
@@ -99,7 +99,7 @@ pub const ServerOptions = struct {
     tls_cert_pem: []const u8,
     tls_key_pem: []const u8,
     alpn_protocols: []const []const u8 = &.{alpn},
-    transport_params: nullq.tls.TransportParams = defaultTransportParams(),
+    transport_params: quic_zig.tls.TransportParams = defaultTransportParams(),
     max_concurrent_connections: u32 = 1,
     local_cid_len: u8 = default_quic_local_cid_len,
     qlog_callback: ?ServerQlogCallback = null,
@@ -167,10 +167,10 @@ pub fn withProductionServerHardening(
     return out;
 }
 
-pub fn nullqServerConfigFromOptions(
+pub fn serverConfigFromOptions(
     allocator: std.mem.Allocator,
     options: ServerOptions,
-) !nullq.Server.Config {
+) !quic_zig.Server.Config {
     try validateServerOptions(options);
     return .{
         .allocator = allocator,
