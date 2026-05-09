@@ -10,7 +10,8 @@
 - `wire/` contains stream framing and typed RPC message readers/builders.
 - `caps/` contains capability table, capability pointer, and payload remap
   helpers.
-- `promises/` contains promised-answer, pipelining, and return-send helpers.
+- `promises/` contains promised-answer, pending-call, return-routing, and
+  return-send helpers, with legacy compatibility facades for older imports.
 - `transport/` contains the peer-facing binding contract plus concrete
   transport backends.
 - `transport/tcp/` is the POSIX TCP/runtime backend.
@@ -34,7 +35,8 @@
 - [mod_core.zig](mod_core.zig): Reduced core export surface for hostless targets.
 - [wire/](wire/): Framing and RPC protocol readers/builders.
 - [caps/](caps/): Capability tables, capability pointers, and payload remapping.
-- [promises/](promises/): Promised-answer transforms and return-send helpers.
+- [promises/](promises/): Promised-answer transforms, pending-call replay,
+  return-routing state, and return-send helpers.
 - [transport/](transport/): Transport binding, stream state, and concrete
   backend implementations.
 - [transport/tcp/](transport/tcp/): TCP stream transport, framed connection, and
