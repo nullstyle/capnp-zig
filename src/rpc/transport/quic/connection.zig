@@ -27,6 +27,127 @@ const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
 const EndpointDriver = endpoint_mod.EndpointDriver;
 
+/// Stream engine for the conservative length-delimited QUIC transport mode.
+///
+/// `Connection` owns endpoint scheduling and callbacks; this engine owns stream
+/// 0 readiness, outbound queueing, and inbound length-delimited frame parsing.
+const BaselineEngine = struct {
+    ready: bool = false,
+    inbound: LengthDelimitedFramer,
+    outbound: OutboundQueue = .{},
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        max_message_bytes: usize,
+        max_outbound_queue_items: usize,
+        max_outbound_queue_bytes: usize,
+    ) BaselineEngine {
+        return .{
+            .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
+            .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
+        };
+    }
+
+    pub fn deinit(self: *BaselineEngine, allocator: std.mem.Allocator) void {
+        self.outbound.drain(allocator);
+        self.inbound.deinit();
+    }
+
+    pub fn close(self: *BaselineEngine) void {
+        self.outbound.close();
+    }
+
+    pub fn resetInbound(self: *BaselineEngine) void {
+        self.inbound.reset();
+    }
+
+    pub fn enqueue(
+        self: *BaselineEngine,
+        allocator: std.mem.Allocator,
+        frame: []const u8,
+    ) !void {
+        try self.outbound.enqueue(allocator, frame);
+    }
+
+    pub fn outboundEmpty(self: *BaselineEngine) bool {
+        return self.outbound.isEmpty();
+    }
+
+    pub fn hasImmediateWork(
+        self: *BaselineEngine,
+        role: Role,
+        conn: *quic_zig.Connection,
+    ) bool {
+        if (self.ready) return true;
+        return role == .client and conn.handshakeDone();
+    }
+
+    pub fn service(
+        self: *BaselineEngine,
+        owner: *Connection,
+        conn: *quic_zig.Connection,
+    ) !void {
+        if (!try self.ensureStream(owner.role, conn)) return;
+        try self.outbound.flush(owner.allocator, conn);
+        try self.readStream(owner, conn);
+    }
+
+    fn ensureStream(
+        self: *BaselineEngine,
+        role: Role,
+        conn: *quic_zig.Connection,
+    ) !bool {
+        if (self.ready) return true;
+        if (conn.stream(quic_options.baseline_stream_id) != null) {
+            self.ready = true;
+            return true;
+        }
+        if (role == .client) {
+            if (!conn.handshakeDone()) return false;
+            _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
+                error.StreamAlreadyOpen => {},
+                else => return err,
+            };
+            self.ready = true;
+            return true;
+        }
+        return false;
+    }
+
+    fn readStream(
+        self: *BaselineEngine,
+        owner: *Connection,
+        conn: *quic_zig.Connection,
+    ) !void {
+        while (!owner.close_requested.load(.acquire)) {
+            const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {
+                error.StreamNotFound => return,
+                else => return err,
+            };
+            if (n == 0) return;
+            try self.inbound.push(owner.stream_read_buf[0..n]);
+            try self.dispatchAvailableFrames(owner);
+        }
+    }
+
+    fn dispatchAvailableFrames(
+        self: *BaselineEngine,
+        owner: *Connection,
+    ) !void {
+        while (true) {
+            if (owner.on_message == null or owner.on_error == null) return;
+            const frame = self.inbound.popFrame() catch |err| {
+                owner.terminateFrameError(err);
+                return;
+            };
+            const bytes = frame orelse return;
+            defer owner.allocator.free(bytes);
+            try owner.dispatchRpcFrame(bytes);
+            if (owner.deinit_requested) return;
+        }
+    }
+};
+
 const NativeQueuedKind = enum {
     inline_rpc,
     data_rpc,
@@ -349,7 +470,19 @@ const NativePendingData = struct {
     offset: usize = 0,
 };
 
-const NativeState = struct {
+fn isNativeFrameError(err: anyerror) bool {
+    return switch (err) {
+        error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory => true,
+        else => false,
+    };
+}
+
+/// Stream engine for the QUIC-native control/data stream transport mode.
+///
+/// The engine keeps native wire state local to native mode: control preface,
+/// hello sequencing, ordered control frames, one-shot data streams, and the
+/// native outbound queue.
+const NativeEngine = struct {
     control_ready: bool = false,
     preamble: [native_framer.preface.len + native_framer.encodedHelloLen()]u8 = undefined,
     preamble_len: usize = 0,
@@ -368,7 +501,7 @@ const NativeState = struct {
         max_outbound_queue_items: usize,
         max_outbound_queue_bytes: usize,
         native_options: NativeOptions,
-    ) NativeState {
+    ) NativeEngine {
         return .{
             .inbound = NativeControlFramer.init(allocator, .{
                 .max_control_frame_bytes = native_options.max_control_frame_bytes,
@@ -383,17 +516,237 @@ const NativeState = struct {
         };
     }
 
-    pub fn deinit(self: *NativeState, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *NativeEngine, allocator: std.mem.Allocator) void {
         self.inbound.deinit();
         self.outbound.drain(allocator);
         if (self.pending_data) |pending| allocator.free(pending.bytes);
         self.pending_data = null;
     }
 
-    pub fn resetInbound(self: *NativeState, allocator: std.mem.Allocator) void {
+    pub fn close(self: *NativeEngine) void {
+        self.outbound.close();
+    }
+
+    pub fn resetInbound(self: *NativeEngine, allocator: std.mem.Allocator) void {
         self.inbound.reset();
         if (self.pending_data) |pending| allocator.free(pending.bytes);
         self.pending_data = null;
+    }
+
+    pub fn enqueue(
+        self: *NativeEngine,
+        allocator: std.mem.Allocator,
+        frame: []const u8,
+    ) !void {
+        try self.outbound.enqueue(allocator, frame);
+    }
+
+    pub fn outboundEmpty(self: *NativeEngine) bool {
+        return self.outbound.isEmpty();
+    }
+
+    pub fn hasImmediateWork(
+        self: *NativeEngine,
+        role: Role,
+        conn: *quic_zig.Connection,
+    ) bool {
+        if (self.control_ready) return true;
+        return role == .client and conn.handshakeDone();
+    }
+
+    pub fn service(
+        self: *NativeEngine,
+        owner: *Connection,
+        conn: *quic_zig.Connection,
+    ) !void {
+        if (!try self.ensureControlStream(owner.role, conn)) return;
+        if (!try self.flushPreamble(conn)) return;
+        try self.outbound.flush(owner.allocator, conn);
+        self.readControlStream(owner, conn) catch |err| {
+            if (isNativeFrameError(err)) {
+                owner.terminateFrameError(err);
+                return;
+            }
+            return err;
+        };
+        self.processControlFrames(owner, conn) catch |err| {
+            if (isNativeFrameError(err)) {
+                owner.terminateFrameError(err);
+                return;
+            }
+            return err;
+        };
+    }
+
+    fn ensureControlStream(
+        self: *NativeEngine,
+        role: Role,
+        conn: *quic_zig.Connection,
+    ) !bool {
+        if (self.control_ready) return true;
+        if (conn.stream(quic_options.baseline_stream_id) != null) {
+            self.control_ready = true;
+            return true;
+        }
+        if (role == .client) {
+            if (!conn.handshakeDone()) return false;
+            _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
+                error.StreamAlreadyOpen => {},
+                else => return err,
+            };
+            self.control_ready = true;
+            return true;
+        }
+        return false;
+    }
+
+    fn flushPreamble(
+        self: *NativeEngine,
+        conn: *quic_zig.Connection,
+    ) !bool {
+        if (self.preamble_offset == self.preamble_len and self.preamble_len != 0) return true;
+        if (self.preamble_len == 0) {
+            @memcpy(self.preamble[0..native_framer.preface.len], native_framer.preface);
+            const hello_len = try native_framer.encodeHello(self.preamble[native_framer.preface.len..]);
+            self.preamble_len = native_framer.preface.len + hello_len;
+        }
+
+        while (self.preamble_offset < self.preamble_len) {
+            const remaining = self.preamble[self.preamble_offset..self.preamble_len];
+            const written = conn.streamWrite(quic_options.baseline_stream_id, remaining) catch |err| switch (err) {
+                error.StreamNotFound => return false,
+                else => return err,
+            };
+            if (written == 0) return false;
+            self.preamble_offset += written;
+        }
+        return true;
+    }
+
+    fn readControlStream(
+        self: *NativeEngine,
+        owner: *Connection,
+        conn: *quic_zig.Connection,
+    ) !void {
+        while (!owner.close_requested.load(.acquire)) {
+            const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {
+                error.StreamNotFound => return,
+                else => return err,
+            };
+            if (n == 0) return;
+            try self.pushControlBytes(owner.stream_read_buf[0..n]);
+        }
+    }
+
+    fn pushControlBytes(self: *NativeEngine, bytes: []const u8) !void {
+        var remaining = bytes;
+        if (self.received_preface_len < native_framer.preface.len) {
+            const need = native_framer.preface.len - self.received_preface_len;
+            const take = @min(need, remaining.len);
+            const prefix_start = self.received_preface_len;
+            const prefix_end = prefix_start + take;
+            if (!std.mem.eql(u8, remaining[0..take], native_framer.preface[prefix_start..prefix_end])) {
+                return error.InvalidFrame;
+            }
+            self.received_preface_len = prefix_end;
+            remaining = remaining[take..];
+        }
+        if (self.received_preface_len == native_framer.preface.len and remaining.len > 0) {
+            try self.inbound.push(remaining);
+        }
+    }
+
+    fn processControlFrames(
+        self: *NativeEngine,
+        owner: *Connection,
+        conn: *quic_zig.Connection,
+    ) !void {
+        while (!owner.close_requested.load(.acquire)) {
+            if (self.pending_data != null) {
+                if (!try self.readPendingData(owner, conn)) return;
+                continue;
+            }
+
+            const frame = (try self.inbound.popFrame()) orelse return;
+            switch (frame) {
+                .hello => |hello| {
+                    if (self.hello_received) return error.InvalidFrame;
+                    if (hello.version != native_framer.version) return error.InvalidFrame;
+                    self.hello_received = true;
+                },
+                .inline_rpc => |inline_frame| {
+                    defer frame.deinit(owner.allocator);
+                    try self.ensureRpcSequence(inline_frame.sequence);
+                    self.next_in_sequence +%= 1;
+                    try owner.dispatchRpcFrame(inline_frame.frame);
+                    if (owner.deinit_requested) return;
+                },
+                .data_rpc => |data| {
+                    try self.ensureRpcSequence(data.sequence);
+                    try self.startPendingData(owner, data);
+                    if (!try self.readPendingData(owner, conn)) return;
+                },
+            }
+        }
+    }
+
+    fn ensureRpcSequence(self: *NativeEngine, sequence: u64) !void {
+        if (!self.hello_received) return error.InvalidFrame;
+        if (sequence != self.next_in_sequence) return error.InvalidFrame;
+    }
+
+    fn startPendingData(
+        self: *NativeEngine,
+        owner: *Connection,
+        data: native_framer.DataRpc,
+    ) !void {
+        if (self.pending_data != null) return error.InvalidFrame;
+        if (!owner.isPeerInitiatedUniStreamId(data.stream_id)) return error.InvalidFrame;
+        if (data.length == 0 or data.length > owner.max_message_bytes) return error.FrameTooLarge;
+        if (data.length > self.outbound.max_pending_data_bytes) return error.FrameTooLarge;
+
+        const bytes = try owner.allocator.alloc(u8, data.length);
+        errdefer owner.allocator.free(bytes);
+        self.pending_data = .{
+            .sequence = data.sequence,
+            .stream_id = data.stream_id,
+            .bytes = bytes,
+        };
+    }
+
+    fn readPendingData(
+        self: *NativeEngine,
+        owner: *Connection,
+        conn: *quic_zig.Connection,
+    ) !bool {
+        if (self.pending_data == null) return true;
+        var pending = &self.pending_data.?;
+        const stream = conn.stream(pending.stream_id) orelse return false;
+        if (stream.recv.final_size) |final_size| {
+            if (final_size != pending.bytes.len) return error.InvalidFrame;
+        }
+
+        while (pending.offset < pending.bytes.len) {
+            const n = conn.streamRead(pending.stream_id, pending.bytes[pending.offset..]) catch |err| switch (err) {
+                error.StreamNotFound => return false,
+                else => return err,
+            };
+            if (n == 0) break;
+            pending.offset += n;
+            if (stream.recv.final_size) |final_size| {
+                if (final_size != pending.bytes.len) return error.InvalidFrame;
+            }
+        }
+
+        if (pending.offset < pending.bytes.len) return false;
+        if (stream.recv.final_size == null) return false;
+
+        const bytes = pending.bytes;
+        self.pending_data = null;
+        defer owner.allocator.free(bytes);
+        self.next_in_sequence +%= 1;
+        try owner.dispatchRpcFrame(bytes);
+        return true;
     }
 };
 
@@ -417,9 +770,8 @@ pub const Connection = struct {
     stream_read_buf: []u8,
     max_message_bytes: usize,
     mode: TransportMode,
-    inbound: LengthDelimitedFramer,
-    outbound: OutboundQueue = .{},
-    native_state: NativeState,
+    baseline: BaselineEngine,
+    native: NativeEngine,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// POSIX-only run-loop wake pipe. [0] is read by the run loop; [1] is
@@ -429,7 +781,6 @@ pub const Connection = struct {
     close_status: ?quic_close.Status = null,
     close_reason_buf: [quic_close.max_wire_reason_bytes]u8 = undefined,
     close_reason_len: usize = 0,
-    baseline_ready: bool = false,
 
     ctx: ?*anyopaque = null,
     on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
@@ -544,9 +895,13 @@ pub const Connection = struct {
             .stream_read_buf = stream_read_buf,
             .max_message_bytes = max_message_bytes,
             .mode = mode,
-            .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
-            .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
-            .native_state = NativeState.init(
+            .baseline = BaselineEngine.init(
+                allocator,
+                max_message_bytes,
+                max_outbound_queue_items,
+                max_outbound_queue_bytes,
+            ),
+            .native = NativeEngine.init(
                 allocator,
                 role,
                 max_message_bytes,
@@ -596,11 +951,10 @@ pub const Connection = struct {
         self.deinitialized = true;
         self.deinit_requested = false;
         _ = self.close_requested.swap(true, .acq_rel);
-        self.outbound.close();
-        self.outbound.drain(self.allocator);
-        self.inbound.deinit();
-        self.native_state.outbound.close();
-        self.native_state.deinit(self.allocator);
+        self.baseline.close();
+        self.baseline.deinit(self.allocator);
+        self.native.close();
+        self.native.deinit(self.allocator);
         self.ctx = null;
         self.on_message = null;
         self.on_error = null;
@@ -649,8 +1003,8 @@ pub const Connection = struct {
         }
 
         self.flushCloseDatagram();
-        self.outbound.close();
-        self.native_state.outbound.close();
+        self.baseline.close();
+        self.native.close();
         if (self.on_close) |cb| self.invokeCloseCallback(cb);
         self.completeDeferredDeinit();
     }
@@ -661,8 +1015,8 @@ pub const Connection = struct {
         if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
 
         switch (self.mode) {
-            .baseline => try self.outbound.enqueue(self.allocator, frame),
-            .native => try self.native_state.outbound.enqueue(self.allocator, frame),
+            .baseline => try self.baseline.enqueue(self.allocator, frame),
+            .native => try self.native.enqueue(self.allocator, frame),
         }
         self.wake();
     }
@@ -680,16 +1034,16 @@ pub const Connection = struct {
 
     pub fn close(self: *Connection) void {
         _ = self.close_requested.swap(true, .acq_rel);
-        self.outbound.close();
-        self.native_state.outbound.close();
+        self.baseline.close();
+        self.native.close();
         self.closeActiveQuicConn(.normal, null);
         self.wake();
     }
 
     pub fn requestClose(self: *Connection) void {
         _ = self.close_requested.swap(true, .acq_rel);
-        self.outbound.close();
-        self.native_state.outbound.close();
+        self.baseline.close();
+        self.native.close();
         self.recordCloseStatus(.normal, null);
         self.wake();
     }
@@ -895,14 +1249,8 @@ pub const Connection = struct {
             if (conn.canSend()) return true;
             if (!self.selectedOutboundEmpty()) {
                 switch (self.mode) {
-                    .baseline => {
-                        if (self.baseline_ready) return true;
-                        if (self.role == .client and conn.handshakeDone()) return true;
-                    },
-                    .native => {
-                        if (self.native_state.control_ready) return true;
-                        if (self.role == .client and conn.handshakeDone()) return true;
-                    },
+                    .baseline => if (self.baseline.hasImmediateWork(self.role, conn)) return true,
+                    .native => if (self.native.hasImmediateWork(self.role, conn)) return true,
                 }
             }
         }
@@ -922,8 +1270,8 @@ pub const Connection = struct {
 
     fn selectedOutboundEmpty(self: *Connection) bool {
         return switch (self.mode) {
-            .baseline => self.outbound.isEmpty(),
-            .native => self.native_state.outbound.isEmpty(),
+            .baseline => self.baseline.outboundEmpty(),
+            .native => self.native.outboundEmpty(),
         };
     }
 
@@ -940,64 +1288,10 @@ pub const Connection = struct {
     }
 
     fn serviceModeStreams(self: *Connection) !void {
-        switch (self.mode) {
-            .baseline => try self.serviceBaselineStream(),
-            .native => try self.serviceNativeStreams(),
-        }
-    }
-
-    fn serviceBaselineStream(self: *Connection) !void {
         const conn = self.activeQuicConn() orelse return;
-        if (!try self.ensureBaselineStream(conn)) return;
-        try self.outbound.flush(self.allocator, conn);
-        try self.readBaselineStream(conn);
-    }
-
-    fn ensureBaselineStream(self: *Connection, conn: *quic_zig.Connection) !bool {
-        if (self.baseline_ready) return true;
-        if (conn.stream(quic_options.baseline_stream_id) != null) {
-            self.baseline_ready = true;
-            return true;
-        }
-        if (self.role == .client) {
-            if (!conn.handshakeDone()) return false;
-            _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
-                error.StreamAlreadyOpen => {},
-                else => return err,
-            };
-            self.baseline_ready = true;
-            return true;
-        }
-        return false;
-    }
-
-    fn readBaselineStream(self: *Connection, conn: *quic_zig.Connection) !void {
-        while (!self.close_requested.load(.acquire)) {
-            const n = conn.streamRead(quic_options.baseline_stream_id, self.stream_read_buf) catch |err| switch (err) {
-                error.StreamNotFound => return,
-                else => return err,
-            };
-            if (n == 0) return;
-            try self.inbound.push(self.stream_read_buf[0..n]);
-            try self.dispatchAvailableFrames();
-        }
-    }
-
-    fn dispatchAvailableFrames(self: *Connection) !void {
-        while (true) {
-            if (self.on_message == null or self.on_error == null) return;
-            const frame = self.inbound.popFrame() catch |err| {
-                if (err == error.OutOfMemory) {
-                    self.terminateFrameError(err);
-                    return;
-                }
-                self.terminateFrameError(err);
-                return;
-            };
-            const bytes = frame orelse return;
-            defer self.allocator.free(bytes);
-            try self.dispatchRpcFrame(bytes);
-            if (self.deinit_requested) return;
+        switch (self.mode) {
+            .baseline => try self.baseline.service(self, conn),
+            .native => try self.native.service(self, conn),
         }
     }
 
@@ -1009,177 +1303,6 @@ pub const Connection = struct {
         };
     }
 
-    fn serviceNativeStreams(self: *Connection) !void {
-        const conn = self.activeQuicConn() orelse return;
-        if (!try self.ensureNativeControlStream(conn)) return;
-        if (!try self.flushNativePreamble(conn)) return;
-        try self.native_state.outbound.flush(self.allocator, conn);
-        self.readNativeControlStream(conn) catch |err| {
-            if (isNativeFrameError(err)) {
-                self.terminateFrameError(err);
-                return;
-            }
-            return err;
-        };
-        self.processNativeControlFrames(conn) catch |err| {
-            if (isNativeFrameError(err)) {
-                self.terminateFrameError(err);
-                return;
-            }
-            return err;
-        };
-    }
-
-    fn ensureNativeControlStream(self: *Connection, conn: *quic_zig.Connection) !bool {
-        if (self.native_state.control_ready) return true;
-        if (conn.stream(quic_options.baseline_stream_id) != null) {
-            self.native_state.control_ready = true;
-            return true;
-        }
-        if (self.role == .client) {
-            if (!conn.handshakeDone()) return false;
-            _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
-                error.StreamAlreadyOpen => {},
-                else => return err,
-            };
-            self.native_state.control_ready = true;
-            return true;
-        }
-        return false;
-    }
-
-    fn flushNativePreamble(self: *Connection, conn: *quic_zig.Connection) !bool {
-        var native_state = &self.native_state;
-        if (native_state.preamble_offset == native_state.preamble_len and native_state.preamble_len != 0) return true;
-        if (native_state.preamble_len == 0) {
-            @memcpy(native_state.preamble[0..native_framer.preface.len], native_framer.preface);
-            const hello_len = try native_framer.encodeHello(native_state.preamble[native_framer.preface.len..]);
-            native_state.preamble_len = native_framer.preface.len + hello_len;
-        }
-
-        while (native_state.preamble_offset < native_state.preamble_len) {
-            const remaining = native_state.preamble[native_state.preamble_offset..native_state.preamble_len];
-            const written = conn.streamWrite(quic_options.baseline_stream_id, remaining) catch |err| switch (err) {
-                error.StreamNotFound => return false,
-                else => return err,
-            };
-            if (written == 0) return false;
-            native_state.preamble_offset += written;
-        }
-        return true;
-    }
-
-    fn readNativeControlStream(self: *Connection, conn: *quic_zig.Connection) !void {
-        while (!self.close_requested.load(.acquire)) {
-            const n = conn.streamRead(quic_options.baseline_stream_id, self.stream_read_buf) catch |err| switch (err) {
-                error.StreamNotFound => return,
-                else => return err,
-            };
-            if (n == 0) return;
-            try self.pushNativeControlBytes(self.stream_read_buf[0..n]);
-        }
-    }
-
-    fn pushNativeControlBytes(self: *Connection, bytes: []const u8) !void {
-        var remaining = bytes;
-        var native_state = &self.native_state;
-        if (native_state.received_preface_len < native_framer.preface.len) {
-            const need = native_framer.preface.len - native_state.received_preface_len;
-            const take = @min(need, remaining.len);
-            const prefix_start = native_state.received_preface_len;
-            const prefix_end = prefix_start + take;
-            if (!std.mem.eql(u8, remaining[0..take], native_framer.preface[prefix_start..prefix_end])) {
-                return error.InvalidFrame;
-            }
-            native_state.received_preface_len = prefix_end;
-            remaining = remaining[take..];
-        }
-        if (native_state.received_preface_len == native_framer.preface.len and remaining.len > 0) {
-            try native_state.inbound.push(remaining);
-        }
-    }
-
-    fn processNativeControlFrames(self: *Connection, conn: *quic_zig.Connection) !void {
-        while (!self.close_requested.load(.acquire)) {
-            if (self.native_state.pending_data != null) {
-                if (!try self.readPendingNativeData(conn)) return;
-                continue;
-            }
-
-            const frame = (try self.native_state.inbound.popFrame()) orelse return;
-            switch (frame) {
-                .hello => |hello| {
-                    if (self.native_state.hello_received) return error.InvalidFrame;
-                    if (hello.version != native_framer.version) return error.InvalidFrame;
-                    self.native_state.hello_received = true;
-                },
-                .inline_rpc => |inline_frame| {
-                    defer frame.deinit(self.allocator);
-                    try self.ensureNativeRpcSequence(inline_frame.sequence);
-                    self.native_state.next_in_sequence +%= 1;
-                    try self.dispatchRpcFrame(inline_frame.frame);
-                    if (self.deinit_requested) return;
-                },
-                .data_rpc => |data| {
-                    try self.ensureNativeRpcSequence(data.sequence);
-                    try self.startPendingNativeData(data);
-                    if (!try self.readPendingNativeData(conn)) return;
-                },
-            }
-        }
-    }
-
-    fn ensureNativeRpcSequence(self: *Connection, sequence: u64) !void {
-        if (!self.native_state.hello_received) return error.InvalidFrame;
-        if (sequence != self.native_state.next_in_sequence) return error.InvalidFrame;
-    }
-
-    fn startPendingNativeData(self: *Connection, data: native_framer.DataRpc) !void {
-        if (self.native_state.pending_data != null) return error.InvalidFrame;
-        if (!self.isPeerInitiatedUniStreamId(data.stream_id)) return error.InvalidFrame;
-        if (data.length == 0 or data.length > self.max_message_bytes) return error.FrameTooLarge;
-        if (data.length > self.native_state.outbound.max_pending_data_bytes) return error.FrameTooLarge;
-
-        const bytes = try self.allocator.alloc(u8, data.length);
-        errdefer self.allocator.free(bytes);
-        self.native_state.pending_data = .{
-            .sequence = data.sequence,
-            .stream_id = data.stream_id,
-            .bytes = bytes,
-        };
-    }
-
-    fn readPendingNativeData(self: *Connection, conn: *quic_zig.Connection) !bool {
-        if (self.native_state.pending_data == null) return true;
-        var pending = &self.native_state.pending_data.?;
-        const stream = conn.stream(pending.stream_id) orelse return false;
-        if (stream.recv.final_size) |final_size| {
-            if (final_size != pending.bytes.len) return error.InvalidFrame;
-        }
-
-        while (pending.offset < pending.bytes.len) {
-            const n = conn.streamRead(pending.stream_id, pending.bytes[pending.offset..]) catch |err| switch (err) {
-                error.StreamNotFound => return false,
-                else => return err,
-            };
-            if (n == 0) break;
-            pending.offset += n;
-            if (stream.recv.final_size) |final_size| {
-                if (final_size != pending.bytes.len) return error.InvalidFrame;
-            }
-        }
-
-        if (pending.offset < pending.bytes.len) return false;
-        if (stream.recv.final_size == null) return false;
-
-        const bytes = pending.bytes;
-        self.native_state.pending_data = null;
-        defer self.allocator.free(bytes);
-        self.native_state.next_in_sequence +%= 1;
-        try self.dispatchRpcFrame(bytes);
-        return true;
-    }
-
     fn isPeerInitiatedUniStreamId(self: *const Connection, stream_id: u64) bool {
         const is_uni = (stream_id & 0b10) != 0;
         if (!is_uni) return false;
@@ -1187,21 +1310,14 @@ pub const Connection = struct {
         return client_initiated != (self.role == .client);
     }
 
-    fn isNativeFrameError(err: anyerror) bool {
-        return switch (err) {
-            error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory => true,
-            else => false,
-        };
-    }
-
     fn terminateFrameError(self: *Connection, err: anyerror) void {
         log.debug("fatal QUIC frame error, closing connection: {}", .{err});
         self.closeActiveQuicConn(quic_close.codeForFrameError(err), err);
         _ = self.close_requested.swap(true, .acq_rel);
-        self.outbound.close();
-        self.native_state.outbound.close();
-        self.inbound.reset();
-        self.native_state.resetInbound(self.allocator);
+        self.baseline.close();
+        self.native.close();
+        self.baseline.resetInbound();
+        self.native.resetInbound(self.allocator);
         self.on_message = null;
         const on_error = self.on_error;
         self.on_error = null;
@@ -1213,8 +1329,8 @@ pub const Connection = struct {
         log.debug("QUIC message callback failed, closing connection: {}", .{err});
         self.closeActiveQuicConn(.peer_callback_failure, err);
         _ = self.close_requested.swap(true, .acq_rel);
-        self.outbound.close();
-        self.native_state.outbound.close();
+        self.baseline.close();
+        self.native.close();
         self.on_message = null;
         const on_error = self.on_error;
         self.on_error = null;
@@ -1225,8 +1341,8 @@ pub const Connection = struct {
     fn terminateInternalError(self: *Connection, err: anyerror) void {
         self.closeActiveQuicConn(quic_close.codeForStepError(err), err);
         _ = self.close_requested.swap(true, .acq_rel);
-        self.outbound.close();
-        self.native_state.outbound.close();
+        self.baseline.close();
+        self.native.close();
         self.wake();
         self.invokeOnError(err);
     }
@@ -1361,7 +1477,7 @@ test "QUIC sendFrame requests scheduler wake" {
     try std.testing.expect(!conn.wake_requested.load(.acquire));
     try conn.sendFrame("abc");
     try std.testing.expect(conn.wake_requested.load(.acquire));
-    try std.testing.expect(!conn.outbound.isEmpty());
+    try std.testing.expect(!conn.baseline.outbound.isEmpty());
     try std.testing.expect(conn.consumeWakeRequested());
     try std.testing.expect(!conn.wake_requested.load(.acquire));
 }
@@ -1372,8 +1488,8 @@ test "QUIC native sendFrame uses native outbound queue" {
 
     try conn.sendFrame("abc");
     try std.testing.expect(conn.wake_requested.load(.acquire));
-    try std.testing.expect(conn.outbound.isEmpty());
-    try std.testing.expect(!conn.native_state.outbound.isEmpty());
+    try std.testing.expect(conn.baseline.outbound.isEmpty());
+    try std.testing.expect(!conn.native.outbound.isEmpty());
 }
 
 test "QUIC native control dispatch preserves order behind pending data stream" {
@@ -1402,21 +1518,21 @@ test "QUIC native control dispatch preserves order behind pending data stream" {
     conn.ctx = &state;
     conn.on_message = Harness.onMessage;
     conn.on_error = Harness.onError;
-    conn.native_state.hello_received = true;
+    conn.native.hello_received = true;
 
     const data_control = try native_framer.encodeDataRpc(std.testing.allocator, 0, 3, 8, 64);
     defer std.testing.allocator.free(data_control);
     const inline_control = try native_framer.encodeInlineRpc(std.testing.allocator, 1, "later", 64);
     defer std.testing.allocator.free(inline_control);
 
-    try conn.native_state.inbound.push(data_control);
-    try conn.native_state.inbound.push(inline_control);
-    try conn.processNativeControlFrames(conn.activeQuicConn().?);
+    try conn.native.inbound.push(data_control);
+    try conn.native.inbound.push(inline_control);
+    try conn.native.processControlFrames(&conn, conn.activeQuicConn().?);
 
     try std.testing.expectEqual(@as(usize, 0), state.messages);
-    try std.testing.expect(conn.native_state.pending_data != null);
-    try std.testing.expectEqual(@as(u64, 0), conn.native_state.next_in_sequence);
-    try std.testing.expect(conn.native_state.inbound.buffer.items.len > 0);
+    try std.testing.expect(conn.native.pending_data != null);
+    try std.testing.expectEqual(@as(u64, 0), conn.native.next_in_sequence);
+    try std.testing.expect(conn.native.inbound.buffer.items.len > 0);
 }
 
 test "QUIC native control rejects missing and duplicate hello frames" {
@@ -1427,10 +1543,10 @@ test "QUIC native control rejects missing and duplicate hello frames" {
         const inline_control = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "rpc", 64);
         defer std.testing.allocator.free(inline_control);
 
-        try conn.native_state.inbound.push(inline_control);
+        try conn.native.inbound.push(inline_control);
         try std.testing.expectError(
             error.InvalidFrame,
-            conn.processNativeControlFrames(conn.activeQuicConn().?),
+            conn.native.processControlFrames(&conn, conn.activeQuicConn().?),
         );
     }
 
@@ -1441,14 +1557,14 @@ test "QUIC native control rejects missing and duplicate hello frames" {
         var hello: [native_framer.encodedHelloLen()]u8 = undefined;
         const hello_len = try native_framer.encodeHello(&hello);
 
-        try conn.native_state.inbound.push(hello[0..hello_len]);
-        try conn.processNativeControlFrames(conn.activeQuicConn().?);
-        try std.testing.expect(conn.native_state.hello_received);
+        try conn.native.inbound.push(hello[0..hello_len]);
+        try conn.native.processControlFrames(&conn, conn.activeQuicConn().?);
+        try std.testing.expect(conn.native.hello_received);
 
-        try conn.native_state.inbound.push(hello[0..hello_len]);
+        try conn.native.inbound.push(hello[0..hello_len]);
         try std.testing.expectError(
             error.InvalidFrame,
-            conn.processNativeControlFrames(conn.activeQuicConn().?),
+            conn.native.processControlFrames(&conn, conn.activeQuicConn().?),
         );
     }
 }
@@ -1456,18 +1572,18 @@ test "QUIC native control rejects missing and duplicate hello frames" {
 test "QUIC native control rejects non-monotonic rpc sequences" {
     var conn = try initTestNativeClient(std.testing.allocator, .{});
     defer conn.deinit();
-    conn.native_state.hello_received = true;
-    conn.native_state.next_in_sequence = 1;
+    conn.native.hello_received = true;
+    conn.native.next_in_sequence = 1;
 
     const stale_inline = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "stale", 64);
     defer std.testing.allocator.free(stale_inline);
 
-    try conn.native_state.inbound.push(stale_inline);
+    try conn.native.inbound.push(stale_inline);
     try std.testing.expectError(
         error.InvalidFrame,
-        conn.processNativeControlFrames(conn.activeQuicConn().?),
+        conn.native.processControlFrames(&conn, conn.activeQuicConn().?),
     );
-    try std.testing.expectEqual(@as(u64, 1), conn.native_state.next_in_sequence);
+    try std.testing.expectEqual(@as(u64, 1), conn.native.next_in_sequence);
 }
 
 test "QUIC native validates data stream references and budgets" {
@@ -1479,27 +1595,27 @@ test "QUIC native validates data stream references and budgets" {
     });
     defer conn.deinit();
 
-    try std.testing.expectError(error.InvalidFrame, conn.startPendingNativeData(.{
+    try std.testing.expectError(error.InvalidFrame, conn.native.startPendingData(&conn, .{
         .sequence = 0,
         .stream_id = 0,
         .length = 4,
     }));
-    try std.testing.expectError(error.InvalidFrame, conn.startPendingNativeData(.{
+    try std.testing.expectError(error.InvalidFrame, conn.native.startPendingData(&conn, .{
         .sequence = 0,
         .stream_id = 2,
         .length = 4,
     }));
-    try std.testing.expectError(error.FrameTooLarge, conn.startPendingNativeData(.{
+    try std.testing.expectError(error.FrameTooLarge, conn.native.startPendingData(&conn, .{
         .sequence = 0,
         .stream_id = 3,
         .length = 0,
     }));
-    try std.testing.expectError(error.FrameTooLarge, conn.startPendingNativeData(.{
+    try std.testing.expectError(error.FrameTooLarge, conn.native.startPendingData(&conn, .{
         .sequence = 0,
         .stream_id = 3,
         .length = 9,
     }));
-    try std.testing.expect(conn.native_state.pending_data == null);
+    try std.testing.expect(conn.native.pending_data == null);
 }
 
 test "QUIC native frame errors record typed terminal close status" {
@@ -1526,7 +1642,7 @@ test "QUIC native frame errors record typed terminal close status" {
     conn.on_error = Harness.onError;
 
     const pending_bytes = try std.testing.allocator.alloc(u8, 4);
-    conn.native_state.pending_data = .{
+    conn.native.pending_data = .{
         .sequence = 0,
         .stream_id = 3,
         .bytes = pending_bytes,
@@ -1535,7 +1651,7 @@ test "QUIC native frame errors record typed terminal close status" {
     conn.terminateFrameError(error.InvalidFrame);
 
     try std.testing.expect(conn.isClosing());
-    try std.testing.expect(conn.native_state.pending_data == null);
+    try std.testing.expect(conn.native.pending_data == null);
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), state.last_error);
     const status = conn.closeStatus().?;
@@ -1565,21 +1681,21 @@ test "QUIC native control allocation OOM is terminal when serviced" {
     var state = Harness.State{};
     var conn = try initTestNativeClient(std.testing.allocator, .{});
     defer conn.deinit();
-    conn.native_state.inbound.deinit();
-    conn.native_state.inbound = NativeControlFramer.init(failing.allocator(), .{
+    conn.native.inbound.deinit();
+    conn.native.inbound = NativeControlFramer.init(failing.allocator(), .{
         .max_control_frame_bytes = 64,
         .max_rpc_frame_bytes = 64,
     });
     conn.ctx = &state;
     conn.on_message = Harness.onMessage;
     conn.on_error = Harness.onError;
-    conn.native_state.hello_received = true;
+    conn.native.hello_received = true;
 
     const inline_control = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "abc", 64);
     defer std.testing.allocator.free(inline_control);
 
-    try conn.native_state.inbound.push(inline_control);
-    conn.processNativeControlFrames(conn.activeQuicConn().?) catch |err| {
+    try conn.native.inbound.push(inline_control);
+    conn.native.processControlFrames(&conn, conn.activeQuicConn().?) catch |err| {
         switch (err) {
             error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory => conn.terminateFrameError(err),
             else => return err,
@@ -1593,7 +1709,7 @@ test "QUIC native control allocation OOM is terminal when serviced" {
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.internal_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
     try std.testing.expectEqualStrings("rpc transport error", conn.close_reason_buf[0..conn.close_reason_len]);
-    try std.testing.expectEqual(@as(usize, 0), conn.native_state.inbound.buffer.items.len);
+    try std.testing.expectEqual(@as(usize, 0), conn.native.inbound.buffer.items.len);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 
@@ -1621,7 +1737,7 @@ test "QUIC dispatch treats malformed frames as terminal" {
     conn.on_error = Harness.onError;
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
-    try conn.inbound.push(&bad_frame);
+    try conn.baseline.inbound.push(&bad_frame);
     try conn.dispatchAvailableFrames();
 
     try std.testing.expect(conn.isClosing());
@@ -1648,7 +1764,7 @@ test "QUIC dispatch can reveal sanitized frame error details when configured" {
     conn.on_error = Harness.onError;
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
-    try conn.inbound.push(&bad_frame);
+    try conn.baseline.inbound.push(&bad_frame);
     try conn.dispatchAvailableFrames();
 
     const status = conn.closeStatus().?;
@@ -1676,8 +1792,8 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     var state = Harness.State{};
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
-    conn.inbound.deinit();
-    conn.inbound = LengthDelimitedFramer.init(failing.allocator(), 1024);
+    conn.baseline.inbound.deinit();
+    conn.baseline.inbound = LengthDelimitedFramer.init(failing.allocator(), 1024);
     conn.ctx = &state;
     conn.on_message = Harness.onMessage;
     conn.on_error = Harness.onError;
@@ -1686,7 +1802,7 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     std.mem.writeInt(u32, encoded[0..4], 3, .little);
     @memcpy(encoded[4..7], "abc");
 
-    try conn.inbound.push(&encoded);
+    try conn.baseline.inbound.push(&encoded);
     try conn.dispatchAvailableFrames();
 
     try std.testing.expect(conn.isClosing());
@@ -1696,7 +1812,7 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     try std.testing.expectEqual(quic_close.ApplicationCloseCode.internal_error, status.code);
     try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
     try std.testing.expectEqualStrings("rpc transport error", conn.close_reason_buf[0..conn.close_reason_len]);
-    try std.testing.expectEqual(@as(usize, 0), conn.inbound.buffer.items.len);
+    try std.testing.expectEqual(@as(usize, 0), conn.baseline.inbound.buffer.items.len);
     try std.testing.expectError(error.BrokenPipe, conn.sendFrame("late"));
 }
 
@@ -1729,7 +1845,7 @@ test "QUIC dispatch treats message callback failure as terminal" {
     std.mem.writeInt(u32, encoded[0..4], 3, .little);
     @memcpy(encoded[4..7], "abc");
 
-    try conn.inbound.push(&encoded);
+    try conn.baseline.inbound.push(&encoded);
     try conn.dispatchAvailableFrames();
 
     try std.testing.expect(conn.isClosing());
