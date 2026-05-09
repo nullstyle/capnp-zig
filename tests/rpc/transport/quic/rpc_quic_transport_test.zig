@@ -424,43 +424,43 @@ fn waitForOrderedClientMessagesOrError(
 }
 
 fn echoQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
-    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     try state.recordMessage(frame);
     try conn.sendFrame(frame);
 }
 
 fn captureQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
-    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     try state.recordMessage(frame);
     conn.requestClose();
 }
 
 fn rejectUnexpectedQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
-    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     try state.recordMessage(frame);
     return error.UnexpectedQuicLoopbackMessage;
 }
 
 fn recordQuicError(conn: *quic.Connection, err: anyerror) void {
-    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     state.last_error = err;
     _ = state.errors.fetchAdd(1, .acq_rel);
     conn.requestClose();
 }
 
 fn recordQuicClose(conn: *quic.Connection) void {
-    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     _ = state.closes.fetchAdd(1, .acq_rel);
 }
 
 fn echoOrderedQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
-    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     _ = try state.recordExpected(frame);
     try conn.sendFrame(frame);
 }
 
 fn captureOrderedQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
-    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     const received = try state.recordExpected(frame);
     if (state.close_after_messages != 0 and received >= state.close_after_messages) {
         conn.requestClose();
@@ -468,14 +468,14 @@ fn captureOrderedQuicMessage(conn: *quic.Connection, frame: []const u8) !void {
 }
 
 fn recordOrderedQuicError(conn: *quic.Connection, err: anyerror) void {
-    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     state.last_error = err;
     _ = state.errors.fetchAdd(1, .acq_rel);
     conn.requestClose();
 }
 
 fn recordOrderedQuicClose(conn: *quic.Connection) void {
-    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.ctx.?));
+    const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     _ = state.closes.fetchAdd(1, .acq_rel);
 }
 

@@ -12,8 +12,69 @@ pub fn State(comptime Connection: type) type {
         depth: usize = 0,
         deinit_requested: bool = false,
         deinitialized: bool = false,
+        ctx: ?*anyopaque = null,
+        on_message: ?MessageCallback = null,
+        on_error: ?ErrorCallback = null,
+        on_close: ?CloseCallback = null,
 
         const Self = @This();
+
+        pub fn start(
+            self: *Self,
+            ctx: *anyopaque,
+            on_message: MessageCallback,
+            on_error: ErrorCallback,
+            on_close: CloseCallback,
+        ) void {
+            self.setCallbacks(ctx, on_message, on_error, on_close);
+        }
+
+        pub fn setCallbacks(
+            self: *Self,
+            ctx: ?*anyopaque,
+            on_message: ?MessageCallback,
+            on_error: ?ErrorCallback,
+            on_close: ?CloseCallback,
+        ) void {
+            self.ctx = ctx;
+            self.on_message = on_message;
+            self.on_error = on_error;
+            self.on_close = on_close;
+        }
+
+        pub fn clearCallbacks(self: *Self) void {
+            self.setCallbacks(null, null, null, null);
+        }
+
+        pub fn context(self: *const Self) ?*anyopaque {
+            return self.ctx;
+        }
+
+        pub fn callbacksReady(self: *const Self) bool {
+            return self.on_message != null and self.on_error != null;
+        }
+
+        pub fn messageCallback(self: *const Self) ?MessageCallback {
+            return self.on_message;
+        }
+
+        pub fn errorCallback(self: *const Self) ?ErrorCallback {
+            return self.on_error;
+        }
+
+        pub fn closeCallback(self: *const Self) ?CloseCallback {
+            return self.on_close;
+        }
+
+        pub fn clearMessageCallback(self: *Self) void {
+            self.on_message = null;
+        }
+
+        pub fn takeErrorCallback(self: *Self) ?ErrorCallback {
+            const cb = self.on_error;
+            self.on_error = null;
+            return cb;
+        }
 
         pub fn decideDeinit(self: *Self) DeinitDecision {
             if (self.deinitialized) return .already_deinitialized;

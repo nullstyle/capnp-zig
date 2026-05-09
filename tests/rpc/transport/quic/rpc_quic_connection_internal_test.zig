@@ -63,7 +63,7 @@ test "QUIC native control dispatch preserves order behind pending data stream" {
         };
 
         fn onMessage(conn: *Connection, _: []const u8) !void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.messages += 1;
         }
 
@@ -79,9 +79,7 @@ test "QUIC native control dispatch preserves order behind pending data stream" {
     defer conn.deinit();
 
     var state = Harness.State{};
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
     conn.native.hello_received = true;
 
     const data_control = try native_framer.encodeDataRpc(std.testing.allocator, 0, 3, 8, 64);
@@ -192,7 +190,7 @@ test "QUIC native frame errors record typed terminal close status" {
         fn onMessage(_: *Connection, _: []const u8) !void {}
 
         fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.error_count += 1;
             state.last_error = err;
         }
@@ -201,9 +199,7 @@ test "QUIC native frame errors record typed terminal close status" {
     var state = Harness.State{};
     var conn = try initTestNativeClient(std.testing.allocator, .{});
     defer conn.deinit();
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
 
     const pending_bytes = try std.testing.allocator.alloc(u8, 4);
     conn.native.pending_data = .{
@@ -235,7 +231,7 @@ test "QUIC native control allocation OOM is terminal when serviced" {
         fn onMessage(_: *Connection, _: []const u8) !void {}
 
         fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.error_count += 1;
             state.last_error = err;
         }
@@ -246,9 +242,7 @@ test "QUIC native control allocation OOM is terminal when serviced" {
     var conn = try initTestNativeClient(std.testing.allocator, .{});
     defer conn.deinit();
     TestAccess.resetNativeInbound(&conn, failing.allocator(), 64, 64);
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
     conn.native.hello_received = true;
 
     const inline_control = try native_framer.encodeInlineRpc(std.testing.allocator, 0, "abc", 64);
@@ -283,7 +277,7 @@ test "QUIC dispatch treats malformed frames as terminal" {
         fn onMessage(_: *Connection, _: []const u8) !void {}
 
         fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.error_count += 1;
             state.last_error = err;
         }
@@ -292,9 +286,7 @@ test "QUIC dispatch treats malformed frames as terminal" {
     var state = Harness.State{};
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
     try conn.baseline.inbound.push(&bad_frame);
@@ -320,8 +312,7 @@ test "QUIC dispatch can reveal sanitized frame error details when configured" {
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
     conn.close_state.reveal_detail_on_wire = true;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, null, Harness.onMessage, Harness.onError, null);
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
     try conn.baseline.inbound.push(&bad_frame);
@@ -342,7 +333,7 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
         fn onMessage(_: *Connection, _: []const u8) !void {}
 
         fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.error_count += 1;
             state.last_error = err;
         }
@@ -353,9 +344,7 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
     TestAccess.resetBaselineInbound(&conn, failing.allocator(), 1024);
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
 
     var encoded: [7]u8 = undefined;
     std.mem.writeInt(u32, encoded[0..4], 3, .little);
@@ -387,7 +376,7 @@ test "QUIC dispatch treats message callback failure as terminal" {
         }
 
         fn onError(conn: *Connection, err: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.error_count += 1;
             state.last_error = err;
         }
@@ -396,9 +385,7 @@ test "QUIC dispatch treats message callback failure as terminal" {
     var state = Harness.State{};
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, null);
 
     var encoded: [7]u8 = undefined;
     std.mem.writeInt(u32, encoded[0..4], 3, .little);
@@ -427,14 +414,14 @@ test "QUIC deinit requested from error callback is deferred without panic" {
         fn onMessage(_: *Connection, _: []const u8) !void {}
 
         fn onError(conn: *Connection, _: anyerror) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.error_count += 1;
             conn.deinit();
             state.deinit_seen_in_error = TestAccess.deinitRequested(conn);
         }
 
         fn onClose(conn: *Connection) void {
-            const state: *State = @ptrCast(@alignCast(conn.ctx.?));
+            const state: *State = @ptrCast(@alignCast(conn.context().?));
             state.close_count += 1;
         }
     };
@@ -442,13 +429,10 @@ test "QUIC deinit requested from error callback is deferred without panic" {
     var state = Harness.State{};
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
-    conn.ctx = &state;
-    conn.on_message = Harness.onMessage;
-    conn.on_error = Harness.onError;
-    conn.on_close = Harness.onClose;
+    TestAccess.setCallbacks(&conn, &state, Harness.onMessage, Harness.onError, Harness.onClose);
 
     TestAccess.terminateFrameError(&conn, error.InvalidFrame);
-    if (conn.on_close) |cb| TestAccess.invokeCloseCallback(&conn, cb);
+    if (TestAccess.closeCallback(&conn)) |cb| TestAccess.invokeCloseCallback(&conn, cb);
 
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(usize, 1), state.close_count);

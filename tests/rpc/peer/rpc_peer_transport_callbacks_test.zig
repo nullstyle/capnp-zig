@@ -10,6 +10,10 @@ test "peer_transport_callbacks onConnectionMessageFor forwards frame to peer han
     };
     const Conn = struct {
         ctx: ?*anyopaque = null,
+
+        pub fn context(self: *const @This()) ?*anyopaque {
+            return self.ctx;
+        }
     };
     const Hooks = struct {
         fn handleFrame(peer: *PeerState, frame: []const u8) !void {
@@ -34,6 +38,10 @@ test "peer_transport_callbacks onConnectionErrorFor forwards errors to peer erro
     };
     const Conn = struct {
         ctx: ?*anyopaque = null,
+
+        pub fn context(self: *const @This()) ?*anyopaque {
+            return self.ctx;
+        }
     };
     const Hooks = struct {
         fn onError(peer: *PeerState, err: anyerror) void {
@@ -57,6 +65,10 @@ test "peer_transport_callbacks onConnectionCloseFor forwards close notifications
     };
     const Conn = struct {
         ctx: ?*anyopaque = null,
+
+        pub fn context(self: *const @This()) ?*anyopaque {
+            return self.ctx;
+        }
     };
     const Hooks = struct {
         fn onClose(peer: *PeerState) void {

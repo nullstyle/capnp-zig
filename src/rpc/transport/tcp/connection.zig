@@ -195,6 +195,10 @@ pub const Connection = struct {
         self.on_close = on_close;
     }
 
+    pub fn context(self: *const Connection) ?*anyopaque {
+        return self.ctx;
+    }
+
     /// Blocking read loop. Reads from the transport, pushes data through
     /// the framer, and dispatches complete message frames to callbacks.
     ///

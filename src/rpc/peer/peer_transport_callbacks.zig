@@ -9,7 +9,7 @@ pub fn peerFromConnection(
     comptime ConnPtr: type,
     conn: ConnPtr,
 ) *PeerType {
-    return @ptrCast(@alignCast(conn.ctx.?));
+    return @ptrCast(@alignCast(conn.context().?));
 }
 
 pub fn onConnectionMessageFor(

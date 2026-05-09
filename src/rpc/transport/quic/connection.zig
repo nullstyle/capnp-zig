@@ -62,10 +62,6 @@ pub const Connection = struct {
     wake_state: wake_mod.Handle = .{},
     close_state: quic_close.State = .{},
 
-    ctx: ?*anyopaque = null,
-    on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
-    on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
-    on_close: ?*const fn (conn: *Connection) void = null,
     callback_lifecycle: CallbackLifecycle = .{},
 
     owner_thread_id: ?std.Thread.Id = null,
@@ -191,10 +187,7 @@ pub const Connection = struct {
         self.enterClosing();
         self.baseline.deinit(self.allocator);
         self.native.deinit(self.allocator);
-        self.ctx = null;
-        self.on_message = null;
-        self.on_error = null;
-        self.on_close = null;
+        self.callback_lifecycle.clearCallbacks();
         self.wake_state.deinit();
         self.endpointDriver().deinit();
         self.allocator.free(self.udp_rx_buf);
@@ -210,10 +203,11 @@ pub const Connection = struct {
         on_close: *const fn (conn: *Connection) void,
     ) void {
         self.assertThreadAffinity();
-        self.ctx = ctx;
-        self.on_message = on_message;
-        self.on_error = on_error;
-        self.on_close = on_close;
+        self.callback_lifecycle.start(ctx, on_message, on_error, on_close);
+    }
+
+    pub fn context(self: *const Connection) ?*anyopaque {
+        return self.callback_lifecycle.context();
     }
 
     pub fn run(self: *Connection) void {
@@ -232,7 +226,7 @@ pub const Connection = struct {
 
         self.flushCloseDatagram();
         self.closeEngines();
-        if (self.on_close) |cb| self.callback_lifecycle.invokeClose(self, cb);
+        if (self.callback_lifecycle.closeCallback()) |cb| self.callback_lifecycle.invokeClose(self, cb);
         if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
     }
 
@@ -445,7 +439,7 @@ pub const Connection = struct {
 
     fn ownerCallbacksReady(ptr: *anyopaque) bool {
         const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.on_message != null and self.on_error != null;
+        return self.callback_lifecycle.callbacksReady();
     }
 
     fn ownerDispatchRpcFrame(ptr: *anyopaque, frame: []const u8) !void {
@@ -464,8 +458,9 @@ pub const Connection = struct {
     }
 
     fn dispatchRpcFrame(self: *Connection, frame: []const u8) !void {
-        if (self.on_message == null or self.on_error == null) return;
-        self.callback_lifecycle.invokeMessage(self, self.on_message.?, frame) catch |err| {
+        if (!self.callback_lifecycle.callbacksReady()) return;
+        const on_message = self.callback_lifecycle.messageCallback() orelse return;
+        self.callback_lifecycle.invokeMessage(self, on_message, frame) catch |err| {
             self.terminateCallbackError(err);
             return;
         };
@@ -493,8 +488,11 @@ pub const Connection = struct {
         self.closeActiveQuicConn(policy.code, err);
         self.enterClosing();
         if (policy.reset_inbound) self.resetInbound();
-        if (policy.clear_message_callback) self.on_message = null;
-        const on_error = if (policy.clear_error_callback) self.takeErrorCallback() else self.on_error;
+        if (policy.clear_message_callback) self.callback_lifecycle.clearMessageCallback();
+        const on_error = if (policy.clear_error_callback)
+            self.callback_lifecycle.takeErrorCallback()
+        else
+            self.callback_lifecycle.errorCallback();
         self.wake();
         if (policy.notify_error_callback) {
             if (on_error) |cb| self.callback_lifecycle.invokeError(self, cb, err);
@@ -514,14 +512,6 @@ pub const Connection = struct {
     fn resetInbound(self: *Connection) void {
         self.baseline.resetInbound();
         self.native.resetInbound(self.allocator);
-    }
-
-    fn takeErrorCallback(
-        self: *Connection,
-    ) ?*const fn (conn: *Connection, err: anyerror) void {
-        const cb = self.on_error;
-        self.on_error = null;
-        return cb;
     }
 
     fn closeActiveQuicConn(
@@ -569,6 +559,9 @@ pub const Connection = struct {
 
 pub const TestAccess = struct {
     pub const ApplicationCloseCode = quic_close.ApplicationCloseCode;
+    pub const CloseCallback = Connection.CallbackLifecycle.CloseCallback;
+    pub const ErrorCallback = Connection.CallbackLifecycle.ErrorCallback;
+    pub const MessageCallback = Connection.CallbackLifecycle.MessageCallback;
     pub const NativeOptions = quic_options.NativeOptions;
 
     pub fn wakeRequested(conn: *const Connection) bool {
@@ -622,6 +615,20 @@ pub const TestAccess = struct {
 
     pub fn closeReason(conn: *const Connection) []const u8 {
         return conn.closeReason();
+    }
+
+    pub fn setCallbacks(
+        conn: *Connection,
+        ctx: ?*anyopaque,
+        on_message: ?MessageCallback,
+        on_error: ?ErrorCallback,
+        on_close: ?CloseCallback,
+    ) void {
+        conn.callback_lifecycle.setCallbacks(ctx, on_message, on_error, on_close);
+    }
+
+    pub fn closeCallback(conn: *const Connection) ?CloseCallback {
+        return conn.callback_lifecycle.closeCallback();
     }
 
     pub fn deinitRequested(conn: *const Connection) bool {
