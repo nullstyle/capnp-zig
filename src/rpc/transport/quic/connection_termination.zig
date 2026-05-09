@@ -17,7 +17,7 @@ pub fn State(comptime Connection: type) type {
         pub fn close(conn: *Connection) void {
             enterClosing(conn);
             conn.close_controller.closeActive(
-                conn.endpoint.activeQuicConnection(),
+                conn.activeQuicConnection(),
                 .normal,
                 null,
             );
@@ -69,7 +69,7 @@ pub fn State(comptime Connection: type) type {
             err: anyerror,
         ) void {
             conn.close_controller.closeActive(
-                conn.endpoint.activeQuicConnection(),
+                conn.activeQuicConnection(),
                 policy.code,
                 err,
             );

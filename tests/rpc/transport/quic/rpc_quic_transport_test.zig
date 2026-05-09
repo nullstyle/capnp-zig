@@ -27,7 +27,47 @@ const echoOrderedQuicMessage = loopback.echoOrderedQuicMessage;
 const captureOrderedQuicMessage = loopback.captureOrderedQuicMessage;
 const recordOrderedQuicError = loopback.recordOrderedQuicError;
 const recordOrderedQuicClose = loopback.recordOrderedQuicClose;
+const echoQuicServerMessage = loopback.echoQuicServerMessage;
+const recordQuicServerError = loopback.recordQuicServerError;
+const recordQuicServerClose = loopback.recordQuicServerClose;
 const runRawNativeFaultCase = raw_faults.runRawNativeFaultCase;
+
+fn waitForFanoutSessions(server: *quic.Server, expected_sessions: usize) !void {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (server.sessionCount() >= expected_sessions) return;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return error.QuicLoopbackTimedOut;
+}
+
+fn driveFanoutUntilTwoClientMessages(
+    server: *quic.Server,
+    client_a: *const QuicEndpointState,
+    client_b: *const QuicEndpointState,
+    server_a: *const QuicEndpointState,
+    server_b: *const QuicEndpointState,
+) !void {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.receiveOne();
+        var index: usize = 0;
+        while (index < server.sessionCount()) : (index += 1) {
+            try server.stepSession(index);
+        }
+        if (client_a.messages.load(.acquire) > 0 and client_b.messages.load(.acquire) > 0) return;
+        if (client_a.errors.load(.acquire) > 0 or
+            client_b.errors.load(.acquire) > 0 or
+            server_a.errors.load(.acquire) > 0 or
+            server_b.errors.load(.acquire) > 0)
+        {
+            return error.QuicLoopbackUnexpectedError;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return error.QuicLoopbackTimedOut;
+}
 
 test "quic transport exposes native Cap'n Proto RPC ALPN" {
     try std.testing.expectEqualStrings("capnp-rpc/1", quic.alpn);
@@ -48,7 +88,8 @@ test "quic transport exposes native Cap'n Proto RPC ALPN" {
     try std.testing.expect(quic.default_native_max_pending_data_streams > 0);
     try std.testing.expect(quic.default_max_outbound_queue_items > 0);
     try std.testing.expect(quic.default_max_outbound_queue_bytes > quic.default_max_message_bytes);
-    try std.testing.expectEqual(@as(u32, 1), quic.supported_max_concurrent_sessions);
+    try std.testing.expectEqual(@as(u32, 1), quic.compatibility_max_concurrent_sessions);
+    try std.testing.expect(quic.supported_max_concurrent_sessions > quic.compatibility_max_concurrent_sessions);
 }
 
 test "quic transport exposes typed application close policy" {
@@ -64,6 +105,8 @@ test "quic transport exposes typed application close policy" {
 
 test "quic exposes listener and session API boundary" {
     try std.testing.expect(@hasDecl(quic, "Listener"));
+    try std.testing.expect(@hasDecl(quic, "Server"));
+    try std.testing.expect(@hasDecl(quic, "ServerSession"));
     try std.testing.expect(@hasDecl(quic, "Session"));
     try std.testing.expect(@hasDecl(quic, "AcceptedSession"));
     try std.testing.expect(@hasDecl(quic, "AcceptedSessionDriver"));
@@ -75,6 +118,7 @@ test "quic exposes listener and session API boundary" {
     try std.testing.expect(@hasDecl(quic.session, "AcceptedSession"));
     try std.testing.expect(@hasDecl(quic.session, "AcceptedSessionDriver"));
     try std.testing.expect(@hasDecl(quic.endpoint, "Endpoint"));
+    try std.testing.expect(@hasDecl(quic.Server, "Session"));
     try std.testing.expect(@hasField(quic.ServerEndpoint, "listener"));
     try std.testing.expect(@hasField(quic.ServerEndpoint, "session"));
     try std.testing.expect(@hasField(quic.ClientEndpoint, "socket"));
@@ -97,7 +141,7 @@ test "quic listener owns server endpoint before session attachment" {
     const addr = listener.getAddress();
     try std.testing.expect(addr == .ip4);
     try std.testing.expect(addr.ip4.port != 0);
-    try std.testing.expectEqual(quic.supported_max_concurrent_sessions, listener.sessionCapacity());
+    try std.testing.expectEqual(quic.compatibility_max_concurrent_sessions, listener.sessionCapacity());
     try std.testing.expectEqual(@as(usize, 0), listener.sessionCount());
     try std.testing.expect(listener.firstSession() == null);
     try std.testing.expect(listener.firstAcceptedSession() == null);
@@ -504,6 +548,184 @@ test "quic native localhost preserves E-order across data stream and inline fram
     try client_state.expectOrder(&expected_order);
 }
 
+test "quic native fanout server drives two sessions independently" {
+    const allocator = std.testing.allocator;
+    const frame_a = try buildBootstrapFrame(allocator, 0xA11C);
+    defer allocator.free(frame_a);
+    const frame_b = try buildBootstrapFrame(allocator, 0xB22D);
+    defer allocator.free(frame_b);
+
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 128,
+        .max_control_frame_bytes = 256,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 8192,
+    };
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+    try std.testing.expectEqual(@as(u32, 2), server.sessionCapacity());
+
+    var client_a = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client_a.deinit();
+
+    var client_b = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client_b.deinit();
+
+    var client_state_a = QuicEndpointState{};
+    var client_state_b = QuicEndpointState{};
+    client_a.start(&client_state_a, captureQuicMessage, recordQuicError, recordQuicClose);
+    client_b.start(&client_state_b, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    var client_thread_a = try std.Thread.spawn(.{}, runQuicConnection, .{&client_a});
+    var client_thread_b = try std.Thread.spawn(.{}, runQuicConnection, .{&client_b});
+    var joined = false;
+    defer if (!joined) {
+        client_a.requestClose();
+        client_b.requestClose();
+        server.requestClose();
+        client_thread_a.join();
+        client_thread_b.join();
+    };
+
+    try waitForFanoutSessions(&server, 2);
+
+    var server_state_a = QuicEndpointState{};
+    var server_state_b = QuicEndpointState{};
+    server.sessionAt(0).?.start(&server_state_a, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+    server.sessionAt(1).?.start(&server_state_b, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+
+    try client_a.sendFrame(frame_a);
+    try client_b.sendFrame(frame_b);
+
+    try driveFanoutUntilTwoClientMessages(
+        &server,
+        &client_state_a,
+        &client_state_b,
+        &server_state_a,
+        &server_state_b,
+    );
+
+    client_a.requestClose();
+    client_b.requestClose();
+    server.requestClose();
+    client_thread_a.join();
+    client_thread_b.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(usize, 2), server.quicConnectionCount());
+    try std.testing.expectEqual(@as(usize, 2), server.sessionCount());
+    try std.testing.expectEqual(@as(usize, 1), client_state_a.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), client_state_b.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state_a.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state_b.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state_a.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state_b.errors.load(.acquire));
+    try std.testing.expectEqualSlices(u8, frame_a, client_state_a.receivedSlice());
+    try std.testing.expectEqualSlices(u8, frame_b, client_state_b.receivedSlice());
+    try std.testing.expectEqual(@as(usize, 1), server_state_a.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), server_state_b.messages.load(.acquire));
+}
+
+test "quic native localhost streams large RPC data payload" {
+    const allocator = std.testing.allocator;
+    const frame = try buildCallFrameWithData(allocator, 0xD17A, 128 * 1024);
+    defer allocator.free(frame);
+
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 512,
+        .max_control_frame_bytes = 1024,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = frame.len + 1024,
+    };
+    try std.testing.expect(frame.len > native_options.inline_frame_threshold);
+
+    var server = try quic.Connection.initServer(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+    try std.testing.expect(server_addr == .ip4);
+    try std.testing.expect(server_addr.ip4.port != 0);
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client.deinit();
+
+    const expected_frames = [_][]const u8{frame};
+    var server_state = OrderedQuicEndpointState{ .expected = &expected_frames };
+    var client_state = OrderedQuicEndpointState{
+        .expected = &expected_frames,
+        .close_after_messages = expected_frames.len,
+    };
+    server.start(&server_state, echoOrderedQuicMessage, recordOrderedQuicError, recordOrderedQuicClose);
+    client.start(&client_state, captureOrderedQuicMessage, recordOrderedQuicError, recordOrderedQuicClose);
+
+    try client.sendFrame(frame);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+        server_thread.join();
+    };
+
+    const exchanged = waitForOrderedClientMessagesOrError(&client_state, &server_state, expected_frames.len);
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    server_thread.join();
+    joined = true;
+
+    if (!exchanged) return error.QuicLoopbackTimedOut;
+
+    try std.testing.expectEqual(expected_frames.len, server_state.messages.load(.acquire));
+    try std.testing.expectEqual(expected_frames.len, client_state.messages.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    const expected_order = [_]usize{0};
+    try server_state.expectOrder(&expected_order);
+    try client_state.expectOrder(&expected_order);
+}
+
 test "quic native mode mismatch closes baseline peer cleanly" {
     const allocator = std.testing.allocator;
     const frame = try buildBootstrapFrame(allocator, 0xBAD);
@@ -623,6 +845,13 @@ test "quic native raw peer malformed control closes with typed frame errors" {
     try runRawNativeFaultCase(.malformed_preface, .{}, error.InvalidFrame);
     try runRawNativeFaultCase(.malformed_hello, .{}, error.InvalidFrame);
     try runRawNativeFaultCase(.malformed_control, .{}, error.InvalidFrame);
+    try runRawNativeFaultCase(.unknown_control_tag, .{}, error.InvalidFrame);
+    try runRawNativeFaultCase(.oversized_control_frame, .{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 1024,
+    }, error.FrameTooLarge);
 }
 
 test "quic native raw peer data stream violations close with typed frame errors" {
@@ -730,19 +959,45 @@ test "quic client outbound queue enforces item and byte bounds" {
     try std.testing.expectError(error.OutboundQueueFull, byte_limited.sendFrame("e"));
 }
 
-test "quic server rejects multi-connection option until fanout exists" {
+test "quic server fanout accepts multi-connection capacity" {
+    const config = try quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .max_concurrent_connections = 2,
+    });
+    try std.testing.expectEqual(@as(u32, 2), config.max_concurrent_connections);
+
+    var listener = try quic.Listener.init(std.testing.allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .max_concurrent_connections = 2,
+    });
+    defer listener.deinit();
+    try std.testing.expectEqual(@as(u32, 2), listener.sessionCapacity());
+
+    var server = try quic.Server.init(std.testing.allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .max_concurrent_connections = 2,
+    });
+    defer server.deinit();
+    try std.testing.expectEqual(@as(u32, 2), server.sessionCapacity());
+
+    try std.testing.expectError(error.InvalidConfig, quic.Connection.initServer(std.testing.allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .max_concurrent_connections = 2,
+    }));
+
     try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
-        .max_concurrent_connections = 2,
-    }));
-
-    try std.testing.expectError(error.InvalidConfig, quic.Listener.init(std.testing.allocator, std.testing.io, .{
-        .listen_addr = testListenAddr(),
-        .tls_cert_pem = "cert",
-        .tls_key_pem = "key",
-        .max_concurrent_connections = 2,
+        .max_concurrent_connections = 0,
     }));
 }
 

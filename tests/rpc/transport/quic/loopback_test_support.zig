@@ -202,3 +202,27 @@ pub fn recordOrderedQuicClose(conn: *quic.Connection) void {
     const state: *OrderedQuicEndpointState = @ptrCast(@alignCast(conn.context().?));
     _ = state.closes.fetchAdd(1, .acq_rel);
 }
+
+pub fn echoQuicServerMessage(session: *quic.ServerSession, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(session.context().?));
+    try state.recordMessage(frame);
+    try session.sendFrame(frame);
+}
+
+pub fn captureQuicServerMessage(session: *quic.ServerSession, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(session.context().?));
+    try state.recordMessage(frame);
+    session.requestClose();
+}
+
+pub fn recordQuicServerError(session: *quic.ServerSession, err: anyerror) void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(session.context().?));
+    state.last_error = err;
+    _ = state.errors.fetchAdd(1, .acq_rel);
+    session.requestClose();
+}
+
+pub fn recordQuicServerClose(session: *quic.ServerSession) void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(session.context().?));
+    _ = state.closes.fetchAdd(1, .acq_rel);
+}

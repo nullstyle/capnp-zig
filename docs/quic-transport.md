@@ -17,9 +17,10 @@ between peers, not the RPC protocol that `Peer` handles.
 
 The public API is intentionally close to the TCP transport while the QUIC layer
 is still maturing. Applications should treat `rpc.quic.Connection` as the stable
-entry point for one client/server session, and use the lower-level listener,
-endpoint, and session helpers only when experimenting with future server fanout
-or writing focused transport tests.
+entry point for one client/server session. Servers that need one UDP listener to
+host multiple sessions should use `rpc.quic.Server`, which accepts up to
+`ServerOptions.max_concurrent_connections` and exposes one `ServerSession`
+transport driver per accepted QUIC connection.
 
 ## Modes
 
@@ -117,16 +118,24 @@ one complete Cap'n Proto RPC frame, and inbound callbacks receive one complete
 RPC frame. Higher-level RPC code can therefore use the same `Peer` attachment
 path in both modes.
 
-## Listener And Session Boundary
+## Server Fanout And Session Boundary
 
 `rpc.quic.Connection.initServer()` is the compatibility entry point for the
-current one-session transport. Internally it owns a `rpc.quic.Listener`, accepts
-the first server-side `rpc.quic.AcceptedSession`, and drives that session through
-the existing `Connection.start()` callbacks.
+one-session transport. It requires
+`ServerOptions.max_concurrent_connections == rpc.quic.compatibility_max_concurrent_sessions`.
+Internally it owns a `rpc.quic.Listener`, accepts the first server-side
+`rpc.quic.AcceptedSession`, and drives that session through the existing
+`Connection.start()` callbacks.
 
-The lower-level boundary is also public for future fanout work. These helpers
-split ownership and event-loop responsibilities, but they do not yet make a
-multi-session RPC server:
+`rpc.quic.Server` is the fanout API. It owns the same listener/socket root, adopts
+each accepted QUIC slot into a `rpc.quic.ServerSession`, and lets callers poll
+for sessions, attach callbacks per session, and drive either one chosen session
+or all sessions. It keeps the wire behavior identical to `Connection`: the ALPN
+is still `capnp-rpc/1`, and each session independently uses either `.baseline`
+or `.native` according to the server options.
+
+The lower-level boundary remains public for focused transport tests and bespoke
+embedding:
 
 - `rpc.quic.Listener` owns the UDP socket and `quic_zig.Server`.
 - `rpc.quic.Session` is a borrowed handle for one accepted server slot.
@@ -134,6 +143,11 @@ multi-session RPC server:
   ordinal.
 - `rpc.quic.AcceptedSessionDriver` attaches, drives, and reaps the one accepted
   session used by the compatibility connection.
+- `rpc.quic.Server` owns a listener plus independent `ServerSession` transport
+  drivers for fanout.
+- `rpc.quic.ServerSession` has the familiar `start()`, `sendFrame()`,
+  `requestClose()`, and `closeStatus()` shape for one accepted server-side
+  session.
 - `rpc.quic.EndpointDriver` is the shared run-loop boundary for endpoint-specific
   socket, timer, inbound datagram, outbound datagram, and session-reaping work.
 - `rpc.quic.ServerEndpoint` pairs a listener with the accepted-session driver
@@ -156,9 +170,9 @@ helper modules:
 - `options.zig` is the public configuration boundary; prefer adding documented
   knobs there instead of threading private constants through examples.
 
-`ServerOptions.max_concurrent_connections` must remain
-`rpc.quic.supported_max_concurrent_sessions` for now. Raising that value will
-need a separate accept loop that hands sessions to independent peer transports.
+Use `rpc.quic.Server` when `ServerOptions.max_concurrent_connections` is greater
+than one. Keep `Connection.initServer()` for compatibility tests, examples, and
+single-session peers.
 
 ## Native Resource Budgets
 
@@ -235,7 +249,10 @@ Recommended hardening posture:
 ## Current Limits
 
 - One server `rpc.quic.Connection` owns one listener and represents one active
-  QUIC session. Broad server fanout is still a future transport layer.
+  QUIC session. Use `rpc.quic.Server` for multi-session fanout.
+- `rpc.quic.Server` is poll-driven. It does not yet provide a high-level accept
+  event abstraction; callers inspect `sessionCount()`/`sessionAt()` and attach
+  callbacks to accepted `ServerSession` values.
 - Native mode carries complete RPC frames only. It does not yet expose
   application-level streaming parameters or results.
 - Mode mismatch is treated as malformed transport input and closes cleanly.
