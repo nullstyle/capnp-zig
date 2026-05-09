@@ -260,6 +260,8 @@ transport layer.
 
 **Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `docs/rpc_runtime_design.md` for details.
 Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
+For the public-surface alias cleanup, see
+[`docs/rpc-migration-guide.md`](docs/rpc-migration-guide.md).
 
 ### Design Highlights
 
@@ -297,6 +299,10 @@ zig build example-rpc -Dio-backend=process_init   # default
 zig build example-rpc -Dio-backend=threaded       # explicit Threaded
 zig build example-rpc -Dio-backend=evented        # explicit Evented where supported
 ```
+
+Use `just check-evented` (or `zig build -Dio-backend=evented check`) as the
+supported no-link compile gate for the Evented selector on targets where Zig
+exposes `std.Io.Evented`.
 
 Evented socket behavior depends on Zig's platform backend implementation; the
 selector itself now lives behind `src/io_backend.zig`.
@@ -470,8 +476,14 @@ just clean
 # Check for compilation errors
 just check
 
+# Check Evented Io backend selection where the target supports std.Io.Evented
+just check-evented
+
 # Check docs/examples for stale public API names and missing build recipes
 zig build docs-smoke
+
+# Compile documentation snippet fixtures
+zig build test-docs-snippets
 
 # Generate API docs into zig-out/docs
 just docs

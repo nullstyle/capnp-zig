@@ -42,6 +42,10 @@ test-fuzz-smoke:
 docs-smoke:
     zig build docs-smoke --summary all
 
+# Compile documentation snippet fixtures
+test-docs-snippets:
+    zig build test-docs-snippets --summary all
+
 # Run key hardening gates under ReleaseSafe
 test-release-safe:
     zig build test-release-safe --summary all
@@ -165,6 +169,10 @@ fmt-check:
 # Check for errors without building
 check:
     zig build check
+
+# Check RPC entry points against the explicit Evented Io backend where supported
+check-evented:
+    zig build -Dio-backend=evented check
 
 # Generate API documentation
 docs:

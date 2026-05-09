@@ -29,7 +29,9 @@ Requires **Zig 0.17-dev** on `PATH` (minimum declared in `build.zig.zon`; `mise.
 | Run all tests | `zig build test --summary all` or `just test` |
 | Format code | `zig fmt src/ tests/` or `just fmt` |
 | Check (no link) | `zig build check` or `just check` |
+| Evented backend check | `zig build -Dio-backend=evented check` or `just check-evented` |
 | Docs/examples smoke | `zig build docs-smoke` or `just docs-smoke` |
+| Docs snippet fixtures | `zig build test-docs-snippets` or `just test-docs-snippets` |
 | Run example | `just example` (requires `capnp` CLI) |
 | Install plugin | `just install` (copies to `~/.local/bin/`) |
 
@@ -82,6 +84,8 @@ The RPC runtime is polymorphic over `std.Io`. Centralised selection lives in `sr
 - `Backend.init(.evented, gpa, _)` — construct and own `std.Io.Evented` where Zig exposes it; returns `error.EventedBackendUnsupported` only when the target has no evented backend.
 
 RPC entry points (`examples/rpc_pingpong.zig`, `tests/e2e/zig/main_{server,client}.zig`) read the kind from the `-Dio-backend=process_init|threaded|evented` build option (default `process_init`) via the `io_backend_options` module wired up in `build.zig`.
+
+Use `just check-evented` (or `zig build -Dio-backend=evented check`) as the supported no-link gate for the Evented selector on targets where Zig exposes `std.Io.Evented`.
 
 ## Coding Conventions
 

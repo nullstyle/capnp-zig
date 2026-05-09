@@ -294,6 +294,10 @@ pub fn build(b: *std.Build) void {
     const run_docs_examples_smoke = b.addRunArtifact(docs_examples_smoke);
     const docs_smoke_step = b.step("docs-smoke", "Run documentation and examples smoke checks");
     docs_smoke_step.dependOn(&run_docs_examples_smoke.step);
+    const run_rpc_getting_started_snippet_tests = addLibTest(b, "tests/docs/rpc_getting_started_snippets_test.zig", target, optimize, lib_module);
+    const test_docs_snippets_step = b.step("test-docs-snippets", "Compile documentation snippet fixtures");
+    test_docs_snippets_step.dependOn(run_rpc_getting_started_snippet_tests);
+    docs_smoke_step.dependOn(test_docs_snippets_step);
 
     // RPC ping-pong example
     const rpc_pingpong_example = b.addExecutable(.{
@@ -434,6 +438,10 @@ pub fn build(b: *std.Build) void {
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, quic_zig_module.?)
     else
         null;
+    const run_rpc_quic_public_api_tests: ?*std.Build.Step = if (enable_quic)
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    else
+        null;
     const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (enable_quic)
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, quic_zig_module.?)
     else
@@ -565,6 +573,7 @@ pub fn build(b: *std.Build) void {
 
     const test_rpc_quic_step = b.step("test-rpc-quic", "Run quic-zig-backed QUIC RPC transport tests (requires -Dquic=true)");
     if (run_rpc_quic_transport_tests) |step| test_rpc_quic_step.dependOn(step);
+    if (run_rpc_quic_public_api_tests) |step| test_rpc_quic_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_rpc_quic_step.dependOn(step);
 
     const test_rpc_peer_step = b.step("test-rpc-peer", "Run RPC peer semantics tests");

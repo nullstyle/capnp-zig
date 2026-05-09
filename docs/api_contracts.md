@@ -16,7 +16,9 @@ should import domain modules such as `rpc.wire.protocol`,
 `rpc.transport.quic`, and `rpc.integration.host_peer`. Removed top-level
 compatibility aliases such as `rpc.protocol`, `rpc.cap_table`,
 `rpc.connection`, `rpc.runtime`, `rpc.host_peer`, and `rpc._internal` are not
-part of the supported surface.
+part of the supported surface. See
+[`docs/rpc-migration-guide.md`](rpc-migration-guide.md) for the full old-name
+to new-name mapping.
 
 Internal helper behavior may change, but exported type semantics and error classes below are considered compatibility-sensitive.
 

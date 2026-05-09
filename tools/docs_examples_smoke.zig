@@ -40,6 +40,7 @@ const required_paths = [_][]const u8{
     "docs/getting-started-rpc.md",
     "docs/getting-started-serialization.md",
     "docs/quic-transport.md",
+    "docs/rpc-migration-guide.md",
     "examples/rpc_pingpong.zig",
     "examples/pingpong.zig",
     "examples/pingpong.capnp",
@@ -91,6 +92,7 @@ const required_build_steps = [_][]const u8{
     "docs-smoke",
     "example-rpc",
     "example-rpc-install",
+    "test-docs-snippets",
     "test-rpc-wire",
     "test-rpc-caps",
     "test-rpc-promises",
@@ -105,6 +107,7 @@ const required_just_recipes = [_][]const u8{
     "docs",
     "docs-smoke",
     "example",
+    "test-docs-snippets",
     "test-rpc-wire",
     "test-rpc-caps",
     "test-rpc-promises",
@@ -122,6 +125,7 @@ const required_doc_needles = [_]RequiredNeedle{
     .{ .path = "docs/getting-started-rpc.md", .needle = "Connection.run()", .reason = "RPC guide should describe the current connection driver" },
     .{ .path = "docs/getting-started-serialization.md", .needle = "capnpc-zig-core", .reason = "serialization guide should document the core module import" },
     .{ .path = "docs/quic-transport.md", .needle = "rpc.transport.quic.Server", .reason = "QUIC guide should document multi-session fanout" },
+    .{ .path = "docs/rpc-migration-guide.md", .needle = "rpc.protocol", .reason = "migration guide should preserve old-name mapping coverage" },
     .{ .path = "examples/rpc_pingpong.zig", .needle = "rpc.transport.tcp.Connection", .reason = "RPC example should use the current TCP transport path" },
 };
 
