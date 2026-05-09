@@ -21,6 +21,29 @@ fn addLibTest(
     return &b.addRunArtifact(t).step;
 }
 
+/// Create a QUIC-only test step that imports capnpc-zig and quic_zig.
+fn addQuicLibTest(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_module: *std.Build.Module,
+    quic_zig_module: *std.Build.Module,
+) *std.Build.Step {
+    const t = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "quic_zig", .module = quic_zig_module },
+            },
+        }),
+    });
+    return &b.addRunArtifact(t).step;
+}
+
 fn addMainTest(
     b: *std.Build,
     path: []const u8,
@@ -391,7 +414,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/integration/rpc_worker_pool_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
-        addLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module)
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, quic_zig_module.?)
     else
         null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
