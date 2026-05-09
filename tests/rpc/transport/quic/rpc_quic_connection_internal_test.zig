@@ -430,7 +430,7 @@ test "QUIC deinit requested from error callback is deferred without panic" {
             const state: *State = @ptrCast(@alignCast(conn.ctx.?));
             state.error_count += 1;
             conn.deinit();
-            state.deinit_seen_in_error = conn.deinit_requested;
+            state.deinit_seen_in_error = TestAccess.deinitRequested(conn);
         }
 
         fn onClose(conn: *Connection) void {
@@ -453,5 +453,5 @@ test "QUIC deinit requested from error callback is deferred without panic" {
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
     try std.testing.expectEqual(@as(usize, 1), state.close_count);
     try std.testing.expect(state.deinit_seen_in_error);
-    try std.testing.expect(conn.deinit_requested);
+    try std.testing.expect(TestAccess.deinitRequested(&conn));
 }

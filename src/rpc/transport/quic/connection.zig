@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
 const baseline_engine = @import("baseline_engine.zig");
+const callback_lifecycle_mod = @import("callback_lifecycle.zig");
 const datagram_io = @import("datagram_io.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
@@ -44,6 +45,7 @@ const EndpointDriver = endpoint_mod.EndpointDriver;
 pub const Connection = struct {
     pub const StepMode = scheduler.StepMode;
     pub const StepResult = scheduler.StepResult;
+    const CallbackLifecycle = callback_lifecycle_mod.State(Connection);
 
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -64,9 +66,7 @@ pub const Connection = struct {
     on_message: ?*const fn (conn: *Connection, frame: []const u8) anyerror!void = null,
     on_error: ?*const fn (conn: *Connection, err: anyerror) void = null,
     on_close: ?*const fn (conn: *Connection) void = null,
-    callback_depth: usize = 0,
-    deinit_requested: bool = false,
-    deinitialized: bool = false,
+    callback_lifecycle: CallbackLifecycle = .{},
 
     owner_thread_id: ?std.Thread.Id = null,
 
@@ -175,20 +175,19 @@ pub const Connection = struct {
     }
 
     pub fn deinit(self: *Connection) void {
-        if (self.deinitialized) return;
-        if (self.callback_depth != 0) {
-            self.deinit_requested = true;
-            self.requestClose();
-            return;
+        switch (self.callback_lifecycle.decideDeinit()) {
+            .already_deinitialized => return,
+            .defer_until_callback_exits => {
+                self.requestClose();
+                return;
+            },
+            .deinit_now => self.deinitNow(true),
         }
-        self.deinitNow(true);
     }
 
     fn deinitNow(self: *Connection, comptime check_affinity: bool) void {
-        if (self.deinitialized) return;
+        if (!self.callback_lifecycle.beginDeinit()) return;
         if (check_affinity) self.assertThreadAffinity();
-        self.deinitialized = true;
-        self.deinit_requested = false;
         self.enterClosing();
         self.baseline.deinit(self.allocator);
         self.native.deinit(self.allocator);
@@ -233,8 +232,8 @@ pub const Connection = struct {
 
         self.flushCloseDatagram();
         self.closeEngines();
-        if (self.on_close) |cb| self.invokeCloseCallback(cb);
-        self.completeDeferredDeinit();
+        if (self.on_close) |cb| self.callback_lifecycle.invokeClose(self, cb);
+        if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
@@ -461,12 +460,12 @@ pub const Connection = struct {
 
     fn ownerDeinitRequested(ptr: *anyopaque) bool {
         const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.deinit_requested;
+        return self.callback_lifecycle.deinitRequested();
     }
 
     fn dispatchRpcFrame(self: *Connection, frame: []const u8) !void {
         if (self.on_message == null or self.on_error == null) return;
-        self.invokeMessageCallback(self.on_message.?, frame) catch |err| {
+        self.callback_lifecycle.invokeMessage(self, self.on_message.?, frame) catch |err| {
             self.terminateCallbackError(err);
             return;
         };
@@ -498,7 +497,7 @@ pub const Connection = struct {
         const on_error = if (policy.clear_error_callback) self.takeErrorCallback() else self.on_error;
         self.wake();
         if (policy.notify_error_callback) {
-            if (on_error) |cb| self.invokeErrorCallback(cb, err);
+            if (on_error) |cb| self.callback_lifecycle.invokeError(self, cb, err);
         }
     }
 
@@ -566,41 +565,6 @@ pub const Connection = struct {
     fn nowUs(self: *Connection) u64 {
         return self.endpointDriver().nowUs();
     }
-
-    fn invokeErrorCallback(
-        self: *Connection,
-        cb: *const fn (conn: *Connection, callback_err: anyerror) void,
-        err: anyerror,
-    ) void {
-        self.callback_depth += 1;
-        defer self.callback_depth -= 1;
-        cb(self, err);
-    }
-
-    fn invokeMessageCallback(
-        self: *Connection,
-        cb: *const fn (conn: *Connection, frame: []const u8) anyerror!void,
-        frame: []const u8,
-    ) !void {
-        self.callback_depth += 1;
-        defer self.callback_depth -= 1;
-        try cb(self, frame);
-    }
-
-    fn invokeCloseCallback(
-        self: *Connection,
-        cb: *const fn (conn: *Connection) void,
-    ) void {
-        self.callback_depth += 1;
-        defer self.callback_depth -= 1;
-        cb(self);
-    }
-
-    fn completeDeferredDeinit(self: *Connection) void {
-        if (self.deinit_requested and self.callback_depth == 0) {
-            self.deinitNow(false);
-        }
-    }
 };
 
 pub const TestAccess = struct {
@@ -660,10 +624,14 @@ pub const TestAccess = struct {
         return conn.closeReason();
     }
 
+    pub fn deinitRequested(conn: *const Connection) bool {
+        return conn.callback_lifecycle.deinitRequested();
+    }
+
     pub fn invokeCloseCallback(
         conn: *Connection,
         cb: *const fn (conn: *Connection) void,
     ) void {
-        conn.invokeCloseCallback(cb);
+        conn.callback_lifecycle.invokeClose(conn, cb);
     }
 };
