@@ -12,6 +12,7 @@ const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
 const scheduler = @import("scheduler.zig");
+const wake_mod = @import("wake.zig");
 
 const log = std.log.scoped(.rpc_quic_transport);
 const Net = std.Io.net;
@@ -24,6 +25,7 @@ const BaselineEngine = baseline_engine.BaselineEngine;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
 const NativeControlFramer = native_framer.ControlFramer;
 const NativeEngine = native_engine.NativeEngine;
+const PollResult = wake_mod.PollResult;
 
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
@@ -52,10 +54,7 @@ pub const Connection = struct {
     baseline: BaselineEngine,
     native: NativeEngine,
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    /// POSIX-only run-loop wake pipe. [0] is read by the run loop; [1] is
-    /// written by cross-thread `sendFrame()` / `requestClose()` calls.
-    wake_fds: ?[2]std.posix.fd_t = null,
+    wake_state: wake_mod.Handle = .{},
     reveal_close_reason_on_wire: bool = false,
     close_status: ?quic_close.Status = null,
     close_reason_buf: [quic_close.max_wire_reason_bytes]u8 = undefined,
@@ -188,30 +187,10 @@ pub const Connection = struct {
                 max_outbound_queue_bytes,
                 native_options,
             ),
-            .wake_fds = createWakeFds(),
+            .wake_state = wake_mod.Handle.init(),
             .reveal_close_reason_on_wire = reveal_close_reason_on_wire,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
         };
-    }
-
-    fn createWakeFds() ?[2]std.posix.fd_t {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return null;
-        var fds: [2]std.posix.fd_t = undefined;
-        if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
-            return null;
-        }
-        setNonBlocking(fds[0]);
-        setNonBlocking(fds[1]);
-        return fds;
-    }
-
-    fn setNonBlocking(fd: std.posix.fd_t) void {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-        const rc = std.posix.system.fcntl(fd, std.posix.F.GETFL, @as(usize, 0));
-        if (std.posix.errno(rc) != .SUCCESS) return;
-        var flags: usize = @intCast(rc);
-        flags |= @as(usize, 1 << @bitOffsetOf(std.posix.O, "NONBLOCK"));
-        _ = std.posix.system.fcntl(fd, std.posix.F.SETFL, flags);
     }
 
     pub fn deinit(self: *Connection) void {
@@ -238,19 +217,11 @@ pub const Connection = struct {
         self.on_message = null;
         self.on_error = null;
         self.on_close = null;
-        self.closeWakeFds();
+        self.wake_state.deinit();
         self.endpointDriver().deinit();
         self.allocator.free(self.udp_rx_buf);
         self.allocator.free(self.udp_tx_buf);
         self.allocator.free(self.stream_read_buf);
-    }
-
-    fn closeWakeFds(self: *Connection) void {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-        const fds = self.wake_fds orelse return;
-        self.wake_fds = null;
-        _ = std.posix.system.close(fds[0]);
-        _ = std.posix.system.close(fds[1]);
     }
 
     pub fn start(
@@ -306,9 +277,7 @@ pub const Connection = struct {
     /// immediately. Other targets keep a wake flag and the scheduler caps
     /// blocking waits to a short interval until a native event primitive lands.
     pub fn wake(self: *Connection) void {
-        if (self.wake_requested.swap(true, .acq_rel)) return;
-        const fds = self.wake_fds orelse return;
-        writeWakeByte(fds[1]);
+        self.wake_state.request();
     }
 
     pub fn close(self: *Connection) void {
@@ -438,80 +407,21 @@ pub const Connection = struct {
         return result;
     }
 
-    const PollResult = struct {
-        socket_ready: bool = false,
-        wake_drained: bool = false,
-    };
-
     fn waitForUdpOrWake(self: *Connection, wait_duration: std.Io.Duration) !?PollResult {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return null;
-        const fds = self.wake_fds orelse return null;
         const socket = self.endpointDriver().activeSocket();
-
-        var poll_fds = [2]std.posix.pollfd{
-            .{ .fd = socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
-            .{ .fd = fds[0], .events = std.posix.POLL.IN, .revents = 0 },
-        };
-        const timeout_ms = scheduler.durationToPollTimeoutMs(wait_duration);
-        while (true) {
-            const rc = std.posix.system.poll(@ptrCast(&poll_fds), poll_fds.len, timeout_ms);
-            if (rc > 0) break;
-            if (rc == 0) return PollResult{};
-            if (std.posix.errno(rc) == .INTR) continue;
-            return error.PollFailed;
-        }
-
-        var result = PollResult{};
-        if (poll_fds[1].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
-            self.drainWakePipe();
-            _ = self.wake_requested.swap(false, .acq_rel);
-            result.wake_drained = true;
-        }
-        if (poll_fds[0].revents & std.posix.POLL.NVAL != 0) return error.BrokenPipe;
-        result.socket_ready =
-            poll_fds[0].revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR) != 0;
-        return result;
+        return try self.wake_state.waitForSocket(socket.handle, wait_duration);
     }
 
     fn consumeWakeRequested(self: *Connection) bool {
-        if (!self.wake_requested.swap(false, .acq_rel)) return false;
-        self.drainWakePipe();
-        return true;
-    }
-
-    fn drainWakePipe(self: *Connection) void {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-        const fds = self.wake_fds orelse return;
-        var buf: [64]u8 = undefined;
-        while (true) {
-            const rc = std.posix.system.read(fds[0], &buf, buf.len);
-            if (rc > 0) continue;
-            if (rc == 0) return;
-            switch (std.posix.errno(rc)) {
-                .INTR => continue,
-                .AGAIN => return,
-                else => return,
-            }
-        }
-    }
-
-    fn writeWakeByte(fd: std.posix.fd_t) void {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-        const byte = [_]u8{1};
-        while (true) {
-            const rc = std.posix.system.write(fd, &byte, byte.len);
-            if (rc > 0) return;
-            if (rc == 0) return;
-            switch (std.posix.errno(rc)) {
-                .INTR => continue,
-                .AGAIN => return,
-                else => return,
-            }
-        }
+        return self.wake_state.consumeRequested();
     }
 
     fn hasWakeSupport(self: *const Connection) bool {
-        return self.wake_fds != null;
+        return self.wake_state.isSupported();
+    }
+
+    fn wakeRequested(self: *const Connection) bool {
+        return self.wake_state.isRequested();
     }
 
     fn receiveTimeout(self: *const Connection) std.Io.Duration {
@@ -523,7 +433,7 @@ pub const Connection = struct {
     }
 
     fn hasImmediateWork(self: *Connection) bool {
-        if (self.wake_requested.load(.acquire)) return true;
+        if (self.wakeRequested()) return true;
         if (self.activeQuicConn()) |conn| {
             if (conn.canSend()) return true;
             if (!self.selectedOutboundEmpty()) {
@@ -819,12 +729,12 @@ test "QUIC sendFrame requests scheduler wake" {
     var conn = try initTestClient(std.testing.allocator);
     defer conn.deinit();
 
-    try std.testing.expect(!conn.wake_requested.load(.acquire));
+    try std.testing.expect(!conn.wakeRequested());
     try conn.sendFrame("abc");
-    try std.testing.expect(conn.wake_requested.load(.acquire));
+    try std.testing.expect(conn.wakeRequested());
     try std.testing.expect(!conn.baseline.outbound.isEmpty());
     try std.testing.expect(conn.consumeWakeRequested());
-    try std.testing.expect(!conn.wake_requested.load(.acquire));
+    try std.testing.expect(!conn.wakeRequested());
 }
 
 test "QUIC native sendFrame uses native outbound queue" {
@@ -832,7 +742,7 @@ test "QUIC native sendFrame uses native outbound queue" {
     defer conn.deinit();
 
     try conn.sendFrame("abc");
-    try std.testing.expect(conn.wake_requested.load(.acquire));
+    try std.testing.expect(conn.wakeRequested());
     try std.testing.expect(conn.baseline.outbound.isEmpty());
     try std.testing.expect(!conn.native.outbound.isEmpty());
 }
