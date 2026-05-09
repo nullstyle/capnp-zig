@@ -4,28 +4,33 @@ const capnpc = @import("capnpc-zig");
 const cap_table = capnpc.rpc.caps.table;
 const message = capnpc.message;
 const protocol = capnpc.rpc.wire.protocol;
-const peer_control = capnpc.rpc.testing.peer_control;
+const peer_bootstrap = capnpc.rpc.testing.peer_bootstrap;
+const peer_disembargo = capnpc.rpc.testing.peer_disembargo;
+const peer_finish = capnpc.rpc.testing.peer_finish;
+const peer_provide_accept_join = capnpc.rpc.testing.peer_provide_accept_join;
+const peer_resolve = capnpc.rpc.testing.peer_resolve;
+const peer_third_party = capnpc.rpc.testing.peer_third_party;
 
-const allocateEmbargoIdForPeerFn = peer_control.allocateEmbargoIdForPeerFn;
-const captureAnyPointerPayloadForPeerFn = peer_control.captureAnyPointerPayloadForPeerFn;
-const clearResolvedImportEmbargoForPeerFn = peer_control.clearResolvedImportEmbargoForPeerFn;
-const freeOwnedFrameForPeerFn = peer_control.freeOwnedFrameForPeerFn;
-const forgetPendingEmbargoForPeerFn = peer_control.forgetPendingEmbargoForPeerFn;
-const handleBootstrap = peer_control.handleBootstrap;
-const handleFinish = peer_control.handleFinish;
-const handleUnimplementedQuestionForPeerFn = peer_control.handleUnimplementedQuestionForPeerFn;
-const hasKnownResolvePromiseForPeerFn = peer_control.hasKnownResolvePromiseForPeerFn;
-const noteCallSendResultsForPeerFn = peer_control.noteCallSendResultsForPeerFn;
-const rememberPendingEmbargoForPeerFn = peer_control.rememberPendingEmbargoForPeerFn;
-const resolveCapDescriptorForPeerFn = peer_control.resolveCapDescriptorForPeerFn;
-const resolveProvideImportedCapForPeerFn = peer_control.resolveProvideImportedCapForPeerFn;
-const resolveProvidePromisedAnswerForPeerFn = peer_control.resolveProvidePromisedAnswerForPeerFn;
-const resolveProvideTargetForPeerFn = peer_control.resolveProvideTargetForPeerFn;
-const setForwardedCallThirdPartyFromPayloadForPeerFn = peer_control.setForwardedCallThirdPartyFromPayloadForPeerFn;
-const takePendingEmbargoPromiseForPeerFn = peer_control.takePendingEmbargoPromiseForPeerFn;
-const takeResolvedAnswerFrameForPeerFn = peer_control.takeResolvedAnswerFrameForPeerFn;
+const allocateEmbargoIdForPeerFn = peer_resolve.allocateEmbargoIdForPeerFn;
+const captureAnyPointerPayloadForPeerFn = peer_third_party.captureAnyPointerPayloadForPeerFn;
+const clearResolvedImportEmbargoForPeerFn = peer_disembargo.clearResolvedImportEmbargoForPeerFn;
+const freeOwnedFrameForPeerFn = peer_finish.freeOwnedFrameForPeerFn;
+const forgetPendingEmbargoForPeerFn = peer_resolve.forgetPendingEmbargoForPeerFn;
+const handleBootstrap = peer_bootstrap.handleBootstrap;
+const handleFinish = peer_finish.handleFinish;
+const handleUnimplementedQuestionForPeerFn = peer_bootstrap.handleUnimplementedQuestionForPeerFn;
+const hasKnownResolvePromiseForPeerFn = peer_resolve.hasKnownResolvePromiseForPeerFn;
+const noteCallSendResultsForPeerFn = peer_third_party.noteCallSendResultsForPeerFn;
+const rememberPendingEmbargoForPeerFn = peer_resolve.rememberPendingEmbargoForPeerFn;
+const resolveCapDescriptorForPeerFn = peer_resolve.resolveCapDescriptorForPeerFn;
+const resolveProvideImportedCapForPeerFn = peer_provide_accept_join.resolveProvideImportedCapForPeerFn;
+const resolveProvidePromisedAnswerForPeerFn = peer_provide_accept_join.resolveProvidePromisedAnswerForPeerFn;
+const resolveProvideTargetForPeerFn = peer_provide_accept_join.resolveProvideTargetForPeerFn;
+const setForwardedCallThirdPartyFromPayloadForPeerFn = peer_third_party.setForwardedCallThirdPartyFromPayloadForPeerFn;
+const takePendingEmbargoPromiseForPeerFn = peer_disembargo.takePendingEmbargoPromiseForPeerFn;
+const takeResolvedAnswerFrameForPeerFn = peer_finish.takeResolvedAnswerFrameForPeerFn;
 
-test "peer_control resolve/disembargo peer helper factories operate on peer state" {
+test "peer resolve/disembargo helper factories operate on peer state" {
     const FakeResolvedImport = struct {
         cap: ?cap_table.ResolvedCap = null,
         embargo_id: ?u32 = null,
@@ -95,7 +100,7 @@ test "peer_control resolve/disembargo peer helper factories operate on peer stat
     clear_embargo(&peer, 12345);
 }
 
-test "peer_control noteCallSendResultsForPeerFn routes to yourself and third-party handlers" {
+test "peer third-party noteCallSendResultsForPeerFn routes to yourself and third-party handlers" {
     const State = struct {
         yourself_calls: usize = 0,
         third_party_calls: usize = 0,
@@ -192,7 +197,7 @@ test "peer_control noteCallSendResultsForPeerFn routes to yourself and third-par
     try std.testing.expectEqual(@as(usize, 1), state.third_party_calls);
 }
 
-test "peer_control forwarded third-party/capture helper factories use peer allocator and payload fields" {
+test "peer third-party capture helper factories use peer allocator and payload fields" {
     const FakePeer = struct {
         allocator: std.mem.Allocator,
         capture_calls: usize = 0,
@@ -244,7 +249,7 @@ test "peer_control forwarded third-party/capture helper factories use peer alloc
     try std.testing.expectEqualStrings("destination", try payload_ptr.getText());
 }
 
-test "peer_control provide-target helper factories resolve imported and promised targets with peer state" {
+test "peer provide-target helper factories resolve imported and promised targets with peer state" {
     const FakeExportEntry = struct {
         is_promise: bool = false,
         resolved: ?cap_table.ResolvedCap = null,
@@ -350,7 +355,7 @@ test "peer_control provide-target helper factories resolve imported and promised
     );
 }
 
-test "peer_control handleBootstrap sends exception when bootstrap export is not configured" {
+test "peer bootstrap sends exception when bootstrap export is not configured" {
     const State = struct {
         send_return_exception_calls: usize = 0,
         exception_question_id: u32 = 0,
@@ -407,7 +412,7 @@ test "peer_control handleBootstrap sends exception when bootstrap export is not 
     try std.testing.expectEqual(@as(usize, 0), state.record_resolved_answer_calls);
 }
 
-test "peer_control handleBootstrap sends frame and records resolved bootstrap answer" {
+test "peer bootstrap sends frame and records resolved bootstrap answer" {
     const State = struct {
         allocator: std.mem.Allocator,
         note_export_ref_calls: usize = 0,
@@ -480,7 +485,7 @@ test "peer_control handleBootstrap sends frame and records resolved bootstrap an
     try std.testing.expectEqualSlices(u8, state.sent_frame.?, state.recorded_frame.?);
 }
 
-test "peer_control frame helper factories take and free resolved answer frame" {
+test "peer finish frame helper factories take and free resolved answer frame" {
     const FakeResolvedAnswer = struct {
         frame: []u8,
     };
@@ -513,7 +518,7 @@ test "peer_control frame helper factories take and free resolved answer frame" {
     try std.testing.expectEqual(@as(?[]u8, null), take_frame(&peer, 55));
 }
 
-test "peer_control handleFinish runs clear, tail-forward, and resolved cleanup" {
+test "peer finish runs clear, tail-forward, and resolved cleanup" {
     const State = struct {
         expected_question_id: u32,
         clear_calls: usize = 0,
@@ -613,7 +618,7 @@ test "peer_control handleFinish runs clear, tail-forward, and resolved cleanup" 
     try std.testing.expectEqual(@as(usize, 1), state.free_frame_calls);
 }
 
-test "peer_control handleFinish skips optional tail and resolved cleanup when absent" {
+test "peer finish skips optional tail and resolved cleanup when absent" {
     const State = struct {
         expected_question_id: u32,
         clear_calls: usize = 0,
@@ -699,7 +704,7 @@ test "peer_control handleFinish skips optional tail and resolved cleanup when ab
     try std.testing.expectEqual(@as(usize, 0), state.free_frame_calls);
 }
 
-test "peer_control handleUnimplementedQuestionForPeerFn builds exception return" {
+test "peer bootstrap handleUnimplementedQuestionForPeerFn builds exception return" {
     const State = struct {
         calls: usize = 0,
         answer_id: u32 = 0,
@@ -729,7 +734,7 @@ test "peer_control handleUnimplementedQuestionForPeerFn builds exception return"
     try std.testing.expectEqualStrings("unimplemented", state.reason);
 }
 
-test "peer_control handleUnimplementedQuestionForPeerFn ignores unknown question return error" {
+test "peer bootstrap handleUnimplementedQuestionForPeerFn ignores unknown question return error" {
     const State = struct {
         calls: usize = 0,
     };

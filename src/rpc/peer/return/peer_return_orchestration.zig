@@ -1,7 +1,6 @@
 const std = @import("std");
 const message = @import("../../../serialization/message.zig");
 const protocol = @import("../../wire/protocol.zig");
-const peer_control = @import("../peer_control.zig");
 const peer_return_dispatch = @import("./peer_return_dispatch.zig");
 const peer_third_party = @import("../third_party.zig");
 const peer_third_party_returns = peer_third_party.returns;
@@ -150,6 +149,46 @@ pub fn handleMissingReturnQuestionForPeerFn(comptime PeerType: type) *const fn (
     }.call;
 }
 
+pub fn handleReturnRegular(
+    comptime PeerType: type,
+    comptime QuestionType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    question: QuestionType,
+    ret: protocol.Return,
+    inbound_caps: *const InboundCapsType,
+    take_adopted_answer_original: *const fn (*PeerType, u32) ?u32,
+    restore_adopted_answer_original: *const fn (*PeerType, u32, u32) void,
+    dispatch_question_return: *const fn (*PeerType, QuestionType, protocol.Return, *const InboundCapsType) anyerror!void,
+    release_inbound_caps: *const fn (*PeerType, *const InboundCapsType) anyerror!void,
+    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+    maybe_send_auto_finish: *const fn (*PeerType, QuestionType, u32, bool) anyerror!void,
+) !void {
+    var callback_ret = ret;
+    var restore_adopted_answer = false;
+    var adopted_original_answer_id: u32 = undefined;
+    if (take_adopted_answer_original(peer, ret.answer_id)) |original_answer_id| {
+        callback_ret.answer_id = original_answer_id;
+        adopted_original_answer_id = original_answer_id;
+        restore_adopted_answer = true;
+    }
+    errdefer if (restore_adopted_answer) {
+        restore_adopted_answer_original(peer, ret.answer_id, adopted_original_answer_id);
+    };
+
+    try dispatch_question_return(peer, question, callback_ret, inbound_caps);
+    restore_adopted_answer = false;
+
+    if (ret.tag == .results and ret.results != null) {
+        release_inbound_caps(peer, inbound_caps) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            report_nonfatal_error(peer, err);
+        };
+    }
+
+    try maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
+}
+
 pub fn handleReturnRegularForPeer(
     comptime PeerType: type,
     comptime QuestionType: type,
@@ -161,7 +200,7 @@ pub fn handleReturnRegularForPeer(
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
 ) !void {
-    try peer_control.handleReturnRegular(
+    try handleReturnRegular(
         PeerType,
         QuestionType,
         InboundCapsType,

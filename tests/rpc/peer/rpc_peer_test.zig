@@ -1593,5 +1593,5 @@ test "peer init attaches connection immediately" {
 }
 
 test {
-    _ = @import("rpc_peer_control_from_peer_control_zig_test.zig");
+    _ = @import("rpc_peer_semantic_helpers_test.zig");
 }
