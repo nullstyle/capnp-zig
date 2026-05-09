@@ -137,12 +137,13 @@ Each handler:
 
 ## 4. Set Up the RPC Runtime
 
-The RPC runtime uses synchronous POSIX I/O with a concurrent read/write transport. Each connection runs on its own thread.
+The RPC runtime uses `std.Io` with a concurrent read/write transport. Each
+connection is driven by calling `Connection.run()` on its owning thread; outbound
+writes are drained by the transport writer.
 
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
-const xev = @import("xev");
 
 const rpc = capnpc.rpc;
 const calculator = @import("calculator");
@@ -152,6 +153,7 @@ var g_state: ?*State = null;
 
 const State = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     done: bool = false,
     err: ?anyerror = null,
     server_peer: ?*rpc.peer.Peer = null,
@@ -177,13 +179,15 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 ```zig
 const ServerCtx = struct {
     listener: rpc.transport.tcp.Listener,
-    state: *State,
     server: Calculator.Server,
 };
 
-fn onAccept(listener: *rpc.transport.tcp.Listener, conn: *rpc.transport.tcp.Connection) void {
-    const server_ctx: *ServerCtx = @fieldParentPtr("listener", listener);
-    const state = server_ctx.state;
+fn serverThread(server_ctx: *ServerCtx, state: *State) void {
+    const conn = server_ctx.listener.accept() catch |err| {
+        state.err = err;
+        state.done = true;
+        return;
+    };
 
     const peer = state.allocator.create(rpc.peer.Peer) catch {
         state.err = error.OutOfMemory;
@@ -201,23 +205,27 @@ fn onAccept(listener: *rpc.transport.tcp.Listener, conn: *rpc.transport.tcp.Conn
     };
 
     peer.start(onPeerError, onPeerClose);
+    conn.run();
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
 
-    var runtime = try rpc.transport.tcp.Runtime.init(allocator);
-    defer runtime.deinit();
+    var backend = try capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
+    defer backend.deinit();
+    const io = backend.io();
 
-    var state = State{ .allocator = allocator };
+    var state = State{ .allocator = allocator, .io = io };
     g_state = &state;
 
-    const addr = try std.net.Address.parseIp4("127.0.0.1", 7001);
+    const addr: std.Io.net.IpAddress = .{ .ip4 = .{
+        .bytes = .{ 127, 0, 0, 1 },
+        .port = 7001,
+    } };
 
     var server_ctx = ServerCtx{
-        .state = &state,
         .server = Calculator.Server{
             .ctx = &state,
             .vtable = .{
@@ -225,17 +233,14 @@ pub fn main() !void {
                 .multiply = handleMultiply,
             },
         },
-        .listener = try rpc.transport.tcp.Listener.init(
-            allocator, &runtime.loop, addr, onAccept, .{},
-        ),
+        .listener = try rpc.transport.tcp.Listener.init(allocator, io, addr, .{}),
     };
-    server_ctx.listener.start();
+    defer server_ctx.listener.close();
 
-    // ... (connect client, then run event loop) ...
+    const server_thread = try std.Thread.spawn(.{}, serverThread, .{ &server_ctx, &state });
+    defer server_thread.join();
 
-    while (!state.done) {
-        try runtime.loop.run(.once);
-    }
+    // ... connect a client, bootstrap, then drive that connection with run() ...
 }
 ```
 
@@ -264,11 +269,11 @@ fn onBootstrap(
 }
 ```
 
-Initiate the connection (inside an xev connect callback):
+Initiate the connection after opening a TCP socket:
 
 ```zig
 const conn = try allocator.create(rpc.transport.tcp.Connection);
-conn.* = try rpc.transport.tcp.Connection.init(allocator, loop, socket, .{});
+conn.* = try rpc.transport.tcp.Connection.init(allocator, io, socket_fd, .{});
 
 const peer = try allocator.create(rpc.peer.Peer);
 peer.* = rpc.peer.Peer.init(allocator, conn);
@@ -277,6 +282,9 @@ peer.start(onPeerError, onPeerClose);
 
 // Request the bootstrap capability
 _ = try Calculator.Client.fromBootstrap(peer, &state, onBootstrap);
+
+// Drive inbound frames until the connection closes.
+conn.run();
 ```
 
 ## 6. Make RPC Calls
@@ -375,12 +383,13 @@ When a client connects, it requests the server's **bootstrap capability** — a 
 The RPC runtime is fully async and callback-driven:
 - No async/await or coroutines
 - Build functions populate parameters synchronously before send
-- Return callbacks fire on the event loop thread when responses arrive
+- Return callbacks fire on the connection owner thread when responses arrive
 - Context pointers (`*anyopaque`) carry state between callbacks
 
 ### Single-Threaded
 
-All operations on a Peer must happen on the event loop thread. The runtime asserts this in debug builds. Do not share Peers across threads.
+All operations on a `Peer` must happen on the connection owner thread. The
+runtime asserts this in debug builds. Do not share peers across threads.
 
 ### VTable Pattern
 

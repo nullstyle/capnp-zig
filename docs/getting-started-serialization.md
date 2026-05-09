@@ -76,7 +76,7 @@ const capnpc_dep = b.dependency("capnpc_zig", .{
     .optimize = optimize,
 });
 
-// Use the core module (no RPC/xev dependency)
+// Use the core module (no POSIX TCP/QUIC transport surface)
 exe.root_module.addImport("capnpc-zig", capnpc_dep.module("capnpc-zig-core"));
 ```
 

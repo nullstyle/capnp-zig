@@ -35,6 +35,8 @@ provides guidance for downstream consumers.
 | RPC Capability Table | `src/rpc/caps/table.zig` | Export/import tracking for capabilities. |
 | RPC Framing | `src/rpc/wire/framing.zig` | Segment-framed message reassembly from byte streams. |
 | RPC Transport | `src/rpc/transport/tcp/stream_transport.zig` | Concurrent read/write I/O. |
+| RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events. Event names may grow while payloads stay redacted. |
+| RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/caps/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
 
@@ -78,7 +80,7 @@ facade for narrow white-box coverage.
 | Peer third-party | `src/rpc/peer/third_party/peer_third_party_adoption.zig`, `peer_third_party_pending.zig`, `peer_third_party_returns.zig` | Third-party capability transfer. |
 | Promised answer copy | `src/rpc/promises/promised_answer_copy.zig` | Deep-copy utility for promised answers. |
 | Promise pipeline | `src/rpc/promises/pipeline.zig` | Owned promised-answer state and transform traversal utilities. |
-| RPC mod (core) | `src/rpc/mod_core.zig` | Core RPC re-exports (subset without xev). |
+| RPC mod (core) | `src/rpc/mod_core.zig` | Core RPC re-exports for hostless targets. |
 | List readers impl | `src/serialization/message/list_readers.zig` | List reader type definitions (re-exported by `message.zig`). |
 | List builders impl | `src/serialization/message/list_builders.zig` | List builder type definitions (re-exported by `message.zig`). |
 | Any pointer impl | `src/serialization/message/any_pointer_reader.zig`, `src/serialization/message/any_pointer_builder.zig` | AnyPointer impl (re-exported by `message.zig`). |
@@ -104,7 +106,8 @@ capnpc-zig follows [Semantic Versioning 2.0.0](https://semver.org/).
 ## Recommendations for Consumers
 
 1. **Pin your dependency** to an exact version or commit hash until 1.0.0.
-2. **Only import through `src/lib.zig`** (i.e., `@import("capnpc-zig")`).
+2. **Only import through `src/lib.zig`** (i.e., `@import("capnpc-zig")`),
+   and prefer the domain-shaped RPC facade under `capnpc.rpc`.
    Direct imports of internal modules may break at any time.
 3. **Expect RPC API churn.** The RPC runtime is under active development.
    If you depend on it, watch the changelog closely.

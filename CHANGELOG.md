@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **RPC public exports** are now domain-shaped. Use `rpc.wire`,
+  `rpc.caps`, `rpc.promises`, `rpc.events`, `rpc.transport`, `rpc.peer`,
+  `rpc.integration`, `rpc.generated`, and `rpc.testing`. Removed top-level
+  compatibility aliases include `rpc.protocol`, `rpc.framing`, `rpc.cap_table`,
+  `rpc.promise_pipeline`, `rpc.connection`, `rpc.runtime`,
+  `rpc.transport_binding`, `rpc.host_peer`, and `rpc._internal`.
+- **RPC test steps** are now named by domain: `test-rpc-wire`,
+  `test-rpc-caps`, `test-rpc-promises`, `test-rpc-transport`,
+  `test-rpc-peer`, `test-rpc-integration`, and `test-rpc-quic`. The old
+  `test-rpc-level*` steps were removed.
+- **Zig 0.17-dev** is the active target for this branch. Zig 0.16 is no longer
+  a compatibility gate.
+
 ### Added
+
+- `rpc.events`, a redacted transport-general observer API shared by TCP, QUIC,
+  host-peer, and peer dispatch.
+- QUIC multi-session server fanout through `rpc.transport.quic.Server` and
+  `ServerSession`, while `Connection.initServer()` remains the single-session
+  helper.
+- QUIC native-mode stress and malformed-frame coverage.
+- `io_backend.Backend.init(.evented, ...)` support where Zig exposes
+  `std.Io.Evented`.
+
+### Changed
+
+- RPC peer internals are split into semantic modules under `peer/return`,
+  `peer/forward`, `peer/provide`, and `peer/third_party`, making the codebase
+  easier to navigate without changing the standard `rpc.capnp` wire protocol.
+
+### Existing Baseline
 
 - **Wire format** (`src/serialization/message.zig`, `src/serialization/message/*`): Full Cap'n Proto binary
   format support including segment management, pointer encoding/decoding
@@ -37,18 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream-based message reading.
 
 - **RPC runtime** (`src/rpc/`, experimental): Cap'n Proto RPC implementation
-  over TCP using synchronous POSIX I/O with concurrent read/write transport. Includes:
-  - Listener and socket helpers (`runtime.zig`)
-  - Connection state machine (`connection.zig`)
-  - Full RPC peer with question/answer tables, capability export/import,
-    bootstrap, call routing, and promise pipelining (`peer.zig`)
-  - RPC protocol message types and wire-format readers/builders (`protocol.zig`)
-  - Segment-framed message reassembly (`framing.zig`)
-  - Concurrent read/write TCP transport (`transport.zig`)
-  - Host-neutral detached frame-pump for wasm environments (`host_peer.zig`)
-  - Capability descriptor remapping (`payload_remap.zig`)
-  - Three-party handoff (provide/accept/join) and third-party capability
-    transfer support
+  over TCP using synchronous POSIX I/O with concurrent read/write transport.
+  Includes the domain-shaped runtime surface under `rpc.wire`, `rpc.caps`,
+  `rpc.promises`, `rpc.transport`, `rpc.peer`, and `rpc.integration`.
 
 - **Interop testing**: Dockerized end-to-end tests against the Go Cap'n Proto
   reference implementation (`vendor/ext/go-capnp/`), serving as the RPC hard
@@ -57,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Benchmarks**: Ping-pong RPC benchmark with configurable iterations and
   payload size. Packed and unpacked serialization benchmarks.
 
-- **Build system**: Zig 0.16 build with `build.zig` providing targets for
+- **Build system**: Zig 0.17-dev build with `build.zig` providing targets for
   `build`, `test`, `check`, `bench-*`, and `example-rpc`. Justfile aliases for
   common tasks.
 

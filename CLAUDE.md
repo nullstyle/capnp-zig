@@ -58,7 +58,7 @@ Four-layer design, each building on the previous:
 
 **Code Generation** (`src/capnpc-zig/`) — Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP. All socket I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded` today, `std.Io.Evented` reserved until this project validates it). Modules: `runtime.zig` (listener/socket helpers), `connection.zig` (state machine), `framing.zig` (message framing), `transport.zig` (concurrent read/write I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
+**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP with optional QUIC. All socket I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded`, `std.Io.Evented` where Zig exposes it, or the process-provided default). Public modules are domain-shaped: `wire`, `caps`, `promises`, `events`, `transport`, `peer`, `integration`, `generated`, and `testing`.
 
 ### Key data flows
 
@@ -78,7 +78,7 @@ The RPC runtime is polymorphic over `std.Io`. Centralised selection lives in `sr
 
 - `Backend.init(.process_init, gpa, init.io)` — reuse the `std.Io` provided by `std.process.Init` (currently `std.Io.Threaded`).
 - `Backend.init(.threaded, gpa, _)` — explicitly construct a fresh `std.Io.Threaded`.
-- `Backend.init(.evented, gpa, _)` — placeholder for `std.Io.Evented`; returns `error.EventedBackendNotImplemented` until capnpc-zig enables its evented adapter.
+- `Backend.init(.evented, gpa, _)` — construct and own `std.Io.Evented` where Zig exposes it; returns `error.EventedBackendUnsupported` only when the target has no evented backend.
 
 RPC entry points (`examples/rpc_pingpong.zig`, `tests/e2e/zig/main_{server,client}.zig`) read the kind from the `-Dio-backend=process_init|threaded|evented` build option (default `process_init`) via the `io_backend_options` module wired up in `build.zig`.
 

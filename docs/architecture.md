@@ -1,211 +1,200 @@
 # Architecture
 
-This document describes the layered architecture of capnpc-zig, a pure Zig
+This document describes the layered architecture of capnp-zig, a pure Zig
 implementation of Cap'n Proto serialization, code generation, and RPC.
 
 ## Layer Diagram
 
-```
+```text
 +-----------------------------------------------------------------------+
+| Layer 4: RPC Runtime                                  src/rpc/        |
 |                                                                       |
-|  Layer 4: RPC Runtime  (EXPERIMENTAL)              src/rpc/           |
-|                                                                       |
-|    runtime.zig          Listener/socket helpers                        |
-|    connection.zig       Connection state machine                      |
-|    peer.zig             Call routing, bootstrap, capability lifecycle  |
-|    protocol.zig         RPC message types (Call, Return, Resolve, ..) |
-|    caps/table.zig       Compatibility facade for capability tables     |
-|    caps/lifecycle.zig   Import/export refcount lifecycle              |
-|    caps/inbound.zig     Inbound payload capability table resolution    |
-|    caps/outbound.zig    Outbound payload capability descriptor encoding|
-|    caps/descriptors.zig Capability descriptor vocabulary               |
-|    framing.zig          Segment-framed message reassembly             |
-|    transport.zig        Concurrent read/write I/O|
-|    host_peer.zig        Host-neutral peer transport (wasm-compatible) |
-|    payload_remap.zig    Capability descriptor remapping               |
-|                                                                       |
+|   wire/            Framing and rpc.capnp message readers/builders     |
+|   caps/            Capability tables, descriptors, and payload remap   |
+|   promises/        Promised-answer and pipelined-call support          |
+|   events.zig       Redacted transport-general observer events          |
+|   transport/tcp/   TCP listener, connection, and stream transport      |
+|   transport/quic/  Optional QUIC baseline/native transports           |
+|   peer/            Call routing, bootstrap, lifecycle orchestration    |
+|   integration/     HostPeer and WorkerPool host-facing adapters        |
 +-----------------------------------------------------------------------+
-        |  uses wire format for message encoding/decoding
+        | uses generated rpc.capnp bindings and serialization messages
         v
 +-----------------------------------------------------------------------+
+| Layer 3: Code Generation                         src/capnpc-zig/      |
 |                                                                       |
-|  Layer 3: Code Generation                      src/capnpc-zig/        |
-|                                                                       |
-|    generator.zig        Driver: schema nodes -> Zig source            |
-|    struct_gen.zig       Field accessor generation (Reader + Builder)  |
-|    types.zig            Cap'n Proto type -> Zig type mapping          |
-|                                                                       |
+|   generator.zig      Driver: schema nodes -> Zig source               |
+|   struct_gen.zig     Field accessor generation                        |
+|   types.zig          Cap'n Proto type -> Zig type mapping             |
 +-----------------------------------------------------------------------+
-        |  reads schema nodes; emits code that imports the wire format
+        | reads schema nodes; emits code that imports the runtime
         v
 +-----------------------------------------------------------------------+
+| Layer 2: Schema                                  src/serialization/    |
 |                                                                       |
-|  Layer 2: Schema                                                      |
-|                                                                       |
-|    schema.zig              Type definitions (Node, Field, Type, Value)|
-|    request_reader.zig      Parse CodeGeneratorRequest from stdin      |
-|    schema_validation.zig   Validate & canonicalize schema graphs      |
-|                                                                       |
+|   schema.zig              Type definitions                            |
+|   request_reader.zig      CodeGeneratorRequest parsing                |
+|   schema_validation.zig   Schema graph validation and canonicalization |
 +-----------------------------------------------------------------------+
-        |  schema types reference wire-format element sizes and IDs
+        | schema types reference wire-format element sizes and IDs
         v
 +-----------------------------------------------------------------------+
+| Layer 1: Wire Format                             src/serialization/    |
 |                                                                       |
-|  Layer 1: Wire Format                          src/serialization/message.zig        |
-|                                                 src/serialization/message/*          |
-|                                                                       |
-|    message.zig              Segment management, pointer encoding,     |
-|                             packing/unpacking, Message & MessageBuilder|
-|    message/struct_builder.zig   StructBuilder (write fields)          |
-|    message/list_builders.zig    Typed list builders                   |
-|    message/list_readers.zig     Typed list readers                    |
-|    message/any_pointer_reader.zig   AnyPointer read support           |
-|    message/any_pointer_builder.zig  AnyPointer write support          |
-|    message/clone_any_pointer.zig    Deep-copy pointers across msgs    |
-|                                                                       |
+|   message.zig             Segment management and pointer encoding      |
+|   message/*               Struct/list/text/data readers and builders   |
+|   reader.zig              Segment-aware reader convenience helpers     |
 +-----------------------------------------------------------------------+
-
-No external dependencies (pure Zig + POSIX)
 ```
 
-## Key Types by Layer
+Default builds use only Zig std and the vendored test fixtures. QUIC builds are
+opt-in with `-Dquic=true`, which resolves `quic-zig` and its BoringSSL support
+through `build.zig.zon`.
 
-### Layer 1 -- Wire Format
+## Key Types By Layer
 
-| Type | Role |
-|---|---|
-| `Message` | Immutable view over segment-framed bytes; zero-copy reads |
-| `MessageBuilder` | Allocates segments and builds messages in wire format |
-| `StructReader` | Reads struct data/pointer sections from a `Message` |
-| `StructBuilder` | Writes struct fields into a `MessageBuilder` |
-| `*ListReader` | Typed list readers (U8, U16, Text, Bool, Struct, ...) |
-| `*ListBuilder` | Typed list builders |
-| `AnyPointerReader` / `AnyPointerBuilder` | Untyped pointer access |
-
-### Layer 2 -- Schema
+### Layer 1: Wire Format
 
 | Type | Role |
 |---|---|
-| `schema.Node` | A schema graph node (file, struct, enum, interface, const, annotation) |
-| `schema.Field` | A struct field descriptor (slot or group) |
-| `schema.Type` | Cap'n Proto type union (primitives, list, struct, enum, interface, any_pointer) |
-| `schema.Value` | Default / constant values |
-| `schema.RequestedFile` | A file entry from a CodeGeneratorRequest |
+| `Message` | Immutable view over segment-framed bytes; zero-copy reads. |
+| `MessageBuilder` | Allocates segments and builds messages in wire format. |
+| `StructReader` | Reads struct data/pointer sections from a `Message`. |
+| `StructBuilder` | Writes struct fields into a `MessageBuilder`. |
+| `*ListReader` / `*ListBuilder` | Typed list accessors. |
+| `AnyPointerReader` / `AnyPointerBuilder` | Untyped pointer access. |
 
-### Layer 3 -- Code Generation
-
-| Type | Role |
-|---|---|
-| `Generator` | Main driver: takes schema nodes, produces `.zig` source files |
-| `StructGenerator` | Generates Reader and Builder types for a single struct |
-| `TypeGenerator` | Maps Cap'n Proto types to Zig type expressions |
-
-### Layer 4 -- RPC Runtime
+### Layer 2: Schema
 
 | Type | Role |
 |---|---|
-| `Runtime` | Listener and socket helpers |
-| `Listener` | Accepts inbound TCP connections |
-| `Connection` | Combines transport + framer for a single link |
-| `Peer` | Full RPC peer: question/answer tables, call routing, bootstrap |
-| `HostPeer` | Detached frame-pump wrapper for host-neutral (wasm) environments |
-| `cap_table.ExportCap` / `ImportCap` | Capability references |
-| `protocol.*` | Wire readers/builders for RPC messages (Call, Return, Resolve, ...) |
+| `schema.Node` | A schema graph node. |
+| `schema.Field` | A struct field descriptor. |
+| `schema.Type` | Cap'n Proto type union. |
+| `schema.Value` | Default or constant values. |
+| `schema.RequestedFile` | A file entry from a `CodeGeneratorRequest`. |
+
+### Layer 3: Code Generation
+
+| Type | Role |
+|---|---|
+| `Generator` | Main driver from schema nodes to `.zig` source. |
+| `StructGenerator` | Generates reader and builder types for a struct. |
+| `TypeGenerator` | Maps Cap'n Proto types to Zig type expressions. |
+
+### Layer 4: RPC Runtime
+
+The public RPC surface is intentionally grouped by domain:
+
+| Module | Role |
+|---|---|
+| `rpc.wire` | RPC message framing and generated `rpc.capnp` protocol accessors. |
+| `rpc.caps` | Capability descriptors, import/export tables, and payload remapping. |
+| `rpc.promises` | Promised-answer pipeline state and transform traversal. |
+| `rpc.events` | Redacted observer events shared by transports and peer dispatch. |
+| `rpc.transport.tcp` | TCP runtime, listener, connection, and stream transport. |
+| `rpc.transport.quic` | Optional QUIC connection, server fanout, baseline/native modes. |
+| `rpc.peer` | Full RPC peer facade: questions, answers, bootstrap, calls, returns. |
+| `rpc.integration` | `HostPeer` and `WorkerPool` adapters for host applications. |
+| `rpc.generated` | Generated bindings for Cap'n Proto's standard RPC schemas. |
+| `rpc.testing` | Test-only white-box helpers. |
+
+Generated RPC code imports through these domain modules. Deprecated top-level
+aliases such as `rpc.protocol`, `rpc.connection`, `rpc.cap_table`, and
+`rpc._internal` are intentionally absent.
 
 ## Data Flows
 
-### Serialization (write path)
+### Serialization Write Path
 
-```
+```text
 Application code
       |
       v
-MessageBuilder.allocateStruct()   -- reserve space in segments
+MessageBuilder.allocateStruct()
       |
       v
-StructBuilder.write*()            -- write field values into data section
-      |                              write pointers (text, list, nested struct)
-      v
-MessageBuilder.toBytes()          -- emit segment-framed wire bytes
-```
-
-### Deserialization (read path)
-
-```
-Wire bytes (from file, network, stdin)
+StructBuilder.write*()
       |
       v
-Message.init(bytes)               -- parse segment table, validate bounds
-      |
-      v
-Message.getRootStruct()           -- return StructReader for root pointer
-      |
-      v
-StructReader.read*()              -- zero-copy field access into wire bytes
+MessageBuilder.toBytes()
 ```
 
-### Code generation (compiler plugin)
+### Deserialization Read Path
 
+```text
+Wire bytes
+      |
+      v
+Message.init(bytes)
+      |
+      v
+Message.getRootStruct()
+      |
+      v
+StructReader.read*()
 ```
+
+### Code Generation
+
+```text
 capnp compile --output=capnpc-zig
       |
       v
-stdin (CodeGeneratorRequest, Cap'n Proto wire format)
+stdin CodeGeneratorRequest
       |
       v
-request_reader.parseCodeGeneratorRequest()   -- Layer 2: decode schema
+request_reader.parseCodeGeneratorRequest()
       |
       v
-Generator.generateFile()                     -- Layer 3: walk nodes
+Generator.generateFile()
       |
       v
-StructGenerator.generate()                   -- emit Reader/Builder types
-      |
-      v
-stdout (.zig source files)
+stdout .zig source files
 ```
 
-### RPC message exchange
+### RPC Message Exchange
 
-```
+```text
 Application                          Remote peer
     |                                     |
     |-- Peer.sendCall() ----------------->|
-    |   (builds Call msg, assigns         |
-    |    question ID, remaps caps)        |
     |                                     |
     |<----------- Return / Resolve -------|
-    |   (Peer dispatches to               |
-    |    QuestionCallback)                |
     |                                     |
     |<----------- inbound Call -----------|
-    |   (Peer invokes CallHandler         |
-    |    for exported capability)          |
+    |-- handler Return ------------------>|
 ```
 
-## Public API Surface (`src/lib.zig`)
+TCP and QUIC transports both deliver complete standard RPC frames to
+`rpc.peer.Peer`. QUIC baseline mode carries those frames over bidirectional
+stream 0. QUIC native mode preserves the same frame callback contract while
+routing large frames through one-shot unidirectional data streams.
+
+## Public API Surface
+
+`src/lib.zig` exports:
 
 ```zig
-pub const message            = @import("serialization/message.zig");           // Layer 1
-pub const schema             = @import("serialization/schema.zig");            // Layer 2
-pub const reader             = @import("serialization/reader.zig");            // Layer 1 convenience
-pub const codegen            = @import("capnpc-zig/generator.zig"); // Layer 3
-pub const request            = @import("serialization/request_reader.zig");    // Layer 2
-pub const schema_validation  = @import("serialization/schema_validation.zig"); // Layer 2
-pub const rpc                = @import("rpc/mod.zig");           // Layer 4
-pub const io_backend         = @import("io_backend.zig");        // std.Io backend selection
+pub const message = @import("serialization/message.zig");
+pub const schema = @import("serialization/schema.zig");
+pub const reader = @import("serialization/reader.zig");
+pub const codegen = @import("capnpc-zig/generator.zig");
+pub const request = @import("serialization/request_reader.zig");
+pub const schema_validation = @import("serialization/schema_validation.zig");
+pub const rpc = @import("rpc/mod.zig");
+pub const io_backend = @import("io_backend.zig");
 ```
 
-The default `capnpc-zig` module exposes serialization, codegen, TCP RPC, and a
-QUIC-disabled facade. Passing `-Dquic=true` selects `src/lib_quic.zig`, resolves
-the optional `quic_zig` dependency, and exposes the native QUIC transport at
+Default imports expose serialization, codegen, TCP RPC, and a QUIC-disabled
+facade. Passing `-Dquic=true` selects the QUIC-enabled library root and exposes
 `rpc.transport.quic`.
 
 ## External Dependencies
 
 | Dependency | Used by | Purpose |
 |---|---|---|
-| (none by default) | Library/runtime | Serialization, codegen, and TCP RPC use Zig std only. |
-| quic-zig / BoringSSL | Optional QUIC builds (`-Dquic=true`) | Native QUIC transport. |
-| vendor/ext/go-capnp | Tests / e2e | Go Cap'n Proto reference for interop testing |
-| vendor/ext/capnp_test | Tests | Official Cap'n Proto test fixtures |
+| Zig std | Library/runtime | Serialization, codegen, TCP RPC, and `std.Io` backend selection. |
+| `quic-zig` / BoringSSL | Optional QUIC builds | Native QUIC transport. |
+| `vendor/ext/go-capnp` | Tests / e2e | Go Cap'n Proto reference for interop testing. |
+| `vendor/ext/capnp_test` | Tests | Official Cap'n Proto test fixtures. |

@@ -7,10 +7,9 @@ const net = std.Io.net;
 
 /// Minimal RPC runtime context.
 ///
-/// In the previous xev-based architecture, Runtime wrapped the event loop.
-/// With synchronous POSIX I/O, the runtime is a thin holder for shared
-/// state (allocator). Connection read loops are driven directly by
-/// calling `Connection.run()` on a dedicated thread.
+/// Runtime is now a thin holder for shared state (allocator). Connection read
+/// loops are driven directly by calling `Connection.run()` on a dedicated
+/// thread.
 pub const Runtime = struct {
     allocator: std.mem.Allocator,
 

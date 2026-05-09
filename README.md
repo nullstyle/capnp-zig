@@ -254,7 +254,9 @@ capnpc-zig/
 
 ## RPC Runtime
 
-The RPC runtime implements the Cap'n Proto RPC protocol over TCP, using synchronous POSIX I/O with a concurrent read/write transport layer. It is organized following the Cap'n Proto RPC specification levels.
+The RPC runtime implements the Cap'n Proto RPC protocol over domain-shaped TCP
+and optional QUIC transport modules, using `std.Io` with a concurrent read/write
+transport layer.
 
 **Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `docs/rpc_runtime_design.md` for details.
 Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
@@ -310,7 +312,7 @@ zig build example-rpc
 The QUIC RPC transport is optional and excluded from normal builds. The
 quic-zig dependency is listed in the package manifest for opt-in builds, but
 `build.zig` resolves it only with `-Dquic=true`. Enable it when you need
-`capnpc.rpc.quic`:
+`capnpc.rpc.transport.quic`:
 
 ```bash
 zig build -Dquic=true check --summary all
