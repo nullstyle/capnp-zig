@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
+const baseline_engine = @import("baseline_engine.zig");
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
 const listener_mod = @import("listener.zig");
@@ -10,7 +11,6 @@ const native_framer = @import("native_framer.zig");
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
-const outbound_queue = @import("outbound_queue.zig");
 const scheduler = @import("scheduler.zig");
 
 const log = std.log.scoped(.rpc_quic_transport);
@@ -20,135 +20,14 @@ const ClientOptions = quic_options.ClientOptions;
 const ServerOptions = quic_options.ServerOptions;
 const TransportMode = quic_options.TransportMode;
 const NativeOptions = quic_options.NativeOptions;
+const BaselineEngine = baseline_engine.BaselineEngine;
 const LengthDelimitedFramer = length_framer.LengthDelimitedFramer;
 const NativeControlFramer = native_framer.ControlFramer;
 const NativeEngine = native_engine.NativeEngine;
-const OutboundQueue = outbound_queue.OutboundQueue;
 
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
 const EndpointDriver = endpoint_mod.EndpointDriver;
-
-/// Stream engine for the conservative length-delimited QUIC transport mode.
-///
-/// `Connection` owns endpoint scheduling and callbacks; this engine owns stream
-/// 0 readiness, outbound queueing, and inbound length-delimited frame parsing.
-const BaselineEngine = struct {
-    ready: bool = false,
-    inbound: LengthDelimitedFramer,
-    outbound: OutboundQueue = .{},
-
-    pub fn init(
-        allocator: std.mem.Allocator,
-        max_message_bytes: usize,
-        max_outbound_queue_items: usize,
-        max_outbound_queue_bytes: usize,
-    ) BaselineEngine {
-        return .{
-            .inbound = LengthDelimitedFramer.init(allocator, max_message_bytes),
-            .outbound = OutboundQueue.init(max_outbound_queue_items, max_outbound_queue_bytes),
-        };
-    }
-
-    pub fn deinit(self: *BaselineEngine, allocator: std.mem.Allocator) void {
-        self.outbound.drain(allocator);
-        self.inbound.deinit();
-    }
-
-    pub fn close(self: *BaselineEngine) void {
-        self.outbound.close();
-    }
-
-    pub fn resetInbound(self: *BaselineEngine) void {
-        self.inbound.reset();
-    }
-
-    pub fn enqueue(
-        self: *BaselineEngine,
-        allocator: std.mem.Allocator,
-        frame: []const u8,
-    ) !void {
-        try self.outbound.enqueue(allocator, frame);
-    }
-
-    pub fn outboundEmpty(self: *BaselineEngine) bool {
-        return self.outbound.isEmpty();
-    }
-
-    pub fn hasImmediateWork(
-        self: *BaselineEngine,
-        role: Role,
-        conn: *quic_zig.Connection,
-    ) bool {
-        if (self.ready) return true;
-        return role == .client and conn.handshakeDone();
-    }
-
-    pub fn service(
-        self: *BaselineEngine,
-        owner: *Connection,
-        conn: *quic_zig.Connection,
-    ) !void {
-        if (!try self.ensureStream(owner.role, conn)) return;
-        try self.outbound.flush(owner.allocator, conn);
-        try self.readStream(owner, conn);
-    }
-
-    fn ensureStream(
-        self: *BaselineEngine,
-        role: Role,
-        conn: *quic_zig.Connection,
-    ) !bool {
-        if (self.ready) return true;
-        if (conn.stream(quic_options.baseline_stream_id) != null) {
-            self.ready = true;
-            return true;
-        }
-        if (role == .client) {
-            if (!conn.handshakeDone()) return false;
-            _ = conn.openBidi(quic_options.baseline_stream_id) catch |err| switch (err) {
-                error.StreamAlreadyOpen => {},
-                else => return err,
-            };
-            self.ready = true;
-            return true;
-        }
-        return false;
-    }
-
-    fn readStream(
-        self: *BaselineEngine,
-        owner: *Connection,
-        conn: *quic_zig.Connection,
-    ) !void {
-        while (!owner.close_requested.load(.acquire)) {
-            const n = conn.streamRead(quic_options.baseline_stream_id, owner.stream_read_buf) catch |err| switch (err) {
-                error.StreamNotFound => return,
-                else => return err,
-            };
-            if (n == 0) return;
-            try self.inbound.push(owner.stream_read_buf[0..n]);
-            try self.dispatchAvailableFrames(owner);
-        }
-    }
-
-    fn dispatchAvailableFrames(
-        self: *BaselineEngine,
-        owner: *Connection,
-    ) !void {
-        while (true) {
-            if (owner.on_message == null or owner.on_error == null) return;
-            const frame = self.inbound.popFrame() catch |err| {
-                owner.terminateFrameError(err);
-                return;
-            };
-            const bytes = frame orelse return;
-            defer owner.allocator.free(bytes);
-            try owner.dispatchRpcFrame(bytes);
-            if (owner.deinit_requested) return;
-        }
-    }
-};
 
 /// A single vat-to-vat Cap'n Proto RPC session over QUIC.
 ///
@@ -690,9 +569,48 @@ pub const Connection = struct {
     fn serviceModeStreams(self: *Connection) !void {
         const conn = self.activeQuicConn() orelse return;
         switch (self.mode) {
-            .baseline => try self.baseline.service(self, conn),
+            .baseline => try self.baseline.service(self.baselineOwner(), conn),
             .native => try self.native.service(self.nativeOwner(), conn),
         }
+    }
+
+    fn baselineOwner(self: *Connection) baseline_engine.Owner {
+        return .{
+            .ptr = self,
+            .allocator = self.allocator,
+            .role = self.role,
+            .stream_read_buf = self.stream_read_buf,
+            .is_closing = baselineOwnerIsClosing,
+            .callbacks_ready = baselineOwnerCallbacksReady,
+            .dispatch_rpc_frame = baselineOwnerDispatchRpcFrame,
+            .terminate_frame_error = baselineOwnerTerminateFrameError,
+            .deinit_requested = baselineOwnerDeinitRequested,
+        };
+    }
+
+    fn baselineOwnerIsClosing(ptr: *anyopaque) bool {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.close_requested.load(.acquire);
+    }
+
+    fn baselineOwnerCallbacksReady(ptr: *anyopaque) bool {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.on_message != null and self.on_error != null;
+    }
+
+    fn baselineOwnerDispatchRpcFrame(ptr: *anyopaque, frame: []const u8) !void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        try self.dispatchRpcFrame(frame);
+    }
+
+    fn baselineOwnerTerminateFrameError(ptr: *anyopaque, err: anyerror) void {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        self.terminateFrameError(err);
+    }
+
+    fn baselineOwnerDeinitRequested(ptr: *anyopaque) bool {
+        const self: *Connection = @ptrCast(@alignCast(ptr));
+        return self.deinit_requested;
     }
 
     fn nativeOwner(self: *Connection) native_engine.Owner {
@@ -1165,7 +1083,7 @@ test "QUIC dispatch treats malformed frames as terminal" {
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
     try conn.baseline.inbound.push(&bad_frame);
-    try conn.baseline.dispatchAvailableFrames(&conn);
+    try conn.baseline.dispatchAvailableFrames(conn.baselineOwner());
 
     try std.testing.expect(conn.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
@@ -1192,7 +1110,7 @@ test "QUIC dispatch can reveal sanitized frame error details when configured" {
 
     const bad_frame = [_]u8{ 0, 0, 0, 0 };
     try conn.baseline.inbound.push(&bad_frame);
-    try conn.baseline.dispatchAvailableFrames(&conn);
+    try conn.baseline.dispatchAvailableFrames(conn.baselineOwner());
 
     const status = conn.closeStatus().?;
     try std.testing.expect(status.reason_reveals_detail);
@@ -1230,7 +1148,7 @@ test "QUIC dispatch treats inbound frame allocation OOM as terminal" {
     @memcpy(encoded[4..7], "abc");
 
     try conn.baseline.inbound.push(&encoded);
-    try conn.baseline.dispatchAvailableFrames(&conn);
+    try conn.baseline.dispatchAvailableFrames(conn.baselineOwner());
 
     try std.testing.expect(conn.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
@@ -1273,7 +1191,7 @@ test "QUIC dispatch treats message callback failure as terminal" {
     @memcpy(encoded[4..7], "abc");
 
     try conn.baseline.inbound.push(&encoded);
-    try conn.baseline.dispatchAvailableFrames(&conn);
+    try conn.baseline.dispatchAvailableFrames(conn.baselineOwner());
 
     try std.testing.expect(conn.isClosing());
     try std.testing.expectEqual(@as(usize, 1), state.error_count);
