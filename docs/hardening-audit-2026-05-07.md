@@ -25,7 +25,7 @@ the most exposed RPC and transport paths:
 - [x] Cap promised-answer transform length during parse/resolve.
 - [x] Add peer and host bridge count/byte budgets for pending input-driven state.
       Host bridge queue budgets, finite WASM/HostPeer defaults, streaming
-      in-flight guards, and initial `PeerLimits` for high-pressure level3
+      in-flight guards, and initial `PeerLimits` for high-pressure peer
       maps are complete; provide/join/third-party await/adoption maps and
       abort reason length are now bounded.
 - [x] Reject duplicate active inbound question IDs.
@@ -55,7 +55,7 @@ Progress in this tranche:
 - TCP and QUIC inbound framers now enforce aggregate buffered-byte budgets before
   appending incoming chunks, with failing-allocator regressions proving budget
   rejection does not allocate.
-- The cumulative RPC level3 and serialization message suites pass with the new regressions.
+- The RPC peer and serialization message suites pass with the new regressions.
 - Host-call bridge queues now enforce default count and byte limits before copying
   inbound frames, and expose pending host-call byte accounting.
 - Generated streaming clients now call a typed `StreamState.noteCallSent` guard

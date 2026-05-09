@@ -42,21 +42,33 @@ test-release-safe:
 test-e2e-security:
     zig build test-e2e-security --summary all
 
-# Run Cap'n Proto RPC level 0 tests (framing/protocol/cap-table)
-test-rpc-level0:
-    zig build test-rpc-level0 --summary all
+# Run RPC wire framing/protocol tests
+test-rpc-wire:
+    zig build test-rpc-wire --summary all
 
-# Run Cap'n Proto RPC level 1 tests (promises/pipelining)
-test-rpc-level1:
-    zig build test-rpc-level1 --summary all
+# Run RPC capability table tests
+test-rpc-caps:
+    zig build test-rpc-caps --summary all
 
-# Run Cap'n Proto RPC level 2 tests (runtime plumbing)
-test-rpc-level2:
-    zig build test-rpc-level2 --summary all
+# Run RPC promise/pipelining tests
+test-rpc-promises:
+    zig build test-rpc-promises --summary all
 
-# Run Cap'n Proto RPC level 3+ tests (advanced peer semantics)
-test-rpc-level3:
-    zig build test-rpc-level3 --summary all
+# Run RPC TCP/raw-frame transport tests
+test-rpc-transport:
+    zig build test-rpc-transport --summary all
+
+# Run RPC peer semantics tests
+test-rpc-peer:
+    zig build test-rpc-peer --summary all
+
+# Run RPC integration tests
+test-rpc-integration:
+    zig build test-rpc-integration --summary all
+
+# Run optional QUIC RPC transport tests
+test-rpc-quic:
+    zig build -Dquic=true test-rpc-quic --summary all
 
 # Build e2e reference images
 e2e-build:

@@ -176,12 +176,14 @@ Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generato
 
 `src/rpc/`
 
-Cap'n Proto RPC over TCP using synchronous POSIX I/O with a concurrent read/write transport. Organized by Cap'n Proto RPC levels:
+Cap'n Proto RPC over TCP using synchronous POSIX I/O with a concurrent read/write transport. Organized by domain:
 
-- **Level 0** (`src/rpc/level0/`): Protocol primitives -- message framing, RPC wire message definitions, and capability export/import table with reference counting.
-- **Level 1** (`src/rpc/level1/`): Promise pipelining -- promised-answer transforms, queued pipelined-call replay, and return-send helpers.
-- **Level 2** (`src/rpc/level2/`): Runtime plumbing -- TCP transport with concurrent read/write I/O, per-connection state machine, host peer management, stream state, and worker pool.
-- **Level 3** (`src/rpc/level3/`): Full peer semantics -- inbound/outbound call orchestration, return handling, capability lifecycle, embargo handling, third-party handoff, and forwarding logic.
+- **Wire** (`src/rpc/wire/`): Message framing and typed RPC wire message readers/builders.
+- **Capabilities** (`src/rpc/caps/`): Capability tables, capability pointers, lifecycle helpers, and payload remapping.
+- **Promises** (`src/rpc/promises/`): Promised-answer transforms, queued pipelined-call replay, return routing, and return-send helpers.
+- **Transport** (`src/rpc/transport/`): Peer-facing binding contracts plus TCP and optional QUIC transport backends.
+- **Peer** (`src/rpc/peer/`): Inbound/outbound call orchestration, return handling, capability lifecycle, embargo handling, third-party handoff, and forwarding logic.
+- **Integration** (`src/rpc/integration/`): Host-facing adapters such as `HostPeer` and `WorkerPool`.
 
 ### Key Data Flows
 
@@ -220,20 +222,23 @@ capnpc-zig/
 │   │   ├── mod.zig                    # RPC public module
 │   │   ├── capnp/
 │   │   │   └── rpc.capnp             # Canonical RPC schema copy
-│   │   ├── level0/                    # Framing, protocol defs, cap table
-│   │   ├── level1/                    # Promise pipeline, pipelined-call replay
-│   │   ├── level2/                    # Runtime, connection, transport, worker pool
-│   │   └── level3/                    # Peer dispatch, call/return/forward/provide
-│   │       └── peer/                  #   orchestration, capability lifecycle,
-│   │           ├── call/              #   embargo, third-party handoff
-│   │           ├── return/
-│   │           ├── forward/
-│   │           ├── provide/
-│   │           └── third_party/
+│   │   ├── wire/                      # Framing and protocol defs
+│   │   ├── caps/                      # Cap tables, descriptors, lifecycle helpers
+│   │   ├── promises/                  # Promise pipeline and return routing
+│   │   ├── transport/                 # Binding, stream state, TCP/QUIC backends
+│   │   │   ├── tcp/
+│   │   │   └── quic/
+│   │   ├── peer/                      # Dispatch, call/return/forward/provide
+│   │   │   ├── call/                  #   orchestration, capability lifecycle,
+│   │   │   ├── return/                #   embargo, third-party handoff
+│   │   │   ├── forward/
+│   │   │   ├── provide/
+│   │   │   └── third_party/
+│   │   └── integration/               # HostPeer and WorkerPool adapters
 │   └── wasm/                          # Experimental WASM host ABI
 ├── tests/
 │   ├── serialization/                 # Message, codegen, interop, schema tests
-│   ├── rpc/                           # RPC tests organized by level (0-3)
+│   ├── rpc/                           # RPC tests organized by domain
 │   ├── golden/                        # Golden codegen output (do not format)
 │   ├── interop/                       # Cross-language interop fixtures
 │   ├── e2e/                           # End-to-end test harness
@@ -373,11 +378,14 @@ just test
 zig build test-serialization # Serialization-focused suites
 zig build test-rpc           # All RPC suites
 
-# Run RPC suites by Cap'n Proto level (cumulative)
-zig build test-rpc-level0    # Framing/protocol/cap-table
-zig build test-rpc-level1    # Promises/pipelining
-zig build test-rpc-level2    # Runtime plumbing
-zig build test-rpc-level3    # Advanced peer semantics (level 3+)
+# Run RPC suites by domain
+zig build test-rpc-wire       # Framing/protocol
+zig build test-rpc-caps       # Capability tables
+zig build test-rpc-promises   # Promises/pipelining
+zig build test-rpc-transport  # TCP/raw-frame transport
+zig build test-rpc-peer       # Peer semantics
+zig build test-rpc-integration # HostPeer/WorkerPool integration
+zig build -Dquic=true test-rpc-quic # Optional QUIC transport
 
 # Run specific focused suites
 zig build test-message       # Message tests

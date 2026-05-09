@@ -8,12 +8,10 @@
 - [../build.zig](../build.zig) defines canonical test steps; [../Justfile](../Justfile)
   provides contributor-friendly wrappers.
 - `zig build test` runs serialization, RPC, and wasm host ABI groups.
-- RPC source and tests are organized by domain. The `test-rpc-level*` commands
-  remain as cumulative compatibility entrypoints:
-  - `test-rpc-level0`: wire/protocol/cap-table coverage.
-  - `test-rpc-level1`: level0 plus promises/pipelining coverage.
-  - `test-rpc-level2`: level1 plus transport/integration coverage.
-  - `test-rpc-level3`: level2 plus peer semantics coverage.
+- RPC source and tests are organized by domain. The focused RPC build steps are
+  `test-rpc-wire`, `test-rpc-caps`, `test-rpc-promises`,
+  `test-rpc-transport`, `test-rpc-peer`, `test-rpc-integration`, and optional
+  `test-rpc-quic`.
 - Fixture-heavy suites rely on vendored Cap'n Proto assets and optional external
   tooling (`capnp`, Python/pycapnp) for full coverage.
 - `tests/e2e/` is an optional interop harness across Zig/C++/Go/Rust/Python
@@ -66,8 +64,9 @@
 - Full suite: `just test` or `zig build test --summary all`
 - Serialization: `just test-serialization` or `zig build test-serialization --summary all`
 - RPC aggregate: `just test-rpc` or `zig build test-rpc --summary all`
-- RPC cumulative compatibility steps: `just test-rpc-level0`,
-  `just test-rpc-level1`, `just test-rpc-level2`, `just test-rpc-level3`
+- RPC domain suites: `just test-rpc-wire`, `just test-rpc-caps`,
+  `just test-rpc-promises`, `just test-rpc-transport`, `just test-rpc-peer`,
+  `just test-rpc-integration`, and `just test-rpc-quic`
 - Focused suites: `zig build test-message`, `zig build test-codegen`,
   `zig build test-integration`, `zig build test-interop`,
   `zig build test-real-world`, `zig build test-union`,
