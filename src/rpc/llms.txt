@@ -63,16 +63,14 @@
   unimplemented-message control handling.
 - [peer/finish.zig](peer/finish.zig): Finish cleanup and resolved-answer cleanup
   handling.
-- [peer/resolve.zig](peer/resolve.zig): Resolve-message and pending-embargo
-  facade.
-- [peer/disembargo.zig](peer/disembargo.zig): Disembargo handling facade.
+- [peer/resolve.zig](peer/resolve.zig): Resolve-message handling and
+  pending-embargo helpers.
+- [peer/disembargo.zig](peer/disembargo.zig): Disembargo handling and resolved
+  import embargo cleanup.
 - [peer/provide_accept_join.zig](peer/provide_accept_join.zig):
   Provide/Accept/Join facade plus compatibility helper implementations.
 - [peer/third_party.zig](peer/third_party.zig): Third-party answer,
   sendResultsTo-thirdParty, and pending-return helper facade.
-- [peer/peer_control.zig](peer/peer_control.zig): Compatibility re-exports plus
-  remaining control-path handlers (`resolve`, disembargo, release, forwarded
-  return, regular return).
 - [peer/call/peer_call_orchestration.zig](peer/call/peer_call_orchestration.zig):
   Inbound/outbound call orchestration.
 - [peer/return/peer_return_orchestration.zig](peer/return/peer_return_orchestration.zig):

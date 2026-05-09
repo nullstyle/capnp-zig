@@ -2,6 +2,15 @@ const std = @import("std");
 const log = std.log.scoped(.rpc_peer);
 const protocol = @import("../wire/protocol.zig");
 
+pub fn handleRelease(
+    comptime PeerType: type,
+    peer: *PeerType,
+    release: protocol.Release,
+    on_release_export: *const fn (*PeerType, u32, u32) anyerror!void,
+) !void {
+    try on_release_export(peer, release.id, release.reference_count);
+}
+
 pub fn releaseImport(
     comptime PeerType: type,
     peer: *PeerType,

@@ -1,6 +1,6 @@
 const std = @import("std");
 const message = @import("../../../serialization/message.zig");
-const peer_control = @import("../peer_control.zig");
+const peer_forwarded_return_logic = @import("./peer_forwarded_return_logic.zig");
 const protocol = @import("../../wire/protocol.zig");
 
 pub fn handleForwardedReturnWithPeerCallbacks(
@@ -9,7 +9,7 @@ pub fn handleForwardedReturnWithPeerCallbacks(
     comptime BuildCtxType: type,
     comptime build_forwarded_return: *const fn (*anyopaque, *protocol.ReturnBuilder) anyerror!void,
     peer: *PeerType,
-    mode: peer_control.ForwardedReturnMode,
+    mode: peer_forwarded_return_logic.ForwardedReturnMode,
     answer_id: u32,
     ret: protocol.Return,
     inbound_caps: *const InboundCapsType,
@@ -67,7 +67,7 @@ pub fn handleForwardedReturnWithPeerCallbacks(
         }
     };
 
-    try peer_control.handleForwardedReturn(
+    try peer_forwarded_return_logic.handleForwardedReturn(
         PeerType,
         InboundCapsType,
         peer,

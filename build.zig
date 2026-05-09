@@ -427,7 +427,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
-    const run_rpc_peer_control_from_peer_control_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_control_from_peer_control_zig_test.zig", target, optimize, lib_module);
+    const run_rpc_peer_semantic_helpers_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_semantic_helpers_test.zig", target, optimize, lib_module);
     const run_rpc_release_and_failure_level3_tests = addLibTest(b, "tests/rpc/peer/rpc_release_and_failure_test.zig", target, optimize, lib_module);
     const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/peer/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
 
@@ -569,7 +569,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_level3_step.dependOn(test_rpc_level2_step);
     test_rpc_level3_step.dependOn(run_rpc_peer_tests);
     test_rpc_level3_step.dependOn(run_rpc_peer_from_peer_zig_tests);
-    test_rpc_level3_step.dependOn(run_rpc_peer_control_from_peer_control_zig_tests);
+    test_rpc_level3_step.dependOn(run_rpc_peer_semantic_helpers_tests);
     test_rpc_level3_step.dependOn(run_rpc_release_and_failure_level3_tests);
     test_rpc_level3_step.dependOn(run_rpc_concurrent_calls_tests);
 

@@ -1,9 +1,14 @@
 const std = @import("std");
 const cap_table = @import("../../caps/table.zig");
 const message = @import("../../../serialization/message.zig");
-const peer_control = @import("../peer_control.zig");
 const peer_third_party = @import("../third_party.zig");
 const protocol = @import("../../wire/protocol.zig");
+
+pub const ForwardResolvedMode = enum {
+    sent_elsewhere,
+    propagate_results_sent_elsewhere,
+    propagate_accept_from_third_party,
+};
 
 pub const ForwardReturnMode = enum {
     translate_to_caller,
@@ -21,12 +26,47 @@ pub fn toControlMode(mode: ForwardReturnMode) peer_third_party.ForwardedReturnMo
     };
 }
 
-pub fn fromControlResolvedMode(mode: peer_control.ForwardResolvedMode) ForwardReturnMode {
+pub fn fromResolvedMode(mode: ForwardResolvedMode) ForwardReturnMode {
     return switch (mode) {
         .sent_elsewhere => .sent_elsewhere,
         .propagate_results_sent_elsewhere => .propagate_results_sent_elsewhere,
         .propagate_accept_from_third_party => .propagate_accept_from_third_party,
     };
+}
+
+fn forwardModeForSendResults(tag: protocol.SendResultsToTag) ForwardResolvedMode {
+    return switch (tag) {
+        .caller => .sent_elsewhere,
+        .yourself => .propagate_results_sent_elsewhere,
+        .thirdParty => .propagate_accept_from_third_party,
+    };
+}
+
+pub fn handleResolvedCall(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    call: protocol.Call,
+    inbound_caps: *const InboundCapsType,
+    resolved: cap_table.ResolvedCap,
+    handle_exported: *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!void,
+    forward_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, ForwardResolvedMode) anyerror!void,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+) !void {
+    switch (resolved) {
+        .exported => |cap| {
+            try handle_exported(peer, call, inbound_caps, cap.id);
+        },
+        .imported, .promised => {
+            const mode = forwardModeForSendResults(call.send_results_to.tag);
+            forward_resolved_call(peer, call, inbound_caps, resolved, mode) catch |err| {
+                try send_return_exception(peer, call.question_id, @errorName(err));
+            };
+        },
+        .none => {
+            try send_return_exception(peer, call.question_id, "promised answer missing");
+        },
+    }
 }
 
 pub const ForwardCallPlan = struct {
@@ -127,21 +167,21 @@ pub fn forwardResolvedCallForPeerFn(
     comptime PeerType: type,
     comptime InboundCapsType: type,
     comptime forward_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, ForwardReturnMode) anyerror!void,
-) *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, peer_control.ForwardResolvedMode) anyerror!void {
+) *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap, ForwardResolvedMode) anyerror!void {
     return struct {
         fn call(
             peer: *PeerType,
             call_msg: protocol.Call,
             inbound_caps: *const InboundCapsType,
             resolved: cap_table.ResolvedCap,
-            mode: peer_control.ForwardResolvedMode,
+            mode: ForwardResolvedMode,
         ) anyerror!void {
             try forward_resolved_call(
                 peer,
                 call_msg,
                 inbound_caps,
                 resolved,
-                fromControlResolvedMode(mode),
+                fromResolvedMode(mode),
             );
         }
     }.call;

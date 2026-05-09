@@ -13,7 +13,6 @@ pub const third_party = @import("./third_party.zig");
 
 const peer_dispatch = dispatch;
 const peer_bootstrap = bootstrap;
-const peer_control = @import("./peer_control.zig");
 const peer_finish = finish;
 const peer_resolve = resolve;
 const peer_disembargo = disembargo;
@@ -1253,7 +1252,7 @@ pub const Peer = struct {
             ret,
             inbound_caps,
             peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-            peer_control.freeOwnedFrameForPeerFn(Peer),
+            peer_finish.freeOwnedFrameForPeerFn(Peer),
             ctx.send_results_to_third_party_payload,
             sendReturnTag,
             peer_forward_orchestration.lookupForwardedQuestionForPeerFn(Peer),
@@ -2077,7 +2076,7 @@ pub const Peer = struct {
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {
-        try peer_control.handleRelease(Peer, self, release, releaseExport);
+        try peer_cap_lifecycle.handleRelease(Peer, self, release, releaseExport);
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
@@ -2187,7 +2186,7 @@ pub const Peer = struct {
                 Peer,
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
-            peer_control.freeOwnedFrameForPeerFn(Peer),
+            peer_finish.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             Peer.ensureProvideBudget,
             peer_provide_accept_join.resolveProvideTargetForPeerFn(
@@ -2213,7 +2212,7 @@ pub const Peer = struct {
                 Peer,
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
-            peer_control.freeOwnedFrameForPeerFn(Peer),
+            peer_finish.freeOwnedFrameForPeerFn(Peer),
             Peer.queueEmbargoedAccept,
             Peer.sendReturnProvidedTarget,
             Peer.sendReturnException,
@@ -2269,7 +2268,7 @@ pub const Peer = struct {
                 Peer,
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
-            peer_control.freeOwnedFrameForPeerFn(Peer),
+            peer_finish.freeOwnedFrameForPeerFn(Peer),
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             Peer.ensurePendingThirdPartyAnswerBudget,
             peer_third_party_adoption.adoptPendingAwaitEntryForPeerFn(
@@ -2365,7 +2364,7 @@ pub const Peer = struct {
         inbound_caps: *const cap_table.InboundCapTable,
         resolved: cap_table.ResolvedCap,
     ) !void {
-        try peer_control.handleResolvedCall(
+        try peer_forward_orchestration.handleResolvedCall(
             Peer,
             cap_table.InboundCapTable,
             self,
@@ -2488,7 +2487,7 @@ pub const Peer = struct {
             &self.pending_third_party_returns,
             peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             Peer.ensureThirdPartyAdoptionBudget,
-            peer_control.freeOwnedFrameForPeerFn(Peer),
+            peer_finish.freeOwnedFrameForPeerFn(Peer),
             peer_third_party_returns.handlePendingReturnFrameForPeerFn(
                 Peer,
                 Peer.handleReturn,
@@ -2517,7 +2516,7 @@ pub const Peer = struct {
                 PendingThirdPartyAwait,
                 cap_table.InboundCapTable,
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
-                peer_control.freeOwnedFrameForPeerFn(Peer),
+                peer_finish.freeOwnedFrameForPeerFn(Peer),
                 peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
                 Peer.ensurePendingThirdPartyAwaitBudget,
                 adoptThirdPartyAnswer,
