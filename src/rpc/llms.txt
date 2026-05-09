@@ -15,7 +15,7 @@
 - `events.zig` contains the transport-general, redacted RPC observer API.
 - `transport/` contains the peer-facing binding contract plus concrete
   transport backends.
-- `transport/tcp/` is the POSIX TCP/runtime backend.
+- `transport/tcp/` is the TCP/runtime backend over `std.Io`.
 - `transport/quic/` is the quic-zig-backed QUIC backend using ALPN `capnp-rpc/1`,
   baseline bidirectional stream 0 by default, and opt-in native control/data
   stream mode.
@@ -94,6 +94,10 @@
 - From repo root: `just test-rpc-wire`, `just test-rpc-caps`,
   `just test-rpc-promises`, `just test-rpc-transport`, `just test-rpc-peer`,
   `just test-rpc-integration`, `just test-rpc-quic`, or `just test-rpc`.
+- For docs/public API example changes, run `just docs-smoke` and
+  `just test-docs-snippets`.
+- For QUIC docs/public API example changes, also run
+  `just test-docs-snippets-quic`.
 - The test step names follow the same domain folders as the source and tests.
 - From this directory: `just gen-rpc` to regenerate schema bindings (requires
   `../../zig-out/bin/capnpc-zig` and `capnpc`).

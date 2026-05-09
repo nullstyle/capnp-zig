@@ -62,6 +62,28 @@ jobs:
       - name: Check evented backend compilation
         run: zig build -Dio-backend=evented check --summary all
 
+  quic-transport:
+    name: QUIC baseline/native transport
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - name: Build QUIC-enabled targets
+        run: zig build -Dquic=true --summary all
+
+      - name: Check QUIC-enabled build graph
+        run: zig build -Dquic=true check --summary all
+
+      - name: Run QUIC baseline/native transport tests
+        run: zig build -Dquic=true test-rpc-quic --summary all
+
+      - name: Compile QUIC documentation snippet fixtures
+        run: zig build -Dquic=true test-docs-snippets-quic --summary all
+
   docs-smoke:
     name: Docs smoke and snippets
     runs-on: ubuntu-latest

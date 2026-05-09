@@ -62,6 +62,13 @@
 ## Development
 
 - Full suite: `just test` or `zig build test --summary all`
+- Documentation/API smoke: `just docs-smoke` or
+  `zig build docs-smoke --summary all`
+- Documentation snippet fixtures: `just test-docs-snippets` or
+  `zig build test-docs-snippets --summary all`
+- Optional QUIC documentation snippet fixtures:
+  `just test-docs-snippets-quic` or
+  `zig build -Dquic=true test-docs-snippets-quic --summary all`
 - Serialization: `just test-serialization` or `zig build test-serialization --summary all`
 - RPC aggregate: `just test-rpc` or `zig build test-rpc --summary all`
 - RPC domain suites: `just test-rpc-wire`, `just test-rpc-caps`,

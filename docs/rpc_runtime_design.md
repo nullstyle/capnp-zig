@@ -47,13 +47,12 @@ Zig exposes `std.Io.Evented`. This gate is intended to catch backend-selection
 regressions without requiring a full RPC runtime execution path.
 
 ## QUIC Transport
-QUIC is opt-in at the build-module boundary. Default builds keep quic-zig/BoringSSL
-out of serialization and TCP-only applications; `rpc.transport.quic` is a disabled facade
-that exposes only QUIC-dependency-free framing helpers and a clear compile-time
-error for transport construction. The dependency remains declared in
-`build.zig.zon` for opt-in users, but `build.zig` resolves it only when
-`-Dquic=true` selects the QUIC-enabled library root and exposes the native
-transport implementation.
+QUIC is opt-in at the build-module boundary. Default builds expose
+`rpc.transport.quic` as a disabled facade with QUIC-dependency-free framing
+helpers and clear compile-time errors for transport construction. The
+dependency remains declared in `build.zig.zon` for opt-in users, but
+`build.zig` resolves it only when `-Dquic=true` selects the QUIC-enabled
+library root and exposes the quic-zig-backed transport implementation.
 For setup examples, mode selection, and production budget guidance, see
 `docs/quic-transport.md`.
 
@@ -143,6 +142,8 @@ Outbound call:
 - Unit tests for framing and state machines.
 - Loopback tests with in-process client/server.
 - Interop tests against reference backends in the canonical `tests/e2e` harness.
+- Documentation/API smoke checks through `zig build docs-smoke` and snippet
+  fixture compilation through `zig build test-docs-snippets`.
 
 ## Open Questions
 - Exact mapping of Cap’n Proto RPC protocol types to generated Zig types.

@@ -186,15 +186,16 @@ pub const rpc = @import("rpc/mod.zig");
 pub const io_backend = @import("io_backend.zig");
 ```
 
-Default imports expose serialization, codegen, TCP RPC, and a QUIC-disabled
-facade. Passing `-Dquic=true` selects the QUIC-enabled library root and exposes
-`rpc.transport.quic`.
+Default imports expose serialization, codegen, TCP RPC, and a disabled
+`rpc.transport.quic` facade with dependency-free framing helpers. Passing
+`-Dquic=true` selects the QUIC-enabled library root and exposes the
+quic-zig-backed `rpc.transport.quic` transport.
 
 ## External Dependencies
 
 | Dependency | Used by | Purpose |
 |---|---|---|
 | Zig std | Library/runtime | Serialization, codegen, TCP RPC, and `std.Io` backend selection. |
-| `quic-zig` / BoringSSL | Optional QUIC builds | Native QUIC transport. |
+| `quic-zig` / BoringSSL | Optional QUIC builds | QUIC transport backend. |
 | `vendor/ext/go-capnp` | Tests / e2e | Go Cap'n Proto reference for interop testing. |
 | `vendor/ext/capnp_test` | Tests | Official Cap'n Proto test fixtures. |

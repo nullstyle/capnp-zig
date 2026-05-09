@@ -147,8 +147,9 @@ Progress in this tranche:
 - The KV store example now defaults to localhost, redacts sensitive operational
   details from normal output, and adds local caps for keys, values, list
   requests, watched keys, batch operations, and pending notifications. Its
-  RocksDB wrapper dependency is vendored and patched for Zig 0.16 build APIs so
-  `cd examples/kvstore && zig build test` is a live regression gate again.
+  RocksDB wrapper dependency is vendored and patched for the current Zig
+  0.17-dev build APIs so `cd examples/kvstore && zig build test` is a live
+  regression gate again.
 - `zig build test-e2e-security` now exercises raw TCP frame clients, HostPeer
   malformed complete frames, invalid RPC top-level tags, and QUIC
   length-delimited framing failures before they reach application handlers.

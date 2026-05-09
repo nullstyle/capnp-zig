@@ -36,7 +36,7 @@ domain`):
   keeps quic-zig/BoringSSL out of serialization and TCP-only builds and exposes a
   disabled `rpc.transport.quic` facade for QUIC-dependency-free framing helpers. Build with
   `-Dquic=true` to select `src/lib_quic.zig`, import quic-zig, and expose the
-  native QUIC transport implementation.
+  quic-zig-backed transport implementation.
 - Option 3 Tranche 11 has split the promise/pipeline helpers under the existing
   `src/rpc/promises/` domain into `promised_answer.zig`, `pending_calls.zig`,
   `return_routing.zig`, and `return_send.zig`, while keeping the older
@@ -283,6 +283,8 @@ Run:
 zig fmt src/ tests/
 zig build check --summary all
 zig build test --summary all
+zig build docs-smoke --summary all
+zig build test-docs-snippets --summary all
 ```
 
 Also update:

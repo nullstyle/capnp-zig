@@ -176,7 +176,8 @@ Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generato
 
 `src/rpc/`
 
-Cap'n Proto RPC over TCP using synchronous POSIX I/O with a concurrent read/write transport. Organized by domain:
+Cap'n Proto RPC over TCP and optional QUIC using `std.Io` with a concurrent
+read/write transport. Organized by domain:
 
 - **Wire** (`src/rpc/wire/`): Message framing and typed RPC wire message readers/builders.
 - **Capabilities** (`src/rpc/caps/`): Capability tables, capability pointers, lifecycle helpers, and payload remapping.
@@ -197,7 +198,7 @@ Cap'n Proto RPC over TCP using synchronous POSIX I/O with a concurrent read/writ
 
 ### Public API (`src/lib.zig`)
 
-Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`
+Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`, `io_backend`
 
 ## Project Structure
 
@@ -398,6 +399,9 @@ zig build -Dquic=true test-rpc-quic # Optional QUIC transport
 # Run specific focused suites
 zig build test-message       # Message tests
 zig build test-codegen       # Codegen tests
+zig build docs-smoke         # Docs/examples public API smoke checks
+zig build test-docs-snippets # Compile documentation snippet fixtures
+zig build -Dquic=true test-docs-snippets-quic # Optional QUIC docs snippets
 just e2e                    # Cross-language interop harness
 ```
 
@@ -521,6 +525,8 @@ Contributions are welcome! Please ensure:
 
 - Code is formatted with `zig fmt`
 - All tests pass (`zig build test`)
+- Docs/examples gates pass when docs or public API examples change
+  (`zig build docs-smoke` and `zig build test-docs-snippets`)
 - New features include tests
 - Documentation is updated
 

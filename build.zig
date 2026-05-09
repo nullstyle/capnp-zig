@@ -296,10 +296,24 @@ pub fn build(b: *std.Build) void {
     docs_smoke_step.dependOn(&run_docs_examples_smoke.step);
     const run_rpc_getting_started_snippet_tests = addLibTest(b, "tests/docs/rpc_getting_started_snippets_test.zig", target, optimize, lib_module);
     const run_serialization_getting_started_snippet_tests = addLibTest(b, "tests/docs/serialization_getting_started_snippets_test.zig", target, optimize, lib_module);
+    const run_rpc_events_snippet_tests = addLibTest(b, "tests/docs/rpc_events_snippets_test.zig", target, optimize, lib_module);
+    const run_quic_transport_disabled_snippet_tests: ?*std.Build.Step = if (!enable_quic)
+        addLibTest(b, "tests/docs/quic_transport_disabled_snippets_test.zig", target, optimize, lib_module)
+    else
+        null;
+    const run_quic_transport_snippet_tests: ?*std.Build.Step = if (enable_quic)
+        addQuicLibTest(b, "tests/docs/quic_transport_snippets_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    else
+        null;
     const test_docs_snippets_step = b.step("test-docs-snippets", "Compile documentation snippet fixtures");
     test_docs_snippets_step.dependOn(run_rpc_getting_started_snippet_tests);
     test_docs_snippets_step.dependOn(run_serialization_getting_started_snippet_tests);
+    test_docs_snippets_step.dependOn(run_rpc_events_snippet_tests);
+    if (run_quic_transport_disabled_snippet_tests) |step| test_docs_snippets_step.dependOn(step);
+    const test_docs_snippets_quic_step = b.step("test-docs-snippets-quic", "Compile QUIC documentation snippet fixtures (requires -Dquic=true)");
+    if (run_quic_transport_snippet_tests) |step| test_docs_snippets_quic_step.dependOn(step);
     docs_smoke_step.dependOn(test_docs_snippets_step);
+    if (run_quic_transport_snippet_tests != null) docs_smoke_step.dependOn(test_docs_snippets_quic_step);
 
     // RPC ping-pong example
     const rpc_pingpong_example = b.addExecutable(.{

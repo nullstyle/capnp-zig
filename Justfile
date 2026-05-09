@@ -46,6 +46,10 @@ docs-smoke:
 test-docs-snippets:
     zig build test-docs-snippets --summary all
 
+# Compile optional QUIC documentation snippet fixtures
+test-docs-snippets-quic:
+    zig build -Dquic=true test-docs-snippets-quic --summary all
+
 # Run key hardening gates under ReleaseSafe
 test-release-safe:
     zig build test-release-safe --summary all
