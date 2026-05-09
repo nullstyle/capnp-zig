@@ -6,12 +6,12 @@ const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
 const close_controller_mod = @import("close_controller.zig");
 const connection_adapters = @import("connection_adapters.zig");
+const connection_dispatch = @import("connection_dispatch.zig");
 const connection_init = @import("connection_init.zig");
 const connection_loop = @import("connection_loop.zig");
 const connection_termination = @import("connection_termination.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_mod = @import("endpoint.zig");
-const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
@@ -24,7 +24,6 @@ const ServerOptions = quic_options.ServerOptions;
 const TransportMode = quic_options.TransportMode;
 const BaselineEngine = baseline_engine.BaselineEngine;
 const EngineOwner = engine_owner.Owner;
-const ModeRouter = mode_router.Router;
 const NativeEngine = native_engine.NativeEngine;
 
 const Role = endpoint_mod.Role;
@@ -43,6 +42,7 @@ pub const Connection = struct {
     const CallbackLifecycle = callback_lifecycle_mod.State(Connection);
     const Adapters = connection_adapters.State(Connection);
     const CloseController = close_controller_mod.Controller;
+    const Dispatch = connection_dispatch.State(Connection);
     const Termination = connection_termination.State(Connection);
 
     allocator: std.mem.Allocator,
@@ -123,12 +123,7 @@ pub const Connection = struct {
     }
 
     pub fn sendFrame(self: *Connection, frame: []const u8) !void {
-        if (self.close_controller.isRequested()) return error.BrokenPipe;
-        if (frame.len == 0 or frame.len > self.max_message_bytes) return error.FrameTooLarge;
-        if (frame.len > std.math.maxInt(u32)) return error.FrameTooLarge;
-
-        try self.selectedMode().enqueue(self.allocator, frame);
-        self.wake();
+        return try Dispatch.sendFrame(self, frame);
     }
 
     /// Wake a blocked `run()` loop from any thread.
@@ -181,7 +176,7 @@ pub const Connection = struct {
 
     pub const AdapterAccess = struct {
         pub fn dispatchRpcFrame(conn: *Connection, frame: []const u8) !void {
-            try conn.dispatchRpcFrame(frame);
+            try Dispatch.dispatchRpcFrame(conn, frame);
         }
 
         pub fn terminateFrameError(conn: *Connection, err: anyerror) void {
@@ -260,14 +255,6 @@ pub const Connection = struct {
         return self.wake_state.isRequested();
     }
 
-    fn selectedMode(self: *Connection) ModeRouter {
-        return .{
-            .mode = self.mode,
-            .baseline = &self.baseline,
-            .native = &self.native,
-        };
-    }
-
     fn baselineOwner(self: *Connection) baseline_engine.Owner {
         return self.engineOwner().baseline();
     }
@@ -282,15 +269,6 @@ pub const Connection = struct {
 
     fn loopOwner(self: *Connection) connection_loop.Owner {
         return Adapters.loopOwner(self);
-    }
-
-    fn dispatchRpcFrame(self: *Connection, frame: []const u8) !void {
-        if (!self.callback_lifecycle.callbacksReady()) return;
-        const on_message = self.callback_lifecycle.messageCallback() orelse return;
-        self.callback_lifecycle.invokeMessage(self, on_message, frame) catch |err| {
-            Termination.callbackError(self, err);
-            return;
-        };
     }
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
