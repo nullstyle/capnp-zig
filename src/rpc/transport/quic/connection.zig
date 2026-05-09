@@ -5,13 +5,12 @@ const quic_zig = @import("quic_zig");
 const baseline_engine = @import("baseline_engine.zig");
 const datagram_io = @import("datagram_io.zig");
 const engine_owner = @import("engine_owner.zig");
+const endpoint_factory = @import("endpoint_factory.zig");
 const endpoint_mod = @import("endpoint.zig");
 const length_framer = @import("length_framer.zig");
-const listener_mod = @import("listener.zig");
 const mode_router = @import("mode_router.zig");
 const native_engine = @import("native_engine.zig");
 const native_framer = @import("native_framer.zig");
-const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const quic_options = @import("options.zig");
 const quic_close = @import("close.zig");
 const scheduler = @import("scheduler.zig");
@@ -80,33 +79,14 @@ pub const Connection = struct {
     ) !Connection {
         try quic_options.validateClientOptions(options);
 
-        const local_addr = options.local_addr orelse quic_zig_adapter.defaultClientBindAddress(options.remote_addr);
-        const socket = try Net.IpAddress.bind(&local_addr, io, .{
-            .mode = .dgram,
-            .protocol = .udp,
-        });
-        errdefer socket.close(io);
-
-        var client = try quic_zig.Client.connect(.{
-            .allocator = allocator,
-            .server_name = options.server_name,
-            .alpn_protocols = options.alpn_protocols,
-            .transport_params = options.transport_params,
-            .ca_pem = options.ca_pem,
-        });
-        errdefer client.deinit();
+        var created = try endpoint_factory.initClient(allocator, io, options);
+        errdefer created.deinit(io);
 
         return try initCommon(
             allocator,
             io,
-            .client,
-            .{ .client = .{
-                .socket = socket,
-                .transport = client,
-                .remote_addr = options.remote_addr,
-                .start_timestamp = std.Io.Timestamp.now(io, .awake),
-                .receive_timeout = options.receive_timeout,
-            } },
+            created.role,
+            created.endpoint,
             options.udp_rx_buffer_size,
             options.udp_tx_buffer_size,
             options.stream_read_buffer_size,
@@ -124,14 +104,14 @@ pub const Connection = struct {
         io: std.Io,
         options: ServerOptions,
     ) !Connection {
-        var listener = try listener_mod.Listener.init(allocator, io, options);
-        errdefer listener.deinit();
+        var created = try endpoint_factory.initServer(allocator, io, options);
+        errdefer created.deinit(io);
 
         return try initCommon(
             allocator,
             io,
-            .server,
-            .{ .server = .{ .listener = listener } },
+            created.role,
+            created.endpoint,
             options.udp_rx_buffer_size,
             options.udp_tx_buffer_size,
             options.stream_read_buffer_size,
