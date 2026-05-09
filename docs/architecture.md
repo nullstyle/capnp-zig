@@ -189,12 +189,19 @@ pub const codegen            = @import("capnpc-zig/generator.zig"); // Layer 3
 pub const request            = @import("serialization/request_reader.zig");    // Layer 2
 pub const schema_validation  = @import("serialization/schema_validation.zig"); // Layer 2
 pub const rpc                = @import("rpc/mod.zig");           // Layer 4
+pub const io_backend         = @import("io_backend.zig");        // std.Io backend selection
 ```
+
+The default `capnpc-zig` module exposes serialization, codegen, TCP RPC, and a
+QUIC-disabled facade. Passing `-Dquic=true` selects `src/lib_quic.zig`, resolves
+the optional `quic_zig` dependency, and exposes the native QUIC transport at
+`rpc.quic`.
 
 ## External Dependencies
 
 | Dependency | Used by | Purpose |
 |---|---|---|
-| (none) | — | RPC uses POSIX sockets directly (no external I/O library) |
+| (none by default) | Library/runtime | Serialization, codegen, and TCP RPC use Zig std only. |
+| quic-zig / BoringSSL | Optional QUIC builds (`-Dquic=true`) | Native QUIC transport. |
 | vendor/ext/go-capnp | Tests / e2e | Go Cap'n Proto reference for interop testing |
 | vendor/ext/capnp_test | Tests | Official Cap'n Proto test fixtures |

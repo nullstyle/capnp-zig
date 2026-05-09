@@ -461,6 +461,14 @@ semantic changes:
 - Modernize examples/tools around `std.process.Init`, `init.gpa`, `init.io`, and
   current `std.Io` APIs.
 
+Scoped modernization decision: this branch now targets Zig 0.17-dev
+(`0.17.0-dev.256+04481c76c` validated locally; minimum declared in
+`build.zig.zon`) and no longer documents Zig 0.16 as a supported build target.
+`mise.toml` does not manage Zig because active development uses a
+master/zvm-style toolchain supplied on `PATH`. `std.Io.Evented` remains a
+reserved backend selector until capnpc-zig validates
+transport wake/poll/scheduling behavior on it.
+
 ## Quality Gates
 
 Use these at the end of each tranche:

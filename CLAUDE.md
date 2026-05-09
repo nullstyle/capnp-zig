@@ -20,7 +20,7 @@ capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/)
 
 ## Build & Test Commands
 
-Requires **Zig 0.16.0** (pinned in `mise.toml`; run `mise install` to set up the toolchain).
+Requires **Zig 0.17-dev** on `PATH` (minimum declared in `build.zig.zon`; `mise.toml` manages helper tools only). This branch is currently validated with `0.17.0-dev.256+04481c76c`.
 
 | Task | Command |
 |---|---|
@@ -58,7 +58,7 @@ Four-layer design, each building on the previous:
 
 **Code Generation** (`src/capnpc-zig/`) — Generates idiomatic Zig Reader/Builder types from Cap'n Proto schemas. `generator.zig` is the main driver; `struct_gen.zig` generates field accessors; `types.zig` maps Cap'n Proto types to Zig types.
 
-**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP. All socket I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded` today, `std.Io.Evented` once it lands upstream). Modules: `runtime.zig` (listener/socket helpers), `connection.zig` (state machine), `framing.zig` (message framing), `transport.zig` (concurrent read/write I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
+**RPC Runtime** (`src/rpc/`) — Cap'n Proto RPC over TCP. All socket I/O flows through `std.Io`, so the runtime is polymorphic over the concrete backend (`std.Io.Threaded` today, `std.Io.Evented` reserved until this project validates it). Modules: `runtime.zig` (listener/socket helpers), `connection.zig` (state machine), `framing.zig` (message framing), `transport.zig` (concurrent read/write I/O), `protocol.zig` (RPC message types), `cap_table.zig` (capability export/import), `peer.zig` (call routing and bootstrap).
 
 ### Key data flows
 
@@ -78,7 +78,7 @@ The RPC runtime is polymorphic over `std.Io`. Centralised selection lives in `sr
 
 - `Backend.init(.process_init, gpa, init.io)` — reuse the `std.Io` provided by `std.process.Init` (currently `std.Io.Threaded`).
 - `Backend.init(.threaded, gpa, _)` — explicitly construct a fresh `std.Io.Threaded`.
-- `Backend.init(.evented, gpa, _)` — placeholder for `std.Io.Evented`; returns `error.EventedBackendNotImplemented` until Zig ships it.
+- `Backend.init(.evented, gpa, _)` — placeholder for `std.Io.Evented`; returns `error.EventedBackendNotImplemented` until capnpc-zig enables its evented adapter.
 
 RPC entry points (`examples/rpc_pingpong.zig`, `tests/e2e/zig/main_{server,client}.zig`) read the kind from the `-Dio-backend=process_init|threaded|evented` build option (default `process_init`) via the `io_backend_options` module wired up in `build.zig`.
 
@@ -102,7 +102,7 @@ Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC r
 
 ## Tooling & Configuration
 
-- Target Zig `0.16.0`. `capnp`, `just`, and `mise` are optional but recommended for local workflows.
+- Target Zig `0.17-dev`. Zig 0.16 is no longer a supported target for this branch. Keep a compatible master/zvm-style Zig on `PATH`; `mise.toml` manages helper tools only. `capnp`, `just`, and `mise` are optional but recommended for local workflows.
 
 ## Landing the Plane (Session Completion)
 

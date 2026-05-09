@@ -17,7 +17,7 @@ pub const generated = base.generated;
 pub const _internal = base._internal;
 
 /// QUIC is optional at the build-module boundary. The default module exposes a
-/// QUIC-dependency-free facade so tests and callers can use the length-delimited framer
-/// without pulling in BoringSSL/quic-zig; build with `-Dquic=true` for the native
-/// QUIC transport.
+/// QUIC-dependency-free facade so tests and callers can use framing helpers
+/// without pulling in BoringSSL/quic-zig; build with `-Dquic=true` for the
+/// native QUIC transport.
 pub const quic = @import("./transport/quic_disabled.zig");

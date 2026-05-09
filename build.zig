@@ -75,6 +75,9 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
     const lib_root = if (enable_quic) "src/lib_quic.zig" else "src/lib.zig";
 
+    // Keep the normal module graph free of quic-zig/BoringSSL. The dependency
+    // is declared in build.zig.zon for opt-in builds, but only resolved when
+    // callers explicitly request the QUIC transport surface.
     const quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
         const quic_zig_dep = b.dependency("quic_zig", .{
             .target = target,
@@ -86,8 +89,8 @@ pub fn build(b: *std.Build) void {
     // Selects which std.Io backend RPC entry points should construct. See
     // src/io_backend.zig for the full list of accepted spellings; the
     // default `process_init` reuses the std.Io that std.process.Init
-    // already provides (currently std.Io.Threaded). Switch to `evented`
-    // once Zig ships std.Io.Evented.
+    // already provides. The `evented` selector is reserved until this project
+    // adopts and validates std.Io.Evented's scheduling/wake semantics.
     const io_backend_kind = b.option(
         []const u8,
         "io-backend",

@@ -4,8 +4,13 @@
 //! that opens sockets, schedules work, or runs the connection loop accepts a
 //! `std.Io` value. This module centralises the choice of which concrete
 //! backend to construct so that swapping (for example) `std.Io.Threaded` for
-//! `std.Io.Evented` once it ships upstream is a single-line change rather
-//! than a sweep through every `main`.
+//! `std.Io.Evented`) is a single-line change rather than a sweep through every
+//! `main`.
+//!
+//! The project currently builds against Zig 0.17-dev. Some 0.17-dev snapshots
+//! expose `std.Io.Evented`, but capnpc-zig still treats `.evented` as a
+//! reserved selector until the TCP wake, polling, and scheduling behavior has
+//! been validated end to end.
 //!
 //! Typical usage:
 //!
@@ -23,8 +28,7 @@ const std = @import("std");
 /// Selects which `std.Io` backend to construct.
 pub const Kind = enum {
     /// Use the `std.Io` provided by `std.process.Init` (the language
-    /// default). In Zig 0.16 this is `std.Io.Threaded`; Zig may change the
-    /// default in future releases.
+    /// default). Zig may change the concrete default in future releases.
     process_init,
 
     /// Explicitly construct a fresh `std.Io.Threaded`. Useful when you want
@@ -32,16 +36,16 @@ pub const Kind = enum {
     /// instances in the same process.
     threaded,
 
-    /// Reserved for `std.Io.Evented` once it lands upstream. Selecting this
-    /// today returns `error.EventedBackendNotImplemented`. Once Zig ships
-    /// the evented backend, the implementation here will be filled in and
-    /// callers that already select `.evented` will start using it.
+    /// Reserved for `std.Io.Evented`. Selecting this today returns
+    /// `error.EventedBackendNotImplemented`; once the RPC transport is
+    /// validated on Evented, the implementation can be filled in here without
+    /// changing callers.
     evented,
 };
 
 /// Errors returned by `Backend.init`.
 pub const InitError = error{
-    /// `std.Io.Evented` is not yet available in the standard library.
+    /// capnpc-zig has not enabled its `std.Io.Evented` adapter yet.
     EventedBackendNotImplemented,
 };
 
@@ -60,7 +64,7 @@ pub const Backend = union(Kind) {
     /// - For `.threaded`, a fresh `std.Io.Threaded` is constructed with
     ///   default options using `gpa`.
     /// - For `.evented`, returns `error.EventedBackendNotImplemented`
-    ///   until Zig ships the evented backend.
+    ///   until capnpc-zig enables its evented adapter.
     pub fn init(
         kind: Kind,
         gpa: std.mem.Allocator,
