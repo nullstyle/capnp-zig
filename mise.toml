@@ -3,4 +3,6 @@ act = "latest"
 go = "1.26.0"
 just = "latest"
 uv = "latest"
-zig = "0.16.0"
+
+# Zig 0.17-dev is required by build.zig.zon. Keep Zig out of mise here because
+# active development uses a master/zvm-style toolchain supplied on PATH.

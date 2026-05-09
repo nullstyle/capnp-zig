@@ -27,13 +27,13 @@ pub const schema_validation = @import("serialization/schema_validation.zig");
 
 /// Cap'n Proto RPC runtime: connection management, capability tables,
 /// message framing, and peer protocol implementation. The default build keeps
-/// the quic-zig-backed QUIC transport disabled; pass `-Dquic=true` to expose the
-/// native QUIC transport as `rpc.quic`.
+/// the quic-zig-backed QUIC transport disabled; pass `-Dquic=true` to select
+/// `src/lib_quic.zig` and expose the native QUIC transport as `rpc.quic`.
 pub const rpc = @import("rpc/mod.zig");
 
 /// Switchable `std.Io` backend selection. Centralises the choice between
-/// `std.Io.Threaded` and (eventually) `std.Io.Evented` so applications can
-/// flip backends in one place.
+/// `std.Io.Threaded` and the reserved `std.Io.Evented` selector so
+/// applications can flip backends in one place once Evented is enabled here.
 pub const io_backend = @import("io_backend.zig");
 
 test {

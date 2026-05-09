@@ -4,7 +4,7 @@
 - Full Cap'n Proto RPC protocol compliance (bootstrap, calls, returns, pipelining, capability transfer).
 - Production-ready performance: low overhead, backpressure-aware, minimal allocations.
 - Integration with the existing `src/serialization/message.zig` wire-format layer and codegen.
-- Concurrent read/write I/O over `std.Io` with dedicated writer threads. The runtime is polymorphic over the concrete `std.Io` backend so that `std.Io.Threaded` (Zig 0.16) and the eventual `std.Io.Evented` are both supported without protocol changes — see `src/io_backend.zig`.
+- Concurrent read/write I/O over `std.Io` with dedicated writer threads. The runtime is polymorphic over the concrete `std.Io` backend so that `std.Io.Threaded` and the reserved `std.Io.Evented` selector can share the same protocol code once Evented is enabled in capnpc-zig -- see `src/io_backend.zig`.
 
 ## Non-Goals (Initial Phase)
 - TLS or authentication for the TCP transport (assume a trusted transport).
@@ -33,12 +33,20 @@ Each connection uses a `Transport` with concurrent read/write I/O:
 4. Parsed messages are dispatched to handlers.
 5. Outbound messages are serialized and enqueued; a dedicated writer thread drains the write queue.
 
+The TCP transport is the only place that should know about POSIX wake pipes,
+`poll`, and socket options such as `TCP_NODELAY`. Those details currently live
+under `src/rpc/transport/tcp/`; future Evented work should either keep them
+behind that boundary or extract a very small platform shim there, without
+touching peer/capability/promise semantics.
+
 ## QUIC Transport
 QUIC is opt-in at the build-module boundary. Default builds keep quic-zig/BoringSSL
 out of serialization and TCP-only applications; `rpc.quic` is a disabled facade
-that exposes only QUIC-dependency-free framing helpers and a clear compile-time error for
-transport construction. Build with `-Dquic=true` to select the QUIC-enabled
-library root, import quic-zig, and expose the native transport implementation.
+that exposes only QUIC-dependency-free framing helpers and a clear compile-time
+error for transport construction. The dependency remains declared in
+`build.zig.zon` for opt-in users, but `build.zig` resolves it only when
+`-Dquic=true` selects the QUIC-enabled library root and exposes the native
+transport implementation.
 For setup examples, mode selection, and production budget guidance, see
 `docs/quic-transport.md`.
 

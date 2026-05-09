@@ -1,8 +1,10 @@
 # QUIC RPC Transport Guide
 
 capnp-zig's QUIC transport is optional. Normal builds keep `quic-zig` and
-BoringSSL out of the dependency graph; build with `-Dquic=true` when an
-application wants `rpc.quic.Connection`.
+BoringSSL out of the resolved dependency graph; build with `-Dquic=true` when an
+application wants `rpc.quic.Connection`. The package manifest declares
+`quic_zig` so opt-in builds are reproducible, but default builds do not
+instantiate that dependency.
 
 ```bash
 zig build -Dquic=true test-rpc-quic --summary all

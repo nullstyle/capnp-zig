@@ -1,8 +1,9 @@
 /// Pure Zig implementation of Cap'n Proto serialization, code generation, and RPC.
 ///
 /// This QUIC-enabled module includes the optional quic-zig-backed QUIC transport.
-/// Use the default `capnpc-zig` build without `-Dquic=true` when serialization
-/// or TCP RPC users should not depend on quic-zig/BoringSSL.
+/// `build.zig` selects this root only when `-Dquic=true`; serialization and TCP
+/// RPC users should use the default root so quic-zig/BoringSSL stay out of their
+/// dependency graph.
 pub const message = @import("serialization/message.zig");
 
 /// Cap'n Proto schema type definitions (Node, Field, Type, Value) used by
@@ -27,8 +28,8 @@ pub const schema_validation = @import("serialization/schema_validation.zig");
 pub const rpc = @import("rpc/mod_quic.zig");
 
 /// Switchable `std.Io` backend selection. Centralises the choice between
-/// `std.Io.Threaded` and (eventually) `std.Io.Evented` so applications can
-/// flip backends in one place.
+/// `std.Io.Threaded` and the reserved `std.Io.Evented` selector so
+/// applications can flip backends in one place once Evented is enabled here.
 pub const io_backend = @import("io_backend.zig");
 
 test {

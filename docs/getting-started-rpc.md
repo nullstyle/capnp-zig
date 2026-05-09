@@ -6,7 +6,7 @@ This guide walks you through defining a Cap'n Proto RPC interface and building a
 
 ## Prerequisites
 
-- **Zig 0.16** (use `mise install` if you have mise)
+- **Zig 0.17-dev** on `PATH` (`mise.toml` manages helper tools only)
 - **Cap'n Proto compiler** (`capnp`) — for schema compilation
 - **capnpc-zig** — built from this repo (`zig build`)
 

@@ -2,11 +2,11 @@
 
 **WARNING: This code was extensively vibed;  It's only for me for now, use at your own risk**
 
-A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets Zig 0.16.0.
+A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serialization framework and RPC system. Includes a compiler plugin (`capnpc-zig`), a message serialization library, and an RPC runtime built on `std.Io` with a concurrent read/write transport. Targets Zig 0.17-dev.
 
 ## Features
 
-- **Pure Zig Implementation**: No C++ dependencies, targets Zig 0.16.0
+- **Pure Zig Implementation**: No C++ dependencies, targets Zig 0.17-dev
 - **Full Serialization Support**: Complete Cap'n Proto wire format including packed encoding and far pointers
 - **Zero-Copy Deserialization**: Readers work directly with message bytes
 - **Builder Pattern**: Ergonomic API for constructing messages
@@ -19,7 +19,7 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 
 ### Prerequisites
 
-- Zig 0.16.0 (pinned in `mise.toml`)
+- Zig 0.17-dev on `PATH` (minimum declared in `build.zig.zon`; helper tools remain in `mise.toml`)
 - Cap'n Proto compiler (`capnp`) - optional, for schema compilation
 - `mise` (recommended, for environment management)
 - `just` (recommended, for task automation)
@@ -39,6 +39,14 @@ just test
 # or
 zig build test --summary all
 ```
+
+## Toolchain Support
+
+This branch is built and tested with Zig `0.17.0-dev.256+04481c76c`. Zig 0.16
+is no longer a supported target for this branch; downstream consumers should use
+a compatible 0.17-dev snapshot until Zig 0.17 stabilizes. The local
+`mise.toml` intentionally does not manage Zig because current development is
+using a master/zvm-style toolchain rather than a resolvable mise release tarball.
 
 ## Usage
 
@@ -252,7 +260,7 @@ Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
 - **Capability-based security**: Each connection maintains export and import tables tracking capabilities by ID with reference counting. The runtime sends `Release` when a refcount reaches zero.
 - **Promise pipelining**: Calls can be pipelined on promised answers before results arrive, reducing round trips.
 - **Structured peer orchestration**: The `Peer` type handles the full lifecycle -- call dispatch, return handling, embargo management, capability forwarding, and third-party handoff.
-- **Backend-agnostic I/O**: Every socket op flows through `std.Io`, so the runtime is polymorphic over any concrete backend (`std.Io.Threaded` today, `std.Io.Evented` once it lands upstream).
+- **Backend-agnostic I/O**: Every socket op flows through `std.Io`, so the runtime is polymorphic over the concrete backend. `std.Io.Threaded` is enabled today; `std.Io.Evented` remains a reserved selector until the transport wake and scheduling semantics are validated.
 
 ### Switchable Io Backend
 
@@ -271,9 +279,9 @@ pub fn main(init: std.process.Init) !void {
 
 `Backend.init` accepts:
 
-- `.process_init` -- reuse the `std.Io` provided by `std.process.Init` (in Zig 0.16 this is `std.Io.Threaded`).
+- `.process_init` -- reuse the `std.Io` provided by `std.process.Init`.
 - `.threaded` -- explicitly construct a fresh `std.Io.Threaded` (useful for sizing your own thread pool or running multiple isolated I/O instances).
-- `.evented` -- reserved for `std.Io.Evented` once it ships in std; today returns `error.EventedBackendNotImplemented`.
+- `.evented` -- reserved for `std.Io.Evented`; today returns `error.EventedBackendNotImplemented`.
 
 Bundled RPC executables (`example-rpc`, `e2e-zig-server`, `e2e-zig-client`) read the selection from a build option:
 
@@ -283,7 +291,8 @@ zig build example-rpc -Dio-backend=threaded       # explicit Threaded
 zig build example-rpc -Dio-backend=evented        # errors at runtime today
 ```
 
-When `std.Io.Evented` becomes available, switching is a single-line change in `src/io_backend.zig` plus a rebuild with `-Dio-backend=evented`.
+When capnpc-zig enables its Evented adapter, switching remains a single change
+in `src/io_backend.zig` plus a rebuild with `-Dio-backend=evented`.
 
 ### Running the RPC Example
 
@@ -293,8 +302,10 @@ zig build example-rpc
 
 ### QUIC Transport
 
-The QUIC RPC transport is optional and excluded from normal builds. Enable it
-with `-Dquic=true` when you need `capnpc.rpc.quic`:
+The QUIC RPC transport is optional and excluded from normal builds. The
+quic-zig dependency is listed in the package manifest for opt-in builds, but
+`build.zig` resolves it only with `-Dquic=true`. Enable it when you need
+`capnpc.rpc.quic`:
 
 ```bash
 zig build -Dquic=true check --summary all
