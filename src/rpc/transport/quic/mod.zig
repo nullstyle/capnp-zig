@@ -17,6 +17,7 @@ pub const AcceptedSession = session.AcceptedSession;
 pub const AcceptedSessionDriver = session.AcceptedSessionDriver;
 pub const ClientEndpoint = endpoint.ClientEndpoint;
 pub const Endpoint = endpoint.Endpoint;
+pub const EndpointDriver = endpoint.EndpointDriver;
 pub const Listener = listener.Listener;
 pub const Role = endpoint.Role;
 pub const ServerEndpoint = endpoint.ServerEndpoint;

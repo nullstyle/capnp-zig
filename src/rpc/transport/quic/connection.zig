@@ -25,6 +25,7 @@ const OutboundQueue = outbound_queue.OutboundQueue;
 
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
+const EndpointDriver = endpoint_mod.EndpointDriver;
 
 const NativeQueuedKind = enum {
     inline_rpc,
@@ -605,10 +606,7 @@ pub const Connection = struct {
         self.on_error = null;
         self.on_close = null;
         self.closeWakeFds();
-        switch (self.endpoint) {
-            .client => |*client| client.deinit(self.io),
-            .server => |*server| server.deinit(),
-        }
+        self.endpointDriver().deinit();
         self.allocator.free(self.udp_rx_buf);
         self.allocator.free(self.udp_tx_buf);
         self.allocator.free(self.stream_read_buf);
@@ -705,10 +703,7 @@ pub const Connection = struct {
     }
 
     pub fn getAddress(self: *const Connection) Net.IpAddress {
-        return switch (self.endpoint) {
-            .client => |*client| client.getAddress(),
-            .server => |*server| server.listener.getAddress(),
-        };
+        return self.endpoint.getAddress();
     }
 
     pub fn assertThreadAffinity(self: *const Connection) void {
@@ -793,7 +788,7 @@ pub const Connection = struct {
             receive_timeout = std.Io.Duration.zero;
         }
 
-        const socket = self.activeSocket();
+        const socket = self.endpointDriver().activeSocket();
         const msg = socket.receiveTimeout(self.io, self.udp_rx_buf, .{
             .duration = .{
                 .raw = receive_timeout,
@@ -806,18 +801,7 @@ pub const Connection = struct {
         if (msg.flags.trunc) return error.DatagramTooLarge;
         result.received_datagram = true;
 
-        switch (self.endpoint) {
-            .client => |*client| {
-                const remote = client.remote_addr;
-                if (!Net.IpAddress.eql(&msg.from, &remote)) return result;
-                try client.transport.conn.handle(msg.data, quic_zig_adapter.ipAddressToPathAddress(msg.from), now_us);
-            },
-            .server => |*server| {
-                _ = try server.listener.feedDatagram(msg.data, msg.from, now_us);
-                self.setServerSlotIfAccepted();
-                try server.listener.drainStatelessResponses();
-            },
-        }
+        _ = try self.endpointDriver().handleDatagram(msg.data, msg.from, now_us);
         return result;
     }
 
@@ -829,7 +813,7 @@ pub const Connection = struct {
     fn waitForUdpOrWake(self: *Connection, wait_duration: std.Io.Duration) !?PollResult {
         if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return null;
         const fds = self.wake_fds orelse return null;
-        const socket = self.activeSocket();
+        const socket = self.endpointDriver().activeSocket();
 
         var poll_fds = [2]std.posix.pollfd{
             .{ .fd = socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
@@ -898,17 +882,11 @@ pub const Connection = struct {
     }
 
     fn receiveTimeout(self: *const Connection) std.Io.Duration {
-        return switch (self.endpoint) {
-            .client => |*client| client.receive_timeout,
-            .server => |*server| server.listener.receive_timeout,
-        };
+        return self.endpoint.receiveTimeout();
     }
 
-    fn activeSocket(self: *Connection) *Net.Socket {
-        return switch (self.endpoint) {
-            .client => |*client| &client.socket,
-            .server => |*server| &server.listener.socket,
-        };
+    fn endpointDriver(self: *Connection) EndpointDriver {
+        return self.endpoint.driver(self.io);
     }
 
     fn hasImmediateWork(self: *Connection) bool {
@@ -1293,55 +1271,21 @@ pub const Connection = struct {
     }
 
     fn drainOutgoingDatagrams(self: *Connection, now_us: u64) !void {
-        switch (self.endpoint) {
-            .client => |*client| {
-                while (try client.transport.conn.pollDatagram(self.udp_tx_buf, now_us)) |out| {
-                    const dest = if (out.to) |addr|
-                        quic_zig_adapter.pathAddressToIpAddress(addr) orelse client.remote_addr
-                    else
-                        client.remote_addr;
-                    try client.socket.send(self.io, &dest, self.udp_tx_buf[0..out.len]);
-                }
-            },
-            .server => |*server| {
-                const accepted = server.session.current() orelse return;
-                try server.listener.drainAcceptedSessionDatagrams(accepted, self.udp_tx_buf, now_us);
-            },
-        }
+        try self.endpointDriver().drainOutgoingDatagrams(self.udp_tx_buf, now_us);
     }
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
-        return switch (self.endpoint) {
-            .client => |*client| client.transport.conn,
-            .server => |*server| server.session.quicConnection(),
-        };
-    }
-
-    fn setServerSlotIfAccepted(self: *Connection) void {
-        switch (self.endpoint) {
-            .client => return,
-            .server => |*server| {
-                _ = server.session.attachFirstAccepted(&server.listener.server);
-            },
-        }
+        return self.endpointDriver().quicConnection();
     }
 
     fn reapServerIfClosed(self: *Connection) void {
-        switch (self.endpoint) {
-            .client => return,
-            .server => |*server| {
-                if (server.session.reapClosed(&server.listener.server)) {
-                    _ = self.close_requested.swap(true, .acq_rel);
-                }
-            },
+        if (self.endpointDriver().reapClosed()) {
+            _ = self.close_requested.swap(true, .acq_rel);
         }
     }
 
     fn nowUs(self: *Connection) u64 {
-        return switch (self.endpoint) {
-            .client => |*client| client.nowUs(self.io),
-            .server => |*server| server.listener.nowUs(),
-        };
+        return self.endpointDriver().nowUs();
     }
 
     fn invokeOnError(self: *Connection, err: anyerror) void {

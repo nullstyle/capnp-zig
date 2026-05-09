@@ -29,7 +29,13 @@ pub const ServerEndpoint = struct {};
 pub const Endpoint = union(Role) {
     client: ClientEndpoint,
     server: ServerEndpoint,
+
+    pub fn driver(_: *Endpoint, _: anytype) EndpointDriver {
+        return .{};
+    }
 };
+
+pub const EndpointDriver = struct {};
 
 pub const Session = struct {};
 pub const AcceptedSession = struct {};

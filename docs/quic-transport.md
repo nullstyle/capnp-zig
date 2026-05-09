@@ -99,6 +99,8 @@ The lower-level boundary is also public for future fanout work:
   ordinal.
 - `rpc.quic.AcceptedSessionDriver` attaches, drives, and reaps the one accepted
   session used by the compatibility connection.
+- `rpc.quic.EndpointDriver` is the shared run-loop boundary for endpoint-specific
+  socket, timer, inbound datagram, outbound datagram, and session-reaping work.
 - `rpc.quic.ServerEndpoint` pairs a listener with the accepted-session driver
   currently attached to the compatibility connection.
 

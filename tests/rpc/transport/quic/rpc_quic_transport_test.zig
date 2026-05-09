@@ -519,6 +519,7 @@ test "quic exposes listener and session API boundary" {
     try std.testing.expect(@hasDecl(quic, "AcceptedSessionDriver"));
     try std.testing.expect(@hasDecl(quic, "ClientEndpoint"));
     try std.testing.expect(@hasDecl(quic, "ServerEndpoint"));
+    try std.testing.expect(@hasDecl(quic, "EndpointDriver"));
     try std.testing.expect(@hasDecl(quic.listener, "Listener"));
     try std.testing.expect(@hasDecl(quic.session, "Session"));
     try std.testing.expect(@hasDecl(quic.session, "AcceptedSession"));
