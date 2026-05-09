@@ -13,6 +13,12 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
+The public API is intentionally close to the TCP transport while the QUIC layer
+is still maturing. Applications should treat `rpc.quic.Connection` as the stable
+entry point for one client/server session, and use the lower-level listener,
+endpoint, and session helpers only when experimenting with future server fanout
+or writing focused transport tests.
+
 ## Modes
 
 `rpc.quic.ClientOptions.mode` and `rpc.quic.ServerOptions.mode` default to
@@ -24,6 +30,18 @@ between peers, not the RPC protocol that `Peer` handles.
 | `baseline` | Client-initiated bidirectional stream 0 carries 32-bit little-endian length-delimited RPC frames. | You want the most conservative QUIC port of the TCP transport. This is the default. |
 | `native` | Bidirectional stream 0 carries a native preface, versioned hello, and ordered control envelopes. Small RPC frames are inline; large RPC frames move over one-shot unidirectional data streams referenced by ordered control frames. | You want QUIC-native stream routing and are comfortable opting both peers into the newer wire shape. |
 
+Baseline mode is the compatibility baseline. It preserves the TCP transport's
+single ordered byte stream above the QUIC handshake, so every RPC frame is still
+delimited by the same 32-bit little-endian length prefix before being handed to
+`Peer`. Use it for first deployments, interop bring-up, and any peer set where a
+mode mismatch would be difficult to roll back quickly.
+
+Native mode is an explicit opt-in wire shape for QUIC-specific stream use. It
+keeps stream 0 as the ordered control stream and uses additional unidirectional
+streams only for large frame bodies. The RPC layer still observes complete
+frames in Cap'n Proto E-order; native mode changes only how the transport moves
+those frames internally.
+
 Native mode preserves Cap'n Proto E-order. Control frames are processed in
 control-stream order. If a `data_rpc` control frame is next but the referenced
 unidirectional data stream has not completed, later control frames stay buffered
@@ -31,6 +49,19 @@ and are not dispatched yet.
 
 QUIC DATAGRAM is not used by either mode. Telemetry and sideband data should be
 designed as a transport-general facility, not as a QUIC-only extension.
+
+## Recommended Mode Defaults
+
+Use the defaults unless you have a concrete reason to diverge:
+
+- Keep `mode = .baseline` for production rollouts and mixed-version fleets.
+- Set `mode = .native` only when both peers are deployed from builds that
+  intentionally support the native QUIC wire shape.
+- Leave `alpn_protocols = &.{rpc.quic.alpn}` unless you are integrating with a
+  private deployment that has a documented ALPN policy.
+- Keep 0-RTT disabled for RPC servers unless every bootstrap operation and
+  early call path is safe to replay.
+- Keep `reveal_close_reason_on_wire = false` outside local debugging.
 
 ## Opting Into Native Mode
 
@@ -91,7 +122,9 @@ current one-session transport. Internally it owns a `rpc.quic.Listener`, accepts
 the first server-side `rpc.quic.AcceptedSession`, and drives that session through
 the existing `Connection.start()` callbacks.
 
-The lower-level boundary is also public for future fanout work:
+The lower-level boundary is also public for future fanout work. These helpers
+split ownership and event-loop responsibilities, but they do not yet make a
+multi-session RPC server:
 
 - `rpc.quic.Listener` owns the UDP socket and `quic_zig.Server`.
 - `rpc.quic.Session` is a borrowed handle for one accepted server slot.
@@ -103,6 +136,23 @@ The lower-level boundary is also public for future fanout work:
   socket, timer, inbound datagram, outbound datagram, and session-reaping work.
 - `rpc.quic.ServerEndpoint` pairs a listener with the accepted-session driver
   currently attached to the compatibility connection.
+
+Internally, the transport keeps the mode-specific frame mechanics behind narrow
+helper modules:
+
+- `baseline_engine.zig` owns baseline stream 0 open/read/write behavior and the
+  length-delimited frame queue.
+- `native_engine.zig` owns native preface/hello state, ordered control frames,
+  unidirectional data-stream sends, and native pending-data budgets.
+- `length_framer.zig` and `native_framer.zig` encode/decode transport frames
+  without owning socket or peer lifecycle.
+- `endpoint.zig`, `client_endpoint.zig`, `server_endpoint.zig`,
+  `datagram_io.zig`, and `scheduler.zig` keep socket datagrams, timers,
+  endpoint stepping, and wake decisions out of the mode engines.
+- `close.zig`, `close_controller.zig`, and `termination.zig` centralize close
+  code selection, reason redaction, and terminal state transitions.
+- `options.zig` is the public configuration boundary; prefer adding documented
+  knobs there instead of threading private constants through examples.
 
 `ServerOptions.max_concurrent_connections` must remain
 `rpc.quic.supported_max_concurrent_sessions` for now. Raising that value will
@@ -159,6 +209,26 @@ const options = quic.withProductionServerHardening(.{
     .new_token_key = new_token_key,
 });
 ```
+
+Recommended hardening posture:
+
+- Provide stable, secret `retry_token_key` material and rotate it with your
+  deployment's normal key-rotation process.
+- Provide `new_token_key` when you want returning clients to avoid Retry after
+  address validation has already succeeded.
+- Leave the preset's listener gates enabled, then tune
+  `max_initials_per_source_per_window`, `max_datagrams_per_window`,
+  `max_bytes_per_window`, and `max_bytes_per_source_per_second` from production
+  telemetry instead of disabling them during load tests.
+- Keep `max_connection_memory`, `max_message_bytes`,
+  `max_outbound_queue_items`, and `max_outbound_queue_bytes` bounded. Raise them
+  only with matching application-level size limits.
+- Register `log_callback` or `qlog_callback` for diagnostics in controlled
+  environments, and rate-limit exposed log paths with
+  `max_log_events_per_source_per_window`.
+- For native mode, keep the default `NativeOptions` first. If large application
+  frames are common, prefer raising `max_pending_data_bytes` within your message
+  budget over making every frame inline.
 
 ## Current Limits
 

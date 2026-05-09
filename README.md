@@ -291,6 +291,22 @@ When `std.Io.Evented` becomes available, switching is a single-line change in `s
 zig build example-rpc
 ```
 
+### QUIC Transport
+
+The QUIC RPC transport is optional and excluded from normal builds. Enable it
+with `-Dquic=true` when you need `capnpc.rpc.quic`:
+
+```bash
+zig build -Dquic=true check --summary all
+zig build -Dquic=true test-rpc-quic --summary all
+```
+
+QUIC defaults to baseline mode, which carries the same ordered RPC frame stream
+as TCP over a QUIC connection. Native mode is an explicit opt-in on both peers
+for QUIC-specific control/data stream routing. For mode selection, helper
+module boundaries, and production hardening defaults, see
+`docs/quic-transport.md`.
+
 ### RPC Benchmarks
 
 ```bash
