@@ -5,6 +5,7 @@ const quic_zig = @import("quic_zig");
 const baseline_engine = @import("baseline_engine.zig");
 const callback_lifecycle_mod = @import("callback_lifecycle.zig");
 const close_controller_mod = @import("close_controller.zig");
+const connection_init = @import("connection_init.zig");
 const connection_loop = @import("connection_loop.zig");
 const engine_owner = @import("engine_owner.zig");
 const endpoint_factory = @import("endpoint_factory.zig");
@@ -24,7 +25,6 @@ const Net = std.Io.net;
 const ClientOptions = quic_options.ClientOptions;
 const ServerOptions = quic_options.ServerOptions;
 const TransportMode = quic_options.TransportMode;
-const NativeOptions = quic_options.NativeOptions;
 const BaselineEngine = baseline_engine.BaselineEngine;
 const EngineOwner = engine_owner.Owner;
 const ModeRouter = mode_router.Router;
@@ -32,7 +32,6 @@ const NativeEngine = native_engine.NativeEngine;
 const TerminationPolicy = termination.Policy;
 
 const Role = endpoint_mod.Role;
-const Endpoint = endpoint_mod.Endpoint;
 const EndpointDriver = endpoint_mod.EndpointDriver;
 const EndpointRuntime = endpoint_mod.Runtime;
 
@@ -76,20 +75,13 @@ pub const Connection = struct {
         var created = try endpoint_factory.initClient(allocator, io, options);
         errdefer created.deinit(io);
 
-        return try initCommon(
+        return try connection_init.init(
+            Connection,
             allocator,
             io,
             created.role,
             created.endpoint,
-            options.udp_rx_buffer_size,
-            options.udp_tx_buffer_size,
-            options.stream_read_buffer_size,
-            options.max_message_bytes,
-            options.max_outbound_queue_items,
-            options.max_outbound_queue_bytes,
-            options.mode,
-            options.native,
-            false,
+            connection_init.Config.fromClient(options),
         );
     }
 
@@ -101,72 +93,14 @@ pub const Connection = struct {
         var created = try endpoint_factory.initServer(allocator, io, options);
         errdefer created.deinit(io);
 
-        return try initCommon(
+        return try connection_init.init(
+            Connection,
             allocator,
             io,
             created.role,
             created.endpoint,
-            options.udp_rx_buffer_size,
-            options.udp_tx_buffer_size,
-            options.stream_read_buffer_size,
-            options.max_message_bytes,
-            options.max_outbound_queue_items,
-            options.max_outbound_queue_bytes,
-            options.mode,
-            options.native,
-            options.reveal_close_reason_on_wire,
+            connection_init.Config.fromServer(options),
         );
-    }
-
-    fn initCommon(
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        role: Role,
-        endpoint: Endpoint,
-        udp_rx_buffer_size: usize,
-        udp_tx_buffer_size: usize,
-        stream_read_buffer_size: usize,
-        max_message_bytes: usize,
-        max_outbound_queue_items: usize,
-        max_outbound_queue_bytes: usize,
-        mode: TransportMode,
-        native_options: NativeOptions,
-        reveal_close_reason_on_wire: bool,
-    ) !Connection {
-        const udp_rx_buf = try allocator.alloc(u8, udp_rx_buffer_size);
-        errdefer allocator.free(udp_rx_buf);
-        const udp_tx_buf = try allocator.alloc(u8, udp_tx_buffer_size);
-        errdefer allocator.free(udp_tx_buf);
-        const stream_read_buf = try allocator.alloc(u8, stream_read_buffer_size);
-        errdefer allocator.free(stream_read_buf);
-
-        return .{
-            .allocator = allocator,
-            .role = role,
-            .endpoint = EndpointRuntime.init(endpoint, io),
-            .udp_rx_buf = udp_rx_buf,
-            .udp_tx_buf = udp_tx_buf,
-            .stream_read_buf = stream_read_buf,
-            .max_message_bytes = max_message_bytes,
-            .mode = mode,
-            .baseline = BaselineEngine.init(
-                allocator,
-                max_message_bytes,
-                max_outbound_queue_items,
-                max_outbound_queue_bytes,
-            ),
-            .native = NativeEngine.init(
-                allocator,
-                role,
-                max_message_bytes,
-                max_outbound_queue_items,
-                max_outbound_queue_bytes,
-                native_options,
-            ),
-            .wake_state = wake_mod.Handle.init(),
-            .close_controller = CloseController.init(reveal_close_reason_on_wire),
-            .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
-        };
     }
 
     pub fn deinit(self: *Connection) void {
