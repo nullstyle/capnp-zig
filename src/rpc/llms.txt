@@ -20,7 +20,8 @@
 - `peer/mod.zig` is the public `Peer` facade; `peer/state.zig`,
   `peer/errors.zig`, and `peer/transport.zig` hold the first extracted Option 3
   boundaries, while `peer/*` continues to split behavior by domain (`call`,
-  `return`, `forward`, `provide`, `third_party`, lifecycle/control).
+  `return`, `forward`, `provide_accept_join`, `third_party`,
+  lifecycle/control).
 - `integration/` provides host-facing adapters (`HostPeer`, `WorkerPool`) and is
   intentionally separate from protocol-core code.
 - Source `.capnp` files live in [capnp/](capnp/); generated Zig bindings live
@@ -63,9 +64,13 @@
 - [peer/resolve.zig](peer/resolve.zig): Resolve-message and pending-embargo
   facade.
 - [peer/disembargo.zig](peer/disembargo.zig): Disembargo handling facade.
+- [peer/provide_accept_join.zig](peer/provide_accept_join.zig):
+  Provide/Accept/Join facade plus compatibility helper implementations.
+- [peer/third_party.zig](peer/third_party.zig): Third-party answer,
+  sendResultsTo-thirdParty, and pending-return helper facade.
 - [peer/peer_control.zig](peer/peer_control.zig): Compatibility re-exports plus
-  remaining control-path handlers (`finish`, `resolve`, embargo,
-  provide/accept/join).
+  remaining control-path handlers (`resolve`, disembargo, release, forwarded
+  return, regular return).
 - [peer/call/peer_call_orchestration.zig](peer/call/peer_call_orchestration.zig):
   Inbound/outbound call orchestration.
 - [peer/return/peer_return_orchestration.zig](peer/return/peer_return_orchestration.zig):

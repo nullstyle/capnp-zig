@@ -404,6 +404,16 @@ src/rpc/peer/third_party.zig
 Keep the current public behavior and routing semantics. This tranche is about
 searchability and ownership.
 
+First local pass:
+
+- Added `peer/provide_accept_join.zig` and `peer/third_party.zig` as semantic
+  facades for the Provide/Accept/Join and third-party helper families.
+- `peer/mod.zig` now routes provide/accept/join, third-party payload capture,
+  sendResultsTo-thirdParty, and pending third-party return helpers through the
+  semantic facades.
+- `peer_control.zig` keeps compatibility re-exports for existing tests/imports
+  while the moved helper implementations live in the semantic modules.
+
 ### Tranche 10: Split Capability Lifecycle
 
 Break `caps/table.zig` into narrower pieces:

@@ -3,7 +3,9 @@ const log = std.log.scoped(.rpc_peer);
 const cap_table = @import("../caps/table.zig");
 const message = @import("../../serialization/message.zig");
 const peer_forwarded_return_logic = @import("./forward/peer_forwarded_return_logic.zig");
+const provide_accept_join = @import("./provide_accept_join.zig");
 const protocol = @import("../wire/protocol.zig");
+const third_party = @import("./third_party.zig");
 
 pub const bootstrap = @import("./bootstrap.zig");
 pub const handleUnimplemented = bootstrap.handleUnimplemented;
@@ -24,6 +26,30 @@ pub const takeResolvedAnswerFrameForPeer = finish.takeResolvedAnswerFrameForPeer
 pub const takeResolvedAnswerFrameForPeerFn = finish.takeResolvedAnswerFrameForPeerFn;
 pub const freeOwnedFrameForPeer = finish.freeOwnedFrameForPeer;
 pub const freeOwnedFrameForPeerFn = finish.freeOwnedFrameForPeerFn;
+
+pub const resolveProvideImportedCapForPeer = provide_accept_join.resolveProvideImportedCapForPeer;
+pub const resolveProvideImportedCapForPeerFn = provide_accept_join.resolveProvideImportedCapForPeerFn;
+pub const resolveProvidePromisedAnswerForPeer = provide_accept_join.resolveProvidePromisedAnswerForPeer;
+pub const resolveProvidePromisedAnswerForPeerFn = provide_accept_join.resolveProvidePromisedAnswerForPeerFn;
+pub const resolveProvideTarget = provide_accept_join.resolveProvideTarget;
+pub const resolveProvideTargetForPeerFn = provide_accept_join.resolveProvideTargetForPeerFn;
+pub const handleProvide = provide_accept_join.handleProvide;
+pub const handleAccept = provide_accept_join.handleAccept;
+pub const JoinInsertOutcome = provide_accept_join.JoinInsertOutcome;
+pub const handleJoin = provide_accept_join.handleJoin;
+
+pub const noteCallSendResults = third_party.noteCallSendResults;
+pub const noteCallSendResultsForPeerFn = third_party.noteCallSendResultsForPeerFn;
+pub const isThirdPartyAnswerId = third_party.isThirdPartyAnswerId;
+pub const ForwardedReturnMode = third_party.ForwardedReturnMode;
+pub const ForwardedCallDestination = third_party.ForwardedCallDestination;
+pub const buildForwardedCallDestination = third_party.buildForwardedCallDestination;
+pub const applyForwardedCallSendResults = third_party.applyForwardedCallSendResults;
+pub const setForwardedCallThirdPartyFromPayloadForPeer = third_party.setForwardedCallThirdPartyFromPayloadForPeer;
+pub const setForwardedCallThirdPartyFromPayloadForPeerFn = third_party.setForwardedCallThirdPartyFromPayloadForPeerFn;
+pub const captureAnyPointerPayloadForPeer = third_party.captureAnyPointerPayloadForPeer;
+pub const captureAnyPointerPayloadForPeerFn = third_party.captureAnyPointerPayloadForPeerFn;
+pub const handleMissingReturnQuestion = third_party.handleMissingReturnQuestion;
 
 pub fn handleRelease(
     comptime PeerType: type,
@@ -488,283 +514,6 @@ pub fn clearResolvedImportEmbargoForPeerFn(comptime PeerType: type) *const fn (*
     }.call;
 }
 
-pub fn resolveProvideImportedCapForPeer(
-    comptime PeerType: type,
-    peer: *PeerType,
-    export_id: u32,
-) !cap_table.ResolvedCap {
-    const exported_entry = peer.exports.getEntry(export_id) orelse return error.UnknownExport;
-
-    if (exported_entry.value_ptr.is_promise) {
-        const resolved = exported_entry.value_ptr.resolved orelse return error.PromiseUnresolved;
-        if (resolved == .none) return error.PromiseBroken;
-        return resolved;
-    }
-    return .{ .exported = .{ .id = export_id } };
-}
-
-pub fn resolveProvideImportedCapForPeerFn(
-    comptime PeerType: type,
-) *const fn (*PeerType, u32) anyerror!cap_table.ResolvedCap {
-    return struct {
-        fn call(peer: *PeerType, export_id: u32) anyerror!cap_table.ResolvedCap {
-            return try resolveProvideImportedCapForPeer(PeerType, peer, export_id);
-        }
-    }.call;
-}
-
-pub fn resolveProvidePromisedAnswerForPeer(
-    comptime PeerType: type,
-    peer: *PeerType,
-    promised: protocol.PromisedAnswer,
-    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-) !cap_table.ResolvedCap {
-    const resolved = try resolve_promised_answer(peer, promised);
-    if (resolved == .none) return error.PromisedAnswerMissing;
-    return resolved;
-}
-
-pub fn resolveProvidePromisedAnswerForPeerFn(
-    comptime PeerType: type,
-    comptime resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-) *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap {
-    return struct {
-        fn call(peer: *PeerType, promised: protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap {
-            return try resolveProvidePromisedAnswerForPeer(
-                PeerType,
-                peer,
-                promised,
-                resolve_promised_answer,
-            );
-        }
-    }.call;
-}
-
-pub fn resolveProvideTarget(
-    comptime PeerType: type,
-    peer: *PeerType,
-    target: protocol.MessageTarget,
-    resolve_imported_cap: *const fn (*PeerType, u32) anyerror!cap_table.ResolvedCap,
-    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-) !cap_table.ResolvedCap {
-    return switch (target.tag) {
-        .importedCap => {
-            const export_id = target.imported_cap orelse return error.MissingCallTarget;
-            return resolve_imported_cap(peer, export_id);
-        },
-        .promisedAnswer => {
-            const promised = target.promised_answer orelse return error.MissingPromisedAnswer;
-            return resolve_promised_answer(peer, promised);
-        },
-    };
-}
-
-pub fn resolveProvideTargetForPeerFn(
-    comptime PeerType: type,
-    comptime resolve_imported_cap: *const fn (*PeerType, u32) anyerror!cap_table.ResolvedCap,
-    comptime resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
-) *const fn (*PeerType, protocol.MessageTarget) anyerror!cap_table.ResolvedCap {
-    return struct {
-        fn call(peer: *PeerType, target: protocol.MessageTarget) anyerror!cap_table.ResolvedCap {
-            return try resolveProvideTarget(
-                PeerType,
-                peer,
-                target,
-                resolve_imported_cap,
-                resolve_promised_answer,
-            );
-        }
-    }.call;
-}
-
-pub fn handleProvide(
-    comptime PeerType: type,
-    comptime ProvideTargetType: type,
-    peer: *PeerType,
-    provide: protocol.Provide,
-    capture_recipient: *const fn (*PeerType, protocol.Provide) anyerror!?[]u8,
-    free_payload: *const fn (*PeerType, []u8) void,
-    has_question: *const fn (*PeerType, u32) bool,
-    has_recipient: *const fn (*PeerType, []const u8) bool,
-    send_abort: *const fn (*PeerType, []const u8) anyerror!void,
-    resolve_target: *const fn (*PeerType, protocol.MessageTarget) anyerror!cap_table.ResolvedCap,
-    make_target: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!ProvideTargetType,
-    deinit_target: *const fn (*PeerType, *ProvideTargetType) void,
-    put_question: *const fn (*PeerType, u32, []u8, ProvideTargetType) anyerror!void,
-    clear_provide: *const fn (*PeerType, u32) void,
-    put_key: *const fn (*PeerType, []const u8, u32) anyerror!void,
-) !void {
-    const key = try capture_recipient(peer, provide);
-    const key_bytes = key orelse {
-        try send_abort(peer, "provide missing recipient");
-        return error.MissingThirdPartyPayload;
-    };
-    errdefer free_payload(peer, key_bytes);
-
-    if (has_question(peer, provide.question_id)) {
-        try send_abort(peer, "duplicate provide question");
-        return error.DuplicateProvideQuestionId;
-    }
-    if (has_recipient(peer, key_bytes)) {
-        try send_abort(peer, "duplicate provide recipient");
-        return error.DuplicateProvideRecipient;
-    }
-
-    const resolved = resolve_target(peer, provide.target) catch |err| {
-        try send_abort(peer, @errorName(err));
-        return err;
-    };
-    var target = try make_target(peer, resolved);
-    errdefer deinit_target(peer, &target);
-
-    try put_question(peer, provide.question_id, key_bytes, target);
-    errdefer clear_provide(peer, provide.question_id);
-    try put_key(peer, key_bytes, provide.question_id);
-}
-
-pub fn handleAccept(
-    comptime PeerType: type,
-    comptime ProvideTargetType: type,
-    peer: *PeerType,
-    accept: protocol.Accept,
-    capture_provision: *const fn (*PeerType, protocol.Accept) anyerror!?[]u8,
-    free_payload: *const fn (*PeerType, []u8) void,
-    get_provided_question: *const fn (*PeerType, []const u8) ?u32,
-    get_provided_target: *const fn (*PeerType, u32) ?*ProvideTargetType,
-    queue_embargoed_accept: *const fn (*PeerType, u32, u32, []const u8) anyerror!void,
-    send_return_provided_target: *const fn (*PeerType, u32, *const ProvideTargetType) anyerror!void,
-    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-) !void {
-    const key = try capture_provision(peer, accept);
-    defer if (key) |bytes| free_payload(peer, bytes);
-    const key_bytes = key orelse {
-        try send_return_exception(peer, accept.question_id, "unknown provision");
-        return;
-    };
-
-    const provided_question_id = get_provided_question(peer, key_bytes) orelse {
-        try send_return_exception(peer, accept.question_id, "unknown provision");
-        return;
-    };
-    const target = get_provided_target(peer, provided_question_id) orelse {
-        try send_return_exception(peer, accept.question_id, "unknown provision");
-        return;
-    };
-
-    if (accept.embargo) |embargo| {
-        try queue_embargoed_accept(peer, accept.question_id, provided_question_id, embargo);
-        return;
-    }
-
-    send_return_provided_target(peer, accept.question_id, target) catch |err| {
-        try send_return_exception(peer, accept.question_id, @errorName(err));
-    };
-}
-
-pub fn noteCallSendResults(
-    comptime PeerType: type,
-    peer: *PeerType,
-    call: protocol.Call,
-    note_send_results_to_yourself: *const fn (*PeerType, u32) anyerror!void,
-    note_send_results_to_third_party: *const fn (*PeerType, u32, ?message.AnyPointerReader) anyerror!void,
-) !void {
-    switch (call.send_results_to.tag) {
-        .caller => {},
-        .yourself => {
-            try note_send_results_to_yourself(peer, call.question_id);
-        },
-        .thirdParty => {
-            try note_send_results_to_third_party(peer, call.question_id, call.send_results_to.third_party);
-        },
-    }
-}
-
-pub fn noteCallSendResultsForPeerFn(
-    comptime PeerType: type,
-    comptime note_send_results_to_yourself: *const fn (*PeerType, u32) anyerror!void,
-    comptime note_send_results_to_third_party: *const fn (*PeerType, u32, ?message.AnyPointerReader) anyerror!void,
-) *const fn (*PeerType, protocol.Call) anyerror!void {
-    return struct {
-        fn call(peer: *PeerType, rpc_call: protocol.Call) anyerror!void {
-            try noteCallSendResults(
-                PeerType,
-                peer,
-                rpc_call,
-                note_send_results_to_yourself,
-                note_send_results_to_third_party,
-            );
-        }
-    }.call;
-}
-
-pub const JoinInsertOutcome = enum {
-    inserted,
-    inserted_ready,
-    part_count_mismatch,
-    duplicate_part,
-};
-
-pub fn handleJoin(
-    comptime PeerType: type,
-    comptime JoinKeyPartType: type,
-    comptime ProvideTargetType: type,
-    peer: *PeerType,
-    join: protocol.Join,
-    has_pending_join_question: *const fn (*PeerType, u32) bool,
-    send_abort: *const fn (*PeerType, []const u8) anyerror!void,
-    parse_join_key_part: *const fn (*PeerType, protocol.Join) anyerror!JoinKeyPartType,
-    resolve_target: *const fn (*PeerType, protocol.MessageTarget) anyerror!cap_table.ResolvedCap,
-    make_target: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!ProvideTargetType,
-    deinit_target: *const fn (*PeerType, *ProvideTargetType) void,
-    insert_join_part: *const fn (*PeerType, JoinKeyPartType, u32, ProvideTargetType) anyerror!JoinInsertOutcome,
-    complete_join: *const fn (*PeerType, JoinKeyPartType) anyerror!void,
-    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-) !void {
-    if (has_pending_join_question(peer, join.question_id)) {
-        try send_abort(peer, "duplicate join question");
-        return error.DuplicateJoinQuestionId;
-    }
-
-    const join_key_part = parse_join_key_part(peer, join) catch |err| {
-        try send_return_exception(peer, join.question_id, @errorName(err));
-        return;
-    };
-
-    const resolved = resolve_target(peer, join.target) catch |err| {
-        try send_return_exception(peer, join.question_id, @errorName(err));
-        return;
-    };
-
-    var target = make_target(peer, resolved) catch |err| {
-        try send_return_exception(peer, join.question_id, @errorName(err));
-        return;
-    };
-
-    const outcome = insert_join_part(peer, join_key_part, join.question_id, target) catch |err| {
-        deinit_target(peer, &target);
-        return err;
-    };
-
-    switch (outcome) {
-        .inserted => {},
-        .inserted_ready => {
-            try complete_join(peer, join_key_part);
-        },
-        .part_count_mismatch => {
-            deinit_target(peer, &target);
-            try send_return_exception(peer, join.question_id, "join partCount mismatch");
-        },
-        .duplicate_part => {
-            deinit_target(peer, &target);
-            try send_return_exception(peer, join.question_id, "duplicate join part");
-        },
-    }
-}
-
-pub fn isThirdPartyAnswerId(answer_id: u32) bool {
-    return (answer_id & 0x4000_0000) != 0 and (answer_id & 0x8000_0000) == 0;
-}
-
 pub const ForwardResolvedMode = enum {
     sent_elsewhere,
     propagate_results_sent_elsewhere,
@@ -804,118 +553,6 @@ pub fn handleResolvedCall(
             try send_return_exception(peer, call.question_id, "promised answer missing");
         },
     }
-}
-
-pub const ForwardedReturnMode = peer_forwarded_return_logic.ForwardedReturnMode;
-
-pub const ForwardedCallDestination = union(enum) {
-    caller,
-    yourself,
-    third_party: ?[]u8,
-
-    pub fn sendResultsToTag(self: ForwardedCallDestination) protocol.SendResultsToTag {
-        return switch (self) {
-            .caller => .caller,
-            .yourself => .yourself,
-            .third_party => .thirdParty,
-        };
-    }
-
-    pub fn thirdPartyPayload(self: ForwardedCallDestination) ?[]u8 {
-        return switch (self) {
-            .third_party => |payload| payload,
-            else => null,
-        };
-    }
-};
-
-pub fn buildForwardedCallDestination(
-    comptime PeerType: type,
-    peer: *PeerType,
-    mode: ForwardedReturnMode,
-    third_party: ?message.AnyPointerReader,
-    capture_payload: *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8,
-) !ForwardedCallDestination {
-    return switch (mode) {
-        .translate_to_caller => .caller,
-        .sent_elsewhere, .propagate_results_sent_elsewhere => .yourself,
-        .propagate_accept_from_third_party => .{
-            .third_party = try capture_payload(peer, third_party),
-        },
-    };
-}
-
-pub fn applyForwardedCallSendResults(
-    comptime PeerType: type,
-    peer: *PeerType,
-    call_builder: *protocol.CallBuilder,
-    send_results_to: protocol.SendResultsToTag,
-    send_results_to_third_party_payload: ?[]const u8,
-    set_third_party_from_payload: *const fn (*PeerType, *protocol.CallBuilder, []const u8) anyerror!void,
-) !void {
-    switch (send_results_to) {
-        .caller => call_builder.setSendResultsToCaller(),
-        .yourself => call_builder.setSendResultsToYourself(),
-        .thirdParty => {
-            if (send_results_to_third_party_payload) |payload| {
-                try set_third_party_from_payload(peer, call_builder, payload);
-            } else {
-                try call_builder.setSendResultsToThirdPartyNull();
-            }
-        },
-    }
-}
-
-pub fn setForwardedCallThirdPartyFromPayloadForPeer(
-    comptime PeerType: type,
-    peer: *PeerType,
-    call_builder: *protocol.CallBuilder,
-    payload: []const u8,
-) !void {
-    var msg = try message.Message.initUnvalidated(peer.allocator, payload);
-    defer msg.deinit();
-    const third_party = try msg.getRootAnyPointer();
-    try call_builder.setSendResultsToThirdParty(third_party);
-}
-
-pub fn setForwardedCallThirdPartyFromPayloadForPeerFn(
-    comptime PeerType: type,
-) *const fn (*PeerType, *protocol.CallBuilder, []const u8) anyerror!void {
-    return struct {
-        fn call(peer: *PeerType, call_builder: *protocol.CallBuilder, payload: []const u8) anyerror!void {
-            try setForwardedCallThirdPartyFromPayloadForPeer(
-                PeerType,
-                peer,
-                call_builder,
-                payload,
-            );
-        }
-    }.call;
-}
-
-pub fn captureAnyPointerPayloadForPeer(
-    comptime PeerType: type,
-    peer: *PeerType,
-    ptr: ?message.AnyPointerReader,
-    capture_payload: *const fn (std.mem.Allocator, ?message.AnyPointerReader) anyerror!?[]u8,
-) !?[]u8 {
-    return capture_payload(peer.allocator, ptr);
-}
-
-pub fn captureAnyPointerPayloadForPeerFn(
-    comptime PeerType: type,
-    comptime capture_payload: *const fn (std.mem.Allocator, ?message.AnyPointerReader) anyerror!?[]u8,
-) *const fn (*PeerType, ?message.AnyPointerReader) anyerror!?[]u8 {
-    return struct {
-        fn call(peer: *PeerType, ptr: ?message.AnyPointerReader) anyerror!?[]u8 {
-            return try captureAnyPointerPayloadForPeer(
-                PeerType,
-                peer,
-                ptr,
-                capture_payload,
-            );
-        }
-    }.call;
 }
 
 /// Re-export ForwardedReturnOps from forwarded_return_logic for callers that prefer
@@ -985,25 +622,6 @@ pub fn handleForwardedReturnWithOps(
         ops,
         context_third_party_payload,
     );
-}
-
-pub fn handleMissingReturnQuestion(
-    comptime PeerType: type,
-    peer: *PeerType,
-    frame: []const u8,
-    answer_id: u32,
-    is_third_party_answer_id: *const fn (u32) bool,
-    has_pending_third_party_return: *const fn (*PeerType, u32) bool,
-    buffer_pending_third_party_return: *const fn (*PeerType, u32, []const u8) anyerror!void,
-) !void {
-    if (is_third_party_answer_id(answer_id)) {
-        if (has_pending_third_party_return(peer, answer_id)) {
-            return error.DuplicateThirdPartyReturn;
-        }
-        try buffer_pending_third_party_return(peer, answer_id, frame);
-        return;
-    }
-    return error.UnknownQuestion;
 }
 
 pub fn handleReturnRegular(

@@ -3,7 +3,8 @@ const message = @import("../../../serialization/message.zig");
 const protocol = @import("../../wire/protocol.zig");
 const peer_control = @import("../peer_control.zig");
 const peer_return_dispatch = @import("./peer_return_dispatch.zig");
-const peer_third_party_returns = @import("../third_party/peer_third_party_returns.zig");
+const peer_third_party = @import("../third_party.zig");
+const peer_third_party_returns = peer_third_party.returns;
 
 pub fn getQuestionForPeer(
     comptime PeerType: type,
@@ -130,12 +131,12 @@ pub fn handleMissingReturnQuestionForPeer(
     frame: []const u8,
     answer_id: u32,
 ) !void {
-    try peer_control.handleMissingReturnQuestion(
+    try peer_third_party.handleMissingReturnQuestion(
         PeerType,
         peer,
         frame,
         answer_id,
-        peer_control.isThirdPartyAnswerId,
+        peer_third_party.isThirdPartyAnswerId,
         peer_third_party_returns.hasPendingReturnForPeerFn(PeerType),
         peer_third_party_returns.bufferPendingReturnForPeerFn(PeerType),
     );
