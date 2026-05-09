@@ -48,10 +48,27 @@ pub const TransportMode = enum {
 };
 
 pub const NativeOptions = struct {
+    /// Frames at or below this size stay in ordered control-stream envelopes.
+    /// Larger frames use one-shot peer-initiated unidirectional data streams.
     inline_frame_threshold: usize = default_native_inline_frame_threshold,
+    /// Maximum native control-envelope payload size, excluding the 4-byte
+    /// length prefix. Must fit the largest inline frame selected by
+    /// `inline_frame_threshold`.
     max_control_frame_bytes: usize = default_native_max_control_frame_bytes,
+    /// Maximum number of queued outbound data-stream RPC frames before
+    /// backpressure rejects `sendFrame`.
     max_pending_data_streams: usize = default_native_max_pending_data_streams,
+    /// Maximum queued outbound data-stream payload bytes before backpressure
+    /// rejects `sendFrame`. The inbound side applies the same per-frame budget.
     max_pending_data_bytes: usize = default_native_max_pending_data_bytes,
+};
+
+pub const NativeConfigError = error{
+    NativeControlFrameLimitTooSmall,
+    NativePendingDataStreamLimitRequired,
+    NativePendingDataByteLimitRequired,
+    NativeInlineFrameExceedsControlFrameLimit,
+    NativeControlFrameLimitExceedsWireLimit,
 };
 
 pub const ServerQlogCallback = quic_zig.QlogCallback;
@@ -259,13 +276,14 @@ fn validateNativeOptions(
     max_message_bytes: usize,
 ) !void {
     if (mode == .baseline) return;
-    if (native.max_control_frame_bytes < native_framer.common_header_bytes) return error.InvalidConfig;
-    if (native.max_pending_data_streams == 0 or native.max_pending_data_bytes == 0) return error.InvalidConfig;
+    if (native.max_control_frame_bytes < native_framer.common_header_bytes) return error.NativeControlFrameLimitTooSmall;
+    if (native.max_pending_data_streams == 0) return error.NativePendingDataStreamLimitRequired;
+    if (native.max_pending_data_bytes == 0) return error.NativePendingDataByteLimitRequired;
 
     const inline_payload_limit = @min(native.inline_frame_threshold, max_message_bytes);
     if (inline_payload_limit > 0) {
-        const required_control = std.math.add(usize, native_framer.rpc_header_bytes, inline_payload_limit) catch return error.InvalidConfig;
-        if (required_control > native.max_control_frame_bytes) return error.InvalidConfig;
+        const required_control = std.math.add(usize, native_framer.rpc_header_bytes, inline_payload_limit) catch return error.NativeInlineFrameExceedsControlFrameLimit;
+        if (required_control > native.max_control_frame_bytes) return error.NativeInlineFrameExceedsControlFrameLimit;
     }
-    if (native.max_control_frame_bytes > std.math.maxInt(u32)) return error.InvalidConfig;
+    if (native.max_control_frame_bytes > std.math.maxInt(u32)) return error.NativeControlFrameLimitExceedsWireLimit;
 }

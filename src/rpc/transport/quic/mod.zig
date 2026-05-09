@@ -61,6 +61,7 @@ pub const ClientOptions = options.ClientOptions;
 pub const ServerOptions = options.ServerOptions;
 pub const TransportMode = options.TransportMode;
 pub const NativeOptions = options.NativeOptions;
+pub const NativeConfigError = options.NativeConfigError;
 pub const ServerProductionHardening = options.ServerProductionHardening;
 pub const defaultTransportParams = options.defaultTransportParams;
 pub const withProductionServerHardening = options.withProductionServerHardening;

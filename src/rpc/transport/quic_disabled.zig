@@ -32,6 +32,14 @@ pub const NativeOptions = struct {
     max_pending_data_bytes: usize = default_native_max_pending_data_bytes,
 };
 
+pub const NativeConfigError = error{
+    NativeControlFrameLimitTooSmall,
+    NativePendingDataStreamLimitRequired,
+    NativePendingDataByteLimitRequired,
+    NativeInlineFrameExceedsControlFrameLimit,
+    NativeControlFrameLimitExceedsWireLimit,
+};
+
 pub fn requireEnabled() void {
     @compileError(unavailable_message);
 }

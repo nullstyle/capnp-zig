@@ -39,6 +39,8 @@ out of serialization and TCP-only applications; `rpc.quic` is a disabled facade
 that exposes only QUIC-dependency-free framing helpers and a clear compile-time error for
 transport construction. Build with `-Dquic=true` to select the QUIC-enabled
 library root, import quic-zig, and expose the native transport implementation.
+For setup examples, mode selection, and production budget guidance, see
+`docs/quic-transport.md`.
 
 The default QUIC transport is intentionally conservative:
 

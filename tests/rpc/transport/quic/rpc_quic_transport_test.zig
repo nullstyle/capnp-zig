@@ -1184,3 +1184,72 @@ test "quic server options reject unusable hardening limits" {
         .retry_state_table_capacity = 0,
     }));
 }
+
+test "quic native options reject unusable budgets with specific errors" {
+    try std.testing.expectError(error.NativeControlFrameLimitTooSmall, quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .mode = .native,
+        .native = .{
+            .max_control_frame_bytes = quic.native.common_header_bytes - 1,
+        },
+    }));
+
+    try std.testing.expectError(error.NativePendingDataStreamLimitRequired, quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .mode = .native,
+        .native = .{
+            .max_pending_data_streams = 0,
+        },
+    }));
+
+    try std.testing.expectError(error.NativePendingDataByteLimitRequired, quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .mode = .native,
+        .native = .{
+            .max_pending_data_bytes = 0,
+        },
+    }));
+
+    try std.testing.expectError(error.NativeInlineFrameExceedsControlFrameLimit, quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .max_message_bytes = 64,
+        .mode = .native,
+        .native = .{
+            .inline_frame_threshold = 64,
+            .max_control_frame_bytes = quic.native.rpc_header_bytes + 63,
+        },
+    }));
+
+    try std.testing.expectError(error.NativeControlFrameLimitExceedsWireLimit, quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .mode = .native,
+        .native = .{
+            .inline_frame_threshold = 0,
+            .max_control_frame_bytes = @as(usize, std.math.maxInt(u32)) + 1,
+        },
+    }));
+
+    try std.testing.expectError(error.NativeInlineFrameExceedsControlFrameLimit, quic.Connection.initClient(std.testing.allocator, std.testing.io, .{
+        .remote_addr = .{ .ip4 = .{
+            .bytes = .{ 127, 0, 0, 1 },
+            .port = 4433,
+        } },
+        .server_name = "localhost",
+        .max_message_bytes = 64,
+        .mode = .native,
+        .native = .{
+            .inline_frame_threshold = 64,
+            .max_control_frame_bytes = quic.native.rpc_header_bytes + 63,
+        },
+    }));
+}

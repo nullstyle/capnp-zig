@@ -452,6 +452,7 @@ Implemented today:
 
 Runtime design and API stability notes live in:
 - `docs/rpc_runtime_design.md`
+- `docs/quic-transport.md`
 - `docs/stability.md`
 
 ## Dependencies
