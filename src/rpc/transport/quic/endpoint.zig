@@ -35,6 +35,38 @@ pub const Endpoint = union(Role) {
     }
 };
 
+pub const Runtime = struct {
+    endpoint: Endpoint,
+    io: std.Io,
+
+    pub fn init(endpoint: Endpoint, io: std.Io) Runtime {
+        return .{
+            .endpoint = endpoint,
+            .io = io,
+        };
+    }
+
+    pub fn driver(self: *Runtime) EndpointDriver {
+        return self.endpoint.driver(self.io);
+    }
+
+    pub fn deinit(self: *Runtime) void {
+        self.driver().deinit();
+    }
+
+    pub fn getAddress(self: *const Runtime) Net.IpAddress {
+        return self.endpoint.getAddress();
+    }
+
+    pub fn activeQuicConnection(self: *Runtime) ?*quic_zig.Connection {
+        return self.driver().quicConnection();
+    }
+
+    pub fn nowUs(self: *Runtime) u64 {
+        return self.driver().nowUs();
+    }
+};
+
 pub const ClientEndpoint = struct {
     socket: Net.Socket,
     transport: quic_zig.Client,

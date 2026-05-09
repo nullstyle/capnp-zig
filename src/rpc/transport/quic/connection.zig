@@ -34,6 +34,7 @@ const TerminationPolicy = termination.Policy;
 const Role = endpoint_mod.Role;
 const Endpoint = endpoint_mod.Endpoint;
 const EndpointDriver = endpoint_mod.EndpointDriver;
+const EndpointRuntime = endpoint_mod.Runtime;
 
 /// A single vat-to-vat Cap'n Proto RPC session over QUIC.
 ///
@@ -49,9 +50,8 @@ pub const Connection = struct {
     const CloseController = close_controller_mod.Controller;
 
     allocator: std.mem.Allocator,
-    io: std.Io,
     role: Role,
-    endpoint: Endpoint,
+    endpoint: EndpointRuntime,
     udp_rx_buf: []u8,
     udp_tx_buf: []u8,
     stream_read_buf: []u8,
@@ -142,9 +142,8 @@ pub const Connection = struct {
 
         return .{
             .allocator = allocator,
-            .io = io,
             .role = role,
-            .endpoint = endpoint,
+            .endpoint = EndpointRuntime.init(endpoint, io),
             .udp_rx_buf = udp_rx_buf,
             .udp_tx_buf = udp_tx_buf,
             .stream_read_buf = stream_read_buf,
@@ -189,7 +188,7 @@ pub const Connection = struct {
         self.native.deinit(self.allocator);
         self.callback_lifecycle.clearCallbacks();
         self.wake_state.deinit();
-        self.endpointDriver().deinit();
+        self.endpoint.deinit();
         self.allocator.free(self.udp_rx_buf);
         self.allocator.free(self.udp_tx_buf);
         self.allocator.free(self.stream_read_buf);
@@ -279,7 +278,7 @@ pub const Connection = struct {
     }
 
     fn endpointDriver(self: *Connection) EndpointDriver {
-        return self.endpoint.driver(self.io);
+        return self.endpoint.driver();
     }
 
     fn selectedOutboundEmpty(self: *Connection) bool {
@@ -320,14 +319,12 @@ pub const Connection = struct {
     fn loopOwner(self: *Connection) connection_loop.Owner {
         return .{
             .ptr = self,
-            .io = self.io,
+            .io = self.endpoint.io,
             .role = self.role,
             .udp_rx_buf = self.udp_rx_buf,
             .udp_tx_buf = self.udp_tx_buf,
             .wake = &self.wake_state,
             .driver = loopDriver,
-            .active_quic_conn = loopActiveQuicConn,
-            .receive_timeout = loopReceiveTimeout,
             .selected_mode = loopSelectedMode,
             .selected_outbound_empty = loopSelectedOutboundEmpty,
             .engine_owner = loopEngineOwner,
@@ -338,24 +335,12 @@ pub const Connection = struct {
             .close_engines = loopCloseEngines,
             .invoke_close_callback = loopInvokeCloseCallback,
             .complete_deferred_deinit = loopCompleteDeferredDeinit,
-            .reap_server_if_closed = loopReapServerIfClosed,
-            .now_us = loopNowUs,
         };
     }
 
     fn loopDriver(ptr: *anyopaque) EndpointDriver {
         const self: *Connection = @ptrCast(@alignCast(ptr));
         return self.endpointDriver();
-    }
-
-    fn loopActiveQuicConn(ptr: *anyopaque) ?*quic_zig.Connection {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.activeQuicConn();
-    }
-
-    fn loopReceiveTimeout(ptr: *anyopaque) std.Io.Duration {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.endpoint.receiveTimeout();
     }
 
     fn loopSelectedMode(ptr: *anyopaque) ModeRouter {
@@ -413,16 +398,6 @@ pub const Connection = struct {
     fn loopCompleteDeferredDeinit(ptr: *anyopaque) void {
         const self: *Connection = @ptrCast(@alignCast(ptr));
         if (self.callback_lifecycle.shouldCompleteDeferredDeinit()) self.deinitNow(false);
-    }
-
-    fn loopReapServerIfClosed(ptr: *anyopaque) void {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        self.reapServerIfClosed();
-    }
-
-    fn loopNowUs(ptr: *anyopaque) u64 {
-        const self: *Connection = @ptrCast(@alignCast(ptr));
-        return self.nowUs();
     }
 
     fn ownerIsClosing(ptr: *anyopaque) bool {
@@ -506,17 +481,11 @@ pub const Connection = struct {
     }
 
     fn activeQuicConn(self: *Connection) ?*quic_zig.Connection {
-        return self.endpointDriver().quicConnection();
-    }
-
-    fn reapServerIfClosed(self: *Connection) void {
-        if (self.endpointDriver().reapClosed()) {
-            self.close_controller.request();
-        }
+        return self.endpoint.activeQuicConnection();
     }
 
     fn nowUs(self: *Connection) u64 {
-        return self.endpointDriver().nowUs();
+        return self.endpoint.nowUs();
     }
 };
 

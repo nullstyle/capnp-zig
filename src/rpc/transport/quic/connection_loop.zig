@@ -1,5 +1,4 @@
 const std = @import("std");
-const quic_zig = @import("quic_zig");
 
 const datagram_io = @import("datagram_io.zig");
 const endpoint_mod = @import("endpoint.zig");
@@ -22,8 +21,6 @@ pub const Owner = struct {
     wake: *wake_mod.Handle,
 
     driver: *const fn (ptr: *anyopaque) endpoint_mod.EndpointDriver,
-    active_quic_conn: *const fn (ptr: *anyopaque) ?*quic_zig.Connection,
-    receive_timeout: *const fn (ptr: *anyopaque) std.Io.Duration,
     selected_mode: *const fn (ptr: *anyopaque) mode_router.Router,
     selected_outbound_empty: *const fn (ptr: *anyopaque) bool,
     engine_owner: *const fn (ptr: *anyopaque) engine_owner.Owner,
@@ -34,8 +31,6 @@ pub const Owner = struct {
     close_engines: *const fn (ptr: *anyopaque) void,
     invoke_close_callback: *const fn (ptr: *anyopaque) void,
     complete_deferred_deinit: *const fn (ptr: *anyopaque) void,
-    reap_server_if_closed: *const fn (ptr: *anyopaque) void,
-    now_us: *const fn (ptr: *anyopaque) u64,
 };
 
 pub fn run(owner: Owner) void {
@@ -45,7 +40,7 @@ pub fn run(owner: Owner) void {
             owner.terminate_internal_error(owner.ptr, err);
             break;
         };
-        if (owner.active_quic_conn(owner.ptr)) |conn| {
+        if (owner.driver(owner.ptr).quicConnection()) |conn| {
             if (conn.isClosed() and owner.selected_outbound_empty(owner.ptr)) {
                 owner.request_close(owner.ptr);
             }
@@ -59,14 +54,15 @@ pub fn run(owner: Owner) void {
 }
 
 pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
-    var now_us = owner.now_us(owner.ptr);
-    const next_deadline_us = nextTimerDeadlineUs(owner, now_us);
+    const driver = owner.driver(owner.ptr);
+    var now_us = driver.nowUs();
+    const next_deadline_us = nextTimerDeadlineUs(driver, now_us);
     const waited_for = scheduler.receiveWaitDuration(.{
         .mode = mode,
-        .receive_timeout = owner.receive_timeout(owner.ptr),
+        .receive_timeout = driver.receiveTimeout(),
         .now_us = now_us,
         .next_deadline_us = next_deadline_us,
-        .immediate_work = hasImmediateWork(owner),
+        .immediate_work = hasImmediateWork(owner, driver),
         .wake_supported = owner.wake.isSupported(),
     });
     var result = StepResult{
@@ -75,7 +71,7 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     };
     const receive_result = try datagram_io.receiveOne(.{
         .io = owner.io,
-        .driver = owner.driver(owner.ptr),
+        .driver = driver,
         .wake = owner.wake,
         .rx_buf = owner.udp_rx_buf,
         .now_us = now_us,
@@ -84,27 +80,29 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     result.received_datagram = receive_result.received_datagram;
     result.wake_drained = receive_result.wake_drained;
 
-    now_us = owner.now_us(owner.ptr);
-    try advanceActive(owner);
-    try serviceModeStreams(owner);
-    try datagram_io.drainOutgoingDatagrams(owner.driver(owner.ptr), owner.udp_tx_buf, now_us);
+    now_us = driver.nowUs();
+    try advanceActive(driver);
+    try serviceModeStreams(owner, driver);
+    try datagram_io.drainOutgoingDatagrams(driver, owner.udp_tx_buf, now_us);
 
-    now_us = owner.now_us(owner.ptr);
-    try tickActive(owner, now_us);
-    try serviceModeStreams(owner);
-    try datagram_io.drainOutgoingDatagrams(owner.driver(owner.ptr), owner.udp_tx_buf, now_us);
+    now_us = driver.nowUs();
+    try tickActive(driver, now_us);
+    try serviceModeStreams(owner, driver);
+    try datagram_io.drainOutgoingDatagrams(driver, owner.udp_tx_buf, now_us);
 
-    owner.reap_server_if_closed(owner.ptr);
-    result.closed = isTransportDrainedClosed(owner);
+    if (driver.reapClosed()) {
+        owner.request_close(owner.ptr);
+    }
+    result.closed = isTransportDrainedClosed(owner, driver);
     if (result.closed) {
         owner.request_close(owner.ptr);
     }
     return result;
 }
 
-fn hasImmediateWork(owner: Owner) bool {
+fn hasImmediateWork(owner: Owner, driver: endpoint_mod.EndpointDriver) bool {
     if (owner.wake.isRequested()) return true;
-    if (owner.active_quic_conn(owner.ptr)) |conn| {
+    if (driver.quicConnection()) |conn| {
         if (conn.canSend()) return true;
         if (!owner.selected_outbound_empty(owner.ptr)) {
             return owner.selected_mode(owner.ptr).hasImmediateWork(owner.role, conn);
@@ -113,30 +111,30 @@ fn hasImmediateWork(owner: Owner) bool {
     return false;
 }
 
-fn nextTimerDeadlineUs(owner: Owner, now_us: u64) ?u64 {
-    const conn = owner.active_quic_conn(owner.ptr) orelse return null;
+fn nextTimerDeadlineUs(driver: endpoint_mod.EndpointDriver, now_us: u64) ?u64 {
+    const conn = driver.quicConnection() orelse return null;
     const deadline = conn.nextTimerDeadline(now_us) orelse return null;
     return deadline.at_us;
 }
 
-fn isTransportDrainedClosed(owner: Owner) bool {
-    const conn = owner.active_quic_conn(owner.ptr) orelse return false;
+fn isTransportDrainedClosed(owner: Owner, driver: endpoint_mod.EndpointDriver) bool {
+    const conn = driver.quicConnection() orelse return false;
     return conn.isClosed() and owner.selected_outbound_empty(owner.ptr);
 }
 
-fn advanceActive(owner: Owner) !void {
-    const conn = owner.active_quic_conn(owner.ptr) orelse return;
+fn advanceActive(driver: endpoint_mod.EndpointDriver) !void {
+    const conn = driver.quicConnection() orelse return;
     if (!conn.handshakeDone()) {
         try conn.advance();
     }
 }
 
-fn tickActive(owner: Owner, now_us: u64) !void {
-    const conn = owner.active_quic_conn(owner.ptr) orelse return;
+fn tickActive(driver: endpoint_mod.EndpointDriver, now_us: u64) !void {
+    const conn = driver.quicConnection() orelse return;
     try conn.tick(now_us);
 }
 
-fn serviceModeStreams(owner: Owner) !void {
-    const conn = owner.active_quic_conn(owner.ptr) orelse return;
+fn serviceModeStreams(owner: Owner, driver: endpoint_mod.EndpointDriver) !void {
+    const conn = driver.quicConnection() orelse return;
     try owner.selected_mode(owner.ptr).service(owner.engine_owner(owner.ptr), conn);
 }
