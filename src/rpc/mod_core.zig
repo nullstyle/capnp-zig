@@ -1,4 +1,4 @@
-// Reduced RPC export surface for environments without POSIX I/O (e.g. wasm32-freestanding).
+// Reduced RPC export surface for environments without OS socket I/O (e.g. wasm32-freestanding).
 // Excludes concrete transport/runtime modules that depend on OS sockets and threads.
 // Used by lib_core.zig; see mod.zig for the full export surface.
 

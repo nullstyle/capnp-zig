@@ -23,7 +23,7 @@ pub const InboundCapTable = struct {
         list_opt: ?message.StructListReader,
         table: *CapTable,
     ) !InboundCapTable {
-        if (list_opt == null) {
+        const list = list_opt orelse {
             const entries = try allocator.alloc(ResolvedCap, 0);
             errdefer allocator.free(entries);
             const retained = try allocator.alloc(bool, 0);
@@ -32,9 +32,8 @@ pub const InboundCapTable = struct {
                 .entries = entries,
                 .retained = retained,
             };
-        }
+        };
 
-        const list = list_opt.?;
         const count = list.len();
         if (count > max_table_size) return error.CapTableFull;
         var entries = try allocator.alloc(ResolvedCap, count);

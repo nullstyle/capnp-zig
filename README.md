@@ -402,6 +402,7 @@ zig build test-codegen       # Codegen tests
 zig build docs-smoke         # Docs/examples public API smoke checks
 zig build test-docs-snippets # Compile documentation snippet fixtures
 zig build -Dquic=true test-docs-snippets-quic # Optional QUIC docs snippets
+just release-preflight      # Complete local release preflight
 just e2e                    # Cross-language interop harness
 ```
 
@@ -510,6 +511,7 @@ Implemented today:
 - Local benchmark and interop gates (`zig build bench-check`, `just e2e`)
 
 Runtime design and API stability notes live in:
+- `docs/release-notes-2026-05-10.md`
 - `docs/rpc_runtime_design.md`
 - `docs/quic-transport.md`
 - `docs/stability.md`

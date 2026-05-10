@@ -6,6 +6,14 @@ build:
 release:
     zig build -Doptimize=ReleaseSafe
 
+# Build optional QUIC-enabled targets
+build-quic:
+    zig build -Dquic=true --summary all
+
+# Build WASM host target
+wasm-build:
+    zig build wasm-host --summary all
+
 # Run tests
 test:
     zig build test --summary all
@@ -86,6 +94,10 @@ test-rpc-integration:
 test-rpc-quic:
     zig build -Dquic=true test-rpc-quic --summary all
 
+# Run benchmark regression checks
+bench-check:
+    zig build -Doptimize=ReleaseFast bench-check
+
 # Build e2e reference images
 e2e-build:
     just --justfile tests/e2e/Justfile build
@@ -106,18 +118,40 @@ e2e-skip-build:
 e2e-scaffold:
     just --justfile tests/e2e/Justfile test-scaffold
 
-# CI gate (unit + interop e2e)
+# Run optional QUIC gates used by CI
+ci-quic:
+    just build-quic
+    just check-quic
+    just test-rpc-quic
+    just test-docs-snippets-quic
+
+# CI gate (format, compile, docs, tests, QUIC, and interop e2e)
 ci:
+    just fmt-check
+    just check
+    just check-evented
     zig build hardening
     zig build test-fuzz-smoke --summary all
     zig build test-resource-budgets --summary all
     zig build test-oom --summary all
     zig build test-e2e-security --summary all
+    zig build test-docs-snippets --summary all
     zig build docs-smoke --summary all
     zig build test-release-safe --summary all
+    just ci-quic
     just src/rpc/check-rpc
     zig build test --summary all
     just e2e-zig
+
+# Complete local release preflight, including heavier CI build/regression jobs
+release-preflight:
+    just ci
+    just wasm-build
+    just bench-check
+    just release
+
+# Alias for the complete local release preflight
+preflight: release-preflight
 
 # List CI workflow jobs as seen by `act`
 act-list:
@@ -129,8 +163,14 @@ act-list:
 act-ci event="pull_request":
     act {{ event }} --matrix os:ubuntu-latest -j fmt-check
     act {{ event }} --matrix os:ubuntu-latest -j test
+    act {{ event }} --matrix os:ubuntu-latest -j evented-check
+    act {{ event }} --matrix os:ubuntu-latest -j quic-transport
+    act {{ event }} --matrix os:ubuntu-latest -j docs-smoke
+    act {{ event }} --matrix os:ubuntu-latest -j hardening
+    act {{ event }} --matrix os:ubuntu-latest -j e2e-zig
     act {{ event }} --matrix os:ubuntu-latest -j wasm-build
     act {{ event }} --matrix os:ubuntu-latest -j release-build
+    act {{ event }} --matrix os:ubuntu-latest -j release-safe-tests
 
 # Run a single CI job locally with `act` (example: `just act-ci-job test`)
 act-ci-job job event="pull_request" matrix="os:ubuntu-latest":
@@ -176,7 +216,11 @@ check:
 
 # Check RPC entry points against the explicit Evented Io backend where supported
 check-evented:
-    zig build -Dio-backend=evented check
+    zig build -Dio-backend=evented check --summary all
+
+# Check optional QUIC-enabled build graph
+check-quic:
+    zig build -Dquic=true check --summary all
 
 # Generate API documentation
 docs:

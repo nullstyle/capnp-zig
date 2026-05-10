@@ -364,7 +364,10 @@ pub const Server = struct {
         for (self.sessions.items) |*server_session| {
             const conn = server_session.activeQuicConnection() orelse continue;
             const deadline = conn.nextTimerDeadline(now_us) orelse continue;
-            if (next == null or deadline.at_us < next.?) {
+            if (next) |current| {
+                if (deadline.at_us >= current) continue;
+                next = deadline.at_us;
+            } else {
                 next = deadline.at_us;
             }
         }

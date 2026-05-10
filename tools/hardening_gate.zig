@@ -46,7 +46,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "entry.cap.?", .reason = "resolved import cap is checked before dispatch" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "guarded by Return tag/results presence check" },
     .{ .path = "src/rpc/peer/peer_cap_lifecycle.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag path" },
-    .{ .path = "src/rpc/peer/peer_transport_callbacks.zig", .kind = .optional_unwrap, .needle = "conn.ctx.?", .reason = "transport callback only installed with context" },
+    .{ .path = "src/rpc/peer/peer_transport_callbacks.zig", .kind = .optional_unwrap, .needle = "conn.context().?", .reason = "transport callback only installed with context" },
     .{ .path = "src/rpc/peer/return/peer_return_orchestration.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag/path check" },
     .{ .path = "src/rpc/peer/call/peer_call_orchestration.zig", .kind = .unchecked_unreachable, .needle = ".queue_promise_export => unreachable", .reason = "filtered by handleCallImportedTargetForPeer before dispatch" },
 
@@ -55,10 +55,6 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
     .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "cb(ctx.?, self.stream_error)", .reason = "callback context is paired with callback registration" },
     .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .panic_call, .needle = "QUIC Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
-    .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .optional_unwrap, .needle = "const remote = self.remote_addr.?;", .reason = "remote address is initialized before connection path use" },
-    .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
-    .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .optional_unwrap, .needle = "pathAddressToIpAddress(addr) orelse self.remote_addr.?", .reason = "remote address is initialized before path update fallback" },
-    .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .optional_unwrap, .needle = "self.remote_addr.?;", .reason = "remote address is initialized before stats path" },
 
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderHosted(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderPromise(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
@@ -69,7 +65,6 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "ret_builder.setReleaseParamCaps(release_param_caps) catch unreachable", .reason = "generated scalar setter is infallible" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "ret_builder.setNoFinishNeeded(no_finish_needed) catch unreachable", .reason = "generated scalar setter is infallible" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "ret_builder.setCanceled({}) catch unreachable", .reason = "generated union setter is infallible for empty variant" },
-    .{ .path = "src/rpc/caps/table.zig", .kind = .optional_unwrap, .needle = "const list = list_opt.?;", .reason = "guarded by nullable cap-table list check" },
 
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .optional_unwrap, .needle = "state.bootstrap_stub_export_id.?", .reason = "bootstrap export id is initialized before write" },
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_source_path, .needle = "\"/Users/\"", .reason = "defensive disclosure-marker filter data" },
@@ -85,6 +80,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/wasm/capnp_host_abi.zig", .kind = .disclosure_stack_trace, .needle = "\"panicked at\"", .reason = "defensive disclosure-marker filter data" },
     .{ .path = "src/io_backend.zig", .kind = .unchecked_unreachable, .needle = "if (comptime std.Io.Evented == void) unreachable;", .reason = "Backend.init rejects unsupported Evented targets; this is reachable only through manual union construction" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
+    .{ .path = "Justfile", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only local recipe intentionally runs optimized code for stable timing" },
 };
 
 const unsafe_dirs = [_][]const u8{

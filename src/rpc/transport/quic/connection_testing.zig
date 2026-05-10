@@ -29,10 +29,8 @@ pub fn Access(comptime Connection: type) type {
         }
 
         pub fn processNativeControlFrames(conn: *Connection) !void {
-            try conn.native.processControlFrames(
-                Hooks.nativeOwner(conn),
-                Hooks.activeQuicConn(conn).?,
-            );
+            const active = Hooks.activeQuicConn(conn) orelse return error.ConnectionNotReady;
+            try conn.native.processControlFrames(Hooks.nativeOwner(conn), active);
         }
 
         pub fn startNativePendingData(

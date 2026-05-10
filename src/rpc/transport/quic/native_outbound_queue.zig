@@ -219,7 +219,7 @@ pub const OutboundQueue = struct {
             self.next_uni_stream_id +%= 4;
         }
 
-        const stream_id = item.stream_id.?;
+        const stream_id = item.stream_id orelse return error.InvalidFrame;
         while (item.data_offset < item.bytes.len) {
             const written = conn.streamWrite(stream_id, item.bytes[item.data_offset..]) catch |err| switch (err) {
                 error.StreamNotFound => return error.InvalidFrame,

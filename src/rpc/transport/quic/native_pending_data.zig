@@ -47,8 +47,7 @@ pub fn readComplete(
     pending_data: *?PendingData,
     conn: *quic_zig.Connection,
 ) !?[]u8 {
-    if (pending_data.* == null) return null;
-    var pending = &pending_data.*.?;
+    var pending = if (pending_data.*) |*pending| pending else return null;
     const stream = conn.stream(pending.stream_id) orelse return null;
     if (stream.recv.final_size) |final_size| {
         if (final_size != pending.bytes.len) return error.InvalidFrame;

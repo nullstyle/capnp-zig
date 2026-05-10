@@ -14,9 +14,7 @@ The RPC facade is public-breaking in the current development line. Consumers
 should import domain modules such as `rpc.wire.protocol`,
 `rpc.caps.table`, `rpc.promises.pipeline`, `rpc.transport.tcp`,
 `rpc.transport.quic`, and `rpc.integration.host_peer`. Removed top-level
-compatibility aliases such as `rpc.protocol`, `rpc.cap_table`,
-`rpc.connection`, `rpc.runtime`, `rpc.host_peer`, and `rpc._internal` are not
-part of the supported surface. See
+compatibility aliases are not part of the supported surface. See
 [`docs/rpc-migration-guide.md`](rpc-migration-guide.md) for the full old-name
 to new-name mapping.
 
