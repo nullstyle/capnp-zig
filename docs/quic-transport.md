@@ -1,10 +1,17 @@
 # QUIC RPC Transport Guide
 
+> **Temporarily unavailable on current Zig master.** The pinned `quic_zig`
+> dependency (and its `boringssl_zig` dependency) have not yet been migrated to
+> the Zig version this branch targets, so `-Dquic=true` builds fail until the
+> dependency is updated and repinned. The dependency is declared lazy in
+> `build.zig.zon`, so everything below the opt-in flag remains accurate for
+> default builds.
+
 capnp-zig's QUIC transport is optional. Normal builds expose a disabled
 `rpc.transport.quic` facade with dependency-free framing helpers; build with
 `-Dquic=true` when an application wants `rpc.transport.quic.Connection`. The
-package manifest declares `quic_zig` so opt-in builds are reproducible, but
-default builds do not resolve or instantiate that dependency.
+package manifest declares `quic_zig` (lazy) so opt-in builds are reproducible,
+but default builds do not fetch, resolve, or instantiate that dependency.
 
 ```bash
 zig build -Dquic=true test-rpc-quic --summary all

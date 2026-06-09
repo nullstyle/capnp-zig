@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test-rpc-level*` steps were removed.
 - **Zig 0.17-dev** is the active target for this branch. Zig 0.16 is no longer
   a compatibility gate.
+- **Zig floor moved to current master** (`0.17.0-dev.813+2153f8143`,
+  minimum `0.17.0-dev.813` in `build.zig.zon`): `build.zig` was migrated to
+  the new `std.Build` configure/make split (`Run.addPassthruArgs()` replaces
+  `b.args`), and `std.meta.Int` usage moved to the `@Int` builtin. Older
+  0.17-dev snapshots no longer build this branch.
+- **QUIC transport temporarily unavailable**: the pinned `quic_zig`
+  dependency (and its `boringssl_zig` dependency) have not been migrated to
+  current Zig master yet, so `-Dquic=true` builds fail until the dependency
+  is updated and repinned. `quic_zig` is now declared lazy, so default
+  builds neither fetch nor compile it; the QUIC CI job is disabled until
+  then.
 
 ### Added
 
@@ -38,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RPC peer internals are split into semantic modules under `peer/return`,
   `peer/forward`, `peer/provide`, and `peer/third_party`, making the codebase
   easier to navigate without changing the standard `rpc.capnp` wire protocol.
+- CI now installs the pinned Zig master snapshot via `mlugg/setup-zig` (Zig
+  had been absent from CI since it was removed from `mise.toml`, so every job
+  failed with `zig: command not found`).
 
 ### Existing Baseline
 

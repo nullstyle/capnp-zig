@@ -474,7 +474,7 @@ semantic changes:
   current `std.Io` APIs.
 
 Scoped modernization decision: this branch now targets Zig 0.17-dev
-(`0.17.0-dev.256+04481c76c` validated locally; minimum declared in
+(`0.17.0-dev.813+2153f8143` validated locally; minimum declared in
 `build.zig.zon`) and no longer documents Zig 0.16 as a supported build target.
 `mise.toml` does not manage Zig because active development uses a
 master/zvm-style toolchain supplied on `PATH`. `std.Io.Evented` is wired through

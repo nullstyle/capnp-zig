@@ -6,7 +6,7 @@ const bounds = @import("bounds.zig");
 /// for all other types, it is the type itself.
 fn WireType(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .float => std.meta.Int(.unsigned, @bitSizeOf(T)),
+        .float => @Int(.unsigned, @bitSizeOf(T)),
         else => T,
     };
 }

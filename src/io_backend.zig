@@ -132,8 +132,8 @@ pub const Backend = union(Kind) {
             .threaded => |*t| t.deinit(),
             .evented => |state| {
                 if (comptime std.Io.Evented != void) {
-                    // Zig 0.17.0-dev.256 exposes Dispatch as Evented on
-                    // Darwin, but Dispatch.deinit currently does not compile
+                    // Zig master (through 0.17.0-dev.813) exposes Dispatch as
+                    // Evented on Darwin, but Dispatch.deinit does not compile
                     // in std because it passes a pointer-to-array to
                     // Allocator.free. Other Evented backends use their normal
                     // deinitializer here.

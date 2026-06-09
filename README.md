@@ -42,11 +42,17 @@ zig build test --summary all
 
 ## Toolchain Support
 
-This branch is built and tested with Zig `0.17.0-dev.256+04481c76c`. Zig 0.16
-is no longer a supported target for this branch; downstream consumers should use
-a compatible 0.17-dev snapshot until Zig 0.17 stabilizes. The local
-`mise.toml` intentionally does not manage Zig because current development is
-using a master/zvm-style toolchain rather than a resolvable mise release tarball.
+This branch is built and tested with Zig `0.17.0-dev.813+2153f8143` (current
+master). Zig 0.16 is no longer a supported target for this branch; downstream
+consumers should use a compatible 0.17-dev snapshot until Zig 0.17 stabilizes.
+The local `mise.toml` intentionally does not manage Zig because current
+development is using a master/zvm-style toolchain rather than a resolvable mise
+release tarball; CI installs the same pinned snapshot via `mlugg/setup-zig`.
+
+The QUIC transport (`-Dquic=true`) is temporarily unavailable on this branch:
+the pinned `quic-zig` dependency (and its `boringssl_zig` dependency) have not
+yet been migrated to current Zig master. The dependency is declared lazy, so
+default (non-QUIC) builds are unaffected.
 
 ## Usage
 

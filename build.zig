@@ -76,13 +76,14 @@ pub fn build(b: *std.Build) void {
     const lib_root = if (enable_quic) "src/lib_quic.zig" else "src/lib.zig";
 
     // Keep the normal module graph free of quic-zig/BoringSSL. The dependency
-    // is declared in build.zig.zon for opt-in builds, but only resolved when
-    // callers explicitly request the QUIC transport surface.
+    // is declared lazy in build.zig.zon so non-QUIC builds neither fetch it
+    // nor compile its build.zig; it is only resolved when callers explicitly
+    // request the QUIC transport surface.
     const quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
-        const quic_zig_dep = b.dependency("quic_zig", .{
+        const quic_zig_dep = b.lazyDependency("quic_zig", .{
             .target = target,
             .optimize = optimize,
-        });
+        }) orelse break :blk null;
         break :blk quic_zig_dep.module("quic_zig");
     } else null;
 
@@ -174,9 +175,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the plugin");
     run_step.dependOn(&run_cmd.step);
@@ -215,9 +214,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_ping_pong = b.addRunArtifact(ping_pong_bench);
-    if (b.args) |args| {
-        run_ping_pong.addArgs(args);
-    }
+    run_ping_pong.addPassthruArgs();
 
     const bench_ping_pong_step = b.step("bench-ping-pong", "Run ping-pong benchmark");
     bench_ping_pong_step.dependOn(&run_ping_pong.step);
@@ -236,15 +233,11 @@ pub fn build(b: *std.Build) void {
 
     const run_pack = b.addRunArtifact(pack_unpack_bench);
     run_pack.addArgs(&.{ "--mode", "pack" });
-    if (b.args) |args| {
-        run_pack.addArgs(args);
-    }
+    run_pack.addPassthruArgs();
 
     const run_unpack = b.addRunArtifact(pack_unpack_bench);
     run_unpack.addArgs(&.{ "--mode", "unpack" });
-    if (b.args) |args| {
-        run_unpack.addArgs(args);
-    }
+    run_unpack.addPassthruArgs();
 
     const bench_pack_step = b.step("bench-packed", "Run packed (packing) benchmark");
     bench_pack_step.dependOn(&run_pack.step);
@@ -262,9 +255,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_bench_check = b.addRunArtifact(bench_check);
-    if (b.args) |args| {
-        run_bench_check.addArgs(args);
-    }
+    run_bench_check.addPassthruArgs();
 
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);
@@ -303,8 +294,8 @@ pub fn build(b: *std.Build) void {
         addLibTest(b, "tests/docs/quic_transport_disabled_snippets_test.zig", target, optimize, lib_module)
     else
         null;
-    const run_quic_transport_snippet_tests: ?*std.Build.Step = if (enable_quic)
-        addQuicLibTest(b, "tests/docs/quic_transport_snippets_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    const run_quic_transport_snippet_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/docs/quic_transport_snippets_test.zig", target, optimize, lib_module, qm)
     else
         null;
     const test_docs_snippets_step = b.step("test-docs-snippets", "Compile documentation snippet fixtures");
@@ -334,9 +325,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_rpc_pingpong = b.addRunArtifact(rpc_pingpong_example);
-    if (b.args) |args| {
-        run_rpc_pingpong.addArgs(args);
-    }
+    run_rpc_pingpong.addPassthruArgs();
 
     const example_rpc_step = b.step("example-rpc", "Run RPC ping-pong example");
     example_rpc_step.dependOn(&run_rpc_pingpong.step);
@@ -359,9 +348,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_e2e_zig_client = b.addRunArtifact(e2e_zig_client);
-    if (b.args) |args| {
-        run_e2e_zig_client.addArgs(args);
-    }
+    run_e2e_zig_client.addPassthruArgs();
 
     const e2e_zig_client_step = b.step("e2e-zig-client", "Run Zig RPC e2e client hook");
     e2e_zig_client_step.dependOn(&run_e2e_zig_client.step);
@@ -383,9 +370,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_e2e_zig_server = b.addRunArtifact(e2e_zig_server);
-    if (b.args) |args| {
-        run_e2e_zig_server.addArgs(args);
-    }
+    run_e2e_zig_server.addPassthruArgs();
 
     const e2e_zig_server_step = b.step("e2e-zig-server", "Run Zig RPC e2e server hook");
     e2e_zig_server_step.dependOn(&run_e2e_zig_server.step);
@@ -454,16 +439,16 @@ pub fn build(b: *std.Build) void {
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/integration/rpc_worker_pool_test.zig", target, optimize, lib_module);
     const run_rpc_events_tests = addLibTest(b, "tests/rpc/transport/rpc_events_test.zig", target, optimize, lib_module);
-    const run_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
     else
         null;
-    const run_rpc_quic_public_api_tests: ?*std.Build.Step = if (enable_quic)
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    const run_rpc_quic_public_api_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, optimize, lib_module, qm)
     else
         null;
-    const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (enable_quic)
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, quic_zig_module.?)
+    const run_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, optimize, lib_module, qm)
     else
         null;
     const run_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, optimize, lib_module);
@@ -655,10 +640,10 @@ pub fn build(b: *std.Build) void {
 
     const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
     const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
-        const release_safe_quic_zig_dep = b.dependency("quic_zig", .{
+        const release_safe_quic_zig_dep = b.lazyDependency("quic_zig", .{
             .target = target,
             .optimize = release_safe_optimize,
-        });
+        }) orelse break :blk null;
         break :blk release_safe_quic_zig_dep.module("quic_zig");
     } else null;
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
@@ -679,12 +664,12 @@ pub fn build(b: *std.Build) void {
     const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
-    const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (enable_quic)
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, release_safe_quic_zig_module.?)
+    const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
     else
         null;
-    const run_release_safe_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (enable_quic)
-        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, release_safe_quic_zig_module.?)
+    const run_release_safe_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
     else
         null;
     const run_release_safe_rpc_raw_frame_security_tests = addLibTest(b, "tests/rpc/transport/rpc_raw_frame_security_test.zig", target, release_safe_optimize, release_safe_lib_module);
