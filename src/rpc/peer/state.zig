@@ -39,6 +39,10 @@ pub const PeerLimits = struct {
     max_pending_third_party_completion_bytes: usize = 1024 * 1024,
     max_adopted_third_party_answers: usize = 4096,
     max_remote_abort_reason_bytes: usize = 4096,
+    max_persistent_exports: usize = 4096,
+    /// Bound on a single sturdy-ref payload, applied both to save-handler
+    /// output and to inbound restore parameters.
+    max_sturdy_ref_bytes: usize = 64 * 1024,
 };
 
 /// Time-domain policy for a peer. All fields are opt-in: a null field

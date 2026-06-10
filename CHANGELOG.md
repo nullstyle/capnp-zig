@@ -35,6 +35,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persistence / sturdy refs (RPC level 2)** (`rpc.peer.persistence`,
+  `Peer.setPersistentExport`, `Peer.setRestorer`, `Peer.sendSave`,
+  `Peer.sendRestore`): applications can mark an export persistent with a
+  save handler that produces an app-defined sturdy-ref payload when the
+  remote calls `Persistent.save()` (dispatched through the normal
+  inbound-call path), call `save()` on imported capabilities and receive
+  the sturdy-ref bytes in a `QuestionCallback`-style callback, and
+  rehydrate refs on reconnect through a restorer hook served on the
+  bootstrap capability (`connect -> bootstrap -> restore(ref) -> resume
+  calling`). Sturdy refs are opaque `Data` bytes and restore uses a
+  documented vat-level `Restorer` convention interface, since both are
+  realm/vat-specific per the spec. New peer state is budgeted
+  (`PeerLimits.max_persistent_exports`, `max_sturdy_ref_bytes`) with
+  pressure/rejection events, and `PeerStats` gains `persistent_exports`,
+  `saves_served`, and `restores_served`. Experimental.
 - **Project policy files**: `LICENSE` (MIT — the README claimed it; now the
   text exists), `SECURITY.md` (private reporting path plus an explicit
   in-scope/out-of-scope list for a library that parses untrusted bytes),

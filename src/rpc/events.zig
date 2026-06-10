@@ -73,6 +73,8 @@ pub const Resource = enum {
     queued_calls,
     queued_call_bytes,
     resolved_imports,
+    persistent_exports,
+    sturdy_ref_bytes,
 };
 
 pub const Event = union(enum) {

@@ -86,6 +86,59 @@ This gives the existing peer/protocol layers the same complete-message callback 
 - Capabilities are represented by IDs and refcounts. The runtime sends `Release` when the refcount reaches zero.
 - `AnyPointer` capability pointers are treated as interface pointers in schema validation and canonicalization.
 
+## Persistence (Sturdy Refs, Level 2)
+
+Spec level 2 (per the vendored `rpc.capnp` level definitions) is the ability
+to save a capability into a `SturdyRef` that outlives the connection and to
+restore it later. `Persistent.save()` is an ordinary interface call defined by
+the vendored `persistent.capnp` (`@0xc8cb212fcd9f5691`); the `SturdyRef` and
+`Owner` type parameters are realm-defined, and restore is deliberately
+vat-specific in the modern spec (the old `Restore` message is obsolete — the
+bootstrap interface took its place). capnp-zig's realm conventions, defined in
+`src/rpc/peer/persistence.zig`:
+
+- A sturdy ref is an opaque application-defined byte string. On the wire it
+  travels as a `Data` pointer in the `SaveResults.sturdyRef` `AnyPointer`
+  slot. `SaveParams.sealFor` is passed through to the save handler raw and
+  uninterpreted.
+- Restore is served as a call on the bootstrap capability using a vat-level
+  `Restorer` convention interface
+  (`restore @0 (sturdyRef :Data) -> (cap :Capability)`, ID
+  `0xac47e3f6453b50f3`). Vats that don't install a restorer answer it like
+  any other unknown interface on their bootstrap export.
+
+Export side: `Peer.setPersistentExport(export_id, ctx, on_save)` marks an
+existing export persistent. The peer swaps the export's stored handler for a
+trampoline that answers `Persistent.save()` (and restore, on the bootstrap
+export) and forwards every other interface to the original handler — so save
+dispatches through the normal inbound-call path, including promised-answer
+targets and queued-call replay. The save handler returns the sturdy-ref
+payload (allocated from `peer.allocator`; the peer embeds and frees it).
+`Peer.setRestorer(ctx, on_restore)` installs the vat restore hook on the
+bootstrap export; the hook maps sturdy-ref bytes to `.existing` (re-expose an
+already-registered export), `.host` (register a fresh export), or `.unknown`
+(answer an "unknown sturdy ref" exception).
+
+Client side, the documented reconnect flow:
+1. Connect and `sendBootstrap` to import the remote's bootstrap capability.
+2. `Peer.sendSave(import_id, ctx, callback)` on any imported capability; the
+   callback receives the sturdy-ref bytes (borrowed from the Return frame).
+   Persist them wherever the application likes.
+3. After a disconnect, in-flight questions resolve through the existing
+   deadline/cancel machinery (`checkDeadlines`, `cancelQuestion`).
+4. Reconnect with a fresh peer, `sendBootstrap`, then
+   `Peer.sendRestore(bootstrap_import_id, sturdy_ref, ctx, callback)`. The
+   callback receives the restored capability already retained; resume calling
+   it via `sendCall`.
+
+Hardening follows the house pattern: the hook registry is budgeted by
+`PeerLimits.max_persistent_exports` with an 80% pressure-event crossing
+(`persistent_exports`), and single sturdy-ref payloads are bounded by
+`PeerLimits.max_sturdy_ref_bytes` in both directions (save-handler output and
+inbound restore params), emitting a `sturdy_ref_bytes` resource rejection on
+violation. `PeerStats` gains `persistent_exports`, `saves_served`, and
+`restores_served`.
+
 ## Call Flow
 Inbound call:
 1. `Call` message parsed with target capability ID and method.

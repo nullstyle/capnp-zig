@@ -562,7 +562,7 @@ capnpc-zig.rpc.generated.persistent.SaveResults.Reader: struct
 capnpc-zig.rpc.generated.persistent.SaveResults: struct
 capnpc-zig.rpc.generated.persistent.capnpSchemaManifestJson: fn () []const u8
 capnpc-zig.rpc.generated.persistent.persistent.Type: type = void
-capnpc-zig.rpc.generated.persistent.persistent.targets: const rpc.gen.capnp.persistent.persistent.targets__struct_153022
+capnpc-zig.rpc.generated.persistent.persistent.targets: const rpc.gen.capnp.persistent.persistent.targets__struct_156285
 capnpc-zig.rpc.generated.persistent.persistent: struct
 capnpc-zig.rpc.generated.persistent: struct
 capnpc-zig.rpc.generated.rpc.Accept.Builder.init: fn (*serialization.message.MessageBuilder) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.rpc.Accept.Builder.init)).@"fn".return_type.?).error_union.error_set!rpc.gen.capnp.rpc.Accept.Builder
@@ -984,7 +984,9 @@ capnpc-zig.rpc.peer.Peer.attachTransport: fn (*rpc.peer.mod.Peer, *anyopaque, ?*
 capnpc-zig.rpc.peer.Peer.attachTransportBinding: fn (*rpc.peer.mod.Peer, rpc.transport.binding.Binding(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.Peer.cancelQuestion: fn (*rpc.peer.mod.Peer, u32, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.cancelQuestion)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.checkDeadlines: fn (*rpc.peer.mod.Peer) usize
+capnpc-zig.rpc.peer.Peer.clearPersistentExport: fn (*rpc.peer.mod.Peer, u32) void
 capnpc-zig.rpc.peer.Peer.clearQuestionDeadline: fn (*rpc.peer.mod.Peer, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.clearQuestionDeadline)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.Peer.clearRestorer: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.closeAttachedTransport: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.completeShutdown: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.deinit: fn (*rpc.peer.mod.Peer) void
@@ -1012,15 +1014,19 @@ capnpc-zig.rpc.peer.Peer.sendCallResolved: fn (*rpc.peer.mod.Peer, rpc.caps.desc
 capnpc-zig.rpc.peer.Peer.sendFinishForHost: fn (*rpc.peer.mod.Peer, u32, bool, bool) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendFinishForHost)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendPrebuiltReturnFrame: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Return, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendPrebuiltReturnFrame)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendReleaseForHost: fn (*rpc.peer.mod.Peer, u32, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReleaseForHost)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.Peer.sendRestore: fn (*rpc.peer.mod.Peer, u32, []const u8, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.RestoreResponse) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendRestore)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.peer.Peer.sendReturnEmptyStruct: fn (*rpc.peer.mod.Peer, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnEmptyStruct)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendReturnException: fn (*rpc.peer.mod.Peer, u32, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnException)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendReturnResults: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnResults)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.Peer.sendSave: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.SaveResponse) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendSave)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.peer.Peer.setBootstrap: fn (*rpc.peer.mod.Peer, rpc.peer.mod.Export) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.setBootstrap)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.peer.Peer.setClock: fn (*rpc.peer.mod.Peer, ?rpc.time.Clock) void
 capnpc-zig.rpc.peer.Peer.setClockIo: fn (*rpc.peer.mod.Peer, ?Io) void
 capnpc-zig.rpc.peer.Peer.setLimits: fn (*rpc.peer.mod.Peer, rpc.peer.state.PeerLimits) void
 capnpc-zig.rpc.peer.Peer.setObserver: fn (*rpc.peer.mod.Peer, ?rpc.events.Observer) void
+capnpc-zig.rpc.peer.Peer.setPersistentExport: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror![]u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.setPersistentExport)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.setQuestionDeadline: fn (*rpc.peer.mod.Peer, u32, u64) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.setQuestionDeadline)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.Peer.setRestorer: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.persistence.RestoreOutcome(rpc.peer.mod.Export)) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.setRestorer)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.setSendFrameOverride: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (*anyopaque, []const u8) anyerror!void) void
 capnpc-zig.rpc.peer.Peer.setTimeouts: fn (*rpc.peer.mod.Peer, rpc.peer.state.PeerTimeouts) void
 capnpc-zig.rpc.peer.Peer.shutdown: fn (*rpc.peer.mod.Peer, ?*const fn (*rpc.peer.mod.Peer) void) void
@@ -1053,7 +1059,14 @@ capnpc-zig.rpc.peer.Peer: struct
 capnpc-zig.rpc.peer.PeerLimits: struct
 capnpc-zig.rpc.peer.PeerTimeouts: struct
 capnpc-zig.rpc.peer.QuestionCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
+capnpc-zig.rpc.peer.RestoreHandler: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.persistence.RestoreOutcome(rpc.peer.mod.Export)
+capnpc-zig.rpc.peer.RestoreOutcome: union
+capnpc-zig.rpc.peer.RestoreResponse: union
+capnpc-zig.rpc.peer.RestoreResponseCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.RestoreResponse) anyerror!void
 capnpc-zig.rpc.peer.ReturnBuildFn: type = *const fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void
+capnpc-zig.rpc.peer.SaveHandler: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror![]u8
+capnpc-zig.rpc.peer.SaveResponse: union
+capnpc-zig.rpc.peer.SaveResponseCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.SaveResponse) anyerror!void
 capnpc-zig.rpc.peer.SendFrameOverride: type = *const fn (*anyopaque, []const u8) anyerror!void
 capnpc-zig.rpc.peer.TransportBinding.CloseFn: type = *const fn (*anyopaque) void
 capnpc-zig.rpc.peer.TransportBinding.IsClosingFn: type = *const fn (*anyopaque) bool
@@ -1110,6 +1123,21 @@ capnpc-zig.rpc.peer.finish.handleResolvedAnswerCleanup: fn (comptime type, anyty
 capnpc-zig.rpc.peer.finish.takeResolvedAnswerFrameForPeer: fn (comptime type, anytype, u32) ?[]u8
 capnpc-zig.rpc.peer.finish.takeResolvedAnswerFrameForPeerFn: fn (comptime type) anytype
 capnpc-zig.rpc.peer.finish: struct
+capnpc-zig.rpc.peer.persistence.CapabilityReturnContext: struct
+capnpc-zig.rpc.peer.persistence.RestoreOutcome: fn (comptime type) type
+capnpc-zig.rpc.peer.persistence.SturdyRefReturnContext: struct
+capnpc-zig.rpc.peer.persistence.buildCapabilityReturn: fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void
+capnpc-zig.rpc.peer.persistence.buildSaveResultsReturn: fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void
+capnpc-zig.rpc.peer.persistence.persistent_interface_id: const u64
+capnpc-zig.rpc.peer.persistence.readSealFor: fn (rpc.wire.protocol.Payload) ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader
+capnpc-zig.rpc.peer.persistence.readSturdyRefParam: fn (rpc.wire.protocol.Payload) @typeInfo(@typeInfo(@TypeOf(rpc.peer.persistence.readSturdyRefParam)).@"fn".return_type.?).error_union.error_set![]const u8
+capnpc-zig.rpc.peer.persistence.readSturdyRefResult: fn (rpc.wire.protocol.Payload) @typeInfo(@typeInfo(@TypeOf(rpc.peer.persistence.readSturdyRefResult)).@"fn".return_type.?).error_union.error_set![]const u8
+capnpc-zig.rpc.peer.persistence.restore_method_id: const u16
+capnpc-zig.rpc.peer.persistence.restorer_interface_id: const u64
+capnpc-zig.rpc.peer.persistence.save_method_id: const u16
+capnpc-zig.rpc.peer.persistence.writeEmptySaveParams: fn (*rpc.wire.protocol.CallBuilder) @typeInfo(@typeInfo(@TypeOf(rpc.peer.persistence.writeEmptySaveParams)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.persistence.writeRestoreParams: fn (*rpc.wire.protocol.CallBuilder, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.persistence.writeRestoreParams)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.persistence: struct
 capnpc-zig.rpc.peer.provide_accept_join.InsertOutcome: enum
 capnpc-zig.rpc.peer.provide_accept_join.JoinInsertOutcome: enum
 capnpc-zig.rpc.peer.provide_accept_join.captureAcceptProvisionForPeer: fn (comptime type, anytype, rpc.wire.protocol.Accept, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.provide.peer_provide_join_orchestration.captureAcceptProvisionForPeer)).@"fn".return_type.?).error_union.error_set!?[]u8
@@ -1473,7 +1501,7 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.writeQueueStats: fn (*rpc.tra
 capnpc-zig.rpc.transport.tcp.connection.Connection: struct
 capnpc-zig.rpc.transport.tcp.connection: struct
 capnpc-zig.rpc.transport.tcp.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
-capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_86242
+capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_86248
 capnpc-zig.rpc.transport.tcp.runtime.Listener.accept: fn (*rpc.transport.tcp.runtime.Listener) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.accept)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close: fn (*rpc.transport.tcp.runtime.Listener) void
 capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress: fn (*const rpc.transport.tcp.runtime.Listener) Io.net.IpAddress
@@ -1487,7 +1515,7 @@ capnpc-zig.rpc.transport.tcp.runtime.Runtime: struct
 capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, i32) void
 capnpc-zig.rpc.transport.tcp.runtime.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
-capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_86242
+capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_86248
 capnpc-zig.rpc.transport.tcp.runtime: struct
 capnpc-zig.rpc.transport.tcp.stream.Transport.EnqueueError: type = error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}
 capnpc-zig.rpc.transport.tcp.stream.Transport.Options: struct

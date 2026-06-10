@@ -25,6 +25,10 @@
   `peer/errors.zig`, and `peer/transport.zig` hold the first extracted Option 3
   boundaries, while `peer/*` splits behavior by domain (`call`, `return`,
   `forward`, `provide_accept_join`, `third_party`, lifecycle).
+- `peer/persistence.zig` pins the sturdy-ref realm conventions (level 2):
+  opaque `Data` sturdy refs, the vat-level `Restorer` interface, and the
+  payload helpers behind `Peer.setPersistentExport`/`setRestorer`/
+  `sendSave`/`sendRestore`.
 - `integration/` provides host-facing adapters (`HostPeer`, `WorkerPool`) and is
   intentionally separate from protocol-core code.
 - Source `.capnp` files live in [capnp/](capnp/); generated Zig bindings live
@@ -61,6 +65,8 @@
 - [peer/transport.zig](peer/transport.zig): Peer-facing transport binding
   facade and transport callback/state helper modules.
 - [peer/dispatch.zig](peer/dispatch.zig): Inbound RPC message dispatch facade.
+- [peer/persistence.zig](peer/persistence.zig): Sturdy-ref realm conventions
+  and save/restore payload helpers.
 - [peer/bootstrap.zig](peer/bootstrap.zig): Bootstrap, abort, and
   unimplemented-message control handling.
 - [peer/finish.zig](peer/finish.zig): Finish cleanup and resolved-answer cleanup

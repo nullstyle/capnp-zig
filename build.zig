@@ -488,6 +488,8 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_release_and_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_release_and_failure_test.zig", target, optimize, lib_module);
     const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/peer/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
     const run_rpc_deadline_tests = addLibTest(b, "tests/rpc/peer/rpc_deadline_test.zig", target, optimize, lib_module);
+    const run_rpc_persistence_tests = addLibTest(b, "tests/rpc/peer/rpc_persistence_test.zig", target, optimize, lib_module);
+    const run_rpc_persistence_reconnect_tests = addLibTest(b, "tests/rpc/integration/rpc_persistence_reconnect_test.zig", target, optimize, lib_module);
 
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
@@ -653,10 +655,12 @@ pub fn build(b: *std.Build) void {
     test_rpc_peer_step.dependOn(run_rpc_peer_release_and_failure_tests);
     test_rpc_peer_step.dependOn(run_rpc_concurrent_calls_tests);
     test_rpc_peer_step.dependOn(run_rpc_deadline_tests);
+    test_rpc_peer_step.dependOn(run_rpc_persistence_tests);
 
     const test_rpc_integration_step = b.step("test-rpc-integration", "Run RPC integration tests");
     test_rpc_integration_step.dependOn(run_rpc_host_peer_tests);
     test_rpc_integration_step.dependOn(run_rpc_worker_pool_tests);
+    test_rpc_integration_step.dependOn(run_rpc_persistence_reconnect_tests);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_wire_step);

@@ -39,6 +39,7 @@ provides guidance for downstream consumers.
 | RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/caps/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
+| RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions documented in `rpc_runtime_design.md`; the vat-level restore interface may change. |
 
 ### Internal
 
