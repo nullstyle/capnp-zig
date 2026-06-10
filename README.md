@@ -49,11 +49,6 @@ The local `mise.toml` intentionally does not manage Zig because current
 development is using a master/zvm-style toolchain rather than a resolvable mise
 release tarball; CI installs the same pinned snapshot via `mlugg/setup-zig`.
 
-The QUIC transport (`-Dquic=true`) is temporarily unavailable on this branch:
-the pinned `quic-zig` dependency (and its `boringssl_zig` dependency) have not
-yet been migrated to current Zig master. The dependency is declared lazy, so
-default (non-QUIC) builds are unaffected.
-
 ## Usage
 
 ### As a Library

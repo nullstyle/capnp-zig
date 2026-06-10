@@ -76,10 +76,6 @@ jobs:
 
   quic-transport:
     name: QUIC baseline/native transport
-    # Disabled until quic-zig (and its boringssl_zig dependency) are migrated
-    # to current Zig master and repinned in build.zig.zon. The dependency is
-    # lazy, so non-QUIC builds are unaffected.
-    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

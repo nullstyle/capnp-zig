@@ -11,48 +11,28 @@ pub fn defaultClientBindAddress(remote_addr: Net.IpAddress) Net.IpAddress {
 }
 
 pub fn ipAddressToPathAddress(addr: Net.IpAddress) quic_zig.conn.path.Address {
-    var out: quic_zig.conn.path.Address = .{};
-    switch (addr) {
-        .ip4 => |ip4| {
-            out.bytes[0] = 4;
-            @memcpy(out.bytes[1..5], &ip4.bytes);
-            std.mem.writeInt(u16, out.bytes[5..7], ip4.port, .big);
-        },
-        .ip6 => |ip6| {
-            out.bytes[0] = 6;
-            @memcpy(out.bytes[1..17], &ip6.bytes);
-            std.mem.writeInt(u16, out.bytes[17..19], ip6.port, .big);
-            out.bytes[19] = @truncate(ip6.flow >> 16);
-            out.bytes[20] = @truncate(ip6.flow >> 8);
-            out.bytes[21] = @truncate(ip6.flow);
-        },
-    }
-    return out;
+    // quic-zig's Address deliberately mirrors std.Io.net.IpAddress, so the
+    // boundary is a one-to-one variant map.
+    return switch (addr) {
+        .ip4 => |ip4| .{ .ipv4 = .{ .addr = ip4.bytes, .port = ip4.port } },
+        .ip6 => |ip6| .{ .ipv6 = .{
+            .addr = ip6.bytes,
+            .port = ip6.port,
+            .flow = ip6.flow,
+        } },
+    };
 }
 
 pub fn pathAddressToIpAddress(addr: quic_zig.conn.path.Address) ?Net.IpAddress {
-    switch (addr.bytes[0]) {
-        4 => {
-            var ip4_bytes: [4]u8 = undefined;
-            @memcpy(&ip4_bytes, addr.bytes[1..5]);
-            const port = std.mem.readInt(u16, addr.bytes[5..7], .big);
-            return .{ .ip4 = .{ .bytes = ip4_bytes, .port = port } };
-        },
-        6 => {
-            var ip6_bytes: [16]u8 = undefined;
-            @memcpy(&ip6_bytes, addr.bytes[1..17]);
-            const port = std.mem.readInt(u16, addr.bytes[17..19], .big);
-            const flow: u32 = (@as(u32, addr.bytes[19]) << 16) |
-                (@as(u32, addr.bytes[20]) << 8) |
-                @as(u32, addr.bytes[21]);
-            return .{ .ip6 = .{
-                .bytes = ip6_bytes,
-                .port = port,
-                .flow = flow,
-            } };
-        },
-        else => return null,
-    }
+    return switch (addr) {
+        .unspecified => null,
+        .ipv4 => |v4| .{ .ip4 = .{ .bytes = v4.addr, .port = v4.port } },
+        .ipv6 => |v6| .{ .ip6 = .{
+            .bytes = v6.addr,
+            .port = v6.port,
+            .flow = v6.flow,
+        } },
+    };
 }
 
 test "QUIC path address round-trips IPv4" {
