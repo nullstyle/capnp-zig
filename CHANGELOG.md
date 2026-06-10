@@ -35,6 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Release-mode thread-affinity checks** (`Peer.enableRuntimeThreadChecks`,
+  `Connection.runtime_thread_checks`): the single-threaded-per-peer contract
+  is always enforced in Debug; release builds can now opt in to the same
+  panic-on-violation checking at the cost of one thread-id read per entry
+  point.
+- **Pressure events** (`rpc.events.pressure`): bounded peer/transport
+  resources (outbound and inbound question tables, queued promise calls and
+  bytes, resolved imports, write-queue items and bytes) emit a single event
+  when occupancy crosses 80% of budget from below — an early-warning signal
+  ahead of the existing hard-rejection events.
+- **Metrics surfaces**: `Peer.stats()` returns a point-in-time gauge
+  snapshot (questions in flight, cancelled questions, inbound questions,
+  exports, queued calls/bytes, resolved imports/answers);
+  `Transport.queueStats()` / `Connection.writeQueueStats()` expose write
+  queue occupancy; `rpc.events.call_latency` reports per-call wall time on
+  Return dispatch whenever the peer has a time source.
+- **Soak harness** (`zig build soak`, `tools/soak_rpc.zig`): sustained
+  concurrent bootstrap+call traffic over loopback TCP against a WorkerPool
+  server, with chaos sessions (abrupt mid-flight disconnects) and deadline
+  sessions (1ms deadlines racing a deliberately slow server method, so
+  cancellation and late-Return absorption run against live traffic). A
+  nightly workflow (`.github/workflows/nightly.yml`) runs it for 2 minutes
+  in Debug and 1 minute in ReleaseSafe alongside extended gates.
+- **Configurable TCP frame cap**
+  (`Connection.Options.max_buffered_frame_bytes`): per-connection bound on
+  inbound frame assembly, mirroring the QUIC transport's per-message bound.
 - **Call deadlines and cancellation** (`rpc.time`, `Peer.setClock`,
   `PeerTimeouts.default_call_timeout_ms`, `Peer.setQuestionDeadline`,
   `Peer.cancelQuestion`, `Peer.checkDeadlines`): outbound questions can now
@@ -69,6 +95,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **QUIC transport re-enabled on Zig master**: `quic_zig` repinned to
+  upstream `0e4d540` (which itself targets `0.17.0-dev.813`), the
+  transport adapter migrated to upstream's new tagged-union
+  `conn.path.Address` API (a one-to-one variant map mirroring
+  `std.Io.net.IpAddress`), and the `quic-transport` CI job restored.
+- **`PeerLimits.max_resolved_imports` default raised 4096 → 10,000** to
+  match the capability table's hard cap, so promise-heavy workloads no
+  longer hit a lower hidden wall first.
 - **Write-queue backpressure semantics are now class-aware.** Caller-initiated
   sends (calls, bootstrap) surface `error.WriteQueueFull` /
   `error.WriteQueueBytesExceeded` to the caller, roll back the question, and

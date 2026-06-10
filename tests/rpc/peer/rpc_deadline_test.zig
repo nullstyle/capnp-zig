@@ -425,3 +425,122 @@ test "cancelQuestion still delivers the local exception when the Finish send fai
     // Control-class escalation closed the transport.
     try std.testing.expectEqual(@as(usize, 1), fake.close_count);
 }
+
+test "call latency event is emitted on Return when a clock is present" {
+    const allocator = std.testing.allocator;
+
+    const LatencyRecorder = struct {
+        latency_events: usize = 0,
+        last_ns: u64 = 0,
+        last_question_id: u32 = 0,
+
+        fn onEvent(ctx_ptr: *anyopaque, event: events.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            switch (event) {
+                .call_latency => |l| {
+                    self.latency_events += 1;
+                    self.last_ns = l.nanoseconds;
+                    self.last_question_id = l.question_id;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var clock = rpc_time.TestClock{};
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var recorder = ReturnRecorder{};
+    var latency = LatencyRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(events.Observer.init(&latency, LatencyRecorder.onEvent));
+    peer.setClock(clock.clock());
+
+    const question_id = try peer.sendBootstrap(&recorder, ReturnRecorder.onReturn);
+
+    clock.advanceMs(7);
+    const ret_frame = try buildRemoteExceptionReturn(allocator, question_id);
+    defer allocator.free(ret_frame);
+    try peer.handleFrame(ret_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), latency.latency_events);
+    try std.testing.expectEqual(question_id, latency.last_question_id);
+    try std.testing.expectEqual(@as(u64, 7 * std.time.ns_per_ms), latency.last_ns);
+}
+
+test "peer stats snapshot tracks questions, cancellations, and queued state" {
+    const allocator = std.testing.allocator;
+
+    var clock = rpc_time.TestClock{};
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var recorder = ReturnRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setClock(clock.clock());
+
+    var stats = peer.stats();
+    try std.testing.expectEqual(@as(u32, 0), stats.outbound_questions);
+    try std.testing.expectEqual(@as(u32, 0), stats.cancelled_questions);
+
+    const q1 = try peer.sendBootstrap(&recorder, ReturnRecorder.onReturn);
+    _ = try peer.sendBootstrap(&recorder, ReturnRecorder.onReturn);
+
+    stats = peer.stats();
+    try std.testing.expectEqual(@as(u32, 2), stats.outbound_questions);
+    try std.testing.expectEqual(@as(u32, 0), stats.cancelled_questions);
+
+    try peer.cancelQuestion(q1, "deadline exceeded");
+    stats = peer.stats();
+    try std.testing.expectEqual(@as(u32, 2), stats.outbound_questions);
+    try std.testing.expectEqual(@as(u32, 1), stats.cancelled_questions);
+    try std.testing.expectEqual(@as(usize, 0), stats.pending_queued_calls);
+}
+
+test "outbound question pressure event fires at 80% of the budget" {
+    const allocator = std.testing.allocator;
+
+    const PressureRecorder = struct {
+        pressure_events: usize = 0,
+        last_current: usize = 0,
+        last_limit: usize = 0,
+
+        fn onEvent(ctx_ptr: *anyopaque, event: events.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            switch (event) {
+                .pressure => |p| {
+                    if (p.resource == .outbound_questions) {
+                        self.pressure_events += 1;
+                        self.last_current = p.current;
+                        self.last_limit = p.limit;
+                    }
+                },
+                else => {},
+            }
+        }
+    };
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var recorder = ReturnRecorder{};
+    var pressure = PressureRecorder{};
+
+    var peer = Peer.initDetachedWithLimits(allocator, .{ .max_outbound_questions = 10 });
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(events.Observer.init(&pressure, PressureRecorder.onEvent));
+
+    // Threshold for limit 10 is 8: the eighth question crosses it, once.
+    var i: usize = 0;
+    while (i < 9) : (i += 1) {
+        _ = try peer.sendBootstrap(&recorder, ReturnRecorder.onReturn);
+    }
+    try std.testing.expectEqual(@as(usize, 1), pressure.pressure_events);
+    try std.testing.expectEqual(@as(usize, 8), pressure.last_current);
+    try std.testing.expectEqual(@as(usize, 10), pressure.last_limit);
+}

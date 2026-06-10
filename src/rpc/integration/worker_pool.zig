@@ -226,6 +226,7 @@ pub const WorkerPool = struct {
             };
 
             peer_ptr.* = Peer.init(pool.allocator, conn_ptr);
+            peer_ptr.setClockIo(pool.io);
 
             const decision = pool.on_accept(pool.ctx, peer_ptr, conn_ptr, worker_index) catch |err| {
                 log.debug("worker {}: on_accept failed: {}", .{ worker_index, err });

@@ -55,6 +55,14 @@ pub const Transport = struct {
         WriteQueueBytesExceeded,
     };
 
+    /// Point-in-time write queue occupancy, for metrics scraping.
+    pub const QueueStats = struct {
+        items: usize,
+        bytes: usize,
+        max_items: usize,
+        max_bytes: usize,
+    };
+
     pub const Options = struct {
         read_buffer_size: usize,
         write_queue_max_items: usize = default_max_queued_items,
@@ -75,10 +83,19 @@ pub const Transport = struct {
         max_bytes: usize = default_max_queued_bytes,
         closed: bool = false,
 
+        /// Queue occupancy before and after a successful enqueue, for
+        /// pressure-crossing emission outside the queue lock.
+        const EnqueueOutcome = struct {
+            prev_items: usize,
+            items: usize,
+            prev_bytes: usize,
+            bytes: usize,
+        };
+
         /// Copy bytes into the queue after checking the configured item and
         /// byte bounds. The copy is deliberately made while the queue lock is
         /// held so a full queue is rejected before allocating.
-        fn enqueueCopy(self: *WriteQueue, io: std.Io, allocator: std.mem.Allocator, bytes: []const u8) EnqueueError!void {
+        fn enqueueCopy(self: *WriteQueue, io: std.Io, allocator: std.mem.Allocator, bytes: []const u8) EnqueueError!EnqueueOutcome {
             self.mu.lockUncancelable(io);
             defer self.mu.unlock(io);
 
@@ -100,6 +117,24 @@ pub const Transport = struct {
             };
             self.queued_bytes += data.len;
             self.cond.signal(io);
+            return .{
+                .prev_items = self.items.items.len - 1,
+                .items = self.items.items.len,
+                .prev_bytes = accounted_bytes,
+                .bytes = accounted_bytes + data.len,
+            };
+        }
+
+        /// Snapshot of queue occupancy (queued plus in-flight bytes).
+        fn stats(self: *WriteQueue, io: std.Io) QueueStats {
+            self.mu.lockUncancelable(io);
+            defer self.mu.unlock(io);
+            return .{
+                .items = self.items.items.len,
+                .bytes = self.queued_bytes + self.in_flight_bytes,
+                .max_items = self.max_items,
+                .max_bytes = self.max_bytes,
+            };
         }
 
         /// Block until queued items are available or the queue is closed.
@@ -244,7 +279,7 @@ pub const Transport = struct {
             events.emitFrame(self.observer, .tcp, .unknown, .sent, bytes.len);
             return;
         }
-        self.write_queue.enqueueCopy(self.io, self.allocator, bytes) catch |err| {
+        const outcome = self.write_queue.enqueueCopy(self.io, self.allocator, bytes) catch |err| {
             switch (err) {
                 error.WriteQueueFull => events.emitBackpressure(
                     self.observer,
@@ -268,7 +303,31 @@ pub const Transport = struct {
             }
             return err;
         };
+        events.emitPressureCrossing(
+            self.observer,
+            .tcp,
+            .unknown,
+            .write_queue_items,
+            outcome.prev_items,
+            outcome.items,
+            self.write_queue.max_items,
+        );
+        events.emitPressureCrossing(
+            self.observer,
+            .tcp,
+            .unknown,
+            .write_queue_bytes,
+            outcome.prev_bytes,
+            outcome.bytes,
+            self.write_queue.max_bytes,
+        );
         events.emitFrame(self.observer, .tcp, .unknown, .enqueued, bytes.len);
+    }
+
+    /// Point-in-time write queue occupancy. Takes the queue lock briefly;
+    /// safe to call from the owner thread for metrics scraping.
+    pub fn queueStats(self: *Transport) QueueStats {
+        return self.write_queue.stats(self.io);
     }
 
     /// Spawn the dedicated writer thread. Call before entering the read loop.

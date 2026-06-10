@@ -95,17 +95,22 @@ pub const Connection = struct {
     /// assert that the current thread matches this value.
     owner_thread_id: ?std.Thread.Id = null,
 
+    /// When true, thread-affinity checks also run in release builds
+    /// (always on in Debug). Mirrors `Peer.enableRuntimeThreadChecks`.
+    runtime_thread_checks: bool = false,
+
     /// Assert that the caller is on the thread that created this connection.
-    /// This is a no-op in release builds. In debug builds, it panics
-    /// with a clear message if the current thread is not the owner.
+    /// Always enforced in Debug builds; enforced in release builds only
+    /// when `runtime_thread_checks` is set. Panics on violation.
     pub fn assertThreadAffinity(self: *const Connection) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
-        if (builtin.mode == .Debug) {
-            const owner = self.owner_thread_id orelse return;
-            const current = std.Thread.getCurrentId();
-            if (current != owner) {
-                @panic("Connection method called from wrong thread: Connection is not thread-safe, all calls must be on the owner thread");
-            }
+        if (comptime builtin.mode != .Debug) {
+            if (!self.runtime_thread_checks) return;
+        }
+        const owner = self.owner_thread_id orelse return;
+        const current = std.Thread.getCurrentId();
+        if (current != owner) {
+            @panic("Connection method called from wrong thread: Connection is not thread-safe, all calls must be on the owner thread");
         }
     }
 
@@ -118,6 +123,11 @@ pub const Connection = struct {
         tick_interval_ms: ?u32 = null,
         /// See `Connection.idle_timeout_ms`.
         idle_timeout_ms: ?u64 = null,
+        /// Cap on bytes buffered while assembling one inbound frame
+        /// (header plus segments). Exceeding it is a fatal framing error.
+        /// Mirrors the QUIC transport's per-message bound; lower this for
+        /// untrusted peers.
+        max_buffered_frame_bytes: usize = framing.Framer.default_max_buffered_bytes,
     };
 
     pub fn init(
@@ -135,7 +145,9 @@ pub const Connection = struct {
                 .write_queue_max_bytes = options.write_queue_max_bytes,
                 .observer = options.observer,
             }),
-            .framer = framing.Framer.init(allocator),
+            .framer = framing.Framer.initWithOptions(allocator, .{
+                .max_buffered_bytes = options.max_buffered_frame_bytes,
+            }),
             .observer = options.observer,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
             .tick_interval_ms = options.tick_interval_ms,
@@ -396,6 +408,12 @@ pub const Connection = struct {
     pub fn isClosing(self: *const Connection) bool {
         self.assertThreadAffinity();
         return self.transport.isClosing();
+    }
+
+    /// Point-in-time write queue occupancy, for metrics scraping.
+    pub fn writeQueueStats(self: *Connection) transport_mod.Transport.QueueStats {
+        self.assertThreadAffinity();
+        return self.transport.queueStats();
     }
 
     fn handleRead(self: *Connection, data: []const u8) bool {

@@ -68,6 +68,11 @@ pub const Resource = enum {
     host_call_frames,
     host_call_bytes,
     peer_state,
+    outbound_questions,
+    active_inbound_questions,
+    queued_calls,
+    queued_call_bytes,
+    resolved_imports,
 };
 
 pub const Event = union(enum) {
@@ -78,6 +83,8 @@ pub const Event = union(enum) {
     protocol_error: ProtocolErrorEvent,
     close: CloseEvent,
     timeout: TimeoutEvent,
+    pressure: PressureEvent,
+    call_latency: CallLatencyEvent,
 };
 
 pub const ConnectionEvent = struct {
@@ -140,6 +147,26 @@ pub const TimeoutEvent = struct {
     kind: TimeoutKind,
     /// Question ID for `call_deadline`; null for connection-scoped kinds.
     question_id: ?u32 = null,
+};
+
+/// Early-warning signal: a bounded resource crossed 80% of its budget.
+/// Emitted once per upward crossing (not on every insertion above the
+/// threshold), so consumers can alert without rate-limiting.
+pub const PressureEvent = struct {
+    source: Source,
+    role: Role = .unknown,
+    resource: Resource,
+    current: usize,
+    limit: usize,
+};
+
+/// Wall time between sending a Call and dispatching its Return, measured
+/// on the peer's monotonic clock. Only emitted when the peer has a clock.
+pub const CallLatencyEvent = struct {
+    source: Source,
+    role: Role = .unknown,
+    question_id: u32,
+    nanoseconds: u64,
 };
 
 pub inline fn emit(observer: ?Observer, event: Event) void {
@@ -253,6 +280,88 @@ pub inline fn emitTimeout(
         .kind = kind,
         .question_id = question_id,
     } });
+}
+
+/// 80% pressure threshold for a budget. Integer-exact: `limit - limit/5`.
+pub inline fn pressureThreshold(limit: usize) usize {
+    return limit - limit / 5;
+}
+
+/// Emit a pressure event iff this change crossed the 80% threshold of
+/// `limit` from below. Stateless crossing detection: callers pass the
+/// resource's occupancy before and after the insertion.
+pub inline fn emitPressureCrossing(
+    observer: ?Observer,
+    source: Source,
+    role: Role,
+    resource: Resource,
+    prev: usize,
+    current: usize,
+    limit: usize,
+) void {
+    if (observer == null or limit == 0) return;
+    const threshold = pressureThreshold(limit);
+    if (prev < threshold and current >= threshold) {
+        emit(observer, .{ .pressure = .{
+            .source = source,
+            .role = role,
+            .resource = resource,
+            .current = current,
+            .limit = limit,
+        } });
+    }
+}
+
+pub inline fn emitCallLatency(
+    observer: ?Observer,
+    source: Source,
+    role: Role,
+    question_id: u32,
+    nanoseconds: u64,
+) void {
+    emit(observer, .{ .call_latency = .{
+        .source = source,
+        .role = role,
+        .question_id = question_id,
+        .nanoseconds = nanoseconds,
+    } });
+}
+
+test "emitPressureCrossing fires exactly on the upward 80% crossing" {
+    const State = struct {
+        count: usize = 0,
+        last: ?Event = null,
+
+        fn onEvent(ctx: *anyopaque, event: Event) void {
+            const state: *@This() = @ptrCast(@alignCast(ctx));
+            state.count += 1;
+            state.last = event;
+        }
+    };
+
+    var state = State{};
+    const observer = Observer.init(&state, State.onEvent);
+
+    const limit: usize = 100;
+    try std.testing.expectEqual(@as(usize, 80), pressureThreshold(limit));
+
+    // Below threshold: no event.
+    emitPressureCrossing(observer, .peer, .unknown, .outbound_questions, 78, 79, limit);
+    try std.testing.expectEqual(@as(usize, 0), state.count);
+
+    // Crossing: exactly one event.
+    emitPressureCrossing(observer, .peer, .unknown, .outbound_questions, 79, 80, limit);
+    try std.testing.expectEqual(@as(usize, 1), state.count);
+    try std.testing.expect(state.last.? == .pressure);
+    try std.testing.expectEqual(@as(usize, 80), state.last.?.pressure.current);
+
+    // Already above: no repeat.
+    emitPressureCrossing(observer, .peer, .unknown, .outbound_questions, 80, 81, limit);
+    try std.testing.expectEqual(@as(usize, 1), state.count);
+
+    // Byte-style jump across the threshold also fires.
+    emitPressureCrossing(observer, .peer, .unknown, .queued_call_bytes, 10, 95, limit);
+    try std.testing.expectEqual(@as(usize, 2), state.count);
 }
 
 test "observer receives redacted frame metadata only" {

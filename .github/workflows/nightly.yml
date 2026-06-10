@@ -1,0 +1,53 @@
+name: Nightly
+
+on:
+  schedule:
+    # 09:17 UTC daily — off the top-of-hour rush.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  soak:
+    name: RPC soak (chaos + deadlines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.813+2153f8143
+
+      - name: Run soak harness (2 minutes, 8 workers)
+        run: zig build soak -- --seconds 120 --workers 8
+
+      - name: Run soak harness under ReleaseSafe (1 minute)
+        run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8
+
+  extended-gates:
+    name: Extended gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.813+2153f8143
+
+      - name: Full test suite
+        run: zig build test --summary all
+
+      - name: ReleaseSafe hardening tests
+        run: zig build test-release-safe --summary all
+
+      - name: QUIC transport tests
+        run: zig build -Dquic=true test-rpc-quic --summary all

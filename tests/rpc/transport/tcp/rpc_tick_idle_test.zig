@@ -88,6 +88,7 @@ test "tick drives peer deadline sweep and idle timeout reaps the connection" {
 
     var peer = Peer.initDetached(allocator);
     peer.attachConnection(&conn);
+    peer.setClockIo(io);
     peer.setTimeouts(.{ .default_call_timeout_ms = 50 });
     peer.setObserver(event_recorder.observer());
     peer.start(null, null);

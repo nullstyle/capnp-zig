@@ -98,6 +98,10 @@ test-rpc-quic:
 bench-check:
     zig build -Doptimize=ReleaseFast bench-check
 
+# Run the RPC soak harness (chaos + deadline sessions over loopback TCP)
+soak seconds="5" workers="4":
+    zig build soak -- --seconds {{ seconds }} --workers {{ workers }}
+
 # Build e2e reference images
 e2e-build:
     just --justfile tests/e2e/Justfile build

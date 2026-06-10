@@ -245,6 +245,25 @@ pub fn build(b: *std.Build) void {
     const bench_unpack_step = b.step("bench-unpacked", "Run unpacked (unpacking) benchmark");
     bench_unpack_step.dependOn(&run_unpack.step);
 
+    // RPC soak harness (loopback TCP, chaos + deadline sessions)
+    const soak_rpc = b.addExecutable(.{
+        .name = "soak-rpc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/soak_rpc.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_soak_rpc = b.addRunArtifact(soak_rpc);
+    run_soak_rpc.addPassthruArgs();
+
+    const soak_step = b.step("soak", "Run RPC soak harness (use -- --seconds N --workers N)");
+    soak_step.dependOn(&run_soak_rpc.step);
+
     const bench_check = b.addExecutable(.{
         .name = "bench-check",
         .root_module = b.createModule(.{

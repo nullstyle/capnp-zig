@@ -318,11 +318,15 @@ pub const Peer = struct {
 
     // -- Time / deadlines -----------------------------------------------------
 
-    /// Monotonic clock used for call deadlines and the shutdown drain bound.
-    /// Null disables all time-based enforcement. `attachConnection` injects
-    /// an `std.Io`-backed clock automatically when the connection exposes
-    /// one and no clock has been set.
+    /// Custom monotonic clock used for call deadlines and the shutdown
+    /// drain bound. The clock's `ctx` pointer must outlive the peer.
+    /// Tests inject `rpc.time.TestClock` here.
     clock: ?rpc_time.Clock = null,
+    /// `std.Io` used as the monotonic time source when no custom `clock`
+    /// is set; see `setClockIo`. Stored by value so peer moves cannot
+    /// dangle it. Null (with no custom clock) disables time-based
+    /// enforcement entirely.
+    clock_io: ?std.Io = null,
     /// Opt-in time-domain policy; see `state.PeerTimeouts`.
     timeouts: PeerTimeouts = .{},
     /// Absolute drain bound stamped by `shutdown()` when a drain timeout is
@@ -352,6 +356,10 @@ pub const Peer = struct {
     /// null and set to the real thread ID in `initDetached`.
     owner_thread_id: ?std.Thread.Id = null,
 
+    /// When true, thread-affinity checks also run in release builds (they
+    /// are always on in Debug). See `enableRuntimeThreadChecks`.
+    runtime_thread_checks: bool = false,
+
     /// Disable the thread-affinity check so that any thread may call
     /// methods on this peer. This is intended for use by the WASM ABI
     /// layer where a global mutex provides synchronization and the peer
@@ -360,11 +368,24 @@ pub const Peer = struct {
         self.owner_thread_id = null;
     }
 
+    /// Opt in to thread-affinity checking in release builds.
+    ///
+    /// `Peer` is single-threaded by contract: every method must be called
+    /// from the owning thread (or under external synchronization with
+    /// `disableThreadAffinity`). Debug builds always enforce this with a
+    /// panic; release builds skip the check by default for performance.
+    /// Deployments that can afford one thread-id read per entry point
+    /// should enable this — a violated affinity contract is a data race,
+    /// and panicking beats corrupting protocol state.
+    pub fn enableRuntimeThreadChecks(self: *Peer, enabled: bool) void {
+        self.runtime_thread_checks = enabled;
+    }
+
     /// Assert that the caller is on the thread that created this peer.
-    /// This is a no-op in release builds. In debug builds, it panics
-    /// with a clear message if the current thread is not the owner.
+    /// Always enforced in Debug builds; enforced in release builds only
+    /// after `enableRuntimeThreadChecks(true)`. Panics on violation.
     pub fn assertThreadAffinity(self: *const Peer) void {
-        state.assertThreadAffinity(self.owner_thread_id);
+        state.assertThreadAffinity(self.owner_thread_id, self.runtime_thread_checks);
     }
 
     /// Create a peer and immediately attach it to a connection/transport.
@@ -422,12 +443,33 @@ pub const Peer = struct {
         self.limits = limits;
     }
 
-    /// Install the monotonic clock used for deadlines. Replaces any
-    /// previously installed clock; pass `null` to disable time-based
-    /// enforcement.
+    /// Install a custom monotonic clock used for deadlines, overriding any
+    /// connection-derived time source. The clock's `ctx` must outlive the
+    /// peer. Pass `null` to fall back to the connection-derived source
+    /// (or disable enforcement when there is none).
     pub fn setClock(self: *Peer, clock: ?rpc_time.Clock) void {
         self.assertThreadAffinity();
         self.clock = clock;
+    }
+
+    /// Provide the `std.Io` whose monotonic clock backs deadline features.
+    /// `WorkerPool` sets this on accepted peers automatically; embedders
+    /// that construct peers directly should call this with the same io the
+    /// transport uses. A custom `setClock` overrides this source.
+    pub fn setClockIo(self: *Peer, io: ?std.Io) void {
+        self.assertThreadAffinity();
+        self.clock_io = io;
+    }
+
+    /// Current monotonic time in nanoseconds, or null when the peer has no
+    /// time source (no custom clock and no io provided via `setClockIo`).
+    /// All deadline features are inert in the null case.
+    fn clockNow(self: *const Peer) ?i64 {
+        if (self.clock) |clock| return clock.now();
+        if (self.clock_io) |io| {
+            return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+        }
+        return null;
     }
 
     /// Replace the peer's time-domain policy. Affects questions allocated
@@ -438,13 +480,13 @@ pub const Peer = struct {
     }
 
     /// Set or replace the deadline on an outstanding question, overriding
-    /// any default stamped at send time. Requires a clock.
+    /// any default stamped at send time. Requires a time source.
     pub fn setQuestionDeadline(self: *Peer, question_id: u32, timeout_ms: u64) !void {
         self.assertThreadAffinity();
-        const clock = self.clock orelse return error.NoClockConfigured;
+        const now = self.clockNow() orelse return error.NoClockConfigured;
         const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
         if (entry.cancelled) return error.QuestionCancelled;
-        entry.deadline_ns = clock.now() + msToNs(timeout_ms);
+        entry.deadline_ns = now + msToNs(timeout_ms);
     }
 
     /// Remove the deadline from an outstanding question.
@@ -480,15 +522,11 @@ pub const Peer = struct {
             ),
         );
 
-        // Connections that carry an `std.Io` provide a monotonic clock; use
-        // it for deadline enforcement unless the embedder installed one.
+        // Connections with a tick cadence drive the deadline sweep. Note:
+        // no time source is captured here — tests attach partially
+        // initialized connections, so the io must be provided explicitly
+        // via `setClockIo` (or `setClock`).
         const Conn = @typeInfo(ConnPtr).pointer.child;
-        if (comptime @hasField(Conn, "io")) {
-            if (self.clock == null) {
-                self.clock = rpc_time.Clock.fromIo(&conn.io);
-            }
-        }
-        // Connections with a tick cadence drive the deadline sweep.
         if (comptime @hasField(Conn, "on_tick")) {
             conn.on_tick = peer_transport_callbacks.onConnectionTickFor(Peer, ConnPtr);
         }
@@ -731,6 +769,49 @@ pub const Peer = struct {
         return self.last_remote_abort_reason;
     }
 
+    /// Point-in-time gauge snapshot of peer protocol state, for metrics
+    /// scraping. Cheap: map counts plus one walk of the queued-call
+    /// buckets and question table.
+    pub const PeerStats = struct {
+        /// Outstanding outbound calls, including cancelled entries that
+        /// are still absorbing their late Return.
+        outbound_questions: u32,
+        /// Subset of `outbound_questions` that were cancelled locally.
+        cancelled_questions: u32,
+        /// Inbound calls accepted and not yet returned/finished.
+        active_inbound_questions: u32,
+        /// Local capabilities currently exported to the remote.
+        exports: u32,
+        /// Cached Return frames held for promise pipelining.
+        resolved_answers: u32,
+        /// Resolved promise imports being tracked.
+        resolved_imports: u32,
+        /// Calls queued behind unresolved promises.
+        pending_queued_calls: usize,
+        /// Bytes held by calls queued behind unresolved promises.
+        pending_queued_call_bytes: usize,
+    };
+
+    pub fn stats(self: *const Peer) PeerStats {
+        self.assertThreadAffinity();
+        var cancelled: u32 = 0;
+        var it = self.questions.valueIterator();
+        while (it.next()) |q| {
+            if (q.cancelled) cancelled += 1;
+        }
+        const queued = self.pendingQueuedCallStats();
+        return .{
+            .outbound_questions = self.questions.count(),
+            .cancelled_questions = cancelled,
+            .active_inbound_questions = self.active_inbound_questions.count(),
+            .exports = self.exports.count(),
+            .resolved_answers = self.resolved_answers.count(),
+            .resolved_imports = self.resolved_imports.count(),
+            .pending_queued_calls = queued.calls,
+            .pending_queued_call_bytes = queued.bytes,
+        };
+    }
+
     const PendingQueuedCallStats = struct {
         calls: usize = 0,
         bytes: usize = 0,
@@ -749,20 +830,20 @@ pub const Peer = struct {
         if (added_bytes > max_bytes - current_bytes) return error.PeerLimitExceeded;
     }
 
-    fn addPendingQueuedCallStats(stats: *PendingQueuedCallStats, list: *const std.ArrayList(PendingCall)) void {
+    fn addPendingQueuedCallStats(totals: *PendingQueuedCallStats, list: *const std.ArrayList(PendingCall)) void {
         for (list.items) |pending| {
-            stats.calls = saturatingAdd(stats.calls, 1);
-            stats.bytes = saturatingAdd(stats.bytes, pending.frame.len);
+            totals.calls = saturatingAdd(totals.calls, 1);
+            totals.bytes = saturatingAdd(totals.bytes, pending.frame.len);
         }
     }
 
     fn pendingQueuedCallStats(self: *const Peer) PendingQueuedCallStats {
-        var stats = PendingQueuedCallStats{};
+        var totals = PendingQueuedCallStats{};
         var pending_it = self.pending_promises.valueIterator();
-        while (pending_it.next()) |list| addPendingQueuedCallStats(&stats, list);
+        while (pending_it.next()) |list| addPendingQueuedCallStats(&totals, list);
         var pending_export_it = self.pending_export_promises.valueIterator();
-        while (pending_export_it.next()) |list| addPendingQueuedCallStats(&stats, list);
-        return stats;
+        while (pending_export_it.next()) |list| addPendingQueuedCallStats(&totals, list);
+        return totals;
     }
 
     fn ensurePendingQueuedCallBudget(
@@ -774,9 +855,9 @@ pub const Peer = struct {
     ) !void {
         try ensureCountLimit(pending_map.contains(key), pending_map.count(), max_buckets);
 
-        const stats = self.pendingQueuedCallStats();
-        if (stats.calls >= self.limits.max_pending_queued_calls) return error.PeerLimitExceeded;
-        try ensureByteLimit(stats.bytes, frame_len, self.limits.max_pending_queued_call_bytes);
+        const totals = self.pendingQueuedCallStats();
+        if (totals.calls >= self.limits.max_pending_queued_calls) return error.PeerLimitExceeded;
+        try ensureByteLimit(totals.bytes, frame_len, self.limits.max_pending_queued_call_bytes);
     }
 
     fn optionalPayloadBytes(payload: ?[]u8) usize {
@@ -982,9 +1063,9 @@ pub const Peer = struct {
         }
         // Stamp the drain bound; `checkDeadlines` force-cancels stragglers
         // once it passes.
-        if (self.clock) |clock| {
+        if (self.clockNow()) |now| {
             if (self.timeouts.shutdown_drain_timeout_ms) |ms| {
-                self.shutdown_deadline_ns = clock.now() + msToNs(ms);
+                self.shutdown_deadline_ns = now + msToNs(ms);
             }
         }
     }
@@ -1066,8 +1147,7 @@ pub const Peer = struct {
     /// without a clock returns 0 immediately.
     pub fn checkDeadlines(self: *Peer) usize {
         self.assertThreadAffinity();
-        const clock = self.clock orelse return 0;
-        const now = clock.now();
+        const now = self.clockNow() orelse return 0;
 
         var expired: std.ArrayList(u32) = .empty;
         defer expired.deinit(self.allocator);
@@ -1988,9 +2068,10 @@ pub const Peer = struct {
         embargo_id: ?u32,
         embargoed: bool,
     ) !void {
+        const resolved_before = self.resolved_imports.count();
         try ensureCountLimit(
             self.resolved_imports.contains(promise_id),
-            self.resolved_imports.count(),
+            resolved_before,
             self.limits.max_resolved_imports,
         );
         try peer_cap_lifecycle.storeResolvedImport(
@@ -2005,6 +2086,15 @@ pub const Peer = struct {
             embargo_id,
             embargoed,
             Peer.releaseResolvedCap,
+        );
+        events.emitPressureCrossing(
+            self.observer,
+            .peer,
+            .unknown,
+            .resolved_imports,
+            resolved_before,
+            self.resolved_imports.count(),
+            self.limits.max_resolved_imports,
         );
     }
 
@@ -2090,14 +2180,17 @@ pub const Peer = struct {
     }
 
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
-        try ensureCountLimit(false, self.questions.count(), self.limits.max_outbound_questions);
+        const questions_before = self.questions.count();
+        try ensureCountLimit(false, questions_before, self.limits.max_outbound_questions);
         var deadline_ns: ?i64 = null;
-        if (self.clock) |clock| {
+        var started_ns: ?i64 = null;
+        if (self.clockNow()) |now| {
+            started_ns = now;
             if (self.timeouts.default_call_timeout_ms) |ms| {
-                deadline_ns = clock.now() + msToNs(ms);
+                deadline_ns = now + msToNs(ms);
             }
         }
-        return peer_question_state.allocateQuestion(
+        const question_id = try peer_question_state.allocateQuestion(
             Question,
             &self.questions,
             &self.next_question_id,
@@ -2106,8 +2199,19 @@ pub const Peer = struct {
                 .on_return = on_return,
                 .is_loopback = false,
                 .deadline_ns = deadline_ns,
+                .started_ns = started_ns,
             },
         );
+        events.emitPressureCrossing(
+            self.observer,
+            .peer,
+            .unknown,
+            .outbound_questions,
+            questions_before,
+            self.questions.count(),
+            self.limits.max_outbound_questions,
+        );
+        return question_id;
     }
 
     fn removeQuestion(self: *Peer, question_id: u32) void {
@@ -2613,9 +2717,19 @@ pub const Peer = struct {
             return error.DuplicateQuestionId;
         }
 
-        try ensureCountLimit(false, self.active_inbound_questions.count(), self.limits.max_active_inbound_questions);
+        const inbound_before = self.active_inbound_questions.count();
+        try ensureCountLimit(false, inbound_before, self.limits.max_active_inbound_questions);
         try self.active_inbound_questions.put(call.question_id, {});
         errdefer _ = self.active_inbound_questions.remove(call.question_id);
+        events.emitPressureCrossing(
+            self.observer,
+            .peer,
+            .unknown,
+            .active_inbound_questions,
+            inbound_before,
+            self.active_inbound_questions.count(),
+            self.limits.max_active_inbound_questions,
+        );
 
         peer_call_orchestration.handleCallForPeer(
             Peer,
@@ -2719,6 +2833,7 @@ pub const Peer = struct {
             frame.len,
             self.limits.max_pending_promises,
         );
+        const stats_before = self.pendingQueuedCallStats();
         try pending_calls.queuePendingCall(
             PendingCall,
             cap_table.InboundCapTable,
@@ -2728,6 +2843,7 @@ pub const Peer = struct {
             frame,
             inbound_caps,
         );
+        self.emitQueuedCallPressure(stats_before, frame.len);
     }
 
     fn queuePromiseExportCall(self: *Peer, export_id: u32, frame: []const u8, inbound_caps: cap_table.InboundCapTable) !void {
@@ -2737,6 +2853,7 @@ pub const Peer = struct {
             frame.len,
             self.limits.max_pending_export_promises,
         );
+        const stats_before = self.pendingQueuedCallStats();
         try pending_calls.queuePendingCall(
             PendingCall,
             cap_table.InboundCapTable,
@@ -2745,6 +2862,29 @@ pub const Peer = struct {
             export_id,
             frame,
             inbound_caps,
+        );
+        self.emitQueuedCallPressure(stats_before, frame.len);
+    }
+
+    /// Emit queued-call pressure crossings after a successful enqueue.
+    fn emitQueuedCallPressure(self: *Peer, before: PendingQueuedCallStats, frame_len: usize) void {
+        events.emitPressureCrossing(
+            self.observer,
+            .peer,
+            .unknown,
+            .queued_calls,
+            before.calls,
+            before.calls + 1,
+            self.limits.max_pending_queued_calls,
+        );
+        events.emitPressureCrossing(
+            self.observer,
+            .peer,
+            .unknown,
+            .queued_call_bytes,
+            before.bytes,
+            before.bytes + frame_len,
+            self.limits.max_pending_queued_call_bytes,
         );
     }
 
@@ -2792,6 +2932,7 @@ pub const Peer = struct {
     }
 
     fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
+        var latency_started_ns: ?i64 = null;
         if (self.questions.get(ret.answer_id)) |question| {
             if (question.cancelled) {
                 // Cancelled locally: the caller already saw an exception and
@@ -2803,7 +2944,18 @@ pub const Peer = struct {
                 self.removeQuestion(ret.answer_id);
                 return;
             }
+            // awaitFromThirdParty is not call completion; results arrive
+            // later through the third party, so no latency sample.
+            if (ret.tag != .awaitFromThirdParty) latency_started_ns = question.started_ns;
         }
+        defer if (latency_started_ns) |started| {
+            if (self.clockNow()) |now| {
+                const elapsed = now - started;
+                if (elapsed >= 0 and !self.questions.contains(ret.answer_id)) {
+                    events.emitCallLatency(self.observer, .peer, .unknown, ret.answer_id, @intCast(elapsed));
+                }
+            }
+        };
         try peer_return_orchestration.handleReturn(
             Peer,
             Question,

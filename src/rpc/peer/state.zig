@@ -17,7 +17,9 @@ pub const PeerLimits = struct {
     max_pending_export_promises: usize = 4096,
     max_pending_queued_calls: usize = 8192,
     max_pending_queued_call_bytes: usize = 16 * 1024 * 1024,
-    max_resolved_imports: usize = 4096,
+    /// Matches the capability table's hard cap (`caps.lifecycle.max_table_size`)
+    /// so promise-heavy workloads do not hit a lower hidden wall first.
+    max_resolved_imports: usize = 10_000,
     max_pending_embargoes: usize = 4096,
     max_loopback_questions: usize = 4096,
     max_send_results_to_yourself: usize = 4096,
@@ -89,6 +91,9 @@ pub fn Question(comptime QuestionCallbackType: type) type {
         /// Absolute monotonic deadline (clock nanoseconds) after which the
         /// question is cancelled. Null means no deadline.
         deadline_ns: ?i64 = null,
+        /// Monotonic send timestamp, stamped when the peer has a clock.
+        /// Used to emit `call_latency` events on Return dispatch.
+        started_ns: ?i64 = null,
         /// Set when the question was cancelled locally (deadline expiry or
         /// explicit cancel). The local callback has already been delivered
         /// an exception and a Finish has been sent; the entry stays in the
@@ -109,14 +114,29 @@ pub fn initialOwnerThreadId() ?std.Thread.Id {
     return std.Thread.getCurrentId();
 }
 
-pub fn assertThreadAffinity(owner_thread_id: ?std.Thread.Id) void {
+/// Pure decision: should an affinity check fire for this owner/current
+/// pair under the given mode? Extracted so the policy is testable without
+/// panicking. Checks always fire in Debug; in release modes they fire only
+/// when the embedder opted in to runtime checks.
+pub fn threadAffinityViolation(
+    owner_thread_id: ?std.Thread.Id,
+    current: std.Thread.Id,
+    runtime_checks: bool,
+    mode: std.builtin.OptimizeMode,
+) bool {
+    if (mode != .Debug and !runtime_checks) return false;
+    const owner = owner_thread_id orelse return false;
+    return current != owner;
+}
+
+pub fn assertThreadAffinity(owner_thread_id: ?std.Thread.Id, runtime_checks: bool) void {
     if (comptime builtin.target.os.tag == .freestanding) return;
-    if (builtin.mode == .Debug) {
-        const owner = owner_thread_id orelse return;
-        const current = std.Thread.getCurrentId();
-        if (current != owner) {
-            @panic("Peer method called from wrong thread: Peer is not thread-safe, all calls must be on the owner thread");
-        }
+    // Skip the getCurrentId() read entirely when no check can fire.
+    if (comptime builtin.mode != .Debug) {
+        if (!runtime_checks) return;
+    }
+    if (threadAffinityViolation(owner_thread_id, std.Thread.getCurrentId(), runtime_checks, builtin.mode)) {
+        @panic("Peer method called from wrong thread: Peer is not thread-safe, all calls must be on the owner thread");
     }
 }
 
