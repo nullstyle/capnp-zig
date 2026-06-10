@@ -35,6 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Project policy files**: `LICENSE` (MIT — the README claimed it; now the
+  text exists), `SECURITY.md` (private reporting path plus an explicit
+  in-scope/out-of-scope list for a library that parses untrusted bytes),
+  and `CONTRIBUTING.md` (toolchain, gates, conventions).
+- **Coverage-guided fuzz targets** (`tests/fuzz/fuzz_targets.zig`,
+  `zig build test-fuzz`): `std.testing.fuzz`-based targets for validated
+  `Message.init`, packed decode, stream framer chunking, and RPC peer frame
+  dispatch. CI runs them deterministically; the nightly workflow fuzzes for
+  10 minutes with crash-vs-timeout discrimination.
+- **Public API snapshot gate** (`tools/api_snapshot.zig`,
+  `docs/api-snapshot.txt`): the library's full pub-decl surface (~1,670
+  declarations with signatures) is captured by comptime reflection;
+  `zig build check-api` fails CI on drift and `zig build api-snapshot`
+  regenerates the file, making API changes an explicit reviewable act.
+- **Cross-target compile gate** (`zig build check-compile -Dtarget=...`):
+  a run-free variant of `check`, exercised in CI for `aarch64-linux-gnu`,
+  `x86-linux-gnu` (32-bit), and `powerpc64-linux-gnu` (big-endian).
 - **Release-mode thread-affinity checks** (`Peer.enableRuntimeThreadChecks`,
   `Connection.runtime_thread_checks`): the single-threaded-per-peer contract
   is always enforced in Debug; release builds can now opt in to the same
@@ -119,6 +136,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
+  the wasm example/ABI modules now import a wasm-targeted core module, so
+  `zig build check-compile -Dtarget=<foreign>` works.
+- **The tick-loop `poll(2)` wrapper is now portable**: poll results are
+  classified via `errno` instead of assuming Darwin's signed return type,
+  fixing Linux-target compiles of the connection run loop.
 - **Graceful shutdown now completes when the last in-flight question is
   answered by a normal Return.** The drain-completion check in the return
   orchestration was comptime-disabled because it probed a non-public decl

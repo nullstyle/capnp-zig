@@ -304,14 +304,8 @@ pub const Connection = struct {
                         @intCast(@min(t, @as(u32, std.math.maxInt(i32))))
                     else
                         -1;
-                    var rc: isize = 0;
-                    while (true) {
-                        rc = std.posix.system.poll(@ptrCast(&fds_buf), @intCast(nfds), timeout_ms);
-                        if (rc >= 0) break;
-                        if (std.posix.errno(rc) == .INTR) continue;
-                        break;
-                    }
-                    if (rc == 0) {
+                    const poll_result = pollRetryIntr(fds_buf[0..nfds], timeout_ms);
+                    if (poll_result == .timeout) {
                         // Tick: the interval elapsed with no inbound I/O.
                         if (self.idleDeadlineExceeded()) {
                             log.debug("idle timeout exceeded, reaping connection", .{});
@@ -322,7 +316,7 @@ pub const Connection = struct {
                         if (self.deinit_requested) break;
                         continue;
                     }
-                    if (rc > 0) {
+                    if (poll_result == .ready) {
                         // Drain wake pipe and invoke callback.
                         if (nfds == 2 and fds_buf[1].revents & std.posix.POLL.IN != 0) {
                             var drain_buf: [64]u8 = undefined;
@@ -538,6 +532,25 @@ pub const Connection = struct {
 /// Monotonic now in nanoseconds via the connection's `std.Io`.
 fn nowNs(io: std.Io) i64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
+
+const PollOutcome = enum { ready, timeout, err };
+
+/// poll(2) with EINTR retry. The raw return type differs across platforms
+/// (usize on Linux syscalls, c_int via libc elsewhere), so outcomes are
+/// classified via errno rather than the sign of the return value.
+fn pollRetryIntr(fds: []std.posix.pollfd, timeout_ms: i32) PollOutcome {
+    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .freestanding) {
+        return .err;
+    }
+    while (true) {
+        const rc = std.posix.system.poll(@ptrCast(fds.ptr), @intCast(fds.len), timeout_ms);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => return if (rc == 0) .timeout else .ready,
+            .INTR => continue,
+            else => return .err,
+        }
+    }
 }
 
 fn buildTestFrame(allocator: std.mem.Allocator, value: u32) ![]const u8 {

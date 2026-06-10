@@ -124,12 +124,22 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
     });
 
+    // The wasm host needs a wasm-targeted core module: mixing the host
+    // `target` into the wasm exe's module graph breaks cross builds
+    // (`zig build check-compile -Dtarget=...`).
+    const core_module_wasm = b.createModule(.{
+        .root_source_file = b.path("src/lib_core.zig"),
+        .target = wasm_target,
+        .optimize = optimize,
+    });
+    core_module_wasm.addImport("capnpc-zig", core_module_wasm);
+
     const wasm_example_schema_module = b.addModule("capnp-wasm-example-schema", .{
         .root_source_file = b.path("src/wasm/generated/example.zig"),
         .target = wasm_target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "capnpc-zig", .module = core_module },
+            .{ .name = "capnpc-zig", .module = core_module_wasm },
         },
     });
 
@@ -140,8 +150,8 @@ pub fn build(b: *std.Build) void {
             .target = wasm_target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "capnpc-zig-core", .module = core_module },
-                .{ .name = "capnpc-zig", .module = core_module },
+                .{ .name = "capnpc-zig-core", .module = core_module_wasm },
+                .{ .name = "capnpc-zig", .module = core_module_wasm },
                 .{ .name = "capnp-wasm-example-schema", .module = wasm_example_schema_module },
             },
         }),
@@ -522,6 +532,36 @@ pub fn build(b: *std.Build) void {
     const test_fuzz_smoke_step = b.step("test-fuzz-smoke", "Run deterministic hardening fuzz/smoke coverage");
     test_fuzz_smoke_step.dependOn(run_fuzz_smoke_tests);
 
+    const run_fuzz_target_tests = addLibTest(b, "tests/fuzz/fuzz_targets.zig", target, optimize, lib_module);
+    const test_fuzz_step = b.step("test-fuzz", "Run coverage-guided fuzz targets (add --fuzz to actually fuzz)");
+    test_fuzz_step.dependOn(run_fuzz_target_tests);
+
+    // Public API snapshot gate. `check-api` diffs the live pub-decl surface
+    // against docs/api-snapshot.txt; `api-snapshot` regenerates the file.
+    const api_snapshot_tool = b.addExecutable(.{
+        .name = "api-snapshot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/api_snapshot.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_api_snapshot_write = b.addRunArtifact(api_snapshot_tool);
+    run_api_snapshot_write.addArg("--write");
+    run_api_snapshot_write.setCwd(b.path("."));
+    const api_snapshot_step = b.step("api-snapshot", "Regenerate docs/api-snapshot.txt from the live public API");
+    api_snapshot_step.dependOn(&run_api_snapshot_write.step);
+
+    const run_api_snapshot_check = b.addRunArtifact(api_snapshot_tool);
+    run_api_snapshot_check.addArg("--check");
+    run_api_snapshot_check.setCwd(b.path("."));
+    const check_api_step = b.step("check-api", "Fail when the public API drifts from docs/api-snapshot.txt");
+    check_api_step.dependOn(&run_api_snapshot_check.step);
+
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");
     test_codegen_step.dependOn(run_codegen_tests);
     test_codegen_step.dependOn(run_codegen_defaults_tests);
@@ -720,14 +760,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_resource_budgets_step);
     test_step.dependOn(test_oom_step);
 
-    // Check step (compile visible user-facing targets without running them).
+    // Compile-only check: no run steps, so it works for cross targets
+    // (`zig build check-compile -Dtarget=powerpc64-linux-gnu`).
+    const check_compile_step = b.step("check-compile", "Compile user-facing targets without running anything (cross-target safe)");
+    check_compile_step.dependOn(&exe.step);
+    check_compile_step.dependOn(&lib_tests.step);
+    check_compile_step.dependOn(&main_tests.step);
+    check_compile_step.dependOn(&rpc_pingpong_example.step);
+    check_compile_step.dependOn(&e2e_zig_client.step);
+    check_compile_step.dependOn(&e2e_zig_server.step);
+    check_compile_step.dependOn(&wasm_host_module.step);
+
+    // Check step (compile visible user-facing targets without running them,
+    // plus the docs/examples smoke gate which does execute on the host).
     const check_step = b.step("check", "Check for compilation errors");
-    check_step.dependOn(&exe.step);
-    check_step.dependOn(&lib_tests.step);
-    check_step.dependOn(&main_tests.step);
-    check_step.dependOn(&rpc_pingpong_example.step);
-    check_step.dependOn(&e2e_zig_client.step);
-    check_step.dependOn(&e2e_zig_server.step);
-    check_step.dependOn(&wasm_host_module.step);
+    check_step.dependOn(check_compile_step);
     check_step.dependOn(docs_smoke_step);
 }

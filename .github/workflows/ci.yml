@@ -120,9 +120,40 @@ jobs:
       - name: Run documentation/examples smoke gate
         run: zig build docs-smoke --summary all
 
-  hardening:
-    name: Hardening gate
+      - name: Check public API snapshot
+        run: zig build check-api --summary all
+
+  cross-targets:
+    name: Cross-target compile (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-gnu
+          - x86-linux-gnu # 32-bit
+          - powerpc64-linux-gnu # big-endian
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.813+2153f8143
+
+      - name: Compile-only check for ${{ matrix.target }}
+        run: zig build check-compile -Dtarget=${{ matrix.target }} --summary all
+
+  hardening:
+    name: Hardening gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
 
@@ -137,6 +168,9 @@ jobs:
 
       - name: Run deterministic fuzz/smoke tests
         run: zig build test-fuzz-smoke --summary all
+
+      - name: Run coverage-guided fuzz targets (deterministic mode)
+        run: zig build test-fuzz --summary all
 
       - name: Run resource-budget regression tests
         run: zig build test-resource-budgets --summary all
@@ -226,8 +260,12 @@ jobs:
         run: zig build -Doptimize=ReleaseSafe
 
   release-safe-tests:
-    name: ReleaseSafe hardening tests
-    runs-on: ubuntu-latest
+    name: ReleaseSafe hardening tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:

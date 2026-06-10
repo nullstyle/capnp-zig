@@ -28,6 +28,34 @@ jobs:
       - name: Run soak harness under ReleaseSafe (1 minute)
         run: zig build -Doptimize=ReleaseSafe soak -- --seconds 60 --workers 8
 
+  fuzz:
+    name: Coverage-guided fuzzing (10 minutes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: jdx/mise-action@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0-dev.813+2153f8143
+
+      - name: Fuzz untrusted-input surfaces
+        # timeout rc 124 = ran the full window without finding a crash.
+        run: |
+          set +e
+          timeout --kill-after=30 600 zig build test-fuzz --fuzz
+          rc=$?
+          if [ "$rc" -eq 124 ]; then
+            echo "fuzzing window elapsed with no findings"
+            exit 0
+          fi
+          echo "fuzzer exited early (rc=$rc) — likely a finding"
+          exit "$rc"
+
   extended-gates:
     name: Extended gates
     runs-on: ubuntu-latest
