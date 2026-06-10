@@ -68,6 +68,22 @@ pub fn bindingForConnection(
     );
 }
 
+/// Tick callback that drives the peer's deadline sweep from the
+/// connection's run loop. The connection's `ctx` is the peer once
+/// `start()` has run; ticks before that are ignored.
+pub fn onConnectionTickFor(
+    comptime PeerType: type,
+    comptime ConnPtr: type,
+) *const fn (conn: ConnPtr) void {
+    return struct {
+        fn call(conn: ConnPtr) void {
+            const ctx = conn.context() orelse return;
+            const peer: *PeerType = @ptrCast(@alignCast(ctx));
+            _ = peer.checkDeadlines();
+        }
+    }.call;
+}
+
 pub fn onConnectionErrorFor(
     comptime PeerType: type,
     comptime ConnPtr: type,

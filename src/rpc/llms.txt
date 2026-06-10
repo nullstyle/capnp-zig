@@ -13,6 +13,8 @@
 - `promises/` contains promised-answer, pending-call, return-routing, and
   return-send helpers.
 - `events.zig` contains the transport-general, redacted RPC observer API.
+- `time.zig` contains the injectable monotonic clock used for call deadlines,
+  idle reaping, and shutdown drain bounds.
 - `transport/` contains the peer-facing binding contract plus concrete
   transport backends.
 - `transport/tcp/` is the TCP/runtime backend over `std.Io`.
@@ -84,6 +86,7 @@
   connection loop between transport and peer callbacks.
 - [transport/quic/mod.zig](transport/quic/mod.zig): Public QUIC transport facade.
 - [events.zig](events.zig): Redacted transport-general observer events.
+- [time.zig](time.zig): Injectable monotonic clock (`Clock`, `TestClock`).
 - [integration/host_peer.zig](integration/host_peer.zig): Host-facing frame pump
   adapter.
 - [integration/worker_pool.zig](integration/worker_pool.zig): Shared-listener

@@ -381,3 +381,84 @@ test "WorkerPool: shutdown closes active connection so run can return" {
 
     try std.testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
 }
+
+fn nowNs(io: std.Io) i64 {
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
+
+test "WorkerPool: graceful shutdown returns promptly with no active connections" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var counter = AcceptCounter{};
+    var pool = try WorkerPool.init(
+        allocator,
+        std.testing.io,
+        .{ .ip4 = .loopback(0) },
+        @ptrCast(&counter),
+        AcceptCounter.onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
+
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    const start = nowNs(std.testing.io);
+    // A long drain bound must not be waited out when nothing is active.
+    pool.shutdownGraceful(5000);
+    const elapsed = nowNs(std.testing.io) - start;
+    pool_thread.join();
+
+    try std.testing.expect(elapsed < 4000 * std.time.ns_per_ms);
+}
+
+test "WorkerPool: graceful shutdown drains an active connection that finishes on its own" {
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+
+    var counter = ActiveCounter{};
+    var pool = try WorkerPool.init(
+        allocator,
+        std.testing.io,
+        .{ .ip4 = .loopback(0) },
+        @ptrCast(&counter),
+        ActiveCounter.onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
+
+    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+    const client_fd = (try connectUntilAccepted(connect_addr, &counter.count, true)).?;
+
+    // The client disconnects on its own shortly after the graceful
+    // shutdown starts; the drain should observe the worker going idle and
+    // return well before the full bound.
+    const Disconnecter = struct {
+        fn run(fd: std.posix.fd_t) void {
+            posix_helpers.sleepMs(80);
+            posix_helpers.closeFd(fd);
+        }
+    };
+    const disconnect_thread = try std.Thread.spawn(.{}, Disconnecter.run, .{client_fd});
+
+    const start = nowNs(std.testing.io);
+    pool.shutdownGraceful(10_000);
+    const elapsed = nowNs(std.testing.io) - start;
+
+    disconnect_thread.join();
+    pool_thread.join();
+
+    try std.testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
+    try std.testing.expect(elapsed < 8000 * std.time.ns_per_ms);
+}

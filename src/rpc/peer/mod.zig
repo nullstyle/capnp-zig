@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.rpc_peer);
 const events = @import("../events.zig");
+const rpc_time = @import("../time.zig");
 const protocol = @import("../wire/protocol.zig");
 const cap_table = @import("../caps/table.zig");
 const message = @import("../../serialization/message.zig");
@@ -44,6 +45,7 @@ const peer_transport_callbacks = peer_transport.callbacks;
 const peer_transport_state = peer_transport.state;
 const peer_question_state = @import("./peer_question_state.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
+const peer_return_frames = @import("./return/peer_return_frames.zig");
 
 pub const errors = @import("./errors.zig");
 pub const state = @import("./state.zig");
@@ -82,6 +84,7 @@ const ForwardReturnMode = peer_forward_orchestration.ForwardReturnMode;
 const ResolvedImport = state.ResolvedImport;
 
 pub const PeerLimits = state.PeerLimits;
+pub const PeerTimeouts = state.PeerTimeouts;
 
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const Question = state.Question(QuestionCallback);
@@ -112,6 +115,10 @@ const ForwardReturnBuildContext = struct {
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
+}
+
+fn msToNs(ms: u64) i64 {
+    return @as(i64, @intCast(ms)) * std.time.ns_per_ms;
 }
 
 /// A Cap'n Proto RPC peer that manages one side of a two-party connection.
@@ -309,6 +316,19 @@ pub const Peer = struct {
     on_close: ?*const fn (peer: *Peer) void = null,
     observer: ?events.Observer = null,
 
+    // -- Time / deadlines -----------------------------------------------------
+
+    /// Monotonic clock used for call deadlines and the shutdown drain bound.
+    /// Null disables all time-based enforcement. `attachConnection` injects
+    /// an `std.Io`-backed clock automatically when the connection exposes
+    /// one and no clock has been set.
+    clock: ?rpc_time.Clock = null,
+    /// Opt-in time-domain policy; see `state.PeerTimeouts`.
+    timeouts: PeerTimeouts = .{},
+    /// Absolute drain bound stamped by `shutdown()` when a drain timeout is
+    /// configured. Enforced by `checkDeadlines`.
+    shutdown_deadline_ns: ?i64 = null,
+
     // -- Diagnostics --------------------------------------------------------
 
     /// Tag of the most recently decoded inbound message (for debugging).
@@ -402,6 +422,38 @@ pub const Peer = struct {
         self.limits = limits;
     }
 
+    /// Install the monotonic clock used for deadlines. Replaces any
+    /// previously installed clock; pass `null` to disable time-based
+    /// enforcement.
+    pub fn setClock(self: *Peer, clock: ?rpc_time.Clock) void {
+        self.assertThreadAffinity();
+        self.clock = clock;
+    }
+
+    /// Replace the peer's time-domain policy. Affects questions allocated
+    /// after this call; existing question deadlines are unchanged.
+    pub fn setTimeouts(self: *Peer, timeouts: PeerTimeouts) void {
+        self.assertThreadAffinity();
+        self.timeouts = timeouts;
+    }
+
+    /// Set or replace the deadline on an outstanding question, overriding
+    /// any default stamped at send time. Requires a clock.
+    pub fn setQuestionDeadline(self: *Peer, question_id: u32, timeout_ms: u64) !void {
+        self.assertThreadAffinity();
+        const clock = self.clock orelse return error.NoClockConfigured;
+        const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
+        if (entry.cancelled) return error.QuestionCancelled;
+        entry.deadline_ns = clock.now() + msToNs(timeout_ms);
+    }
+
+    /// Remove the deadline from an outstanding question.
+    pub fn clearQuestionDeadline(self: *Peer, question_id: u32) !void {
+        self.assertThreadAffinity();
+        const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
+        entry.deadline_ns = null;
+    }
+
     /// Bind a typed connection to this peer, wiring up transport callbacks.
     ///
     /// Asserts that no transport is already attached. Call `detachConnection`
@@ -427,6 +479,19 @@ pub const Peer = struct {
                 onConnectionClose,
             ),
         );
+
+        // Connections that carry an `std.Io` provide a monotonic clock; use
+        // it for deadline enforcement unless the embedder installed one.
+        const Conn = @typeInfo(ConnPtr).pointer.child;
+        if (comptime @hasField(Conn, "io")) {
+            if (self.clock == null) {
+                self.clock = rpc_time.Clock.fromIo(&conn.io);
+            }
+        }
+        // Connections with a tick cadence drive the deadline sweep.
+        if (comptime @hasField(Conn, "on_tick")) {
+            conn.on_tick = peer_transport_callbacks.onConnectionTickFor(Peer, ConnPtr);
+        }
     }
 
     /// Detach the connection without closing it. The transport is unbound
@@ -619,7 +684,7 @@ pub const Peer = struct {
                 self,
                 entry.key_ptr.*,
                 entry.value_ptr.ref_count,
-                Peer.sendFrame,
+                Peer.sendFrameControl,
             ) catch |err| {
                 log.debug("releaseAllImports: failed to send release for import {}: {}", .{ entry.key_ptr.*, err });
             };
@@ -913,10 +978,22 @@ pub const Peer = struct {
 
         if (self.questions.count() == 0) {
             self.completeShutdown();
+            return;
+        }
+        // Stamp the drain bound; `checkDeadlines` force-cancels stragglers
+        // once it passes.
+        if (self.clock) |clock| {
+            if (self.timeouts.shutdown_drain_timeout_ms) |ms| {
+                self.shutdown_deadline_ns = clock.now() + msToNs(ms);
+            }
         }
     }
 
-    fn completeShutdown(self: *Peer) void {
+    /// Finish the graceful-shutdown sequence: close the transport (if any)
+    /// and fire the shutdown callback. Public so cross-module question
+    /// bookkeeping (return orchestration) can complete a drain; not
+    /// intended for direct application use.
+    pub fn completeShutdown(self: *Peer) void {
         self.assertThreadAffinity();
         if (self.transport.ctx) |transport_ctx| {
             // Close transport if attached and not already closing.
@@ -934,6 +1011,147 @@ pub const Peer = struct {
             self.shutdown_callback = null;
             cb(self);
         }
+    }
+
+    /// Cancel an outstanding outbound question.
+    ///
+    /// The local callback is delivered an exception Return carrying
+    /// `reason` immediately, and a Finish with `releaseResultCaps` is sent
+    /// to the remote. Per the Cap'n Proto RPC spec the remote still sends
+    /// exactly one Return for the question (possibly `canceled`); the
+    /// question entry stays in the table, marked cancelled, so that Return
+    /// is absorbed silently when it arrives. Loopback questions complete
+    /// locally and are removed outright.
+    pub fn cancelQuestion(self: *Peer, question_id: u32, reason: []const u8) !void {
+        self.assertThreadAffinity();
+        const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
+        if (entry.cancelled) return;
+        const question = entry.*;
+
+        if (question.is_loopback) {
+            _ = self.loopback_questions.remove(question_id);
+            self.removeQuestion(question_id);
+            try self.deliverLocalException(question, question_id, reason);
+            return;
+        }
+
+        // Delivery transfers ctx ownership to the callback; drop the
+        // undelivered-cleanup hook so peer deinit cannot double-free.
+        entry.cancelled = true;
+        entry.deadline_ns = null;
+        entry.deinit_ctx = null;
+
+        // Tell the remote we no longer want the answer. A send failure is
+        // tolerated: the local caller still observes the exception, and
+        // transport teardown reconciles remote state.
+        peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+            Peer,
+            self,
+            question_id,
+            true,
+            false,
+            Peer.sendFrameControl,
+        ) catch |err| {
+            log.debug("cancel finish send failed for question {}: {}", .{ question_id, err });
+        };
+
+        try self.deliverLocalException(question, question_id, reason);
+    }
+
+    /// Cancel every question whose deadline has passed, and enforce the
+    /// shutdown drain bound. Returns the number of questions cancelled.
+    ///
+    /// Call this periodically — typically from a transport tick (see
+    /// `Connection.Options.tick_interval_ms`) or a test harness. A peer
+    /// without a clock returns 0 immediately.
+    pub fn checkDeadlines(self: *Peer) usize {
+        self.assertThreadAffinity();
+        const clock = self.clock orelse return 0;
+        const now = clock.now();
+
+        var expired: std.ArrayList(u32) = .empty;
+        defer expired.deinit(self.allocator);
+        var it = self.questions.iterator();
+        while (it.next()) |kv| {
+            if (kv.value_ptr.cancelled) continue;
+            const deadline = kv.value_ptr.deadline_ns orelse continue;
+            if (now >= deadline) expired.append(self.allocator, kv.key_ptr.*) catch break;
+        }
+
+        var cancelled: usize = 0;
+        for (expired.items) |question_id| {
+            events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, question_id);
+            self.cancelQuestion(question_id, "deadline exceeded") catch |err| {
+                log.debug("deadline cancel failed for question {}: {}", .{ question_id, err });
+                continue;
+            };
+            cancelled += 1;
+        }
+
+        if (self.is_shutting_down) {
+            if (self.shutdown_deadline_ns) |drain_deadline| {
+                if (now >= drain_deadline and self.questions.count() != 0) {
+                    self.shutdown_deadline_ns = null;
+                    events.emitTimeout(self.observer, .peer, .unknown, .shutdown_drain, null);
+                    cancelled += self.forceCancelAllQuestions("peer shutting down");
+                }
+            }
+        }
+        return cancelled;
+    }
+
+    /// Synthesize an exception Return for `question_id` and deliver it to
+    /// the question's callback, exactly as if the remote had answered.
+    fn deliverLocalException(self: *Peer, question: Question, question_id: u32, reason: []const u8) !void {
+        const frame = try peer_return_frames.buildReturnExceptionFrame(self.allocator, question_id, reason);
+        defer self.allocator.free(frame);
+        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+        defer decoded.deinit();
+        const ret = try decoded.asReturn();
+        var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, null, &self.caps);
+        defer inbound_caps.deinit();
+        question.on_return(question.ctx, self, ret, &inbound_caps) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            log.debug("cancel exception callback error for question {}: {}", .{ question_id, err });
+        };
+    }
+
+    /// Remove and cancel every outstanding question (drain-bound
+    /// enforcement). Unlike `cancelQuestion` this does not keep entries
+    /// for late Returns — the transport is about to close.
+    fn forceCancelAllQuestions(self: *Peer, reason: []const u8) usize {
+        var ids: std.ArrayList(u32) = .empty;
+        defer ids.deinit(self.allocator);
+        var it = self.questions.keyIterator();
+        while (it.next()) |key| ids.append(self.allocator, key.*) catch break;
+
+        var cancelled: usize = 0;
+        for (ids.items) |question_id| {
+            const removed = self.questions.fetchRemove(question_id) orelse continue;
+            const question = removed.value;
+            _ = self.loopback_questions.remove(question_id);
+            if (question.cancelled) continue; // exception already delivered
+            if (!question.is_loopback) {
+                peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+                    Peer,
+                    self,
+                    question_id,
+                    true,
+                    false,
+                    Peer.sendFrameControl,
+                ) catch |err| {
+                    log.debug("drain finish send failed for question {}: {}", .{ question_id, err });
+                };
+            }
+            self.deliverLocalException(question, question_id, reason) catch |err| {
+                log.debug("drain exception delivery failed for question {}: {}", .{ question_id, err });
+            };
+            cancelled += 1;
+        }
+        if (self.is_shutting_down and self.questions.count() == 0) {
+            self.completeShutdown();
+        }
+        return cancelled;
     }
 
     /// Resolve a previously exported promise to point at a concrete export.
@@ -1456,7 +1674,7 @@ pub const Peer = struct {
             answer_id,
             bytes,
             deliverLoopbackReturn,
-            sendFrame,
+            sendFrameControl,
         );
         _ = self.active_inbound_questions.remove(answer_id);
     }
@@ -1606,7 +1824,7 @@ pub const Peer = struct {
             peer_cap_lifecycle.importRefCountForPeerFn(Peer),
             peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
             Peer.releaseResolvedImport,
-            peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
         );
     }
 
@@ -1619,7 +1837,7 @@ pub const Peer = struct {
             self,
             import_id,
             count,
-            Peer.sendFrame,
+            Peer.sendFrameControl,
         );
     }
 
@@ -1638,7 +1856,7 @@ pub const Peer = struct {
             question_id,
             release_result_caps,
             require_early_cancellation,
-            Peer.sendFrame,
+            Peer.sendFrameControl,
         );
     }
 
@@ -1646,6 +1864,43 @@ pub const Peer = struct {
         const bytes = try builder.finish();
         defer self.allocator.free(bytes);
         try self.sendFrame(bytes);
+    }
+
+    fn sendBuilderControl(self: *Peer, builder: *protocol.MessageBuilder) !void {
+        const bytes = try builder.finish();
+        defer self.allocator.free(bytes);
+        try self.sendFrameControl(bytes);
+    }
+
+    /// Send a protocol-mandated frame (Return, Finish, Release, Resolve,
+    /// Disembargo, Abort, Unimplemented).
+    ///
+    /// Unlike caller-initiated sends — where a full write queue surfaces
+    /// `error.WriteQueueFull` / `error.WriteQueueBytesExceeded` to the
+    /// caller and the connection stays healthy — dropping a control frame
+    /// desynchronizes protocol state with the remote. The only safe
+    /// recovery is closing the connection, so enqueue overflow here emits
+    /// a peer-level backpressure event and initiates transport close.
+    fn sendFrameControl(self: *Peer, frame: []const u8) !void {
+        self.sendFrame(frame) catch |err| {
+            switch (err) {
+                error.WriteQueueFull, error.WriteQueueBytesExceeded => {
+                    events.emitBackpressure(
+                        self.observer,
+                        .peer,
+                        .unknown,
+                        if (err == error.WriteQueueFull) .write_queue_items else .write_queue_bytes,
+                        frame.len,
+                        null,
+                        err,
+                    );
+                    log.warn("control frame dropped by saturated write queue; closing connection", .{});
+                    self.closeAttachedTransport();
+                },
+                else => {},
+            }
+            return err;
+        };
     }
 
     fn sendFrame(self: *Peer, frame: []const u8) !void {
@@ -1722,7 +1977,7 @@ pub const Peer = struct {
             inbound,
             peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
             Peer.releaseResolvedImport,
-            peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
         );
     }
 
@@ -1836,6 +2091,12 @@ pub const Peer = struct {
 
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
         try ensureCountLimit(false, self.questions.count(), self.limits.max_outbound_questions);
+        var deadline_ns: ?i64 = null;
+        if (self.clock) |clock| {
+            if (self.timeouts.default_call_timeout_ms) |ms| {
+                deadline_ns = clock.now() + msToNs(ms);
+            }
+        }
         return peer_question_state.allocateQuestion(
             Question,
             &self.questions,
@@ -1844,6 +2105,7 @@ pub const Peer = struct {
                 .ctx = ctx,
                 .on_return = on_return,
                 .is_loopback = false,
+                .deadline_ns = deadline_ns,
             },
         );
     }
@@ -1948,7 +2210,7 @@ pub const Peer = struct {
             Peer,
             self,
             @errorName(err),
-            Peer.sendBuilder,
+            Peer.sendBuilderControl,
         ) catch |abort_err| {
             log.debug("failed to send abort: {}", .{abort_err});
         };
@@ -1958,7 +2220,7 @@ pub const Peer = struct {
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
         try builder.buildUnimplementedFromAnyPointer(original);
-        try self.sendBuilder(&builder);
+        try self.sendBuilderControl(&builder);
     }
 
     fn sendUnimplementedForFrame(self: *Peer, frame: []const u8) !void {
@@ -2039,7 +2301,7 @@ pub const Peer = struct {
                 PendingEmbargoedAccept,
             ),
             .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
-            .send_finish = peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            .send_finish = peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             .take_resolved_answer_frame = peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
             .release_caps_for_frame = releaseResultCaps,
             .free_frame = peer_finish.freeOwnedFrameForPeerFn(Peer),
@@ -2221,7 +2483,7 @@ pub const Peer = struct {
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
             peer_finish.freeOwnedFrameForPeerFn(Peer),
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             Peer.ensureProvideBudget,
             peer_provide_accept_join.resolveProvideTargetForPeerFn(
                 Peer,
@@ -2265,7 +2527,7 @@ pub const Peer = struct {
             join,
             &self.pending_joins,
             &self.pending_join_questions,
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             peer_provide_accept_join.resolveProvideTargetForPeerFn(
                 Peer,
                 peer_provide_accept_join.resolveProvideImportedCapForPeerFn(Peer),
@@ -2303,7 +2565,7 @@ pub const Peer = struct {
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
             ),
             peer_finish.freeOwnedFrameForPeerFn(Peer),
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             Peer.ensurePendingThirdPartyAnswerBudget,
             peer_third_party_adoption.adoptPendingAwaitEntryForPeerFn(
                 Peer,
@@ -2519,7 +2781,7 @@ pub const Peer = struct {
             &self.questions,
             &self.adopted_third_party_answers,
             &self.pending_third_party_returns,
-            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+            peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             Peer.ensureThirdPartyAdoptionBudget,
             peer_finish.freeOwnedFrameForPeerFn(Peer),
             peer_third_party_returns.handlePendingReturnFrameForPeerFn(
@@ -2530,6 +2792,18 @@ pub const Peer = struct {
     }
 
     fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
+        if (self.questions.get(ret.answer_id)) |question| {
+            if (question.cancelled) {
+                // Cancelled locally: the caller already saw an exception and
+                // a Finish with releaseResultCaps is on the wire, so the
+                // remote releases any caps this Return carries. Per spec the
+                // remote sends exactly one Return per question — absorb it
+                // without importing caps or re-dispatching.
+                log.debug("absorbing return for cancelled question {}", .{ret.answer_id});
+                self.removeQuestion(ret.answer_id);
+                return;
+            }
+        }
         try peer_return_orchestration.handleReturn(
             Peer,
             Question,
@@ -2551,21 +2825,21 @@ pub const Peer = struct {
                 cap_table.InboundCapTable,
                 peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
                 peer_finish.freeOwnedFrameForPeerFn(Peer),
-                peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+                peer_outbound_control.sendAbortViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
                 Peer.ensurePendingThirdPartyAwaitBudget,
                 adoptThirdPartyAnswer,
             ),
             peer_return_dispatch.maybeSendAutoFinishForPeerFn(
                 Peer,
                 Question,
-                peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+                peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             ),
             peer_return_orchestration.handleReturnRegularForPeerFn(
                 Peer,
                 Question,
                 cap_table.InboundCapTable,
                 Peer.releaseInboundCaps,
-                peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrame),
+                peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             ),
         );
     }

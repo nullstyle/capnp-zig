@@ -68,6 +68,27 @@ pub const Connection = struct {
     /// Use this to drain a per-connection work queue on the correct thread.
     on_wake: ?*const fn (conn: *Connection) void = null,
 
+    // -- Periodic tick / idle reaping -----------------------------------------
+
+    /// When set, `run()` polls with this timeout instead of blocking
+    /// indefinitely, and invokes `on_tick` whenever the interval elapses
+    /// with no inbound I/O. POSIX only (like wake support): on Windows and
+    /// freestanding targets ticks do not fire.
+    tick_interval_ms: ?u32 = null,
+
+    /// Reap the connection when no inbound read or outbound enqueue has
+    /// happened for this long. Checked on the tick cadence; if no
+    /// `tick_interval_ms` is configured a 500ms default tick drives the
+    /// check.
+    idle_timeout_ms: ?u64 = null,
+
+    /// Called on the run loop's thread each time the tick interval elapses.
+    /// `Peer.attachConnection` wires this to the peer's deadline sweep.
+    on_tick: ?*const fn (conn: *Connection) void = null,
+
+    /// Monotonic timestamp of the last inbound read or outbound enqueue.
+    last_activity_ns: i64 = 0,
+
     // -- Thread-affinity check (debug only) ---------------------------------
 
     /// Thread ID captured at init time. In debug builds, key entry points
@@ -93,6 +114,10 @@ pub const Connection = struct {
         write_queue_max_items: usize = transport_mod.Transport.default_max_queued_items,
         write_queue_max_bytes: usize = transport_mod.Transport.default_max_queued_bytes,
         observer: ?events.Observer = null,
+        /// See `Connection.tick_interval_ms`.
+        tick_interval_ms: ?u32 = null,
+        /// See `Connection.idle_timeout_ms`.
+        idle_timeout_ms: ?u64 = null,
     };
 
     pub fn init(
@@ -113,6 +138,9 @@ pub const Connection = struct {
             .framer = framing.Framer.init(allocator),
             .observer = options.observer,
             .owner_thread_id = if (comptime builtin.target.os.tag == .freestanding) null else std.Thread.getCurrentId(),
+            .tick_interval_ms = options.tick_interval_ms,
+            .idle_timeout_ms = options.idle_timeout_ms,
+            .last_activity_ns = nowNs(io),
         };
         events.emitConnection(conn.observer, .tcp, .unknown, .initialized);
         return conn;
@@ -241,41 +269,66 @@ pub const Connection = struct {
         };
 
         while (!self.transport.isClosing()) {
-            // If wake support is enabled, use poll() to wait on both
-            // the socket and the wake pipe.
-            // Wake/poll support is only available on POSIX platforms;
-            // enableWake() is a no-op on Windows/freestanding so wake_fds
-            // is always null there, but we still need a comptime guard to
-            // avoid referencing std.posix.pollfd which doesn't exist on Windows.
+            // Use poll() when wake support or a tick cadence is enabled, so
+            // the loop can wait on the socket (plus the wake pipe) with a
+            // bounded timeout. Poll support is POSIX-only; enableWake() is a
+            // no-op on Windows/freestanding so wake_fds is always null
+            // there, and ticks/idle reaping do not fire. The comptime guard
+            // avoids referencing std.posix.pollfd where it doesn't exist.
             if (comptime builtin.target.os.tag != .windows and builtin.target.os.tag != .freestanding) {
-                if (self.wake_fds) |wfds| {
-                    var fds = [2]std.posix.pollfd{
-                        .{ .fd = self.transport.fd, .events = std.posix.POLL.IN, .revents = 0 },
-                        .{ .fd = wfds[0], .events = std.posix.POLL.IN, .revents = 0 },
-                    };
+                // An idle bound without an explicit tick still needs the
+                // loop to wake periodically; default to 500ms checks.
+                const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
+                    (if (self.idle_timeout_ms != null) @as(?u32, 500) else null);
+                if (self.wake_fds != null or effective_tick_ms != null) {
+                    var fds_buf: [2]std.posix.pollfd = undefined;
+                    fds_buf[0] = .{ .fd = self.transport.fd, .events = std.posix.POLL.IN, .revents = 0 };
+                    var nfds: usize = 1;
+                    if (self.wake_fds) |wfds| {
+                        fds_buf[1] = .{ .fd = wfds[0], .events = std.posix.POLL.IN, .revents = 0 };
+                        nfds = 2;
+                    }
+                    const timeout_ms: i32 = if (effective_tick_ms) |t|
+                        @intCast(@min(t, @as(u32, std.math.maxInt(i32))))
+                    else
+                        -1;
+                    var rc: isize = 0;
                     while (true) {
-                        const rc = std.posix.system.poll(@ptrCast(&fds), 2, -1);
-                        if (rc > 0) break;
+                        rc = std.posix.system.poll(@ptrCast(&fds_buf), @intCast(nfds), timeout_ms);
+                        if (rc >= 0) break;
                         if (std.posix.errno(rc) == .INTR) continue;
                         break;
                     }
-                    // Drain wake pipe and invoke callback.
-                    if (fds[1].revents & std.posix.POLL.IN != 0) {
-                        var drain_buf: [64]u8 = undefined;
-                        _ = std.posix.system.read(wfds[0], &drain_buf, drain_buf.len);
-                        if (self.on_wake) |cb| cb(self);
-                    }
-                    // POLLNVAL means the fd is invalid — break out of the run loop.
-                    if (fds[0].revents & std.posix.POLL.NVAL != 0) {
-                        log.debug("poll NVAL on socket fd, exiting run loop", .{});
-                        break;
-                    }
-                    // If socket has no data, loop back (might have been woken only).
-                    if (fds[0].revents & std.posix.POLL.IN == 0 and
-                        fds[0].revents & std.posix.POLL.HUP == 0 and
-                        fds[0].revents & std.posix.POLL.ERR == 0)
-                    {
+                    if (rc == 0) {
+                        // Tick: the interval elapsed with no inbound I/O.
+                        if (self.idleDeadlineExceeded()) {
+                            log.debug("idle timeout exceeded, reaping connection", .{});
+                            events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
+                            break;
+                        }
+                        if (self.on_tick) |cb| cb(self);
+                        if (self.deinit_requested) break;
                         continue;
+                    }
+                    if (rc > 0) {
+                        // Drain wake pipe and invoke callback.
+                        if (nfds == 2 and fds_buf[1].revents & std.posix.POLL.IN != 0) {
+                            var drain_buf: [64]u8 = undefined;
+                            _ = std.posix.system.read(self.wake_fds.?[0], &drain_buf, drain_buf.len);
+                            if (self.on_wake) |cb| cb(self);
+                        }
+                        // POLLNVAL means the fd is invalid — break out of the run loop.
+                        if (fds_buf[0].revents & std.posix.POLL.NVAL != 0) {
+                            log.debug("poll NVAL on socket fd, exiting run loop", .{});
+                            break;
+                        }
+                        // If socket has no data, loop back (might have been woken only).
+                        if (fds_buf[0].revents & std.posix.POLL.IN == 0 and
+                            fds_buf[0].revents & std.posix.POLL.HUP == 0 and
+                            fds_buf[0].revents & std.posix.POLL.ERR == 0)
+                        {
+                            continue;
+                        }
                     }
                 }
             }
@@ -293,6 +346,7 @@ pub const Connection = struct {
                 log.debug("transport EOF", .{});
                 break;
             }
+            self.last_activity_ns = nowNs(self.io);
             if (!self.handleRead(self.transport.read_buf[0..n])) {
                 self.transport.shutdown();
                 break;
@@ -320,6 +374,7 @@ pub const Connection = struct {
             self.invokeOnError(err);
             return err;
         };
+        self.last_activity_ns = nowNs(self.io);
     }
 
     /// Initiate connection close. This shuts down the socket, which will
@@ -454,7 +509,18 @@ pub const Connection = struct {
         events.emitClose(self.observer, .tcp, .unknown, self.last_error);
         events.emitConnection(self.observer, .tcp, .unknown, .closed);
     }
+
+    fn idleDeadlineExceeded(self: *const Connection) bool {
+        const timeout_ms = self.idle_timeout_ms orelse return false;
+        const now = nowNs(self.io);
+        return now - self.last_activity_ns >= @as(i64, @intCast(timeout_ms)) * std.time.ns_per_ms;
+    }
 };
+
+/// Monotonic now in nanoseconds via the connection's `std.Io`.
+fn nowNs(io: std.Io) i64 {
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
 
 fn buildTestFrame(allocator: std.mem.Allocator, value: u32) ![]const u8 {
     var builder = message.MessageBuilder.init(allocator);

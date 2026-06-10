@@ -151,6 +151,35 @@ pub const WorkerPool = struct {
         self.closeActiveConnections();
     }
 
+    /// Graceful pool shutdown: stop accepting immediately, then give the
+    /// connections currently running on workers up to `drain_ms` to finish
+    /// on their own before requesting close on the stragglers. Safe to call
+    /// from any thread; like `shutdown()`, pair it with `run()` returning
+    /// (or `deinit()`) to join workers.
+    pub fn shutdownGraceful(self: *WorkerPool, drain_ms: u64) void {
+        self.should_stop.store(true, .release);
+        if (!self.fd_closed.swap(true, .acq_rel)) {
+            closeListenFd(self.io, self.server.socket.handle);
+        }
+        const deadline = nowNs(self.io) + @as(i64, @intCast(drain_ms)) * std.time.ns_per_ms;
+        while (nowNs(self.io) < deadline) {
+            if (!self.hasActiveConnections()) return;
+            sleepMs(self.io, drain_poll_interval_ms);
+        }
+        self.closeActiveConnections();
+    }
+
+    const drain_poll_interval_ms: u64 = 10;
+
+    fn hasActiveConnections(self: *WorkerPool) bool {
+        self.active_mu.lockUncancelable(self.io);
+        defer self.active_mu.unlock(self.io);
+        for (self.active_connections) |maybe_conn| {
+            if (maybe_conn != null) return true;
+        }
+        return false;
+    }
+
     pub fn deinit(self: *WorkerPool) void {
         self.shutdown();
         while (self.run_active.load(.acquire)) {
@@ -261,3 +290,15 @@ pub const WorkerPool = struct {
         runtime_helpers.closeFd(io, fd);
     }
 };
+
+fn nowNs(io: std.Io) i64 {
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+}
+
+fn sleepMs(io: std.Io, ms: u64) void {
+    const duration: std.Io.Clock.Duration = .{
+        .raw = .{ .nanoseconds = @as(i96, @intCast(ms)) * std.time.ns_per_ms },
+        .clock = .awake,
+    };
+    duration.sleep(io) catch {};
+}

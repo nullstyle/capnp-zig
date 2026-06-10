@@ -39,6 +39,19 @@ pub const PeerLimits = struct {
     max_remote_abort_reason_bytes: usize = 4096,
 };
 
+/// Time-domain policy for a peer. All fields are opt-in: a null field
+/// disables that bound. Enforcement additionally requires a `Clock`
+/// (see `Peer.setClock`); without one, configured timeouts stay inert.
+pub const PeerTimeouts = struct {
+    /// Default deadline applied to every outbound question at send time.
+    /// Individual questions can override via `Peer.setQuestionDeadline`.
+    default_call_timeout_ms: ?u64 = null,
+    /// Bound on the graceful-shutdown drain. When the drain exceeds this,
+    /// remaining in-flight questions are force-cancelled and the shutdown
+    /// completes.
+    shutdown_drain_timeout_ms: ?u64 = null,
+};
+
 pub fn ExportEntry(comptime ExportType: type) type {
     return struct {
         handler: ?ExportType = null,
@@ -73,6 +86,14 @@ pub fn Question(comptime QuestionCallbackType: type) type {
         is_loopback: bool = false,
         suppress_auto_finish: bool = false,
         restore_on_return_error: bool = true,
+        /// Absolute monotonic deadline (clock nanoseconds) after which the
+        /// question is cancelled. Null means no deadline.
+        deadline_ns: ?i64 = null,
+        /// Set when the question was cancelled locally (deadline expiry or
+        /// explicit cancel). The local callback has already been delivered
+        /// an exception and a Finish has been sent; the entry stays in the
+        /// table only to absorb the remote's guaranteed Return silently.
+        cancelled: bool = false,
     };
 }
 

@@ -439,6 +439,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, optimize, lib_module);
     const run_rpc_worker_pool_tests = addLibTest(b, "tests/rpc/integration/rpc_worker_pool_test.zig", target, optimize, lib_module);
     const run_rpc_events_tests = addLibTest(b, "tests/rpc/transport/rpc_events_test.zig", target, optimize, lib_module);
+    const run_rpc_tick_idle_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_tick_idle_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
     else
@@ -457,6 +458,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_semantic_helpers_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_semantic_helpers_test.zig", target, optimize, lib_module);
     const run_rpc_peer_release_and_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_release_and_failure_test.zig", target, optimize, lib_module);
     const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/peer/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
+    const run_rpc_deadline_tests = addLibTest(b, "tests/rpc/peer/rpc_deadline_test.zig", target, optimize, lib_module);
 
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
@@ -574,6 +576,7 @@ pub fn build(b: *std.Build) void {
     const test_rpc_transport_step = b.step("test-rpc-transport", "Run RPC TCP/raw-frame transport tests");
     test_rpc_transport_step.dependOn(run_rpc_connection_failure_tests);
     test_rpc_transport_step.dependOn(run_rpc_events_tests);
+    test_rpc_transport_step.dependOn(run_rpc_tick_idle_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
 
     const test_rpc_quic_step = b.step("test-rpc-quic", "Run quic-zig-backed QUIC RPC transport tests (requires -Dquic=true)");
@@ -590,6 +593,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_peer_step.dependOn(run_rpc_peer_semantic_helpers_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_release_and_failure_tests);
     test_rpc_peer_step.dependOn(run_rpc_concurrent_calls_tests);
+    test_rpc_peer_step.dependOn(run_rpc_deadline_tests);
 
     const test_rpc_integration_step = b.step("test-rpc-integration", "Run RPC integration tests");
     test_rpc_integration_step.dependOn(run_rpc_host_peer_tests);

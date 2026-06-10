@@ -35,6 +35,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Call deadlines and cancellation** (`rpc.time`, `Peer.setClock`,
+  `PeerTimeouts.default_call_timeout_ms`, `Peer.setQuestionDeadline`,
+  `Peer.cancelQuestion`, `Peer.checkDeadlines`): outbound questions can now
+  carry monotonic deadlines. Expiry delivers a local exception Return to the
+  caller, sends a Finish (`releaseResultCaps`) to the remote, absorbs the
+  remote's late Return silently per spec, and emits a `timeout` event. Time
+  comes from an injectable clock (`rpc.time.Clock`); attaching a TCP
+  connection injects an `std.Io`-backed clock automatically, and
+  `rpc.time.TestClock` drives deterministic tests.
+- **Transport tick and idle reaping**
+  (`Connection.Options.tick_interval_ms` / `idle_timeout_ms`): the TCP run
+  loop can poll with a bounded timeout, driving the peer's deadline sweep
+  on each tick and reaping connections that see no traffic within the idle
+  bound (POSIX only, mirroring wake-pipe support).
+- **Graceful shutdown drain bound**
+  (`PeerTimeouts.shutdown_drain_timeout_ms`, `WorkerPool.shutdownGraceful`):
+  `Peer.shutdown` now stamps a drain deadline; if in-flight questions
+  outlive it they are force-cancelled (with a `shutdown_drain` timeout
+  event) and the shutdown completes. The worker pool gained a graceful
+  variant that stops accepting, waits up to a bound for active connections
+  to finish, then closes stragglers.
+- `rpc.events` gained a `timeout` event (`call_deadline`, `idle_connection`,
+  `shutdown_drain`).
 - `rpc.events`, a redacted transport-general observer API shared by TCP, QUIC,
   host-peer, and peer dispatch.
 - QUIC multi-session server fanout through `rpc.transport.quic.Server` and
@@ -46,12 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Write-queue backpressure semantics are now class-aware.** Caller-initiated
+  sends (calls, bootstrap) surface `error.WriteQueueFull` /
+  `error.WriteQueueBytesExceeded` to the caller, roll back the question, and
+  leave the connection healthy. Protocol-mandated frames (Return, Finish,
+  Release, Resolve, Disembargo, Abort, Unimplemented) treat enqueue overflow
+  as unrecoverable divergence: a peer-level backpressure event is emitted and
+  the transport is closed instead of silently dropping protocol state.
 - RPC peer internals are split into semantic modules under `peer/return`,
   `peer/forward`, `peer/provide`, and `peer/third_party`, making the codebase
   easier to navigate without changing the standard `rpc.capnp` wire protocol.
 - CI now installs the pinned Zig master snapshot via `mlugg/setup-zig` (Zig
   had been absent from CI since it was removed from `mise.toml`, so every job
   failed with `zig: command not found`).
+
+### Fixed
+
+- **Graceful shutdown now completes when the last in-flight question is
+  answered by a normal Return.** The drain-completion check in the return
+  orchestration was comptime-disabled because it probed a non-public decl
+  (`@hasDecl` cannot see private fns across files), so `Peer.shutdown`'s
+  callback only ever fired for empty peers or force-cancelled drains.
 
 ### Existing Baseline
 

@@ -77,6 +77,7 @@ pub const Event = union(enum) {
     resource_rejection: ResourceRejectionEvent,
     protocol_error: ProtocolErrorEvent,
     close: CloseEvent,
+    timeout: TimeoutEvent,
 };
 
 pub const ConnectionEvent = struct {
@@ -121,6 +122,24 @@ pub const CloseEvent = struct {
     source: Source,
     role: Role = .unknown,
     err: ?anyerror = null,
+};
+
+pub const TimeoutKind = enum {
+    /// An outbound call exceeded its deadline and was cancelled.
+    call_deadline,
+    /// A connection saw no traffic for longer than its idle limit and was reaped.
+    idle_connection,
+    /// A graceful shutdown drain exceeded its bound; remaining in-flight
+    /// questions were force-cancelled.
+    shutdown_drain,
+};
+
+pub const TimeoutEvent = struct {
+    source: Source,
+    role: Role = .unknown,
+    kind: TimeoutKind,
+    /// Question ID for `call_deadline`; null for connection-scoped kinds.
+    question_id: ?u32 = null,
 };
 
 pub inline fn emit(observer: ?Observer, event: Event) void {
@@ -218,6 +237,21 @@ pub inline fn emitClose(
         .source = source,
         .role = role,
         .err = err,
+    } });
+}
+
+pub inline fn emitTimeout(
+    observer: ?Observer,
+    source: Source,
+    role: Role,
+    kind: TimeoutKind,
+    question_id: ?u32,
+) void {
+    emit(observer, .{ .timeout = .{
+        .source = source,
+        .role = role,
+        .kind = kind,
+        .question_id = question_id,
     } });
 }
 

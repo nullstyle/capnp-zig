@@ -20,6 +20,7 @@ pub const promises = struct {
 };
 
 pub const events = @import("./events.zig");
+pub const time = @import("./time.zig");
 pub const peer = @import("./peer/mod.zig");
 
 pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
