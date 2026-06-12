@@ -27,7 +27,7 @@ Requires **Zig 0.17-dev** on `PATH` (minimum declared in `build.zig.zon`; `mise.
 | Build | `zig build` or `just build` |
 | Release build | `just release` |
 | Run all tests | `zig build test --summary all` or `just test` |
-| Format code | `zig fmt src/ tests/` or `just fmt` |
+| Format code | `just fmt` (never raw `zig fmt tests/` — it reformats excluded golden/generated files) |
 | Check (no link) | `zig build check` or `just check` |
 | Evented backend check | `zig build -Dio-backend=evented check` or `just check-evented` |
 | Docs/examples smoke | `zig build docs-smoke` or `just docs-smoke` |
