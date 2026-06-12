@@ -145,6 +145,7 @@ pub const WorkerPool = struct {
     /// notifications, but active transports are not drained gracefully.
     pub fn shutdown(self: *WorkerPool) void {
         self.should_stop.store(true, .release);
+        self.nudgeAcceptors();
         if (!self.fd_closed.swap(true, .acq_rel)) {
             closeListenFd(self.io, self.server.socket.handle);
         }
@@ -158,6 +159,7 @@ pub const WorkerPool = struct {
     /// (or `deinit()`) to join workers.
     pub fn shutdownGraceful(self: *WorkerPool, drain_ms: u64) void {
         self.should_stop.store(true, .release);
+        self.nudgeAcceptors();
         if (!self.fd_closed.swap(true, .acq_rel)) {
             closeListenFd(self.io, self.server.socket.handle);
         }
@@ -214,6 +216,14 @@ pub const WorkerPool = struct {
                 log.debug("worker {}: accept failed: {}", .{ worker_index, err });
                 continue;
             };
+
+            // A shutdown nudge (see nudgeAcceptors) pops blocked accepts
+            // with a throwaway connection; discard it and exit.
+            if (pool.should_stop.load(.acquire)) {
+                conn_ptr.deinit();
+                pool.allocator.destroy(conn_ptr);
+                break;
+            }
 
             if (pool.should_stop.load(.acquire)) {
                 destroyConnection(pool.allocator, conn_ptr);
@@ -287,8 +297,42 @@ pub const WorkerPool = struct {
     }
 
     fn closeListenFd(io: std.Io, fd: net.Socket.Handle) void {
-        io.vtable.netShutdown(io.userdata, fd, .both) catch {};
+        // POSIX: shutting the listener down unblocks threads parked in
+        // accept(). Windows AFD rejects shutdown on a listening socket
+        // (noisy INVALID_PARAMETER) and closing the handle does not
+        // reliably unblock a pending accept either — that is what the
+        // self-connect nudges in shutdown() are for.
+        if (comptime builtin.target.os.tag != .windows) {
+            io.vtable.netShutdown(io.userdata, fd, .both) catch {};
+        }
         runtime_helpers.closeFd(io, .{ .handle = fd });
+    }
+
+    /// Pop every worker that may be blocked in accept() by dialing the
+    /// listener once per worker with a throwaway loopback connection.
+    /// Portable: unlike the POSIX shutdown(2)-on-listener trick, this
+    /// works on Windows AFD sockets too. Errors are ignored — if the
+    /// listener is already closed or unreachable the workers are not
+    /// blocked on it.
+    fn nudgeAcceptors(self: *WorkerPool) void {
+        var addr = self.server.socket.address;
+        switch (addr) {
+            .ip4 => |*a| {
+                if (std.mem.allEqual(u8, &a.bytes, 0)) a.bytes = .{ 127, 0, 0, 1 };
+            },
+            .ip6 => |*a| {
+                if (std.mem.allEqual(u8, &a.bytes, 0)) {
+                    a.bytes = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 };
+                }
+            },
+        }
+        for (self.workers) |_| {
+            const stream = net.IpAddress.connect(&addr, self.io, .{
+                .mode = .stream,
+                .protocol = .tcp,
+            }) catch break;
+            runtime_helpers.closeFd(self.io, .{ .handle = stream.socket.handle });
+        }
     }
 };
 
