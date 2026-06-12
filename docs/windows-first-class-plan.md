@@ -1,8 +1,10 @@
 # Windows as a First-Class Target and Development OS
 
-Status: Phases 0–3 landed (one open decision below); Phase 4 is
-upstream-tracking only. Owner: rotating per session; this document is the
-source of truth for progress.
+Status: **Phases 0–3 landed and verified green on real Windows runners**
+(CI run on `9608ef0`: native test suite, soak smoke, check-api, and
+self-interop e2e all pass on windows-latest). One open owner decision
+below; Phase 4 is upstream-tracking only. Owner: rotating per session;
+this document is the source of truth for progress.
 
 Progress notes:
 

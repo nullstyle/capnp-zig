@@ -32,9 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is updated and repinned. `quic_zig` is now declared lazy, so default
   builds neither fetch nor compile it; the QUIC CI job is disabled until
   then.
-
-### Breaking
-
 - **Transport entry points take `SocketFd`** (`rpc.transport.tcp.SocketFd`,
   a thin named wrapper over `std.Io.net.Socket.Handle`): `Connection.init`,
   `Transport.init`/`initWithOptions`, `Listener.initFd`, and `closeFd` now

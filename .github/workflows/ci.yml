@@ -39,34 +39,6 @@ jobs:
             apt-get install -y capnproto libcapnp-dev
           fi
 
-      # Temporary Windows diagnostics: the first real-socket runtime on
-      # Windows hung somewhere inside `zig build test` with binary-level
-      # logs only. These bounded standalone runs print progressive
-      # per-test output so a hang names its test. Remove once green.
-      - name: '[diag] tick/idle suite (windows)'
-        if: runner.os == 'Windows'
-        timeout-minutes: 6
-        shell: bash
-        run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/transport/tcp/rpc_tick_idle_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
-
-      - name: '[diag] connection failure suite (windows)'
-        if: runner.os == 'Windows'
-        timeout-minutes: 6
-        shell: bash
-        run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/transport/tcp/rpc_connection_failure_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
-
-      - name: '[diag] raw frame suite (windows)'
-        if: runner.os == 'Windows'
-        timeout-minutes: 6
-        shell: bash
-        run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/transport/rpc_raw_frame_security_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
-
-      - name: '[diag] worker pool suite (windows)'
-        if: runner.os == 'Windows'
-        timeout-minutes: 6
-        shell: bash
-        run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/integration/rpc_worker_pool_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
-
       - name: Run tests
         timeout-minutes: 20
         run: zig build test --summary all
