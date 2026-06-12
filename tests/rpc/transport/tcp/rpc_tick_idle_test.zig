@@ -9,17 +9,22 @@ const events = capnpc.rpc.events;
 const Connection = capnpc.rpc.transport.tcp.Connection;
 const Peer = peer_impl.Peer;
 
-fn createSocketPair() ![2]std.posix.fd_t {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
-    var fds: [2]std.posix.fd_t = undefined;
-    if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
-        return error.SocketPairFailed;
-    }
-    return fds;
+const tcp = capnpc.rpc.transport.tcp;
+
+/// Portable connected pair: loopback TCP via std.Io, so these suites run
+/// on every platform (POSIX socketpair does not exist on Windows).
+fn createSocketPair(io: std.Io) ![2]tcp.SocketFd {
+    return tcp.createLoopbackSocketPair(io);
 }
 
-fn closeFd(io: std.Io, fd: std.posix.fd_t) void {
-    io.vtable.netClose(io.userdata, (&fd)[0..1]);
+fn closeFd(io: std.Io, socket: tcp.SocketFd) void {
+    tcp.closeFd(io, socket);
+}
+
+fn writeBytes(io: std.Io, socket: tcp.SocketFd, bytes: []const u8) void {
+    const pattern: []const u8 = &.{};
+    const data: [1][]const u8 = .{pattern};
+    _ = io.vtable.netWrite(io.userdata, socket.handle, bytes, &data, 0) catch {};
 }
 
 const EventRecorder = struct {
@@ -70,11 +75,10 @@ const ReturnRecorder = struct {
 };
 
 test "tick drives peer deadline sweep and idle timeout reaps the connection" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const fds = try createSocketPair();
+    const fds = try createSocketPair(io);
     defer closeFd(io, fds[1]);
 
     var event_recorder = EventRecorder{};
@@ -111,11 +115,10 @@ test "tick drives peer deadline sweep and idle timeout reaps the connection" {
 }
 
 test "on_tick fires repeatedly while the connection is idle" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const fds = try createSocketPair();
+    const fds = try createSocketPair(io);
     defer closeFd(io, fds[1]);
 
     const TickState = struct {
@@ -147,14 +150,13 @@ test "on_tick fires repeatedly while the connection is idle" {
 }
 
 test "traffic resets the idle clock" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const fds = try createSocketPair();
+    const fds = try createSocketPair(io);
 
     const Feeder = struct {
-        fn run(fd: std.posix.fd_t, write_io: std.Io) void {
+        fn run(fd: tcp.SocketFd, write_io: std.Io) void {
             // Feed partial frame bytes every 20ms for ~100ms, keeping the
             // connection alive past several idle windows. Write before each
             // sleep: on a loaded machine a delayed thread spawn must not
@@ -162,8 +164,7 @@ test "traffic resets the idle clock" {
             // first byte arrives.
             var i: usize = 0;
             while (i < 5) : (i += 1) {
-                const byte = [_]u8{0};
-                _ = std.posix.system.write(fd, &byte, 1);
+                writeBytes(write_io, fd, &[_]u8{0});
                 sleepMs(write_io, 20);
             }
             closeFd(write_io, fd);

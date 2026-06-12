@@ -59,9 +59,10 @@ pub const Connection = struct {
 
     // -- Cross-thread wake support -------------------------------------------
 
-    /// Pipe fds for cross-thread signaling. [0]=read, [1]=write.
-    /// When set, `run()` uses `poll()` on both the socket and the pipe,
-    /// and calls `on_wake` when the pipe is readable.
+    /// Connected socket pair for cross-thread signaling. [0]=read,
+    /// [1]=write. When set, `run()` waits on both the socket and the wake
+    /// channel, and calls `on_wake` when the channel is readable. POSIX
+    /// uses `socketpair(2)`; Windows uses a loopback TCP pair.
     wake_fds: ?[2]std.posix.fd_t = null,
 
     /// Called on the run loop's thread when woken by `wake()`.
@@ -70,10 +71,11 @@ pub const Connection = struct {
 
     // -- Periodic tick / idle reaping -----------------------------------------
 
-    /// When set, `run()` polls with this timeout instead of blocking
+    /// When set, `run()` waits with this timeout instead of blocking
     /// indefinitely, and invokes `on_tick` whenever the interval elapses
-    /// with no inbound I/O. POSIX only (like wake support): on Windows and
-    /// freestanding targets ticks do not fire.
+    /// with no inbound I/O. Works on POSIX (poll) and Windows (WSAPoll);
+    /// on freestanding targets there is no readiness primitive and ticks
+    /// do not fire.
     tick_interval_ms: ?u32 = null,
 
     /// Reap the connection when no inbound read or outbound enqueue has
@@ -133,13 +135,13 @@ pub const Connection = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
-        fd: std.posix.fd_t,
+        socket: transport_mod.SocketFd,
         options: Options,
     ) !Connection {
         const conn = Connection{
             .allocator = allocator,
             .io = io,
-            .transport = try transport_mod.Transport.initWithOptions(allocator, io, fd, .{
+            .transport = try transport_mod.Transport.initWithOptions(allocator, io, socket, .{
                 .read_buffer_size = options.read_buffer_size,
                 .write_queue_max_items = options.write_queue_max_items,
                 .write_queue_max_bytes = options.write_queue_max_bytes,
@@ -158,19 +160,28 @@ pub const Connection = struct {
         return conn;
     }
 
-    /// Enable cross-thread wake support. Creates a pipe so that other
-    /// threads can call `wake()` to interrupt the blocking `run()` loop.
-    /// The `on_wake` callback is invoked on the run loop's thread.
+    /// Enable cross-thread wake support. Creates a socket pair so that
+    /// other threads can call `wake()` to interrupt the blocking `run()`
+    /// loop. The `on_wake` callback is invoked on the run loop's thread.
+    ///
+    /// POSIX uses a `socketpair(2)`; Windows uses a connected loopback TCP
+    /// pair (pipes are not pollable by `WSAPoll`).
     pub fn enableWake(
         self: *Connection,
         on_wake: *const fn (conn: *Connection) void,
     ) !void {
-        if (comptime builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) return;
-        var fds: [2]std.posix.fd_t = undefined;
-        if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
-            return error.WakePipeCreateFailed;
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        if (comptime builtin.target.os.tag == .windows) {
+            const pair = runtime_helpers.createLoopbackSocketPair(self.io) catch
+                return error.WakePipeCreateFailed;
+            self.wake_fds = .{ pair[0].handle, pair[1].handle };
+        } else {
+            var fds: [2]std.posix.fd_t = undefined;
+            if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
+                return error.WakePipeCreateFailed;
+            }
+            self.wake_fds = fds;
         }
-        self.wake_fds = fds;
         self.on_wake = on_wake;
     }
 
@@ -178,7 +189,9 @@ pub const Connection = struct {
     /// The run loop will call `on_wake` on its own thread.
     pub fn wake(self: *Connection) void {
         const fds = self.wake_fds orelse return;
-        _ = std.posix.system.write(fds[1], &[_]u8{1}, 1);
+        const pattern: []const u8 = &.{};
+        const data: [1][]const u8 = .{pattern};
+        _ = self.io.vtable.netWrite(self.io.userdata, fds[1], &[_]u8{1}, &data, 0) catch {};
     }
 
     /// Release all internal state: tears down the transport and framer.
@@ -217,8 +230,8 @@ pub const Connection = struct {
         self.on_wake = null;
         self.observer = null;
         if (self.wake_fds) |fds| {
-            runtime_helpers.closeFd(self.io, fds[0]);
-            runtime_helpers.closeFd(self.io, fds[1]);
+            runtime_helpers.closeFd(self.io, .{ .handle = fds[0] });
+            runtime_helpers.closeFd(self.io, .{ .handle = fds[1] });
             self.wake_fds = null;
         }
         self.transport.deinit();
@@ -281,23 +294,22 @@ pub const Connection = struct {
         };
 
         while (!self.transport.isClosing()) {
-            // Use poll() when wake support or a tick cadence is enabled, so
-            // the loop can wait on the socket (plus the wake pipe) with a
-            // bounded timeout. Poll support is POSIX-only; enableWake() is a
-            // no-op on Windows/freestanding so wake_fds is always null
-            // there, and ticks/idle reaping do not fire. The comptime guard
-            // avoids referencing std.posix.pollfd where it doesn't exist.
-            if (comptime builtin.target.os.tag != .windows and builtin.target.os.tag != .freestanding) {
+            // Wait for readiness when wake support or a tick cadence is
+            // enabled, so the loop can wait on the socket (plus the wake
+            // channel) with a bounded timeout. POSIX uses poll(2); Windows
+            // uses WSAPoll, which has the same shape (freestanding has no
+            // readiness primitive: ticks/wake do not fire there).
+            if (comptime builtin.target.os.tag != .freestanding) {
                 // An idle bound without an explicit tick still needs the
                 // loop to wake periodically; default to 500ms checks.
                 const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
                     (if (self.idle_timeout_ms != null) @as(?u32, 500) else null);
                 if (self.wake_fds != null or effective_tick_ms != null) {
-                    var fds_buf: [2]std.posix.pollfd = undefined;
-                    fds_buf[0] = .{ .fd = self.transport.fd, .events = std.posix.POLL.IN, .revents = 0 };
+                    var fds_buf: [2]PollFd = undefined;
+                    fds_buf[0] = makePollFd(self.transport.fd);
                     var nfds: usize = 1;
                     if (self.wake_fds) |wfds| {
-                        fds_buf[1] = .{ .fd = wfds[0], .events = std.posix.POLL.IN, .revents = 0 };
+                        fds_buf[1] = makePollFd(wfds[0]);
                         nfds = 2;
                     }
                     const timeout_ms: i32 = if (effective_tick_ms) |t|
@@ -317,23 +329,25 @@ pub const Connection = struct {
                         continue;
                     }
                     if (poll_result == .ready) {
-                        // Drain wake pipe and invoke callback.
-                        if (nfds == 2 and fds_buf[1].revents & std.posix.POLL.IN != 0) {
+                        // Drain wake channel and invoke callback.
+                        if (nfds == 2 and fds_buf[1].revents & poll_in_mask != 0) {
                             if (self.wake_fds) |wake_fds| {
                                 var drain_buf: [64]u8 = undefined;
-                                _ = std.posix.system.read(wake_fds[0], &drain_buf, drain_buf.len);
+                                var bufs: [1][]u8 = .{&drain_buf};
+                                var wake_stream = std.Io.net.Stream{ .socket = .{ .handle = wake_fds[0], .address = undefined } };
+                                _ = wake_stream.read(self.io, &bufs) catch {};
                             }
                             if (self.on_wake) |cb| cb(self);
                         }
                         // POLLNVAL means the fd is invalid — break out of the run loop.
-                        if (fds_buf[0].revents & std.posix.POLL.NVAL != 0) {
+                        if (fds_buf[0].revents & poll_nval_mask != 0) {
                             log.debug("poll NVAL on socket fd, exiting run loop", .{});
                             break;
                         }
                         // If socket has no data, loop back (might have been woken only).
-                        if (fds_buf[0].revents & std.posix.POLL.IN == 0 and
-                            fds_buf[0].revents & std.posix.POLL.HUP == 0 and
-                            fds_buf[0].revents & std.posix.POLL.ERR == 0)
+                        if (fds_buf[0].revents & poll_in_mask == 0 and
+                            fds_buf[0].revents & poll_hup_mask == 0 and
+                            fds_buf[0].revents & poll_err_mask == 0)
                         {
                             continue;
                         }
@@ -538,12 +552,51 @@ fn nowNs(io: std.Io) i64 {
 
 const PollOutcome = enum { ready, timeout, err };
 
-/// poll(2) with EINTR retry. The raw return type differs across platforms
-/// (usize on Linux syscalls, c_int via libc elsewhere), so outcomes are
-/// classified via errno rather than the sign of the return value.
-fn pollRetryIntr(fds: []std.posix.pollfd, timeout_ms: i32) PollOutcome {
-    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .freestanding) {
+/// Readiness-wait entry shaped per platform. POSIX uses `poll(2)`'s
+/// `pollfd`; Windows uses `WSAPOLLFD`, whose `fd` is a `SOCKET`
+/// (pointer-width integer) rather than a file descriptor.
+const PollFd = if (builtin.target.os.tag == .windows) extern struct {
+    fd: usize,
+    events: i16,
+    revents: i16,
+} else std.posix.pollfd;
+
+// Readiness masks. `WSAPoll` only accepts the RDNORM/RDBAND/WRNORM/WRBAND
+// families in `events` (ERR/HUP/NVAL are output-only and rejected as
+// input), so the wait event is RDNORM and the input mask accepts the
+// RDNORM|RDBAND composite that POSIX calls POLLIN.
+const poll_in_event: i16 = if (builtin.target.os.tag == .windows) 0x0100 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.IN;
+const poll_in_mask: i16 = if (builtin.target.os.tag == .windows) 0x0300 else poll_in_event;
+const poll_err_mask: i16 = if (builtin.target.os.tag == .windows) 0x0001 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.ERR;
+const poll_hup_mask: i16 = if (builtin.target.os.tag == .windows) 0x0002 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.HUP;
+const poll_nval_mask: i16 = if (builtin.target.os.tag == .windows) 0x0004 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.NVAL;
+
+fn makePollFd(handle: std.Io.net.Socket.Handle) PollFd {
+    if (comptime builtin.target.os.tag == .windows) {
+        return .{ .fd = @intFromPtr(handle), .events = poll_in_event, .revents = 0 };
+    }
+    return .{ .fd = handle, .events = poll_in_event, .revents = 0 };
+}
+
+/// `WSAPoll` is missing from std's ws2_32 bindings; declare the stable
+/// winsock API locally (Vista+).
+const ws2 = struct {
+    extern "ws2_32" fn WSAPoll(fdArray: [*]PollFd, fds: c_ulong, timeout: c_int) callconv(.winapi) c_int;
+};
+
+/// Readiness wait with EINTR retry. POSIX classifies outcomes via errno
+/// because the raw poll return type differs across platforms (usize on
+/// Linux syscalls, c_int via libc elsewhere). Windows uses WSAPoll, which
+/// reports errors as SOCKET_ERROR (-1) and has no EINTR.
+fn pollRetryIntr(fds: []PollFd, timeout_ms: i32) PollOutcome {
+    if (comptime builtin.target.os.tag == .freestanding) {
         return .err;
+    }
+    if (comptime builtin.target.os.tag == .windows) {
+        const rc = ws2.WSAPoll(fds.ptr, @intCast(fds.len), timeout_ms);
+        if (rc == 0) return .timeout;
+        if (rc < 0) return .err;
+        return .ready;
     }
     while (true) {
         const rc = std.posix.system.poll(@ptrCast(fds.ptr), @intCast(fds.len), timeout_ms);

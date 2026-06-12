@@ -144,14 +144,14 @@ fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) 
     };
 
     const conn = allocator.create(rpc.transport.tcp.Connection) catch {
-        rpc.transport.tcp.closeFd(io, fd);
+        rpc.transport.tcp.closeFd(io, .{ .handle = fd });
         state.err = error.OutOfMemory;
         state.done = true;
         return;
     };
-    conn.* = rpc.transport.tcp.Connection.init(allocator, io, fd, .{}) catch |err| {
+    conn.* = rpc.transport.tcp.Connection.init(allocator, io, .{ .handle = fd }, .{}) catch |err| {
         allocator.destroy(conn);
-        rpc.transport.tcp.closeFd(io, fd);
+        rpc.transport.tcp.closeFd(io, .{ .handle = fd });
         state.err = err;
         state.done = true;
         return;
@@ -198,7 +198,7 @@ pub fn main(init: std.process.Init) !void {
     var listener = rpc.transport.tcp.Listener.initFd(
         allocator,
         io,
-        (try rpc.transport.tcp.createListenSocket(io, address, 1, false)).socket.handle,
+        .{ .handle = (try rpc.transport.tcp.createListenSocket(io, address, 1, false)).socket.handle },
         .{},
     );
     defer listener.close();

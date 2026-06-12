@@ -33,8 +33,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builds neither fetch nor compile it; the QUIC CI job is disabled until
   then.
 
+### Breaking
+
+- **Transport entry points take `SocketFd`** (`rpc.transport.tcp.SocketFd`,
+  a thin named wrapper over `std.Io.net.Socket.Handle`): `Connection.init`,
+  `Transport.init`/`initWithOptions`, `Listener.initFd`, and `closeFd` now
+  take `.{ .handle = fd }` instead of a raw handle, and
+  `Listener.listenHandle` returns the wrapper. The raw handle's width
+  varies by target (i32 on POSIX, a pointer on Windows), which made the
+  public surface — and the `check-api` snapshot gate — platform-dependent.
+
 ### Added
 
+- **Windows TCP transport parity** (`docs/windows-first-class-plan.md`
+  phase 1): ticks, idle reaping, cross-thread wake, and `TCP_NODELAY` now
+  work on Windows. The connection wait loop uses `WSAPoll` (same shape as
+  the POSIX `poll(2)` path), the wake channel is a loopback TCP pair where
+  POSIX uses `socketpair(2)` (`rpc.transport.tcp.createLoopbackSocketPair`
+  is the new portable pair helper), and wake writes/drains go through the
+  io vtable everywhere. The tick/idle, connection-failure, and raw-frame
+  suites now run on Windows with zero skips, `zig build check-api` and a
+  2-second soak smoke run in every Test matrix OS, and the nightly soak
+  gains a Windows lane.
 - **`zig build check-test-compile`** compiles every registered test
   binary without running it, and CI runs it for `x86_64-windows` on a
   Linux runner (new cross-target matrix entry) — Windows test-suite

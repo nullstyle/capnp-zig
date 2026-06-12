@@ -77,7 +77,7 @@ pub const WorkerPool = struct {
         if (concurrency == 0) return error.InvalidConcurrency;
 
         const server = try runtime_helpers.createListenSocket(io, addr, config.listen_backlog, false);
-        errdefer runtime_helpers.closeFd(io, server.socket.handle);
+        errdefer runtime_helpers.closeFd(io, .{ .handle = server.socket.handle });
 
         const workers = try allocator.alloc(Worker, concurrency);
         errdefer allocator.free(workers);
@@ -204,7 +204,7 @@ pub const WorkerPool = struct {
         var listener = Listener.initFd(
             pool.allocator,
             pool.io,
-            pool.server.socket.handle,
+            .{ .handle = pool.server.socket.handle },
             pool.conn_options,
         );
 
@@ -288,7 +288,7 @@ pub const WorkerPool = struct {
 
     fn closeListenFd(io: std.Io, fd: net.Socket.Handle) void {
         io.vtable.netShutdown(io.userdata, fd, .both) catch {};
-        runtime_helpers.closeFd(io, fd);
+        runtime_helpers.closeFd(io, .{ .handle = fd });
     }
 };
 

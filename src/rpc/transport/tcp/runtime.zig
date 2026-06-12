@@ -5,6 +5,10 @@ const Connection = @import("./connection.zig").Connection;
 const events = @import("../../events.zig");
 const net = std.Io.net;
 
+/// Re-export of the platform-stable socket wrapper used by all public
+/// handle-taking entry points in the TCP transport layer.
+pub const SocketFd = @import("./stream_transport.zig").SocketFd;
+
 /// Minimal RPC runtime context.
 ///
 /// Runtime is now a thin holder for shared state (allocator). Connection read
@@ -66,14 +70,14 @@ pub const Listener = struct {
     pub fn initFd(
         allocator: std.mem.Allocator,
         io: std.Io,
-        fd: net.Socket.Handle,
+        socket: SocketFd,
         conn_options: Connection.Options,
     ) Listener {
         return .{
             .allocator = allocator,
             .io = io,
             .server = .{
-                .socket = .{ .handle = fd, .address = .{ .ip4 = .unspecified(0) } },
+                .socket = .{ .handle = socket.handle, .address = .{ .ip4 = .unspecified(0) } },
                 .options = if (net.Server.AcceptOptions != void) .{ .mode = .stream, .protocol = .tcp } else {},
             },
             .conn_options = conn_options,
@@ -87,7 +91,7 @@ pub const Listener = struct {
 
         const stream = try self.server.accept(self.io);
         const client_fd = stream.socket.handle;
-        errdefer closeFd(self.io, client_fd);
+        errdefer closeFd(self.io, .{ .handle = client_fd });
 
         enableTcpNoDelay(client_fd);
 
@@ -98,7 +102,7 @@ pub const Listener = struct {
     /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
-        closeFd(self.io, self.server.socket.handle);
+        closeFd(self.io, .{ .handle = self.server.socket.handle });
     }
 
     /// Return the bound address. Useful for resolving ephemeral ports (port 0).
@@ -107,8 +111,8 @@ pub const Listener = struct {
     }
 
     /// Return the underlying socket handle.
-    pub fn listenHandle(self: *const Listener) net.Socket.Handle {
-        return self.server.socket.handle;
+    pub fn listenHandle(self: *const Listener) SocketFd {
+        return .{ .handle = self.server.socket.handle };
     }
 
     /// Allocate and initialize a Connection. Uses errdefer to guarantee
@@ -120,7 +124,7 @@ pub const Listener = struct {
         conn_ptr.* = try Connection.init(
             self.allocator,
             self.io,
-            fd,
+            .{ .handle = fd },
             self.conn_options,
         );
         events.emitConnection(self.conn_options.observer, .tcp, .server, .accepted);
@@ -128,7 +132,16 @@ pub const Listener = struct {
     }
 
     fn enableTcpNoDelay(fd: net.Socket.Handle) void {
-        if (comptime builtin.target.os.tag == .windows) return;
+        if (comptime builtin.target.os.tag == .windows) {
+            // No setsockopt binding in std's ws2_32 yet; declare the
+            // stable winsock API locally. TCP_NODELAY = 1, IPPROTO_TCP = 6.
+            const one: c_int = 1;
+            const rc = ws2.setsockopt(@intFromPtr(fd), 6, 1, @ptrCast(&one), @sizeOf(c_int));
+            if (rc != 0) {
+                log.debug("failed to set TCP_NODELAY on accepted socket (winsock rc={})", .{rc});
+            }
+            return;
+        }
         std.posix.setsockopt(
             fd,
             std.posix.IPPROTO.TCP,
@@ -138,6 +151,10 @@ pub const Listener = struct {
             log.debug("failed to set TCP_NODELAY on accepted socket: {}", .{err});
         };
     }
+
+    const ws2 = struct {
+        extern "ws2_32" fn setsockopt(s: usize, level: c_int, optname: c_int, optval: [*]const u8, optlen: c_int) callconv(.winapi) c_int;
+    };
 };
 
 // ---------------------------------------------------------------------------
@@ -152,9 +169,32 @@ pub fn createListenSocket(io: std.Io, addr: net.IpAddress, backlog: u31, _: bool
     });
 }
 
-/// Close a socket handle via Io.
-pub fn closeFd(io: std.Io, fd: net.Socket.Handle) void {
-    io.vtable.netClose(io.userdata, (&fd)[0..1]);
+/// Close a socket via Io.
+pub fn closeFd(io: std.Io, socket: SocketFd) void {
+    io.vtable.netClose(io.userdata, (&socket.handle)[0..1]);
+}
+
+/// Create a pair of connected stream sockets over loopback TCP using
+/// `std.Io`, portable to every platform. POSIX `socketpair(2)` does not
+/// exist on Windows, so this is the cross-platform building block for the
+/// connection wake channel and for tests that feed a `Connection` or
+/// `Transport` raw bytes.
+///
+/// Returns `[2]SocketFd`; both ends are connected to each other and the
+/// temporary listener is closed before returning.
+pub fn createLoopbackSocketPair(io: std.Io) ![2]SocketFd {
+    var server = try createListenSocket(io, .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = 0 } }, 1, false);
+    defer closeFd(io, .{ .handle = server.socket.handle });
+
+    var connect_addr = server.socket.address;
+    const client_stream = try net.IpAddress.connect(&connect_addr, io, .{ .mode = .stream, .protocol = .tcp });
+    errdefer closeFd(io, .{ .handle = client_stream.socket.handle });
+
+    const accepted_stream = try server.accept(io);
+    return .{
+        .{ .handle = client_stream.socket.handle },
+        .{ .handle = accepted_stream.socket.handle },
+    };
 }
 
 /// Storage union for POSIX socket addresses.
@@ -196,11 +236,10 @@ test "runtime init and deinit" {
 }
 
 test "createConnection returns OOM when Connection allocation fails" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
     const server = try createListenSocket(std.testing.io, addr, 128, false);
 
-    var listener = Listener.initFd(std.testing.allocator, std.testing.io, server.socket.handle, .{});
+    var listener = Listener.initFd(std.testing.allocator, std.testing.io, .{ .handle = server.socket.handle }, .{});
     defer listener.close();
 
     // fail_index = 0: the very first allocation (create(Connection)) fails.
@@ -214,19 +253,18 @@ test "createConnection returns OOM when Connection allocation fails" {
 
     // Need a real connected fd for createConnection.
     // Create a socketpair to get a valid fd.
-    const fds = try createSocketPair();
+    const fds = try createLoopbackSocketPair(std.testing.io);
     defer closeFd(std.testing.io, fds[0]);
     defer closeFd(std.testing.io, fds[1]);
 
-    try std.testing.expectError(error.OutOfMemory, fail_listener.createConnection(fds[0]));
+    try std.testing.expectError(error.OutOfMemory, fail_listener.createConnection(fds[0].handle));
 }
 
 test "createConnection errdefer frees Connection when Transport.init fails" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const addr: net.IpAddress = .{ .ip4 = .loopback(0) };
     const server = try createListenSocket(std.testing.io, addr, 128, false);
 
-    var listener = Listener.initFd(std.testing.allocator, std.testing.io, server.socket.handle, .{});
+    var listener = Listener.initFd(std.testing.allocator, std.testing.io, .{ .handle = server.socket.handle }, .{});
     defer listener.close();
 
     // fail_index = 1: the first allocation (create(Connection)) succeeds,
@@ -239,19 +277,9 @@ test "createConnection errdefer frees Connection when Transport.init fails" {
         .conn_options = .{},
     };
 
-    const fds = try createSocketPair();
+    const fds = try createLoopbackSocketPair(std.testing.io);
     defer closeFd(std.testing.io, fds[0]);
     defer closeFd(std.testing.io, fds[1]);
 
-    try std.testing.expectError(error.OutOfMemory, fail_listener.createConnection(fds[0]));
-}
-
-/// Create a UNIX socketpair for testing. POSIX-only.
-fn createSocketPair() ![2]std.posix.fd_t {
-    if (comptime builtin.target.os.tag == .windows) return error.SocketPairFailed;
-    var fds: [2]std.posix.fd_t = undefined;
-    if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
-        return error.SocketPairFailed;
-    }
-    return fds;
+    try std.testing.expectError(error.OutOfMemory, fail_listener.createConnection(fds[0].handle));
 }

@@ -42,6 +42,14 @@ jobs:
       - name: Check compilation
         run: zig build check
 
+      - name: API snapshot check
+        # On every OS: the snapshot is target-stable by construction and
+        # this is the gate that keeps it that way.
+        run: zig build check-api --summary all
+
+      - name: Soak smoke (2s, loopback TCP)
+        run: zig build soak -- --seconds 2
+
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest

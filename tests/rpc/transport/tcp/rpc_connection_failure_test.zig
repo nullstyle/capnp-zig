@@ -76,32 +76,26 @@ fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32) ![]const u8 
     return builder.finish();
 }
 
-fn createSocketPair() ![2]std.posix.fd_t {
-    if (comptime builtin.target.os.tag == .windows) return error.SocketPairFailed;
-    var fds: [2]std.posix.fd_t = undefined;
-    if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
-        return error.SocketPairFailed;
-    }
-    return fds;
+const tcp = capnpc.rpc.transport.tcp;
+
+/// Portable connected pair: loopback TCP via std.Io, so these suites run
+/// on every platform (POSIX socketpair does not exist on Windows).
+fn createSocketPair() ![2]tcp.SocketFd {
+    return tcp.createLoopbackSocketPair(std.testing.io);
 }
 
-fn closeFd(fd: std.posix.fd_t) void {
-    switch (std.posix.errno(std.posix.system.close(fd))) {
-        .SUCCESS, .INTR, .BADF => {},
-        else => {},
-    }
+fn closeFd(socket: tcp.SocketFd) void {
+    tcp.closeFd(std.testing.io, socket);
 }
 
-fn writeAll(fd: std.posix.fd_t, bytes: []const u8) !void {
+fn writeAll(socket: tcp.SocketFd, bytes: []const u8) !void {
+    const io = std.testing.io;
+    const pattern: []const u8 = &.{};
+    const data: [1][]const u8 = .{pattern};
     var offset: usize = 0;
     while (offset < bytes.len) {
-        const rc = std.posix.system.write(fd, bytes[offset..].ptr, bytes.len - offset);
-        const n: usize = switch (std.posix.errno(rc)) {
-            .SUCCESS => @intCast(rc),
-            .INTR => continue,
-            .PIPE => return error.BrokenPipe,
-            else => return error.WriteFailed,
-        };
+        const n = io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
+            return error.WriteFailed;
         if (n == 0) return error.BrokenPipe;
         offset += n;
     }
@@ -472,7 +466,6 @@ test "handleFrame after shutdown: returns for pending questions are delivered" {
 }
 
 test "transport enqueueWrite rejects queued item overflow" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -490,7 +483,6 @@ test "transport enqueueWrite rejects queued item overflow" {
 }
 
 test "transport enqueueWrite rejects queued byte overflow" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -557,7 +549,7 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
         .vtable = &vtable,
     };
 
-    var transport = try Transport.initWithOptions(allocator, io, fake_socket_handle, .{
+    var transport = try Transport.initWithOptions(allocator, io, .{ .handle = fake_socket_handle }, .{
         .read_buffer_size = 64,
         .write_queue_max_items = 8,
         .write_queue_max_bytes = 4,
@@ -581,7 +573,6 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
 }
 
 test "transport stopWriter shuts down before joining idle writer" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -598,7 +589,6 @@ test "transport stopWriter shuts down before joining idle writer" {
 }
 
 test "connection run treats malformed frame as terminal after on_error" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -655,7 +645,6 @@ test "connection run treats malformed frame as terminal after on_error" {
 }
 
 test "connection run closes after inbound frame allocation OOM" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -711,7 +700,6 @@ test "connection run closes after inbound frame allocation OOM" {
 }
 
 test "connection deinit requested from error callback is deferred without panic" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -798,7 +786,7 @@ test "transport concurrent close and shutdown call socket shutdown once" {
         .vtable = &vtable,
     };
 
-    var transport = try Transport.init(std.testing.allocator, io, fake_socket_handle, 64);
+    var transport = try Transport.init(std.testing.allocator, io, .{ .handle = fake_socket_handle }, 64);
     var threads: [8]std.Thread = undefined;
     for (&threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, Runner.closeTransport, .{&transport});
@@ -842,7 +830,7 @@ test "listener concurrent close calls socket close once" {
         .vtable = &vtable,
     };
 
-    var listener = Listener.initFd(std.testing.allocator, io, fake_socket_handle, .{});
+    var listener = Listener.initFd(std.testing.allocator, io, .{ .handle = fake_socket_handle }, .{});
     var threads: [8]std.Thread = undefined;
     for (&threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, Runner.closeListener, .{&listener});

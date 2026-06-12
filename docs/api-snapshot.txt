@@ -1482,15 +1482,16 @@ capnpc-zig.rpc.transport.tcp.Connection: struct
 capnpc-zig.rpc.transport.tcp.Listener: struct
 capnpc-zig.rpc.transport.tcp.Runtime: struct
 capnpc-zig.rpc.transport.tcp.SockAddrStorage: union
+capnpc-zig.rpc.transport.tcp.SocketFd: struct
 capnpc-zig.rpc.transport.tcp.Transport: struct
-capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, i32) void
+capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.Options: struct
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.close: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.transport.tcp.connection.Connection) ?*anyopaque
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinit: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.enableWake: fn (*rpc.transport.tcp.connection.Connection, *const fn (*rpc.transport.tcp.connection.Connection) void) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.connection.Connection.enableWake)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.transport.tcp.connection.Connection.init: fn (mem.Allocator, Io, i32, rpc.transport.tcp.connection.Connection.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.connection.Connection.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.connection.Connection.init: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.connection.Connection.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.connection.Connection.isClosing: fn (*const rpc.transport.tcp.connection.Connection) bool
 capnpc-zig.rpc.transport.tcp.connection.Connection.requestClose: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.run: fn (*rpc.transport.tcp.connection.Connection) void
@@ -1501,22 +1502,26 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.writeQueueStats: fn (*rpc.tra
 capnpc-zig.rpc.transport.tcp.connection.Connection: struct
 capnpc-zig.rpc.transport.tcp.connection: struct
 capnpc-zig.rpc.transport.tcp.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
+capnpc-zig.rpc.transport.tcp.createLoopbackSocketPair: fn (Io) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createLoopbackSocketPair)).@"fn".return_type.?).error_union.error_set![2]rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
 capnpc-zig.rpc.transport.tcp.runtime.Listener.accept: fn (*rpc.transport.tcp.runtime.Listener) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.accept)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close: fn (*rpc.transport.tcp.runtime.Listener) void
 capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress: fn (*const rpc.transport.tcp.runtime.Listener) Io.net.IpAddress
 capnpc-zig.rpc.transport.tcp.runtime.Listener.init: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.connection.Connection.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.runtime.Listener
-capnpc-zig.rpc.transport.tcp.runtime.Listener.initFd: fn (mem.Allocator, Io, i32, rpc.transport.tcp.connection.Connection.Options) rpc.transport.tcp.runtime.Listener
-capnpc-zig.rpc.transport.tcp.runtime.Listener.listenHandle: fn (*const rpc.transport.tcp.runtime.Listener) i32
+capnpc-zig.rpc.transport.tcp.runtime.Listener.initFd: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) rpc.transport.tcp.runtime.Listener
+capnpc-zig.rpc.transport.tcp.runtime.Listener.listenHandle: fn (*const rpc.transport.tcp.runtime.Listener) rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.Listener: struct
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.deinit: fn (*rpc.transport.tcp.runtime.Runtime) void
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.init: fn (mem.Allocator) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Runtime.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.runtime.Runtime
 capnpc-zig.rpc.transport.tcp.runtime.Runtime: struct
 capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage: union
-capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, i32) void
+capnpc-zig.rpc.transport.tcp.runtime.SocketFd: struct
+capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
+capnpc-zig.rpc.transport.tcp.runtime.createLoopbackSocketPair: fn (Io) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createLoopbackSocketPair)).@"fn".return_type.?).error_union.error_set![2]rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
 capnpc-zig.rpc.transport.tcp.runtime: struct
+capnpc-zig.rpc.transport.tcp.stream.SocketFd: struct
 capnpc-zig.rpc.transport.tcp.stream.Transport.EnqueueError: type = error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}
 capnpc-zig.rpc.transport.tcp.stream.Transport.Options: struct
 capnpc-zig.rpc.transport.tcp.stream.Transport.QueueStats: struct
@@ -1527,8 +1532,8 @@ capnpc-zig.rpc.transport.tcp.stream.Transport.default_max_queued_bytes: const us
 capnpc-zig.rpc.transport.tcp.stream.Transport.default_max_queued_items: const usize
 capnpc-zig.rpc.transport.tcp.stream.Transport.deinit: fn (*rpc.transport.tcp.stream_transport.Transport) void
 capnpc-zig.rpc.transport.tcp.stream.Transport.enqueueWrite: fn (*rpc.transport.tcp.stream_transport.Transport, []const u8) error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}!void
-capnpc-zig.rpc.transport.tcp.stream.Transport.init: fn (mem.Allocator, Io, i32, usize) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.stream_transport.Transport.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.stream_transport.Transport
-capnpc-zig.rpc.transport.tcp.stream.Transport.initWithOptions: fn (mem.Allocator, Io, i32, rpc.transport.tcp.stream_transport.Transport.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.stream_transport.Transport.initWithOptions)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.stream_transport.Transport
+capnpc-zig.rpc.transport.tcp.stream.Transport.init: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, usize) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.stream_transport.Transport.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.stream_transport.Transport
+capnpc-zig.rpc.transport.tcp.stream.Transport.initWithOptions: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.stream_transport.Transport.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.stream_transport.Transport.initWithOptions)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.stream_transport.Transport
 capnpc-zig.rpc.transport.tcp.stream.Transport.isClosing: fn (*const rpc.transport.tcp.stream_transport.Transport) bool
 capnpc-zig.rpc.transport.tcp.stream.Transport.queueStats: fn (*rpc.transport.tcp.stream_transport.Transport) rpc.transport.tcp.stream_transport.Transport.QueueStats
 capnpc-zig.rpc.transport.tcp.stream.Transport.read: fn (*rpc.transport.tcp.stream_transport.Transport) error{AccessDenied,Canceled,ConnectionResetByPeer,NetworkDown,SocketUnconnected,SystemResources,Unexpected}!usize

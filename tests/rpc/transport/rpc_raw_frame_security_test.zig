@@ -23,32 +23,26 @@ fn buildInvalidMessageTagFrame(allocator: std.mem.Allocator) ![]const u8 {
     return builder.toBytes();
 }
 
-fn createSocketPair() ![2]std.posix.fd_t {
-    if (comptime builtin.target.os.tag == .windows) return error.SocketPairFailed;
-    var fds: [2]std.posix.fd_t = undefined;
-    if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
-        return error.SocketPairFailed;
-    }
-    return fds;
+const tcp = capnpc.rpc.transport.tcp;
+
+/// Portable connected pair: loopback TCP via std.Io, so these suites run
+/// on every platform (POSIX socketpair does not exist on Windows).
+fn createSocketPair() ![2]tcp.SocketFd {
+    return tcp.createLoopbackSocketPair(std.testing.io);
 }
 
-fn closeFd(fd: std.posix.fd_t) void {
-    switch (std.posix.errno(std.posix.system.close(fd))) {
-        .SUCCESS, .INTR, .BADF => {},
-        else => {},
-    }
+fn closeFd(socket: tcp.SocketFd) void {
+    tcp.closeFd(std.testing.io, socket);
 }
 
-fn writeAll(fd: std.posix.fd_t, bytes: []const u8) !void {
+fn writeAll(socket: tcp.SocketFd, bytes: []const u8) !void {
+    const io = std.testing.io;
+    const pattern: []const u8 = &.{};
+    const data: [1][]const u8 = .{pattern};
     var offset: usize = 0;
     while (offset < bytes.len) {
-        const rc = std.posix.system.write(fd, bytes[offset..].ptr, bytes.len - offset);
-        const n: usize = switch (std.posix.errno(rc)) {
-            .SUCCESS => @intCast(rc),
-            .INTR => continue,
-            .PIPE => return error.BrokenPipe,
-            else => return error.WriteFailed,
-        };
+        const n = io.vtable.netWrite(io.userdata, socket.handle, bytes[offset..], &data, 0) catch
+            return error.WriteFailed;
         if (n == 0) return error.BrokenPipe;
         offset += n;
     }
@@ -82,7 +76,6 @@ fn containsDisclosureMarker(reason: []const u8) bool {
 }
 
 test "raw TCP client malformed segment header closes without dispatch" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     const pair = try createSocketPair();
@@ -139,11 +132,11 @@ test "raw TCP client malformed segment header closes without dispatch" {
 }
 
 test "raw TCP client valid frame before malformed frame dispatches only the valid frame" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
+    // pair[1] is closed explicitly mid-test (the EOF signal); no defer —
+    // std.Io.Threaded treats a double close as a use-after-free bug.
     const pair = try createSocketPair();
-    defer closeFd(pair[1]);
 
     const State = struct {
         allocator: std.mem.Allocator,

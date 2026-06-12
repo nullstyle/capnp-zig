@@ -387,9 +387,9 @@ pub fn main(init: std.process.Init) !void {
     const fd = try rawTcpConnect(address, io);
 
     const conn = try allocator.create(rpc.transport.tcp.Connection);
-    conn.* = rpc.transport.tcp.Connection.init(allocator, io, fd, .{}) catch |err| {
+    conn.* = rpc.transport.tcp.Connection.init(allocator, io, .{ .handle = fd }, .{}) catch |err| {
         allocator.destroy(conn);
-        rpc.transport.tcp.closeFd(io, fd);
+        rpc.transport.tcp.closeFd(io, .{ .handle = fd });
         return err;
     };
     app.conn = conn;

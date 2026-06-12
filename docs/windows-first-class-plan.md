@@ -1,9 +1,30 @@
 # Windows as a First-Class Target and Development OS
 
-Status: Phase 0 landed (guardrails); Phase 1 in progress. Owner: rotating
-per session; this document is the source of truth for progress.
+Status: Phases 0–1 landed; Phase 2 next. Owner: rotating per session;
+this document is the source of truth for progress.
 
 Progress notes:
+
+- Phase 1 (2026-06-12): the spike confirmed `std.Io`'s portable
+  read-with-timeout path is blocked upstream (Windows `Threaded` batch
+  net ops are blocking-only, "TODO integrate with overlapped I/O"), so
+  the fallback design shipped: the connection wait loop uses `WSAPoll`
+  on Windows (locally declared; std has no binding) with the same
+  shape as the POSIX `poll(2)` path, the wake channel is a loopback TCP
+  pair where POSIX uses `socketpair(2)`, wake writes/drains go through
+  the io vtable on all platforms, and `TCP_NODELAY` is set via a local
+  `ws2_32.setsockopt` declaration. Public handle-taking transport entry
+  points now take the platform-stable `SocketFd` wrapper (fixes the
+  `check-api` width drift; `check-api` now runs on all three Test
+  matrix OSes). The socket-pair test helpers are portable
+  (`createLoopbackSocketPair` via `std.Io`), the tick/idle,
+  connection-failure, and raw-frame suites run on Windows with zero
+  skips, and the soak harness runs as a 2s smoke in every Test job
+  plus a Windows nightly lane. Porting found one real bug class: the
+  old POSIX test helpers silently swallowed `EBADF` double-closes that
+  `std.Io.Threaded` correctly treats as use-after-free.
+  The `std.Io`-native loop remains the long-term direction once
+  upstream lands overlapped net I/O for the Windows Threaded backend.
 
 - Phase 0 (2026-06-12): `.gitattributes` landed and validated against an
   `autocrlf=true` clone; plugin CLI options now parse on Windows; platform

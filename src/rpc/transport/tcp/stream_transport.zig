@@ -4,6 +4,15 @@ const log = std.log.scoped(.rpc_transport);
 const net = std.Io.net;
 const events = @import("../../events.zig");
 
+/// A connected socket passed into the transport layer. A thin named
+/// wrapper: `std.Io.net.Socket.Handle` is an `i32` on POSIX and a pointer
+/// (`HANDLE`) on Windows, and naming the type keeps the public surface —
+/// and the docs/api-snapshot.txt gate built from it — identical on every
+/// platform.
+pub const SocketFd = struct {
+    handle: net.Socket.Handle,
+};
+
 /// TCP transport layer with concurrent read/write support.
 ///
 /// `Transport` owns a TCP socket handle and provides blocking
@@ -199,16 +208,16 @@ pub const Transport = struct {
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
-        fd: net.Socket.Handle,
+        socket: SocketFd,
         read_buffer_size: usize,
     ) !Transport {
-        return initWithOptions(allocator, io, fd, .{ .read_buffer_size = read_buffer_size });
+        return initWithOptions(allocator, io, socket, .{ .read_buffer_size = read_buffer_size });
     }
 
     pub fn initWithOptions(
         allocator: std.mem.Allocator,
         io: std.Io,
-        fd: net.Socket.Handle,
+        socket: SocketFd,
         options: Options,
     ) !Transport {
         ignoreSigpipe();
@@ -216,7 +225,7 @@ pub const Transport = struct {
         return .{
             .allocator = allocator,
             .io = io,
-            .fd = fd,
+            .fd = socket.handle,
             .read_buf = buf,
             .observer = options.observer,
             .write_queue = .{
@@ -482,7 +491,7 @@ test "transport init and deinit" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     try std.testing.expect(!transport.isClosing());
     transport.deinit();
 }
@@ -492,7 +501,7 @@ test "transport read returns data written to peer" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     // Write data into the other end of the socketpair.
@@ -506,7 +515,7 @@ test "transport read returns 0 after close" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     transport.close();
@@ -520,7 +529,7 @@ test "transport write sends data to peer" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     try transport.write("world");
@@ -535,7 +544,7 @@ test "transport write after close returns error" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     transport.close();
@@ -546,7 +555,7 @@ test "transport read returns 0 on peer close (EOF)" {
     if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const pair = try createSocketPair();
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     // Close the peer end — transport should see EOF.
@@ -560,7 +569,7 @@ test "transport isClosing tracks close state" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     try std.testing.expect(!transport.isClosing());
@@ -573,7 +582,7 @@ test "transport close is idempotent" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     transport.close();
@@ -586,7 +595,7 @@ test "transport shutdown then deinit does not double-close" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     transport.shutdown();
     transport.deinit(); // should close fd and free buffer without error
 }
@@ -596,7 +605,7 @@ test "transport shutdown after deinit observes closed fd guard" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     transport.deinit();
     transport.shutdown();
     try std.testing.expect(transport.isClosing());
@@ -607,7 +616,7 @@ test "transport enqueue write delivers data to peer" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     try transport.startWriter();
@@ -627,7 +636,7 @@ test "transport enqueue write delivers multiple frames in order" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     try transport.startWriter();
@@ -654,7 +663,7 @@ test "transport enqueue write after close returns error" {
     const pair = try createSocketPair();
     defer ioClose(std.testing.io, pair[0][1]);
 
-    var transport = try Transport.init(std.testing.allocator, std.testing.io, pair[0][0], 64);
+    var transport = try Transport.init(std.testing.allocator, std.testing.io, .{ .handle = pair[0][0] }, 64);
     defer transport.deinit();
 
     transport.close();

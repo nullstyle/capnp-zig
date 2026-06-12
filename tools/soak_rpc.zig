@@ -230,7 +230,7 @@ const Worker = struct {
 
         const conn = try self.allocator.create(Connection);
         errdefer self.allocator.destroy(conn);
-        conn.* = try Connection.init(self.allocator, self.io, fd, .{
+        conn.* = try Connection.init(self.allocator, self.io, .{ .handle = fd }, .{
             .tick_interval_ms = 5,
             .idle_timeout_ms = 2_000,
         });

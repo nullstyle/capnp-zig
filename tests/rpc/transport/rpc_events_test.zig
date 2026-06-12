@@ -72,7 +72,7 @@ test "tcp observer reports frame send metadata without frame bytes" {
         .vtable = &vtable,
     };
 
-    var transport = try Transport.initWithOptions(std.testing.allocator, io, fake_socket_handle, .{
+    var transport = try Transport.initWithOptions(std.testing.allocator, io, .{ .handle = fake_socket_handle }, .{
         .read_buffer_size = 64,
         .observer = recorder.observer(),
     });

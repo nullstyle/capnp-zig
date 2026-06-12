@@ -39,8 +39,10 @@ pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
             pub const Runtime = runtime.Runtime;
             pub const Listener = runtime.Listener;
             pub const SockAddrStorage = runtime.SockAddrStorage;
+            pub const SocketFd = stream.SocketFd;
             pub const closeFd = runtime.closeFd;
             pub const createListenSocket = runtime.createListenSocket;
+            pub const createLoopbackSocketPair = runtime.createLoopbackSocketPair;
             pub const ipAddressToSockaddr = runtime.ipAddressToSockaddr;
         } else struct {};
     };
