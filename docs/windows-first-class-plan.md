@@ -25,26 +25,35 @@ Progress notes:
   cross-implementation docker e2e remains the ubuntu CI gate and works
   locally on Windows via Docker Desktop/WSL2.
 
-- Phase 1 (2026-06-12): the spike confirmed `std.Io`'s portable
-  read-with-timeout path is blocked upstream (Windows `Threaded` batch
-  net ops are blocking-only, "TODO integrate with overlapped I/O"), so
-  the fallback design shipped: the connection wait loop uses `WSAPoll`
-  on Windows (locally declared; std has no binding) with the same
-  shape as the POSIX `poll(2)` path, the wake channel is a loopback TCP
-  pair where POSIX uses `socketpair(2)`, wake writes/drains go through
-  the io vtable on all platforms, and `TCP_NODELAY` is set via a local
-  `ws2_32.setsockopt` declaration. Public handle-taking transport entry
-  points now take the platform-stable `SocketFd` wrapper (fixes the
-  `check-api` width drift; `check-api` now runs on all three Test
-  matrix OSes). The socket-pair test helpers are portable
-  (`createLoopbackSocketPair` via `std.Io`), the tick/idle,
-  connection-failure, and raw-frame suites run on Windows with zero
-  skips, and the soak harness runs as a 2s smoke in every Test job
-  plus a Windows nightly lane. Porting found one real bug class: the
-  old POSIX test helpers silently swallowed `EBADF` double-closes that
-  `std.Io.Threaded` correctly treats as use-after-free.
-  The `std.Io`-native loop remains the long-term direction once
-  upstream lands overlapped net I/O for the Windows Threaded backend.
+- Phase 1 (2026-06-12): two designs were eliminated by upstream
+  realities before the third shipped. The `std.Io` read-with-timeout
+  path is blocked (Windows `Threaded` batch net ops are blocking-only,
+  "TODO integrate with overlapped I/O"), and the `WSAPoll` fallback
+  turned out to be impossible too: **std's Windows sockets are raw AFD
+  handles** created via `NtCreateFile`/`IOCTL_AFD_*`, which winsock
+  (`WSAPoll`, `ws2_32.setsockopt`) rejects — on real Windows runners
+  this surfaced as the run loop hanging (poll error degraded to a
+  tickless blocking read). The shipped design needs no readiness
+  primitive at all: on Windows, `run()` delegates blocking reads to a
+  dedicated reader thread and waits on a timed `std.Io.Condition` for
+  read completion, wake, or the tick timeout (`WinReadBridge` in
+  connection.zig); buffer ownership alternates strictly between the
+  two threads, callbacks all stay on the `run()` thread, and `wake()`
+  signals the condition directly (no wake channel needed on Windows).
+  `TCP_NODELAY` on Windows is blocked upstream for the same AFD reason
+  and is a documented no-op; the one test that depends on Nagle-free
+  small writes ("traffic resets the idle clock") carries a documented
+  Windows skip while ticks/idle/deadline coverage runs there fully.
+  Public handle-taking transport entry points take the platform-stable
+  `SocketFd` wrapper (fixes the `check-api` width drift; `check-api`
+  runs in all three Test matrix OSes), the socket-pair test helpers
+  are portable (`createLoopbackSocketPair`, TCP_NODELAY'd on POSIX),
+  and soak runs as a 2s smoke per Test job plus a Windows nightly
+  lane. Porting also surfaced two real bug classes: test helpers that
+  silently swallowed `EBADF` double-closes (`std.Io.Threaded` rightly
+  panics on them as use-after-free), and timing tests whose margins
+  assumed unloaded schedulers. The `std.Io`-native loop remains the
+  long-term direction once upstream lands overlapped net I/O.
 
 - Phase 0 (2026-06-12): `.gitattributes` landed and validated against an
   `autocrlf=true` clone; plugin CLI options now parse on Windows; platform

@@ -137,13 +137,11 @@ pub const Listener = struct {
 /// small writes for ~40-200ms, which breaks tick/idle timing.
 fn setTcpNoDelay(fd: net.Socket.Handle) void {
     if (comptime builtin.target.os.tag == .windows) {
-        // No setsockopt binding in std's ws2_32 yet; declare the
-        // stable winsock API locally. TCP_NODELAY = 1, IPPROTO_TCP = 6.
-        const one: c_int = 1;
-        const rc = ws2.setsockopt(@intFromPtr(fd), 6, 1, @ptrCast(&one), @sizeOf(c_int));
-        if (rc != 0) {
-            log.debug("failed to set TCP_NODELAY (winsock rc={})", .{rc});
-        }
+        // std's Windows sockets are raw AFD handles: ws2_32.setsockopt
+        // rejects them, and std does not yet expose its internal AFD
+        // socket-option helper. Nagle stays on for Windows until
+        // upstream does (tracked in docs/windows-first-class-plan.md
+        // phase 4).
         return;
     }
     std.posix.setsockopt(
@@ -155,10 +153,6 @@ fn setTcpNoDelay(fd: net.Socket.Handle) void {
         log.debug("failed to set TCP_NODELAY: {}", .{err});
     };
 }
-
-const ws2 = struct {
-    extern "ws2_32" fn setsockopt(s: usize, level: c_int, optname: c_int, optval: [*]const u8, optlen: c_int) callconv(.winapi) c_int;
-};
 
 // ---------------------------------------------------------------------------
 // Cross-platform socket helpers (via std.Io)

@@ -69,6 +69,14 @@ pub const Connection = struct {
     /// Use this to drain a per-connection work queue on the correct thread.
     on_wake: ?*const fn (conn: *Connection) void = null,
 
+    /// Windows read-loop bridge; `{}` elsewhere. std's Windows sockets are
+    /// raw AFD handles that `WSAPoll` rejects, so the run loop there
+    /// delegates blocking reads to a dedicated reader thread and waits on
+    /// a timed condition for read completion, wake, or a tick timeout.
+    /// All callbacks still fire on the `run()` thread.
+    win_read: if (builtin.target.os.tag == .windows) WinReadBridge else void =
+        if (builtin.target.os.tag == .windows) .{} else {},
+
     // -- Periodic tick / idle reaping -----------------------------------------
 
     /// When set, `run()` waits with this timeout instead of blocking
@@ -160,22 +168,20 @@ pub const Connection = struct {
         return conn;
     }
 
-    /// Enable cross-thread wake support. Creates a socket pair so that
-    /// other threads can call `wake()` to interrupt the blocking `run()`
-    /// loop. The `on_wake` callback is invoked on the run loop's thread.
+    /// Enable cross-thread wake support so that other threads can call
+    /// `wake()` to interrupt the blocking `run()` loop. The `on_wake`
+    /// callback is invoked on the run loop's thread.
     ///
-    /// POSIX uses a `socketpair(2)`; Windows uses a connected loopback TCP
-    /// pair (pipes are not pollable by `WSAPoll`).
+    /// POSIX creates a `socketpair(2)` that the run loop polls alongside
+    /// the socket. Windows needs no channel: the run loop there waits on a
+    /// timed condition (see `WinReadBridge`) that `wake()` signals
+    /// directly.
     pub fn enableWake(
         self: *Connection,
         on_wake: *const fn (conn: *Connection) void,
     ) !void {
         if (comptime builtin.target.os.tag == .freestanding) return;
-        if (comptime builtin.target.os.tag == .windows) {
-            const pair = runtime_helpers.createLoopbackSocketPair(self.io) catch
-                return error.WakePipeCreateFailed;
-            self.wake_fds = .{ pair[0].handle, pair[1].handle };
-        } else {
+        if (comptime builtin.target.os.tag != .windows) {
             var fds: [2]std.posix.fd_t = undefined;
             if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
                 return error.WakePipeCreateFailed;
@@ -188,6 +194,14 @@ pub const Connection = struct {
     /// Wake the run loop from any thread. Thread-safe.
     /// The run loop will call `on_wake` on its own thread.
     pub fn wake(self: *Connection) void {
+        if (comptime builtin.target.os.tag == .windows) {
+            const io = self.io;
+            self.win_read.mu.lockUncancelable(io);
+            self.win_read.wake_requested = true;
+            self.win_read.cond.broadcast(io);
+            self.win_read.mu.unlock(io);
+            return;
+        }
         const fds = self.wake_fds orelse return;
         const pattern: []const u8 = &.{};
         const data: [1][]const u8 = .{pattern};
@@ -293,13 +307,32 @@ pub const Connection = struct {
             return;
         };
 
+        if (comptime builtin.target.os.tag == .windows) {
+            self.runLoopWindows();
+        } else self.runLoopShared();
+
+        // Stop the writer thread before invoking on_close, since on_close
+        // may deinit/destroy the connection.
+        self.transport.stopWriter();
+
+        // Signal close to the owner (typically the Peer).
+        self.emitClosed();
+        if (self.on_close) |cb| {
+            self.invokeCloseCallback(cb);
+        }
+        self.completeDeferredDeinit();
+    }
+
+    /// The POSIX/freestanding read loop: optional poll-based readiness for
+    /// ticks and wake, then blocking reads on this thread.
+    fn runLoopShared(self: *Connection) void {
         while (!self.transport.isClosing()) {
             // Wait for readiness when wake support or a tick cadence is
             // enabled, so the loop can wait on the socket (plus the wake
-            // channel) with a bounded timeout. POSIX uses poll(2); Windows
-            // uses WSAPoll, which has the same shape (freestanding has no
-            // readiness primitive: ticks/wake do not fire there).
-            if (comptime builtin.target.os.tag != .freestanding) {
+            // channel) with a bounded timeout (freestanding has no
+            // readiness primitive: ticks/wake do not fire there). Windows
+            // never enters this loop; see runLoopWindows.
+            if (comptime builtin.target.os.tag != .freestanding and builtin.target.os.tag != .windows) {
                 // An idle bound without an explicit tick still needs the
                 // loop to wake periodically; default to 500ms checks.
                 const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
@@ -317,18 +350,6 @@ pub const Connection = struct {
                     else
                         -1;
                     const poll_result = pollRetryIntr(fds_buf[0..nfds], timeout_ms);
-                    if (comptime builtin.target.os.tag == .windows) {
-                        // A persistent WSAPoll failure must not silently
-                        // degrade into a tickless blocking read: ticks,
-                        // idle reaping, and wake would all stop. Treat it
-                        // as a dead connection. (POSIX keeps its historic
-                        // fall-through-to-read behavior, where the read
-                        // surfaces the error.)
-                        if (poll_result == .err) {
-                            log.debug("WSAPoll failed, exiting run loop", .{});
-                            break;
-                        }
-                    }
                     if (poll_result == .timeout) {
                         // Tick: the interval elapsed with no inbound I/O.
                         if (self.idleDeadlineExceeded()) {
@@ -386,16 +407,144 @@ pub const Connection = struct {
                 break;
             }
         }
-        // Stop the writer thread before invoking on_close, since on_close
-        // may deinit/destroy the connection.
-        self.transport.stopWriter();
+    }
 
-        // Signal close to the owner (typically the Peer).
-        self.emitClosed();
-        if (self.on_close) |cb| {
-            self.invokeCloseCallback(cb);
+    /// The Windows read loop. One reader thread performs the blocking
+    /// reads; this thread waits on a timed condition so ticks, idle
+    /// reaping, and wake all keep working without a socket readiness
+    /// primitive. Reads target `transport.read_buf` exactly as on POSIX —
+    /// ownership alternates strictly between the two threads via
+    /// `win_read.result`/`read_requested`, so there is no concurrent
+    /// access and no copying.
+    fn runLoopWindows(self: *Connection) void {
+        const io = self.io;
+
+        self.win_read.thread = std.Thread.spawn(.{}, winReaderMain, .{self}) catch |err| {
+            log.debug("failed to start windows reader thread: {}", .{err});
+            self.last_error = err;
+            self.invokeOnError(err);
+            return;
+        };
+        defer self.joinWinReader();
+
+        while (!self.transport.isClosing()) {
+            const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
+                (if (self.idle_timeout_ms != null) @as(?u32, 500) else null);
+
+            var outcome: ?WinReadBridge.ReadOutcome = null;
+            var woke = false;
+            {
+                self.win_read.mu.lockUncancelable(io);
+                defer self.win_read.mu.unlock(io);
+                if (self.win_read.result == null and !self.win_read.read_requested) {
+                    self.win_read.read_requested = true;
+                    self.win_read.cond.broadcast(io);
+                }
+                if (self.win_read.result == null and !self.win_read.wake_requested) {
+                    if (effective_tick_ms) |tick_ms| {
+                        const timeout: std.Io.Timeout = .{ .duration = .{
+                            .raw = .{ .nanoseconds = @as(i96, tick_ms) * std.time.ns_per_ms },
+                            .clock = .awake,
+                        } };
+                        // error.Timeout is the tick; anything else is
+                        // treated the same (spurious wake, re-checked
+                        // below).
+                        self.win_read.cond.waitTimeout(io, &self.win_read.mu, timeout) catch {};
+                    } else {
+                        self.win_read.cond.waitUncancelable(io, &self.win_read.mu);
+                    }
+                }
+                if (self.win_read.wake_requested) {
+                    self.win_read.wake_requested = false;
+                    woke = true;
+                }
+                if (self.win_read.result) |r| {
+                    outcome = r;
+                    self.win_read.result = null;
+                }
+            }
+
+            if (woke) {
+                if (self.on_wake) |cb| cb(self);
+            }
+
+            const r = outcome orelse {
+                if (woke) continue;
+                // Tick: the interval elapsed with no read completion.
+                if (self.idleDeadlineExceeded()) {
+                    log.debug("idle timeout exceeded, reaping connection", .{});
+                    events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
+                    break;
+                }
+                if (self.on_tick) |cb| cb(self);
+                if (self.deinit_requested) break;
+                continue;
+            };
+
+            switch (r) {
+                .eof => {
+                    log.debug("transport EOF", .{});
+                    break;
+                },
+                .fail => |err| {
+                    log.debug("transport read error: {}", .{err});
+                    self.last_error = err;
+                    self.invokeOnError(err);
+                    self.on_message = null;
+                    self.on_error = null;
+                    self.transport.shutdown();
+                    break;
+                },
+                .data => |n| {
+                    self.last_activity_ns = nowNs(io);
+                    if (!self.handleRead(self.transport.read_buf[0..n])) {
+                        self.transport.shutdown();
+                        break;
+                    }
+                },
+            }
         }
-        self.completeDeferredDeinit();
+    }
+
+    /// Reader-thread body for the Windows loop: performs one blocking
+    /// `transport.read()` per request and publishes the outcome.
+    fn winReaderMain(self: *Connection) void {
+        const io = self.io;
+        while (true) {
+            {
+                self.win_read.mu.lockUncancelable(io);
+                defer self.win_read.mu.unlock(io);
+                while (!self.win_read.read_requested and !self.win_read.exit) {
+                    self.win_read.cond.waitUncancelable(io, &self.win_read.mu);
+                }
+                if (self.win_read.exit) return;
+                self.win_read.read_requested = false;
+            }
+            const outcome: WinReadBridge.ReadOutcome = blk: {
+                const n = self.transport.read() catch |err| break :blk .{ .fail = err };
+                if (n == 0) break :blk .eof;
+                break :blk .{ .data = n };
+            };
+            self.win_read.mu.lockUncancelable(io);
+            self.win_read.result = outcome;
+            self.win_read.cond.broadcast(io);
+            self.win_read.mu.unlock(io);
+        }
+    }
+
+    /// Signal the Windows reader thread to exit and join it. The socket
+    /// shutdown unblocks a read still pending in the kernel; the
+    /// connection is terminating on every path that reaches this.
+    fn joinWinReader(self: *Connection) void {
+        const io = self.io;
+        const thread = self.win_read.thread orelse return;
+        self.win_read.mu.lockUncancelable(io);
+        self.win_read.exit = true;
+        self.win_read.cond.broadcast(io);
+        self.win_read.mu.unlock(io);
+        self.transport.shutdown();
+        thread.join();
+        self.win_read.thread = null;
     }
 
     /// Enqueue a framed message for sending to the remote peer.
@@ -562,53 +711,53 @@ fn nowNs(io: std.Io) i64 {
     return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
 }
 
+/// Synchronization state for the Windows read loop (see
+/// `Connection.runLoopWindows`). Ownership of `transport.read_buf`
+/// alternates strictly: the reader thread owns it from `read_requested`
+/// until it publishes `result`; the run thread owns it after taking
+/// `result` until the next request.
+const WinReadBridge = struct {
+    mu: std.Io.Mutex = .init,
+    cond: std.Io.Condition = .init,
+    /// Set by `wake()` from any thread; consumed by the run loop.
+    wake_requested: bool = false,
+    /// The run loop asks the reader thread for one blocking read.
+    read_requested: bool = false,
+    /// Outcome of the last completed read, owned by the run loop once set.
+    result: ?ReadOutcome = null,
+    exit: bool = false,
+    thread: ?std.Thread = null,
+
+    const ReadOutcome = union(enum) {
+        data: usize,
+        eof,
+        fail: anyerror,
+    };
+};
+
 const PollOutcome = enum { ready, timeout, err };
 
-/// Readiness-wait entry shaped per platform. POSIX uses `poll(2)`'s
-/// `pollfd`; Windows uses `WSAPOLLFD`, whose `fd` is a `SOCKET`
-/// (pointer-width integer) rather than a file descriptor.
-const PollFd = if (builtin.target.os.tag == .windows) extern struct {
-    fd: usize,
-    events: i16,
-    revents: i16,
-} else std.posix.pollfd;
+/// POSIX readiness-wait entry. The Windows loop does not poll at all
+/// (std's AFD-created sockets are rejected by WSAPoll); see
+/// `Connection.runLoopWindows`.
+const PollFd = std.posix.pollfd;
 
-// Readiness masks. `WSAPoll` only accepts the RDNORM/RDBAND/WRNORM/WRBAND
-// families in `events` (ERR/HUP/NVAL are output-only and rejected as
-// input), so the wait event is RDNORM and the input mask accepts the
-// RDNORM|RDBAND composite that POSIX calls POLLIN.
-const poll_in_event: i16 = if (builtin.target.os.tag == .windows) 0x0100 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.IN;
-const poll_in_mask: i16 = if (builtin.target.os.tag == .windows) 0x0300 else poll_in_event;
-const poll_err_mask: i16 = if (builtin.target.os.tag == .windows) 0x0001 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.ERR;
-const poll_hup_mask: i16 = if (builtin.target.os.tag == .windows) 0x0002 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.HUP;
-const poll_nval_mask: i16 = if (builtin.target.os.tag == .windows) 0x0004 else if (builtin.target.os.tag == .freestanding) 0 else std.posix.POLL.NVAL;
+const poll_in_event: i16 = if (builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) 0 else std.posix.POLL.IN;
+const poll_in_mask: i16 = poll_in_event;
+const poll_err_mask: i16 = if (builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) 0 else std.posix.POLL.ERR;
+const poll_hup_mask: i16 = if (builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) 0 else std.posix.POLL.HUP;
+const poll_nval_mask: i16 = if (builtin.target.os.tag == .freestanding or builtin.target.os.tag == .windows) 0 else std.posix.POLL.NVAL;
 
 fn makePollFd(handle: std.Io.net.Socket.Handle) PollFd {
-    if (comptime builtin.target.os.tag == .windows) {
-        return .{ .fd = @intFromPtr(handle), .events = poll_in_event, .revents = 0 };
-    }
     return .{ .fd = handle, .events = poll_in_event, .revents = 0 };
 }
 
-/// `WSAPoll` is missing from std's ws2_32 bindings; declare the stable
-/// winsock API locally (Vista+).
-const ws2 = struct {
-    extern "ws2_32" fn WSAPoll(fdArray: [*]PollFd, fds: c_ulong, timeout: c_int) callconv(.winapi) c_int;
-};
-
-/// Readiness wait with EINTR retry. POSIX classifies outcomes via errno
-/// because the raw poll return type differs across platforms (usize on
-/// Linux syscalls, c_int via libc elsewhere). Windows uses WSAPoll, which
-/// reports errors as SOCKET_ERROR (-1) and has no EINTR.
+/// poll(2) with EINTR retry. The raw return type differs across platforms
+/// (usize on Linux syscalls, c_int via libc elsewhere), so outcomes are
+/// classified via errno rather than the sign of the return value.
 fn pollRetryIntr(fds: []PollFd, timeout_ms: i32) PollOutcome {
-    if (comptime builtin.target.os.tag == .freestanding) {
+    if (comptime builtin.target.os.tag == .windows or builtin.target.os.tag == .freestanding) {
         return .err;
-    }
-    if (comptime builtin.target.os.tag == .windows) {
-        const rc = ws2.WSAPoll(fds.ptr, @intCast(fds.len), timeout_ms);
-        if (rc == 0) return .timeout;
-        if (rc < 0) return .err;
-        return .ready;
     }
     while (true) {
         const rc = std.posix.system.poll(@ptrCast(fds.ptr), @intCast(fds.len), timeout_ms);

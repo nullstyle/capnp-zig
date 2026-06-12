@@ -17,7 +17,8 @@ updated as phases land.
 | Codegen + `capnpc-zig` plugin (incl. CLI options) | full | full | full |
 | RPC protocol engine (`Peer`, persistence, promises) | full | full | full |
 | TCP transport: connect/accept/read/write | full | full | full |
-| TCP transport: ticks, idle reaping, wake, `TCP_NODELAY` | full | full | full (WSAPoll wait loop; loopback-pair wake) |
+| TCP transport: ticks, idle reaping, wake | full | full | full (reader-thread bridge; see plan doc) |
+| TCP transport: `TCP_NODELAY` | full | full | blocked upstream (std's AFD sockets accept no winsock setsockopt; AFD option helper not exposed) |
 | Soak harness | full | full | full (nightly lane) |
 | Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |

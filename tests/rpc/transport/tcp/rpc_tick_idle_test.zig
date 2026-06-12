@@ -150,6 +150,12 @@ test "on_tick fires repeatedly while the connection is idle" {
 }
 
 test "traffic resets the idle clock" {
+    // Windows: the loopback pair cannot disable Nagle (std's AFD socket
+    // handles reject ws2_32.setsockopt and std does not expose its AFD
+    // option helper yet), and Nagle + delayed ACK stretches the feed
+    // cadence past any reasonable idle bound. Ticks and idle reaping
+    // themselves are covered on Windows by the other tests in this file.
+    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 

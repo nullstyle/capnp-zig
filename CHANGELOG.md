@@ -46,15 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Windows TCP transport parity** (`docs/windows-first-class-plan.md`
-  phase 1): ticks, idle reaping, cross-thread wake, and `TCP_NODELAY` now
-  work on Windows. The connection wait loop uses `WSAPoll` (same shape as
-  the POSIX `poll(2)` path), the wake channel is a loopback TCP pair where
-  POSIX uses `socketpair(2)` (`rpc.transport.tcp.createLoopbackSocketPair`
-  is the new portable pair helper), and wake writes/drains go through the
-  io vtable everywhere. The tick/idle, connection-failure, and raw-frame
-  suites now run on Windows with zero skips, `zig build check-api` and a
-  2-second soak smoke run in every Test matrix OS, and the nightly soak
-  gains a Windows lane.
+  phase 1): ticks, idle reaping, and cross-thread wake now work on
+  Windows. std's Windows sockets are raw AFD handles that winsock APIs
+  (WSAPoll, setsockopt) reject, so the Windows run loop uses no readiness
+  primitive: a dedicated reader thread performs the blocking reads and
+  the run thread waits on a timed `std.Io.Condition` for read completion,
+  wake, or the tick timeout — callbacks all stay on the `run()` thread.
+  `TCP_NODELAY` on Windows is a documented no-op until upstream exposes
+  AFD socket options. The portable pair helper
+  (`rpc.transport.tcp.createLoopbackSocketPair`) replaces POSIX-only
+  socketpair test plumbing, the tick/idle, connection-failure, and
+  raw-frame suites run on Windows (one documented Nagle-dependent skip),
+  `zig build check-api` and a 2-second soak smoke run in every Test
+  matrix OS, and the nightly soak gains a Windows lane.
 - **Windows developer experience** (`docs/windows-first-class-plan.md`
   phase 3): the Justfile pins `windows-shell` to `sh` (Git Bash) so every
   recipe works unchanged; benchmarks use the Io-backed monotonic clock
