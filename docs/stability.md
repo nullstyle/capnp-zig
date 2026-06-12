@@ -3,6 +3,29 @@
 This document describes the stability level of each module in capnpc-zig and
 provides guidance for downstream consumers.
 
+## Platform Support
+
+macOS, Linux, and Windows are all first-class targets and development
+operating systems; per-push CI gates every tier below. Status of the
+work bringing Windows to full parity is tracked in
+[windows-first-class-plan.md](windows-first-class-plan.md) — this table is
+updated as phases land.
+
+| Layer | Linux | macOS | Windows |
+|---|---|---|---|
+| Serialization / wire format / packing | full | full | full |
+| Codegen + `capnpc-zig` plugin (incl. CLI options) | full | full | full |
+| RPC protocol engine (`Peer`, persistence, promises) | full | full | full |
+| TCP transport: connect/accept/read/write | full | full | full |
+| TCP transport: ticks, idle reaping, wake, `TCP_NODELAY` | full | full | planned (phase 1) |
+| Soak harness | full | full | planned (phase 1) |
+| Self-interop e2e (zig↔zig loopback) | planned (phase 2) | planned (phase 2) | planned (phase 2) |
+| Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
+| Deterministic fuzz smoke | full | full | full |
+| Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
+| Evented `std.Io` backend | where zig exposes it | where zig exposes it | blocked upstream (`EventedBackendUnsupported`) |
+| QUIC transport | blocked on quic-zig repin | blocked on quic-zig repin | blocked on quic-zig repin |
+
 ## Stability Levels
 
 | Level | Meaning |

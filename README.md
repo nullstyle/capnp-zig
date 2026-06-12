@@ -49,6 +49,11 @@ The local `mise.toml` intentionally does not manage Zig because current
 development is using a master/zvm-style toolchain rather than a resolvable mise
 release tarball; CI installs the same pinned snapshot via `mlugg/setup-zig`.
 
+Linux, macOS, and Windows are all first-class targets and development
+operating systems, gated per push in CI. The per-layer platform matrix
+(including the few upstream-blocked features) lives in
+[docs/stability.md](docs/stability.md#platform-support).
+
 ## Usage
 
 ### As a Library

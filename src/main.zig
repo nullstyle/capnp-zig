@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
-    var options = parseRunOptionsFromArgs(init.minimal.args);
+    var options = try parseRunOptionsFromArgs(allocator, init.minimal.args);
     applyEnvRunOptions(init.environ_map, &options);
 
     // Read CodeGeneratorRequest from stdin
@@ -76,10 +76,14 @@ fn logStderr(comptime fmt: []const u8, args: anytype) void {
     std.debug.print(fmt, args);
 }
 
-fn parseRunOptionsFromArgs(args: std.process.Args) RunOptions {
+fn parseRunOptionsFromArgs(allocator: std.mem.Allocator, args: std.process.Args) !RunOptions {
     var options = RunOptions{};
-    if (builtin.target.os.tag == .windows) return options;
-    var iter = std.process.Args.Iterator.init(args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows, where plugin CLI options used to be silently
+    // ignored. All options parse to bools/enums, so nothing outlives
+    // the iterator.
+    var iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer iter.deinit();
     _ = iter.skip(); // skip program name
     while (iter.next()) |arg| {
         applyOptionToken(arg, &options);

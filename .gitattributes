@@ -1,0 +1,10 @@
+# Normalize all text to LF in the index and on checkout, on every
+# platform. Golden codegen files, docs greps, and `zig fmt --check`
+# depend on exact bytes; a Windows checkout with core.autocrlf=true
+# would otherwise corrupt them.
+* text=auto eol=lf
+
+# Raw Cap'n Proto wire-format fixtures are byte-compared by tests and
+# must never be line-ending-normalized.
+tests/capnp_testdata/testdata/** -text
+*.bin -text

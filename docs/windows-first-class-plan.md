@@ -1,7 +1,19 @@
 # Windows as a First-Class Target and Development OS
 
-Status: planned (phases land independently). Owner: rotating per session;
-this document is the source of truth for progress.
+Status: Phase 0 landed (guardrails); Phase 1 in progress. Owner: rotating
+per session; this document is the source of truth for progress.
+
+Progress notes:
+
+- Phase 0 (2026-06-12): `.gitattributes` landed and validated against an
+  `autocrlf=true` clone; plugin CLI options now parse on Windows; platform
+  matrix added to `docs/stability.md` with a README pointer. The
+  `check-api` handle-width fix (item 4) moved into Phase 1: the fix is
+  changing the same transport signatures Phase 1 rewires
+  (`Connection.init`/`Transport.init*`/`Listener.initFd`/`closeFd` take
+  `i32`-rendered `Socket.Handle` params today; they will take the
+  symbolically-rendered `std.Io.net.Socket` instead), so they are done in
+  one pass, and the Windows `check-api` CI step lands with it.
 
 Goal: Windows is a first-class target and development OS, with the same
 standing as macOS and Linux — feature parity in the runtime, test parity in
