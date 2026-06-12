@@ -182,6 +182,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feeder writes before it sleeps, so a delayed spawn on a loaded CI
   runner cannot leave the connection idle past the reap bound before the
   first byte arrives.
+- **Hardening gate compiles on Windows**: argument parsing uses
+  `std.process.Args.Iterator.initAllocator`, the cross-platform form
+  (plain `init` is a compile error on Windows, where CI also runs the
+  gate).
 - **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
   the wasm example/ABI modules now import a wasm-targeted core module, so
   `zig build check-compile -Dtarget=<foreign>` works.
