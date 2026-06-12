@@ -46,25 +46,21 @@ const EventedState = if (std.Io.Evented == void) void else struct {
     instance: *std.Io.Evented,
 };
 
-/// Platform-specific Evented options. This is `void` when Evented is not
-/// available in Zig's standard library for the target.
-pub const EventedInitOptions = if (std.Io.Evented == void) void else std.Io.Evented.InitOptions;
-
-const EventedInitError = if (std.Io.Evented == void) error{} else eventedInitError(std.Io.Evented);
 const evented_deinit_available = if (std.Io.Evented == void) false else std.Io.Evented != std.Io.Dispatch;
 
-fn eventedInitError(comptime Evented: type) type {
-    const Return = @typeInfo(@TypeOf(Evented.init)).@"fn".return_type orelse
-        @compileError("std.Io.Evented.init must return an error union");
-    return @typeInfo(Return).error_union.error_set;
-}
-
-/// Errors returned by `Backend.init`.
+/// Errors returned by `Backend.init`. Deliberately target-stable: the
+/// evented backend's target-specific init failures (io_uring setup, mmap
+/// limits, kqueue resources, ...) are coalesced into
+/// `EventedBackendInitFailed` so the public surface — and the
+/// docs/api-snapshot.txt gate built from it — does not vary by platform.
 pub const InitError = error{
     /// Zig's standard library does not provide `std.Io.Evented` for this
     /// target.
     EventedBackendUnsupported,
-} || std.mem.Allocator.Error || EventedInitError;
+    /// `std.Io.Evented` exists for this target but failed to initialize
+    /// (kernel support, fd/memory limits, ...).
+    EventedBackendInitFailed,
+} || std.mem.Allocator.Error;
 
 /// Owns the concrete backend storage. Call `.io()` to obtain a `std.Io`
 /// suitable for passing into the RPC runtime (`rpc.transport.tcp.Listener`,
@@ -91,7 +87,7 @@ pub const Backend = union(Kind) {
         return switch (kind) {
             .process_init => fromInit(default_io),
             .threaded => initThreaded(gpa, .{}),
-            .evented => initEvented(gpa, defaultEventedOptions()),
+            .evented => initEvented(gpa),
         };
     }
 
@@ -109,17 +105,22 @@ pub const Backend = union(Kind) {
         return .{ .threaded = std.Io.Threaded.init(gpa, options) };
     }
 
-    /// Construct a fresh `std.Io.Evented` with caller-controlled options.
-    pub fn initEvented(
-        gpa: std.mem.Allocator,
-        options: EventedInitOptions,
-    ) InitError!Backend {
+    /// Construct a fresh `std.Io.Evented` with default options. The
+    /// platform-specific options type is deliberately not part of the
+    /// public surface — it varies by target (Dispatch vs io_uring), which
+    /// would make this API and its snapshot platform-dependent.
+    pub fn initEvented(gpa: std.mem.Allocator) InitError!Backend {
         if (comptime std.Io.Evented == void) {
             return error.EventedBackendUnsupported;
         } else {
             const instance = try gpa.create(std.Io.Evented);
             errdefer gpa.destroy(instance);
-            try instance.init(gpa, options);
+            instance.init(gpa, .{}) catch |err| {
+                return if (err == error.OutOfMemory)
+                    error.OutOfMemory
+                else
+                    error.EventedBackendInitFailed;
+            };
             return .{ .evented = .{ .allocator = gpa, .instance = instance } };
         }
     }
@@ -156,11 +157,6 @@ pub const Backend = union(Kind) {
         };
     }
 };
-
-fn defaultEventedOptions() EventedInitOptions {
-    if (comptime std.Io.Evented == void) return {};
-    return .{};
-}
 
 /// Parse a backend kind from a textual selector. Accepted spellings (case
 /// insensitive): `process_init` / `process-init` / `default`, `threaded`,

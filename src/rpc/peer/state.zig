@@ -113,9 +113,17 @@ pub fn PendingThirdPartyAwait(comptime QuestionType: type) type {
     };
 }
 
-pub fn initialOwnerThreadId() ?std.Thread.Id {
+/// Owner-thread identity captured at peer init. Wraps `std.Thread.Id`
+/// because its integer width varies by target (u32 on linux, u64 on
+/// darwin); the wrapper keeps the rendered public surface — and the
+/// docs/api-snapshot.txt gate built from it — identical on every platform.
+pub const OwnerThreadId = struct {
+    value: std.Thread.Id,
+};
+
+pub fn initialOwnerThreadId() ?OwnerThreadId {
     if (comptime builtin.target.os.tag == .freestanding) return null;
-    return std.Thread.getCurrentId();
+    return .{ .value = std.Thread.getCurrentId() };
 }
 
 /// Pure decision: should an affinity check fire for this owner/current
@@ -123,23 +131,23 @@ pub fn initialOwnerThreadId() ?std.Thread.Id {
 /// panicking. Checks always fire in Debug; in release modes they fire only
 /// when the embedder opted in to runtime checks.
 pub fn threadAffinityViolation(
-    owner_thread_id: ?std.Thread.Id,
-    current: std.Thread.Id,
+    owner_thread_id: ?OwnerThreadId,
+    current: OwnerThreadId,
     runtime_checks: bool,
     mode: std.builtin.OptimizeMode,
 ) bool {
     if (mode != .Debug and !runtime_checks) return false;
     const owner = owner_thread_id orelse return false;
-    return current != owner;
+    return current.value != owner.value;
 }
 
-pub fn assertThreadAffinity(owner_thread_id: ?std.Thread.Id, runtime_checks: bool) void {
+pub fn assertThreadAffinity(owner_thread_id: ?OwnerThreadId, runtime_checks: bool) void {
     if (comptime builtin.target.os.tag == .freestanding) return;
     // Skip the getCurrentId() read entirely when no check can fire.
     if (comptime builtin.mode != .Debug) {
         if (!runtime_checks) return;
     }
-    if (threadAffinityViolation(owner_thread_id, std.Thread.getCurrentId(), runtime_checks, builtin.mode)) {
+    if (threadAffinityViolation(owner_thread_id, .{ .value = std.Thread.getCurrentId() }, runtime_checks, builtin.mode)) {
         @panic("Peer method called from wrong thread: Peer is not thread-safe, all calls must be on the owner thread");
     }
 }

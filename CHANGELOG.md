@@ -151,6 +151,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Zig e2e interop gate is reliable on CI runners** (`tools/e2e_runner.zig`):
+  port readiness now requires the accepted connection to survive a short
+  probe window — a bare connect is a false positive against docker
+  published ports, whose userland proxy accepts before the in-container
+  server has bound (this made every `zig-client:*:python` case lose the
+  startup race on CI while passing on faster local machines). The zig e2e
+  client is pre-built once per phase so the first case no longer spends its
+  20s case timeout on a cold `zig build` (the `zig-client:game_world:cpp`
+  exit=124), and failing cases now always print their captured output so
+  CI logs are diagnosable without re-running.
+- **`check-api` is target-stable** (verified by running the checker against
+  the same snapshot in a linux/amd64 container): the snapshot gate had
+  failed on Linux CI since it landed because the surface rendered
+  differently per platform. `io_backend.InitError` no longer unions
+  `std.Io.Evented.init`'s target-specific error set (failures coalesce
+  into the new `error.EventedBackendInitFailed`), `Backend.initEvented`
+  drops its platform-typed options parameter (`EventedInitOptions`
+  removed; nothing consumed it), `rpc.peer.state` thread-affinity helpers
+  wrap `std.Thread.Id` in `OwnerThreadId` so signatures stop rendering the
+  target's integer width, and `tools/api_snapshot.zig` collapses
+  compiler-assigned `__struct_<n>` suffixes that shift across targets and
+  unrelated edits.
 - **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
   the wasm example/ABI modules now import a wasm-targeted core module, so
   `zig build check-compile -Dtarget=<foreign>` works.

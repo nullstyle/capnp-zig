@@ -415,7 +415,7 @@ pub const Peer = struct {
     /// Thread ID captured at init time. In debug builds, key entry points
     /// assert that the current thread matches this value. Initialized to
     /// null and set to the real thread ID in `initDetached`.
-    owner_thread_id: ?std.Thread.Id = null,
+    owner_thread_id: ?state.OwnerThreadId = null,
 
     /// When true, thread-affinity checks also run in release builds (they
     /// are always on in Debug). See `enableRuntimeThreadChecks`.

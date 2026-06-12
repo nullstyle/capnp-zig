@@ -96,10 +96,38 @@ fn lessThan(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.lessThan(u8, a, b);
 }
 
+/// Copy `line` with every `__struct_<digits>` collapsed to `__struct_*`.
+/// Those suffixes are compiler-assigned anonymous-type counters: they shift
+/// whenever unrelated code changes and differ between targets, so keeping
+/// them verbatim would make the snapshot churn without any API change.
+fn normalizeLine(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    const marker = "__struct_";
+    var rest = line;
+    while (std.mem.indexOf(u8, rest, marker)) |idx| {
+        var end = idx + marker.len;
+        while (end < rest.len and std.ascii.isDigit(rest[end])) end += 1;
+        try out.appendSlice(allocator, rest[0 .. idx + marker.len]);
+        try out.append(allocator, '*');
+        rest = rest[end..];
+    }
+    try out.appendSlice(allocator, rest);
+    return out.toOwnedSlice(allocator);
+}
+
 fn renderSnapshot(allocator: std.mem.Allocator) ![]u8 {
-    const sorted = try allocator.dupe([]const u8, api_lines);
-    defer allocator.free(sorted);
-    std.mem.sort([]const u8, sorted, {}, lessThan);
+    const normalized = try allocator.alloc([]u8, api_lines.len);
+    var normalized_count: usize = 0;
+    defer {
+        for (normalized[0..normalized_count]) |line| allocator.free(line);
+        allocator.free(normalized);
+    }
+    for (api_lines) |line| {
+        normalized[normalized_count] = try normalizeLine(allocator, line);
+        normalized_count += 1;
+    }
+    std.mem.sort([]u8, normalized, {}, lessThan);
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -109,7 +137,7 @@ fn renderSnapshot(allocator: std.mem.Allocator) ![]u8 {
         \\# and commit the regenerated file deliberately.
         \\
     );
-    for (sorted) |line| {
+    for (normalized) |line| {
         try out.appendSlice(allocator, line);
         try out.append(allocator, '\n');
     }

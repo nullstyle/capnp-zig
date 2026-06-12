@@ -29,13 +29,12 @@ capnpc-zig.codegen.TypeGenerator: struct
 capnpc-zig.codegen: struct
 capnpc-zig.io_backend.Backend.deinit: fn (*io_backend.Backend) void
 capnpc-zig.io_backend.Backend.fromInit: fn (Io) io_backend.Backend
-capnpc-zig.io_backend.Backend.init: fn (io_backend.Kind, mem.Allocator, Io) error{EventedBackendUnsupported,OutOfMemory,SystemResources}!io_backend.Backend
-capnpc-zig.io_backend.Backend.initEvented: fn (mem.Allocator, Io.Dispatch.InitOptions) error{EventedBackendUnsupported,OutOfMemory,SystemResources}!io_backend.Backend
+capnpc-zig.io_backend.Backend.init: fn (io_backend.Kind, mem.Allocator, Io) error{EventedBackendInitFailed,EventedBackendUnsupported,OutOfMemory}!io_backend.Backend
+capnpc-zig.io_backend.Backend.initEvented: fn (mem.Allocator) error{EventedBackendInitFailed,EventedBackendUnsupported,OutOfMemory}!io_backend.Backend
 capnpc-zig.io_backend.Backend.initThreaded: fn (mem.Allocator, Io.Threaded.InitOptions) io_backend.Backend
 capnpc-zig.io_backend.Backend.io: fn (*io_backend.Backend) Io
 capnpc-zig.io_backend.Backend: union
-capnpc-zig.io_backend.EventedInitOptions: struct
-capnpc-zig.io_backend.InitError: type = error{EventedBackendUnsupported,OutOfMemory,SystemResources}
+capnpc-zig.io_backend.InitError: type = error{EventedBackendInitFailed,EventedBackendUnsupported,OutOfMemory}
 capnpc-zig.io_backend.Kind: enum
 capnpc-zig.io_backend.parseKind: fn ([]const u8) ?io_backend.Kind
 capnpc-zig.io_backend: struct
@@ -562,7 +561,7 @@ capnpc-zig.rpc.generated.persistent.SaveResults.Reader: struct
 capnpc-zig.rpc.generated.persistent.SaveResults: struct
 capnpc-zig.rpc.generated.persistent.capnpSchemaManifestJson: fn () []const u8
 capnpc-zig.rpc.generated.persistent.persistent.Type: type = void
-capnpc-zig.rpc.generated.persistent.persistent.targets: const rpc.gen.capnp.persistent.persistent.targets__struct_156285
+capnpc-zig.rpc.generated.persistent.persistent.targets: const rpc.gen.capnp.persistent.persistent.targets__struct_*
 capnpc-zig.rpc.generated.persistent.persistent: struct
 capnpc-zig.rpc.generated.persistent: struct
 capnpc-zig.rpc.generated.rpc.Accept.Builder.init: fn (*serialization.message.MessageBuilder) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.rpc.Accept.Builder.init)).@"fn".return_type.?).error_union.error_set!rpc.gen.capnp.rpc.Accept.Builder
@@ -1238,6 +1237,7 @@ capnpc-zig.rpc.peer.state.JoinPartEntry: struct
 capnpc-zig.rpc.peer.state.JoinState.deinit: fn (*rpc.peer.peer_state_types.JoinState, mem.Allocator) void
 capnpc-zig.rpc.peer.state.JoinState.init: fn (mem.Allocator, u16) rpc.peer.peer_state_types.JoinState
 capnpc-zig.rpc.peer.state.JoinState: struct
+capnpc-zig.rpc.peer.state.OwnerThreadId: struct
 capnpc-zig.rpc.peer.state.PeerLimits: struct
 capnpc-zig.rpc.peer.state.PeerTimeouts: struct
 capnpc-zig.rpc.peer.state.PendingCall: struct
@@ -1251,9 +1251,9 @@ capnpc-zig.rpc.peer.state.Question: fn (comptime type) type
 capnpc-zig.rpc.peer.state.QuestionDeinitCtxFn: type = *const fn (mem.Allocator, *anyopaque) void
 capnpc-zig.rpc.peer.state.ResolvedAnswer: struct
 capnpc-zig.rpc.peer.state.ResolvedImport: struct
-capnpc-zig.rpc.peer.state.assertThreadAffinity: fn (?u64, bool) void
-capnpc-zig.rpc.peer.state.initialOwnerThreadId: fn () ?u64
-capnpc-zig.rpc.peer.state.threadAffinityViolation: fn (?u64, u64, bool, lang.OptimizeMode) bool
+capnpc-zig.rpc.peer.state.assertThreadAffinity: fn (?rpc.peer.state.OwnerThreadId, bool) void
+capnpc-zig.rpc.peer.state.initialOwnerThreadId: fn () ?rpc.peer.state.OwnerThreadId
+capnpc-zig.rpc.peer.state.threadAffinityViolation: fn (?rpc.peer.state.OwnerThreadId, rpc.peer.state.OwnerThreadId, bool, lang.OptimizeMode) bool
 capnpc-zig.rpc.peer.state: struct
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.sendResultsToTag: fn (rpc.peer.third_party.ForwardedCallDestination) rpc.gen.capnp.rpc.Call.SendResultsTo.WhichTag
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.thirdPartyPayload: fn (rpc.peer.third_party.ForwardedCallDestination) ?[]u8
@@ -1501,7 +1501,7 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.writeQueueStats: fn (*rpc.tra
 capnpc-zig.rpc.transport.tcp.connection.Connection: struct
 capnpc-zig.rpc.transport.tcp.connection: struct
 capnpc-zig.rpc.transport.tcp.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
-capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_86248
+capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
 capnpc-zig.rpc.transport.tcp.runtime.Listener.accept: fn (*rpc.transport.tcp.runtime.Listener) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.accept)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close: fn (*rpc.transport.tcp.runtime.Listener) void
 capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress: fn (*const rpc.transport.tcp.runtime.Listener) Io.net.IpAddress
@@ -1515,7 +1515,7 @@ capnpc-zig.rpc.transport.tcp.runtime.Runtime: struct
 capnpc-zig.rpc.transport.tcp.runtime.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, i32) void
 capnpc-zig.rpc.transport.tcp.runtime.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
-capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_86248
+capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
 capnpc-zig.rpc.transport.tcp.runtime: struct
 capnpc-zig.rpc.transport.tcp.stream.Transport.EnqueueError: type = error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}
 capnpc-zig.rpc.transport.tcp.stream.Transport.Options: struct

@@ -91,6 +91,9 @@ const Paths = struct {
 
 const server_timeout_ms: i64 = 60 * 1000;
 const case_timeout_ms: i64 = 20 * 1000;
+/// How long a freshly accepted connection must stay open before the port
+/// counts as ready (see `probeConnectionAlive`).
+const ready_probe_window_ms: i32 = 250;
 const default_e2e_zig_global_cache_dir = "./.zig-global-cache";
 
 fn usage() void {
@@ -595,18 +598,43 @@ fn printCommandFailure(label: []const u8, res: RunResult) void {
     if (res.stderr.len > 0) std.debug.print("stderr:\n{s}\n", .{res.stderr});
 }
 
+/// Wait until `port` accepts a connection that survives a short probe
+/// window. A bare connect is not enough for docker published ports: the
+/// userland proxy accepts on the host port as soon as the container starts
+/// and closes immediately when the in-container server has not bound yet,
+/// which reads as a false "ready" and races slow-booting backends.
 fn waitForPort(io: std.Io, port: u16, timeout_ms: i64) !bool {
     const addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
     const start = milliTimestamp(io);
 
     while (true) {
         if (rawTcpConnect(addr)) |fd| {
-            closeFd(fd);
-            return true;
-        } else |_| {
-            if (milliTimestamp(io) - start > timeout_ms) return false;
-            sleepNs(io, 100 * std.time.ns_per_ms);
+            defer closeFd(fd);
+            if (probeConnectionAlive(fd)) return true;
+        } else |_| {}
+        if (milliTimestamp(io) - start > timeout_ms) return false;
+        sleepNs(io, 100 * std.time.ns_per_ms);
+    }
+}
+
+/// True when a freshly connected socket stays open (quiet or readable)
+/// through the probe window. Cap'n Proto servers wait for the client's
+/// first frame, so silence means a live listener; an instant EOF or reset
+/// means a proxy whose backend is not up yet.
+fn probeConnectionAlive(fd: std.posix.fd_t) bool {
+    var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    while (true) {
+        const poll_rc = std.posix.system.poll(&fds, 1, ready_probe_window_ms);
+        switch (std.posix.errno(poll_rc)) {
+            .SUCCESS => {},
+            .INTR => continue,
+            else => return false,
         }
+        if (poll_rc == 0) return true; // Quiet and still open.
+        var buf: [1]u8 = undefined;
+        const read_rc = std.posix.system.read(fd, &buf, 1);
+        if (std.posix.errno(read_rc) != .SUCCESS) return false;
+        return read_rc != 0; // Bytes mean a live server; 0 is EOF.
     }
 }
 
@@ -920,6 +948,25 @@ fn runZigClientPhase(
 ) !void {
     std.debug.print("==> Phase: Zig client -> reference server\n", .{});
 
+    // Pre-build the client once so the first case does not spend its
+    // case timeout on a cold `zig build` (the per-case hook then hits a
+    // warm cache). Mirrors the zig-server phase pre-build.
+    if (zig_client_cmd_override == null) {
+        std.debug.print("    pre-building e2e-zig-client...\n", .{});
+        const res = try runCapture(allocator, io, &.{
+            "just",
+            "--justfile",
+            paths.zig_justfile,
+            "build-client",
+        }, null, null);
+        defer allocator.free(res.stdout);
+        defer allocator.free(res.stderr);
+        if (res.exit_code != 0) {
+            printCommandFailure("just build-client", res);
+            std.debug.print("    WARNING: pre-build failed, client tests will fail\n", .{});
+        }
+    }
+
     for (all_schemas) |schema| {
         if (!cfg.isSchemaSelected(schema)) continue;
 
@@ -955,7 +1002,9 @@ fn runZigClientPhase(
             defer allocator.free(status);
             try appendResult(allocator, results, key, status);
 
-            if (cfg.verbose and !std.mem.startsWith(u8, status, "PASS")) {
+            // Always surface failing-case output; CI logs are otherwise
+            // blind (the per-case .tap files are not uploaded anywhere).
+            if (!std.mem.startsWith(u8, status, "PASS")) {
                 std.debug.print("      output:\n{s}\n", .{combined});
             }
         }
@@ -1026,7 +1075,9 @@ fn runZigServerPhase(
             defer allocator.free(status);
             try appendResult(allocator, results, key, status);
 
-            if (cfg.verbose and !std.mem.startsWith(u8, status, "PASS")) {
+            // Always surface failing-case output; CI logs are otherwise
+            // blind (the per-case .tap files are not uploaded anywhere).
+            if (!std.mem.startsWith(u8, status, "PASS")) {
                 std.debug.print("      output:\n{s}\n", .{combined});
             }
         }
