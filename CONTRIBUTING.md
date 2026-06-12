@@ -23,17 +23,43 @@ fits together.
 | Build | `zig build` |
 | All tests | `zig build test --summary all` (or `just test`) |
 | Compile-only check | `zig build check` |
-| Format | `zig fmt src/ tests/` (or `just fmt`) |
+| Format | `just fmt` (never raw `zig fmt tests/` — it reformats excluded golden/generated files) |
 | Docs/snippets gate | `zig build docs-smoke` |
-| Cross-language e2e | `just e2e` (needs `capnp` and `go`) |
+| Self-interop e2e (no docker, all OSes) | `zig build e2e-self` (or `just e2e-self`) |
+| Cross-language e2e | `just e2e` (needs docker, `capnp`, and `go`) |
 | Soak harness | `zig build soak -- --seconds 5 --workers 4` |
 | Fuzz targets | `zig build test-fuzz` (deterministic) / `--fuzz` (coverage-guided) |
+| Windows test compile gate | `zig build check-test-compile -Dtarget=x86_64-windows` |
 
 Run focused suites while iterating (`zig build test-message`,
 `test-rpc-peer`, etc. — see CLAUDE.md for the full list), but make sure
 `zig build test`, `zig build check`, and `just fmt-check` pass before
 opening a PR. CI additionally runs hardening, ReleaseSafe, QUIC, WASM,
 e2e, and benchmark-regression jobs.
+
+## Developing on Windows
+
+Windows is a first-class development OS (see the
+[platform matrix](docs/stability.md#platform-support)). Quickstart:
+
+- **Zig**: install the pinned master snapshot from
+  [ci.yml](.github/workflows/ci.yml) — `zigup`/`scoop install zig-dev`
+  or a manual download both work; the version must match exactly.
+- **Shell**: install Git for Windows. `just` recipes assume a POSIX
+  `sh`, which Git Bash provides (the Justfile pins `windows-shell` to
+  it). Run `just` from Git Bash or any shell with `sh` on `PATH`.
+- **Line endings**: nothing to configure — `.gitattributes` forces LF
+  for text and protects binary fixtures regardless of `core.autocrlf`.
+- **Everything except the docker e2e runs natively**: `just test`,
+  `just e2e-self`, `just hardening`, `zig build check-api`,
+  `zig build soak -- --seconds 5`.
+- **Cross-language e2e**: needs Linux reference containers — install
+  Docker Desktop (WSL2 backend) and `just e2e` works locally. Hosted
+  Windows CI runners cannot do this; CI covers it on ubuntu and runs
+  the self-interop e2e on Windows instead.
+- **Build speed**: add a Microsoft Defender exclusion for the repo's
+  `.zig-cache/` and `zig-out/` directories; real-time scanning of
+  compiler outputs dominates build time otherwise.
 
 ## Conventions
 

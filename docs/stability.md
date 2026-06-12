@@ -19,7 +19,7 @@ updated as phases land.
 | TCP transport: connect/accept/read/write | full | full | full |
 | TCP transport: ticks, idle reaping, wake, `TCP_NODELAY` | full | full | full (WSAPoll wait loop; loopback-pair wake) |
 | Soak harness | full | full | full (nightly lane) |
-| Self-interop e2e (zig↔zig loopback) | planned (phase 2) | planned (phase 2) | planned (phase 2) |
+| Self-interop e2e (zig↔zig loopback, `zig build e2e-self`) | full | full | full |
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |

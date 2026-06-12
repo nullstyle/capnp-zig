@@ -50,6 +50,9 @@ jobs:
       - name: Soak smoke (2s, loopback TCP)
         run: zig build soak -- --seconds 2
 
+      - name: Self-interop e2e (zig client vs zig server, loopback)
+        run: zig build e2e-self --summary all
+
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest

@@ -1,9 +1,29 @@
 # Windows as a First-Class Target and Development OS
 
-Status: Phases 0–1 landed; Phase 2 next. Owner: rotating per session;
-this document is the source of truth for progress.
+Status: Phases 0–3 landed (one open decision below); Phase 4 is
+upstream-tracking only. Owner: rotating per session; this document is the
+source of truth for progress.
 
 Progress notes:
+
+- Phase 3 (2026-06-12): the Justfile pins `windows-shell` to `sh` (Git
+  Bash) so every recipe works unchanged on Windows; the benchmarks use
+  the Io-backed monotonic clock (no libc dependency) and cross-compile
+  for Windows; CONTRIBUTING gains a "Developing on Windows" quickstart
+  (toolchain, shell, Docker Desktop path for cross-impl e2e, Defender
+  exclusion). **Open decision for the repo owner**: marking the Windows
+  jobs as required branch-protection checks — required status checks
+  also reject direct pushes to `main`, which is the current workflow,
+  so this is deliberately not configured by automation. Enable it
+  together with a PR-based flow when ready.
+
+- Phase 2 (2026-06-12): `zig build e2e-self` (tools/e2e_self.zig) drives
+  the zig e2e client against the zig e2e server over real loopback TCP
+  for all four schemas with TAP accounting — pure `std.Io`, no docker,
+  no reference toolchains — and runs as a step in every Test matrix OS
+  plus `just e2e-self` locally (also part of `just ci`). The
+  cross-implementation docker e2e remains the ubuntu CI gate and works
+  locally on Windows via Docker Desktop/WSL2.
 
 - Phase 1 (2026-06-12): the spike confirmed `std.Io`'s portable
   read-with-timeout path is blocked upstream (Windows `Threaded` batch

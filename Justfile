@@ -1,3 +1,8 @@
+# Windows: recipes assume a POSIX shell. Git Bash (installed with Git for
+# Windows) provides `sh`; pinning it here makes `just` use it explicitly
+# instead of silently falling back to cmd/powershell semantics.
+set windows-shell := ["sh", "-cu"]
+
 # Build the plugin
 build:
     zig build
@@ -114,6 +119,10 @@ e2e:
 e2e-zig:
     just --justfile tests/e2e/Justfile test-zig
 
+# Run the no-docker self-interop e2e (zig client vs zig server, all OSes)
+e2e-self:
+    zig build e2e-self --summary all
+
 # Run e2e without rebuilding docker images
 e2e-skip-build:
     just --justfile tests/e2e/Justfile test-skip-build
@@ -146,6 +155,7 @@ ci:
     just ci-quic
     just src/rpc/check-rpc
     zig build test --summary all
+    just e2e-self
     just e2e-zig
 
 # Complete local release preflight, including heavier CI build/regression jobs

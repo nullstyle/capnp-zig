@@ -55,6 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suites now run on Windows with zero skips, `zig build check-api` and a
   2-second soak smoke run in every Test matrix OS, and the nightly soak
   gains a Windows lane.
+- **Windows developer experience** (`docs/windows-first-class-plan.md`
+  phase 3): the Justfile pins `windows-shell` to `sh` (Git Bash) so every
+  recipe works unchanged; benchmarks use the Io-backed monotonic clock
+  (no libc dependency) and compile for Windows; CONTRIBUTING gains a
+  "Developing on Windows" quickstart.
+- **`zig build e2e-self`** (`tools/e2e_self.zig`): no-docker self-interop
+  e2e — the zig e2e client runs against the zig e2e server over real
+  loopback TCP for all four schemas with TAP accounting, on every
+  platform. Runs in each Test matrix OS in CI (Windows runners cannot run
+  the Linux reference containers, so this is the Windows end-to-end
+  socket-stack exercise) and locally via `just e2e-self`.
 - **`zig build check-test-compile`** compiles every registered test
   binary without running it, and CI runs it for `x86_64-windows` on a
   Linux runner (new cross-target matrix entry) — Windows test-suite

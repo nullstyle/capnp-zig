@@ -5,16 +5,10 @@ const alloc_counter = @import("alloc_counter.zig");
 
 const message = capnp.message;
 
-fn readMonotonicNs() u64 {
-    if (builtin.os.tag == .linux) {
-        var ts: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(.MONOTONIC, &ts);
-        return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
-    } else {
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-        return @intCast(@as(i128, ts.sec) * std.time.ns_per_s + ts.nsec);
-    }
+fn readMonotonicNs(io: std.Io) u64 {
+    // Io-backed monotonic clock: portable to every platform (the previous
+    // libc clock_gettime path required libc on Windows).
+    return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
 }
 
 const Mode = enum {
@@ -329,7 +323,7 @@ pub fn main(init: std.process.Init) !void {
         };
     }
 
-    const start_ts = readMonotonicNs();
+    const start_ts = readMonotonicNs(io);
     var iter: usize = 0;
     while (iter < cfg.iterations) : (iter += 1) {
         checksum +%= switch (cfg.mode) {
@@ -338,7 +332,7 @@ pub fn main(init: std.process.Init) !void {
             .roundtrip => try doRoundTrip(allocator, &builder),
         };
     }
-    const elapsed_ns = readMonotonicNs() - start_ts;
+    const elapsed_ns = readMonotonicNs(io) - start_ts;
 
     const elapsed_ns_f = @as(f64, @floatFromInt(elapsed_ns));
     const seconds = elapsed_ns_f / 1_000_000_000.0;

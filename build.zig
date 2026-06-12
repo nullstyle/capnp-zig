@@ -419,6 +419,24 @@ pub fn build(b: *std.Build) void {
     const install_e2e_zig_server_step = b.step("e2e-zig-server-install", "Build Zig RPC e2e server (install only)");
     install_e2e_zig_server_step.dependOn(&b.addInstallArtifact(e2e_zig_server, .{}).step);
 
+    // Self-interop e2e: zig client vs zig server over loopback, no docker
+    // and no reference toolchains — the cross-platform end-to-end gate
+    // (Windows CI runners cannot run the Linux reference containers).
+    const e2e_self = b.addExecutable(.{
+        .name = "e2e-self",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/e2e_self.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_e2e_self = b.addRunArtifact(e2e_self);
+    run_e2e_self.addArtifactArg(e2e_zig_server);
+    run_e2e_self.addArtifactArg(e2e_zig_client);
+    const e2e_self_step = b.step("e2e-self", "Run self-interop e2e (zig client vs zig server over loopback)");
+    e2e_self_step.dependOn(&run_e2e_self.step);
+
+
     // Unit tests for main
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{
