@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`zig build check-test-compile`** compiles every registered test
+  binary without running it, and CI runs it for `x86_64-windows` on a
+  Linux runner (new cross-target matrix entry) — Windows test-suite
+  compile rot is now caught on every push without a Windows machine.
 - **Persistence / sturdy refs (RPC level 2)** (`rpc.peer.persistence`,
   `Peer.setPersistentExport`, `Peer.setRestorer`, `Peer.sendSave`,
   `Peer.sendRestore`): applications can mark an export persistent with a
@@ -200,6 +204,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tmp/` cleanup races the fuzzer log file; maker slice panics). The
   nightly job now classifies maker crashes and fuzzer-runtime panics as
   warnings; a fuzz target dying still fails the job.
+- **e2e zig client/server compile for Windows**: cross-platform argument
+  iteration, a comptime-stubbed wall clock (no libc dependency), and
+  removal of the dead `--listen-fd` flag whose `parseInt(fd_t, ...)`
+  cannot type-check where `fd_t` is a pointer.
 - **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
   the wasm example/ABI modules now import a wasm-targeted core module, so
   `zig build check-compile -Dtarget=<foreign>` works.

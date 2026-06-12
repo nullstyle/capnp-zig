@@ -64,7 +64,10 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = out.host;
 
-    var args_iter = std.process.Args.Iterator.init(args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows, which the cross-compile gate covers.
+    var args_iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer args_iter.deinit();
     _ = args_iter.skip(); // skip program name
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {

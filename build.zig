@@ -1,5 +1,11 @@
 const std = @import("std");
 
+/// Compile steps for every test registered through `addLibTest`, collected
+/// so `check-test-compile` can gate test compilation for cross targets
+/// (e.g. `zig build check-test-compile -Dtarget=x86_64-windows` on a POSIX
+/// host catches Windows test rot without a Windows runner).
+var registered_test_compile_steps: std.ArrayList(*std.Build.Step) = .empty;
+
 /// Create a test step that imports capnpc-zig and return its run step.
 fn addLibTest(
     b: *std.Build,
@@ -18,6 +24,7 @@ fn addLibTest(
             },
         }),
     });
+    registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
     return &b.addRunArtifact(t).step;
 }
 
@@ -779,6 +786,14 @@ pub fn build(b: *std.Build) void {
     check_compile_step.dependOn(&e2e_zig_client.step);
     check_compile_step.dependOn(&e2e_zig_server.step);
     check_compile_step.dependOn(&wasm_host_module.step);
+
+    // Compile every registered test binary without running it. CI pairs
+    // this with -Dtarget=x86_64-windows on a Linux runner so Windows test
+    // compile rot is caught on every push, cheaply.
+    const check_test_compile_step = b.step("check-test-compile", "Compile all registered test binaries without running them (cross-target safe)");
+    for (registered_test_compile_steps.items) |test_compile| {
+        check_test_compile_step.dependOn(test_compile);
+    }
 
     // Check step (compile visible user-facing targets without running them,
     // plus the docs/examples smoke gate which does execute on the host).

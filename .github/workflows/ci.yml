@@ -133,6 +133,7 @@ jobs:
           - aarch64-linux-gnu
           - x86-linux-gnu # 32-bit
           - powerpc64-linux-gnu # big-endian
+          - x86_64-windows # catches Windows rot without a Windows runner
     steps:
       - uses: actions/checkout@v6
         with:
@@ -146,6 +147,13 @@ jobs:
 
       - name: Compile-only check for ${{ matrix.target }}
         run: zig build check-compile -Dtarget=${{ matrix.target }} --summary all
+
+      - name: Compile test suite for ${{ matrix.target }}
+        # Windows-only: the native Test (windows) job runs the suite for
+        # real; this step exists so test compile breakage for Windows is
+        # caught even by contributors without Windows machines.
+        if: matrix.target == 'x86_64-windows'
+        run: zig build check-test-compile -Dtarget=${{ matrix.target }} --summary all
 
   hardening:
     name: Hardening gate (${{ matrix.os }})

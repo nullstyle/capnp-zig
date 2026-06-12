@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 const io_backend_options = @import("io_backend_options");
 
@@ -24,7 +25,6 @@ const CliArgs = struct {
     host: []const u8 = "0.0.0.0",
     port: u16 = 4700,
     schema: Schema = .game_world,
-    listen_fd: ?std.posix.fd_t = null,
 };
 
 const App = struct {
@@ -469,7 +469,10 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     var out = CliArgs{};
     var host_text: []const u8 = out.host;
 
-    var args_iter = std.process.Args.Iterator.init(args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows, which the cross-compile gate covers.
+    var args_iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer args_iter.deinit();
     _ = args_iter.skip(); // skip program name
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -489,11 +492,6 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
             out.schema = try parseSchema(schema_str);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--listen-fd")) {
-            const fd_str = args_iter.next() orelse return error.MissingArgValue;
-            out.listen_fd = try std.fmt.parseInt(std.posix.fd_t, fd_str, 10);
-            continue;
-        }
     }
 
     out.host = try allocator.dupe(u8, host_text);
@@ -501,6 +499,12 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
 }
 
 fn nowMillis() i64 {
+    if (comptime builtin.os.tag == .windows) {
+        // The e2e harness only runs this server on POSIX hosts; Windows
+        // builds exist for the cross-compile gate and need a well-typed
+        // stub rather than a libc clock dependency.
+        return 0;
+    }
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.REALTIME, &ts);
     return @as(i64, ts.sec) * 1000 + @divTrunc(@as(i64, ts.nsec), 1_000_000);
