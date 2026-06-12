@@ -319,8 +319,10 @@ pub const Connection = struct {
                     if (poll_result == .ready) {
                         // Drain wake pipe and invoke callback.
                         if (nfds == 2 and fds_buf[1].revents & std.posix.POLL.IN != 0) {
-                            var drain_buf: [64]u8 = undefined;
-                            _ = std.posix.system.read(self.wake_fds.?[0], &drain_buf, drain_buf.len);
+                            if (self.wake_fds) |wake_fds| {
+                                var drain_buf: [64]u8 = undefined;
+                                _ = std.posix.system.read(wake_fds[0], &drain_buf, drain_buf.len);
+                            }
                             if (self.on_wake) |cb| cb(self);
                         }
                         // POLLNVAL means the fd is invalid — break out of the run loop.

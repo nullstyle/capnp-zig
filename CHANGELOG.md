@@ -173,6 +173,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target's integer width, and `tools/api_snapshot.zig` collapses
   compiler-assigned `__struct_<n>` suffixes that shift across targets and
   unrelated edits.
+- **Hardening gate passes again**: the `st.on_save.?`/`st.on_restore.?`
+  unwraps introduced with persistence and the long-standing `wake_fds.?`
+  unwrap in the tick loop are restructured away (save/restore hook context
+  and handler now travel together as one optional; the wake-pipe drain
+  uses an optional capture), so the gate needs no new allowlist entries.
+- **`rpc_tick_idle_test` no longer races thread spawn**: the traffic
+  feeder writes before it sleeps, so a delayed spawn on a loaded CI
+  runner cannot leave the connection idle past the reap bound before the
+  first byte arrives.
 - **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
   the wasm example/ABI modules now import a wasm-targeted core module, so
   `zig build check-compile -Dtarget=<foreign>` works.

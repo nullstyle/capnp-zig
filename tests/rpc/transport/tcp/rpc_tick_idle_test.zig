@@ -156,12 +156,15 @@ test "traffic resets the idle clock" {
     const Feeder = struct {
         fn run(fd: std.posix.fd_t, write_io: std.Io) void {
             // Feed partial frame bytes every 20ms for ~100ms, keeping the
-            // connection alive past several idle windows.
+            // connection alive past several idle windows. Write before each
+            // sleep: on a loaded machine a delayed thread spawn must not
+            // leave the connection idle long enough to be reaped before the
+            // first byte arrives.
             var i: usize = 0;
             while (i < 5) : (i += 1) {
-                sleepMs(write_io, 20);
                 const byte = [_]u8{0};
                 _ = std.posix.system.write(fd, &byte, 1);
+                sleepMs(write_io, 20);
             }
             closeFd(write_io, fd);
         }

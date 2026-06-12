@@ -103,16 +103,27 @@ pub const RestoreResponse = union(enum) {
 /// Callback invoked when a `Peer.sendRestore` question completes.
 pub const RestoreResponseCallback = *const fn (ctx: *anyopaque, peer: *Peer, response: RestoreResponse) anyerror!void;
 
+/// A registered save hook: context and handler always travel together so
+/// dispatch never has to unwrap them independently.
+const SaveHook = struct {
+    ctx: *anyopaque,
+    on_save: SaveHandler,
+};
+
+/// A registered restore hook (see `SaveHook`).
+const RestoreHook = struct {
+    ctx: *anyopaque,
+    on_restore: RestoreHandler,
+};
+
 /// Persistence hooks installed on one export. The peer wraps the export's
 /// original handler with a trampoline that serves `Persistent.save()` and
 /// vat-level restore calls, forwarding everything else to the original.
 const PersistenceState = struct {
     export_id: u32,
     original: Export,
-    save_ctx: ?*anyopaque = null,
-    on_save: ?SaveHandler = null,
-    restore_ctx: ?*anyopaque = null,
-    on_restore: ?RestoreHandler = null,
+    save: ?SaveHook = null,
+    restore: ?RestoreHook = null,
 };
 
 const ExportEntry = state.ExportEntry(Export);
@@ -1132,8 +1143,7 @@ pub const Peer = struct {
     pub fn setPersistentExport(self: *Peer, export_id: u32, ctx: *anyopaque, on_save: SaveHandler) !void {
         self.assertThreadAffinity();
         const st = try self.ensurePersistenceState(export_id);
-        st.save_ctx = ctx;
-        st.on_save = on_save;
+        st.save = .{ .ctx = ctx, .on_save = on_save };
         log.debug("export {} marked persistent", .{export_id});
     }
 
@@ -1142,8 +1152,7 @@ pub const Peer = struct {
     pub fn clearPersistentExport(self: *Peer, export_id: u32) void {
         self.assertThreadAffinity();
         const st = self.persistent_exports.get(export_id) orelse return;
-        st.save_ctx = null;
-        st.on_save = null;
+        st.save = null;
         self.dropPersistenceStateIfUnused(export_id, st);
     }
 
@@ -1160,8 +1169,7 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         const bootstrap_id = self.bootstrap_export_id orelse return error.BootstrapNotConfigured;
         const st = try self.ensurePersistenceState(bootstrap_id);
-        st.restore_ctx = ctx;
-        st.on_restore = on_restore;
+        st.restore = .{ .ctx = ctx, .on_restore = on_restore };
         self.restorer_export_id = bootstrap_id;
         log.debug("restorer installed on bootstrap export {}", .{bootstrap_id});
     }
@@ -1172,8 +1180,7 @@ pub const Peer = struct {
         const export_id = self.restorer_export_id orelse return;
         self.restorer_export_id = null;
         const st = self.persistent_exports.get(export_id) orelse return;
-        st.restore_ctx = null;
-        st.on_restore = null;
+        st.restore = null;
         self.dropPersistenceStateIfUnused(export_id, st);
     }
 
@@ -1267,7 +1274,7 @@ pub const Peer = struct {
     /// Drop a persistence state once both hook sets are cleared, restoring
     /// the export's original handler.
     fn dropPersistenceStateIfUnused(self: *Peer, export_id: u32, st: *PersistenceState) void {
-        if (st.on_save != null or st.on_restore != null) return;
+        if (st.save != null or st.restore != null) return;
         if (self.exports.getEntry(export_id)) |entry| {
             if (entry.value_ptr.handler) |handler| {
                 if (handler.on_call == persistenceOnCall and handler.ctx == @as(*anyopaque, @ptrCast(st))) {
@@ -1298,26 +1305,29 @@ pub const Peer = struct {
         caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
         const st: *PersistenceState = castCtx(*PersistenceState, ctx);
-        if (call.interface_id == persistence.persistent_interface_id and st.on_save != null) {
-            if (call.method_id == persistence.save_method_id) {
-                return peer.servePersistentSave(st, call);
+        if (call.interface_id == persistence.persistent_interface_id) {
+            if (st.save) |hook| {
+                if (call.method_id == persistence.save_method_id) {
+                    return peer.servePersistentSave(st.export_id, hook, call);
+                }
+                return peer.sendReturnException(call.question_id, "unknown method");
             }
-            return peer.sendReturnException(call.question_id, "unknown method");
-        }
-        if (call.interface_id == persistence.restorer_interface_id and st.on_restore != null) {
-            if (call.method_id == persistence.restore_method_id) {
-                return peer.serveRestore(st, call);
+        } else if (call.interface_id == persistence.restorer_interface_id) {
+            if (st.restore) |hook| {
+                if (call.method_id == persistence.restore_method_id) {
+                    return peer.serveRestore(hook, call);
+                }
+                return peer.sendReturnException(call.question_id, "unknown method");
             }
-            return peer.sendReturnException(call.question_id, "unknown method");
         }
         return st.original.on_call(st.original.ctx, peer, call, caps);
     }
 
-    fn servePersistentSave(self: *Peer, st: *PersistenceState, call: protocol.Call) !void {
+    fn servePersistentSave(self: *Peer, export_id: u32, hook: SaveHook, call: protocol.Call) !void {
         const seal_for = persistence.readSealFor(call.params);
-        const sturdy_ref = st.on_save.?(st.save_ctx.?, self, st.export_id, seal_for) catch |err| {
+        const sturdy_ref = hook.on_save(hook.ctx, self, export_id, seal_for) catch |err| {
             if (err == error.OutOfMemory) return err;
-            log.debug("save handler failed for export {}: {}", .{ st.export_id, err });
+            log.debug("save handler failed for export {}: {}", .{ export_id, err });
             return self.sendReturnException(call.question_id, @errorName(err));
         };
         defer self.allocator.free(sturdy_ref);
@@ -1338,7 +1348,7 @@ pub const Peer = struct {
         self.saves_served +%= 1;
     }
 
-    fn serveRestore(self: *Peer, st: *PersistenceState, call: protocol.Call) !void {
+    fn serveRestore(self: *Peer, hook: RestoreHook, call: protocol.Call) !void {
         const sturdy_ref = persistence.readSturdyRefParam(call.params) catch |err| {
             return self.sendReturnException(call.question_id, @errorName(err));
         };
@@ -1354,7 +1364,7 @@ pub const Peer = struct {
             );
             return self.sendReturnException(call.question_id, "sturdy ref too large");
         }
-        const outcome = st.on_restore.?(st.restore_ctx.?, self, sturdy_ref) catch |err| {
+        const outcome = hook.on_restore(hook.ctx, self, sturdy_ref) catch |err| {
             if (err == error.OutOfMemory) return err;
             log.debug("restore handler failed: {}", .{err});
             return self.sendReturnException(call.question_id, @errorName(err));
