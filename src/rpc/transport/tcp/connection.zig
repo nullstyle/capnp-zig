@@ -317,6 +317,18 @@ pub const Connection = struct {
                     else
                         -1;
                     const poll_result = pollRetryIntr(fds_buf[0..nfds], timeout_ms);
+                    if (comptime builtin.target.os.tag == .windows) {
+                        // A persistent WSAPoll failure must not silently
+                        // degrade into a tickless blocking read: ticks,
+                        // idle reaping, and wake would all stop. Treat it
+                        // as a dead connection. (POSIX keeps its historic
+                        // fall-through-to-read behavior, where the read
+                        // surfaces the error.)
+                        if (poll_result == .err) {
+                            log.debug("WSAPoll failed, exiting run loop", .{});
+                            break;
+                        }
+                    }
                     if (poll_result == .timeout) {
                         // Tick: the interval elapsed with no inbound I/O.
                         if (self.idleDeadlineExceeded()) {

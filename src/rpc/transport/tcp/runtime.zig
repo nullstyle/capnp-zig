@@ -93,7 +93,7 @@ pub const Listener = struct {
         const client_fd = stream.socket.handle;
         errdefer closeFd(self.io, .{ .handle = client_fd });
 
-        enableTcpNoDelay(client_fd);
+        setTcpNoDelay(client_fd);
 
         return self.createConnection(client_fd);
     }
@@ -130,31 +130,34 @@ pub const Listener = struct {
         events.emitConnection(self.conn_options.observer, .tcp, .server, .accepted);
         return conn_ptr;
     }
+};
 
-    fn enableTcpNoDelay(fd: net.Socket.Handle) void {
-        if (comptime builtin.target.os.tag == .windows) {
-            // No setsockopt binding in std's ws2_32 yet; declare the
-            // stable winsock API locally. TCP_NODELAY = 1, IPPROTO_TCP = 6.
-            const one: c_int = 1;
-            const rc = ws2.setsockopt(@intFromPtr(fd), 6, 1, @ptrCast(&one), @sizeOf(c_int));
-            if (rc != 0) {
-                log.debug("failed to set TCP_NODELAY on accepted socket (winsock rc={})", .{rc});
-            }
-            return;
+/// Disable Nagle on a connected TCP socket. Loopback control channels and
+/// RPC frames are latency-sensitive; with Nagle on, delayed ACKs can hold
+/// small writes for ~40-200ms, which breaks tick/idle timing.
+fn setTcpNoDelay(fd: net.Socket.Handle) void {
+    if (comptime builtin.target.os.tag == .windows) {
+        // No setsockopt binding in std's ws2_32 yet; declare the
+        // stable winsock API locally. TCP_NODELAY = 1, IPPROTO_TCP = 6.
+        const one: c_int = 1;
+        const rc = ws2.setsockopt(@intFromPtr(fd), 6, 1, @ptrCast(&one), @sizeOf(c_int));
+        if (rc != 0) {
+            log.debug("failed to set TCP_NODELAY (winsock rc={})", .{rc});
         }
-        std.posix.setsockopt(
-            fd,
-            std.posix.IPPROTO.TCP,
-            std.posix.TCP.NODELAY,
-            &std.mem.toBytes(@as(c_int, 1)),
-        ) catch |err| {
-            log.debug("failed to set TCP_NODELAY on accepted socket: {}", .{err});
-        };
+        return;
     }
-
-    const ws2 = struct {
-        extern "ws2_32" fn setsockopt(s: usize, level: c_int, optname: c_int, optval: [*]const u8, optlen: c_int) callconv(.winapi) c_int;
+    std.posix.setsockopt(
+        fd,
+        std.posix.IPPROTO.TCP,
+        std.posix.TCP.NODELAY,
+        &std.mem.toBytes(@as(c_int, 1)),
+    ) catch |err| {
+        log.debug("failed to set TCP_NODELAY: {}", .{err});
     };
+}
+
+const ws2 = struct {
+    extern "ws2_32" fn setsockopt(s: usize, level: c_int, optname: c_int, optval: [*]const u8, optlen: c_int) callconv(.winapi) c_int;
 };
 
 // ---------------------------------------------------------------------------
@@ -191,6 +194,10 @@ pub fn createLoopbackSocketPair(io: std.Io) ![2]SocketFd {
     errdefer closeFd(io, .{ .handle = client_stream.socket.handle });
 
     const accepted_stream = try server.accept(io);
+    // Nagle + delayed ACK can hold sub-MSS writes for ~40-200ms, which is
+    // longer than the tick/idle windows this pair exists to exercise.
+    setTcpNoDelay(client_stream.socket.handle);
+    setTcpNoDelay(accepted_stream.socket.handle);
     return .{
         .{ .handle = client_stream.socket.handle },
         .{ .handle = accepted_stream.socket.handle },
