@@ -46,21 +46,25 @@ jobs:
       - name: '[diag] tick/idle suite (windows)'
         if: runner.os == 'Windows'
         timeout-minutes: 6
+        shell: bash
         run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/transport/tcp/rpc_tick_idle_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
 
       - name: '[diag] connection failure suite (windows)'
         if: runner.os == 'Windows'
         timeout-minutes: 6
+        shell: bash
         run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/transport/tcp/rpc_connection_failure_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
 
       - name: '[diag] raw frame suite (windows)'
         if: runner.os == 'Windows'
         timeout-minutes: 6
+        shell: bash
         run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/transport/rpc_raw_frame_security_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
 
       - name: '[diag] worker pool suite (windows)'
         if: runner.os == 'Windows'
         timeout-minutes: 6
+        shell: bash
         run: zig test -ODebug --dep capnpc-zig -Mroot=tests/rpc/integration/rpc_worker_pool_test.zig --dep capnpc-zig -Mcapnpc-zig=src/lib.zig
 
       - name: Run tests

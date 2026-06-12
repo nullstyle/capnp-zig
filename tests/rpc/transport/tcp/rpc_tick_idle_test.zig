@@ -157,15 +157,18 @@ test "traffic resets the idle clock" {
 
     const Feeder = struct {
         fn run(fd: tcp.SocketFd, write_io: std.Io) void {
-            // Feed partial frame bytes every 20ms for ~100ms, keeping the
+            // Feed partial frame bytes every 50ms for ~400ms, keeping the
             // connection alive past several idle windows. Write before each
             // sleep: on a loaded machine a delayed thread spawn must not
             // leave the connection idle long enough to be reaped before the
-            // first byte arrives.
+            // first byte arrives. The cadence (50ms) vs the idle bound
+            // (250ms) leaves ~200ms of scheduling-jitter margin: CI runners
+            // routinely stall threads for tens of milliseconds, which is
+            // exactly what made tighter versions of this test flake.
             var i: usize = 0;
-            while (i < 5) : (i += 1) {
+            while (i < 8) : (i += 1) {
                 writeBytes(write_io, fd, &[_]u8{0});
-                sleepMs(write_io, 20);
+                sleepMs(write_io, 50);
             }
             closeFd(write_io, fd);
         }
@@ -187,7 +190,7 @@ test "traffic resets the idle clock" {
 
     var conn = try Connection.init(allocator, io, fds[0], .{
         .tick_interval_ms = 10,
-        .idle_timeout_ms = 60,
+        .idle_timeout_ms = 250,
     });
     defer conn.deinit();
     var dummy: u8 = 0;
@@ -201,7 +204,9 @@ test "traffic resets the idle clock" {
     const elapsed_ns: i64 = @as(i64, @intCast(std.Io.Clock.awake.now(io).nanoseconds)) - start_ns;
     feeder.join();
 
-    // The feeder kept the connection alive for ~100ms, which exceeds the
-    // 60ms idle bound: traffic must have reset the idle clock at least once.
-    try std.testing.expect(elapsed_ns >= 90 * std.time.ns_per_ms);
+    // The feeder kept the connection alive for ~400ms, which exceeds the
+    // 250ms idle bound: traffic must have reset the idle clock at least
+    // once. The margin (assert at 350ms vs the 250ms bound) absorbs the
+    // scheduling jitter of loaded CI runners.
+    try std.testing.expect(elapsed_ns >= 350 * std.time.ns_per_ms);
 }
