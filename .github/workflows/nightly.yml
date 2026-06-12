@@ -45,12 +45,24 @@ jobs:
 
       - name: Fuzz untrusted-input surfaces
         # timeout rc 124 = ran the full window without finding a crash.
+        #
+        # Zig master's coverage-guided fuzzer is experimental and its own
+        # infrastructure can crash (build-runner tmp/ cleanup races with
+        # the fuzzer's log file, maker slice panics). Those are not
+        # findings: a real finding is the fuzz TARGET dying, reported by a
+        # normally exiting build runner. Classify maker crashes and
+        # fuzzer-runtime panics as warnings so the job fails only on
+        # genuine findings.
         run: |
           set +e
-          timeout --kill-after=30 600 zig build test-fuzz --fuzz
-          rc=$?
+          timeout --kill-after=30 600 zig build test-fuzz --fuzz 2>&1 | tee fuzz.log
+          rc=${PIPESTATUS[0]}
           if [ "$rc" -eq 124 ]; then
             echo "fuzzing window elapsed with no findings"
+            exit 0
+          fi
+          if grep -qE "the following maker command terminated with signal|fuzzer\.zig|libfuzzer\.log" fuzz.log; then
+            echo "::warning::zig fuzzer infrastructure failed (experimental on zig master) — not a fuzz finding"
             exit 0
           fi
           echo "fuzzer exited early (rc=$rc) — likely a finding"

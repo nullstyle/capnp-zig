@@ -186,6 +186,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `std.process.Args.Iterator.initAllocator`, the cross-platform form
   (plain `init` is a compile error on Windows, where CI also runs the
   gate).
+- **Test suite compiles on Windows**: fake-Io transport tests passed
+  integer literals where `std.Io.net.Socket.Handle` is a pointer
+  (`HANDLE`) on Windows; they now use a portable dummy handle. Verified
+  by cross-compiling every registered test root for `x86_64-windows` in
+  Debug and ReleaseSafe.
+- **`bench-check` is self-contained**: the step now installs the
+  benchmark binaries it spawns (`bench/baselines.json` points at
+  `./zig-out/bin/...`), so it works from a fresh checkout — in CI every
+  case failed with `FileNotFound` because nothing built them.
+- **Nightly fuzzing fails only on findings**: zig master's experimental
+  coverage-guided fuzzer can crash its own infrastructure (build-runner
+  `tmp/` cleanup races the fuzzer log file; maker slice panics). The
+  nightly job now classifies maker crashes and fuzzer-runtime panics as
+  warnings; a fuzz target dying still fails the job.
 - **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
   the wasm example/ABI modules now import a wasm-targeted core module, so
   `zig build check-compile -Dtarget=<foreign>` works.

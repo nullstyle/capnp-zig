@@ -11,6 +11,12 @@ const Peer = peer_impl.Peer;
 const Transport = capnpc.rpc.transport.tcp.Transport;
 const Listener = capnpc.rpc.transport.tcp.Listener;
 
+/// Dummy socket handle for tests that drive a fake Io vtable — never used
+/// for real I/O. `fd_t` is an integer on POSIX and a pointer (HANDLE) on
+/// Windows, so a literal 0 does not compile there.
+const fake_socket_handle: std.Io.net.Socket.Handle =
+    if (builtin.os.tag == .windows) std.os.windows.INVALID_HANDLE_VALUE else 0;
+
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
 // ---------------------------------------------------------------------------
@@ -551,7 +557,7 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
         .vtable = &vtable,
     };
 
-    var transport = try Transport.initWithOptions(allocator, io, 0, .{
+    var transport = try Transport.initWithOptions(allocator, io, fake_socket_handle, .{
         .read_buffer_size = 64,
         .write_queue_max_items = 8,
         .write_queue_max_bytes = 4,
@@ -792,7 +798,7 @@ test "transport concurrent close and shutdown call socket shutdown once" {
         .vtable = &vtable,
     };
 
-    var transport = try Transport.init(std.testing.allocator, io, 123, 64);
+    var transport = try Transport.init(std.testing.allocator, io, fake_socket_handle, 64);
     var threads: [8]std.Thread = undefined;
     for (&threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, Runner.closeTransport, .{&transport});
@@ -836,7 +842,7 @@ test "listener concurrent close calls socket close once" {
         .vtable = &vtable,
     };
 
-    var listener = Listener.initFd(std.testing.allocator, io, 456, .{});
+    var listener = Listener.initFd(std.testing.allocator, io, fake_socket_handle, .{});
     var threads: [8]std.Thread = undefined;
     for (&threads) |*thread| {
         thread.* = try std.Thread.spawn(.{}, Runner.closeListener, .{&listener});

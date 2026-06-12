@@ -1,10 +1,17 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const rpc_events = capnpc.rpc.events;
 const HostPeer = capnpc.rpc.integration.host_peer.HostPeer;
 const Peer = capnpc.rpc.peer.Peer;
 const Transport = capnpc.rpc.transport.tcp.Transport;
+
+/// Dummy socket handle for tests that drive a fake Io vtable — never used
+/// for real I/O. `fd_t` is an integer on POSIX and a pointer (HANDLE) on
+/// Windows, so a literal 0 does not compile there.
+const fake_socket_handle: std.Io.net.Socket.Handle =
+    if (builtin.os.tag == .windows) std.os.windows.INVALID_HANDLE_VALUE else 0;
 
 const Recorder = struct {
     events: [32]rpc_events.Event = undefined,
@@ -65,7 +72,7 @@ test "tcp observer reports frame send metadata without frame bytes" {
         .vtable = &vtable,
     };
 
-    var transport = try Transport.initWithOptions(std.testing.allocator, io, 0, .{
+    var transport = try Transport.initWithOptions(std.testing.allocator, io, fake_socket_handle, .{
         .read_buffer_size = 64,
         .observer = recorder.observer(),
     });

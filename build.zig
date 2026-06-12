@@ -285,6 +285,11 @@ pub fn build(b: *std.Build) void {
 
     const run_bench_check = b.addRunArtifact(bench_check);
     run_bench_check.addPassthruArgs();
+    // bench-check spawns the benchmark binaries via the paths recorded in
+    // bench/baselines.json (./zig-out/bin/...), so the step must install
+    // them first — a fresh checkout (CI) has no zig-out.
+    run_bench_check.step.dependOn(&b.addInstallArtifact(ping_pong_bench, .{}).step);
+    run_bench_check.step.dependOn(&b.addInstallArtifact(pack_unpack_bench, .{}).step);
 
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);
