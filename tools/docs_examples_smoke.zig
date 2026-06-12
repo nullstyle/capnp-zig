@@ -155,8 +155,11 @@ fn printUsage() void {
     , .{});
 }
 
-fn parseArgs(args: std.process.Args) !bool {
-    var iter = std.process.Args.Iterator.init(args);
+fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !bool {
+    // initAllocator is the cross-platform form; plain init is a
+    // compile error on Windows, where `zig build check` also runs in CI.
+    var iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer iter.deinit();
     _ = iter.skip();
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -330,7 +333,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = gpa.allocator();
     const io = init.io;
 
-    const should_run = parseArgs(init.minimal.args) catch |err| {
+    const should_run = parseArgs(allocator, init.minimal.args) catch |err| {
         std.debug.print("Argument error: {s}\n", .{@errorName(err)});
         printUsage();
         return error.InvalidArgument;

@@ -153,7 +153,11 @@ pub fn main(init: std.process.Init) !void {
     var mode: enum { check, write } = .check;
     var snapshot_path: []const u8 = "docs/api-snapshot.txt";
 
-    var iter = std.process.Args.Iterator.init(init.minimal.args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows. The iterator stays alive for all of main because
+    // --path captures a slice of its buffer.
+    var iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer iter.deinit();
     _ = iter.skip();
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--write")) {

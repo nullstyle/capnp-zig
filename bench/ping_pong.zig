@@ -59,9 +59,13 @@ fn parseUsize(arg: []const u8) !usize {
     return std.fmt.parseUnsigned(usize, arg, 10);
 }
 
-fn parseArgs(args: std.process.Args, io: std.Io) !?Config {
+fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args, io: std.Io) !?Config {
     var cfg = Config{};
-    var iter = std.process.Args.Iterator.init(args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows. All values parse to integers/bools, so nothing
+    // outlives the iterator.
+    var iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer iter.deinit();
     _ = iter.skip(); // skip program name
 
     while (iter.next()) |arg| {
@@ -223,7 +227,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
     const io = init.io;
 
-    const cfg = (parseArgs(init.minimal.args, io) catch |err| {
+    const cfg = (parseArgs(allocator, init.minimal.args, io) catch |err| {
         std.debug.print("Argument error: {s}\n", .{@errorName(err)});
         return;
     }) orelse return;

@@ -33,9 +33,8 @@ fn parseF64(arg: []const u8) !f64 {
     return std.fmt.parseFloat(f64, arg);
 }
 
-fn parseArgs(args: std.process.Args) !?Options {
+fn parseArgs(iter: *std.process.Args.Iterator) !?Options {
     var opts = Options{};
-    var iter = std.process.Args.Iterator.init(args);
     _ = iter.skip(); // skip program name
 
     while (iter.next()) |arg| {
@@ -123,7 +122,12 @@ pub fn main(init: std.process.Init) !void {
     const allocator = gpa.allocator();
     const io = init.io;
 
-    const opts = (parseArgs(init.minimal.args) catch |err| {
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows. The iterator outlives parsing because
+    // --baseline captures a slice of its buffer.
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    const opts = (parseArgs(&args_iter) catch |err| {
         std.debug.print("Argument error: {s}\n", .{@errorName(err)});
         printUsage();
         return;

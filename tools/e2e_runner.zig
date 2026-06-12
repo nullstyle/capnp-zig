@@ -363,13 +363,17 @@ fn parseDirection(text: []const u8) !Direction {
     return error.InvalidDirection;
 }
 
-fn parseArgs(args: std.process.Args) !Config {
+fn parseArgs(allocator: Allocator, args: std.process.Args) !Config {
     var cfg = Config{};
 
     var has_backend = false;
     var has_schema = false;
 
-    var args_iter = std.process.Args.Iterator.init(args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows. Every flag parses to a bool/enum, so nothing
+    // outlives the iterator.
+    var args_iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer args_iter.deinit();
     _ = args_iter.skip(); // skip program name
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -1179,7 +1183,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
 
-    const cfg = parseArgs(init.minimal.args) catch |err| switch (err) {
+    const cfg = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
         error.HelpRequested => return,
         else => return err,
     };

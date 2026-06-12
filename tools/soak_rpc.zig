@@ -301,9 +301,13 @@ fn getSockPort(fd: std.posix.fd_t) !u16 {
     return error.UnsupportedAddressFamily;
 }
 
-fn parseArgs(args: std.process.Args) !Config {
+fn parseArgs(allocator: std.mem.Allocator, args: std.process.Args) !Config {
     var cfg = Config{};
-    var iter = std.process.Args.Iterator.init(args);
+    // initAllocator is the cross-platform form; plain init is a compile
+    // error on Windows. All values parse to integers, so nothing
+    // outlives the iterator.
+    var iter = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer iter.deinit();
     _ = iter.skip();
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--seconds")) {
@@ -335,7 +339,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = gpa.allocator();
     const io = init.io;
 
-    const cfg = try parseArgs(init.minimal.args);
+    const cfg = try parseArgs(allocator, init.minimal.args);
 
     var totals = Totals{};
     EchoServer.server_io = io;

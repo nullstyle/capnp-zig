@@ -208,6 +208,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   iteration, a comptime-stubbed wall clock (no libc dependency), and
   removal of the dead `--listen-fd` flag whose `parseInt(fd_t, ...)`
   cannot type-check where `fd_t` is a pointer.
+- **Argument parsing is cross-platform in every tool and benchmark**
+  (`docs_examples_smoke` — which `zig build check` compiles on the
+  Windows CI job — plus `api_snapshot`, `bench_check`, `soak_rpc`,
+  `e2e_runner`, and both benchmarks): `Args.Iterator.initAllocator`
+  replaces the POSIX-only `init`, with iterator lifetimes hoisted where
+  parsed slices escape. The e2e runner's raw-socket layer and the
+  benches' monotonic clock remain deliberately POSIX-only.
 - **Cross builds of the WASM host no longer inherit the host `-Dtarget`**:
   the wasm example/ABI modules now import a wasm-targeted core module, so
   `zig build check-compile -Dtarget=<foreign>` works.
