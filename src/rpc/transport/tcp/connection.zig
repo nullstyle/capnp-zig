@@ -70,10 +70,10 @@ pub const Connection = struct {
     on_wake: ?*const fn (conn: *Connection) void = null,
 
     /// Windows read-loop bridge; `{}` elsewhere. std's Windows sockets are
-    /// raw AFD handles that `WSAPoll` rejects, so the run loop there
-    /// delegates blocking reads to a dedicated reader thread and waits on
-    /// a timed condition for read completion, wake, or a tick timeout.
-    /// All callbacks still fire on the `run()` thread.
+    /// raw AFD handles that `WSAPoll` rejects, so the run loop there runs
+    /// each blocking read as a cancellable `io.async` task and waits on a
+    /// timed condition for read completion, wake, or a tick timeout. All
+    /// callbacks still fire on the `run()` thread.
     win_read: if (builtin.target.os.tag == .windows) WinReadBridge else void =
         if (builtin.target.os.tag == .windows) .{} else {},
 
@@ -409,37 +409,62 @@ pub const Connection = struct {
         }
     }
 
-    /// The Windows read loop. One reader thread performs the blocking
-    /// reads; this thread waits on a timed condition so ticks, idle
-    /// reaping, and wake all keep working without a socket readiness
-    /// primitive. Reads target `transport.read_buf` exactly as on POSIX —
-    /// ownership alternates strictly between the two threads via
-    /// `win_read.result`/`read_requested`, so there is no concurrent
-    /// access and no copying.
+    /// The Windows read loop. std's Windows sockets are raw AFD handles
+    /// with no readiness primitive (`WSAPoll` rejects them), so the
+    /// blocking read runs as a cancellable `io.concurrent` task on an io
+    /// worker thread while this thread waits on a timed condition — that
+    /// keeps ticks, idle reaping, and wake working. Crucially the read is
+    /// on an io worker (not a raw `std.Thread`), so teardown can `cancel`
+    /// it: `NtCancelIoFileEx` then unblocks the pending AFD receive,
+    /// instead of waiting out the kernel's multi-minute read timeout.
+    /// `concurrent` (not `async`) is used so the read never silently runs
+    /// inline on this thread — that would reintroduce the un-cancellable
+    /// blocking read this design exists to avoid; its `concurrent_limit`
+    /// defaults to unlimited, so any number of connections each get a real
+    /// cancellable read thread. Reads target `transport.read_buf`;
+    /// ownership passes to the task while a read is in flight and back to
+    /// this thread when its `result` is published, so there is no
+    /// concurrent access and no copying.
     fn runLoopWindows(self: *Connection) void {
         const io = self.io;
 
-        self.win_read.thread = std.Thread.spawn(.{}, winReaderMain, .{self}) catch |err| {
-            log.debug("failed to start windows reader thread: {}", .{err});
-            self.last_error = err;
-            self.invokeOnError(err);
-            return;
+        // The in-flight read task, if any. `cancel`/`await` on it run only
+        // from this thread (the framework's threadsafety requirement).
+        var read_future: ?std.Io.Future(void) = null;
+        defer if (read_future) |*f| {
+            _ = f.cancel(io);
         };
-        defer self.joinWinReader();
 
         while (!self.transport.isClosing()) {
             const effective_tick_ms: ?u32 = self.tick_interval_ms orelse
                 (if (self.idle_timeout_ms != null) @as(?u32, 500) else null);
+
+            // Launch a read if none is in flight and no result is pending.
+            if (read_future == null) {
+                const have_result = blk: {
+                    self.win_read.mu.lockUncancelable(io);
+                    defer self.win_read.mu.unlock(io);
+                    break :blk self.win_read.result != null;
+                };
+                if (!have_result) {
+                    read_future = io.concurrent(winReadTask, .{self}) catch null;
+                    if (read_future == null) {
+                        // ConcurrencyUnavailable (single-threaded, OOM, or
+                        // thread-spawn exhaustion — never in practice with
+                        // the default unlimited concurrent_limit). Fall
+                        // back to a single inline read; it cannot be
+                        // cancelled, but this path is effectively
+                        // unreachable in the threaded runtime.
+                        winReadTask(self);
+                    }
+                }
+            }
 
             var outcome: ?WinReadBridge.ReadOutcome = null;
             var woke = false;
             {
                 self.win_read.mu.lockUncancelable(io);
                 defer self.win_read.mu.unlock(io);
-                if (self.win_read.result == null and !self.win_read.read_requested) {
-                    self.win_read.read_requested = true;
-                    self.win_read.cond.broadcast(io);
-                }
                 if (self.win_read.result == null and !self.win_read.wake_requested) {
                     if (effective_tick_ms) |tick_ms| {
                         const timeout: std.Io.Timeout = .{ .duration = .{
@@ -481,6 +506,12 @@ pub const Connection = struct {
                 continue;
             };
 
+            // The task published a result and is returning; reap it.
+            if (read_future) |*f| {
+                f.await(io);
+                read_future = null;
+            }
+
             switch (r) {
                 .eof => {
                     log.debug("transport EOF", .{});
@@ -506,45 +537,22 @@ pub const Connection = struct {
         }
     }
 
-    /// Reader-thread body for the Windows loop: performs one blocking
-    /// `transport.read()` per request and publishes the outcome.
-    fn winReaderMain(self: *Connection) void {
+    /// One cancellable blocking read, run as an `io.concurrent` task on an
+    /// io worker thread (see `runLoopWindows`). Publishes the outcome under
+    /// the bridge mutex and signals the run loop. On cancel the read
+    /// returns `error.Canceled`, which is published like any other failure
+    /// but ignored by the tearing-down run loop.
+    fn winReadTask(self: *Connection) void {
         const io = self.io;
-        while (true) {
-            {
-                self.win_read.mu.lockUncancelable(io);
-                defer self.win_read.mu.unlock(io);
-                while (!self.win_read.read_requested and !self.win_read.exit) {
-                    self.win_read.cond.waitUncancelable(io, &self.win_read.mu);
-                }
-                if (self.win_read.exit) return;
-                self.win_read.read_requested = false;
-            }
-            const outcome: WinReadBridge.ReadOutcome = blk: {
-                const n = self.transport.read() catch |err| break :blk .{ .fail = err };
-                if (n == 0) break :blk .eof;
-                break :blk .{ .data = n };
-            };
-            self.win_read.mu.lockUncancelable(io);
-            self.win_read.result = outcome;
-            self.win_read.cond.broadcast(io);
-            self.win_read.mu.unlock(io);
-        }
-    }
-
-    /// Signal the Windows reader thread to exit and join it. The socket
-    /// shutdown unblocks a read still pending in the kernel; the
-    /// connection is terminating on every path that reaches this.
-    fn joinWinReader(self: *Connection) void {
-        const io = self.io;
-        const thread = self.win_read.thread orelse return;
+        const outcome: WinReadBridge.ReadOutcome = blk: {
+            const n = self.transport.read() catch |err| break :blk .{ .fail = err };
+            if (n == 0) break :blk .eof;
+            break :blk .{ .data = n };
+        };
         self.win_read.mu.lockUncancelable(io);
-        self.win_read.exit = true;
+        self.win_read.result = outcome;
         self.win_read.cond.broadcast(io);
         self.win_read.mu.unlock(io);
-        self.transport.shutdown();
-        thread.join();
-        self.win_read.thread = null;
     }
 
     /// Enqueue a framed message for sending to the remote peer.
@@ -713,20 +721,17 @@ fn nowNs(io: std.Io) i64 {
 
 /// Synchronization state for the Windows read loop (see
 /// `Connection.runLoopWindows`). Ownership of `transport.read_buf`
-/// alternates strictly: the reader thread owns it from `read_requested`
-/// until it publishes `result`; the run thread owns it after taking
-/// `result` until the next request.
+/// alternates strictly: the in-flight read task owns it until it publishes
+/// `result`; the run thread owns it after taking `result` until it
+/// launches the next read.
 const WinReadBridge = struct {
     mu: std.Io.Mutex = .init,
     cond: std.Io.Condition = .init,
     /// Set by `wake()` from any thread; consumed by the run loop.
     wake_requested: bool = false,
-    /// The run loop asks the reader thread for one blocking read.
-    read_requested: bool = false,
-    /// Outcome of the last completed read, owned by the run loop once set.
+    /// Outcome of the in-flight read once it completes. Published by the
+    /// `io.async` read task under `mu`; consumed by the run loop.
     result: ?ReadOutcome = null,
-    exit: bool = false,
-    thread: ?std.Thread = null,
 
     const ReadOutcome = union(enum) {
         data: usize,

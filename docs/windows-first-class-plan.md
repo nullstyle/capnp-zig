@@ -38,12 +38,23 @@ Progress notes:
   (`WSAPoll`, `ws2_32.setsockopt`) rejects — on real Windows runners
   this surfaced as the run loop hanging (poll error degraded to a
   tickless blocking read). The shipped design needs no readiness
-  primitive at all: on Windows, `run()` delegates blocking reads to a
-  dedicated reader thread and waits on a timed `std.Io.Condition` for
-  read completion, wake, or the tick timeout (`WinReadBridge` in
-  connection.zig); buffer ownership alternates strictly between the
-  two threads, callbacks all stay on the `run()` thread, and `wake()`
-  signals the condition directly (no wake channel needed on Windows).
+  primitive at all: on Windows, `run()` launches each blocking read as a
+  cancellable `io.concurrent` task and waits on a timed
+  `std.Io.Condition` for read completion, wake, or the tick timeout
+  (`WinReadBridge` in connection.zig); buffer ownership passes to the
+  task while a read is in flight and back on completion, callbacks all
+  stay on the `run()` thread, and `wake()` signals the condition
+  directly (no wake channel needed on Windows). A *third* dead end was
+  eliminated by real-Windows CI before this stuck: a raw `std.Thread`
+  reader (the first cut of this design) cannot be cancelled — std's
+  cancellation keys off `Thread.current`, which only io worker threads
+  have — so `shutdown`/`close` did not unblock its pending AFD receive
+  and teardown wedged for the kernel's multi-minute read timeout, which
+  also starved sibling test binaries of CPU. Running the read via
+  `io.concurrent` (not `io.async`, which silently runs inline once
+  `async_limit ≈ cpu_count` is hit; `concurrent_limit` defaults to
+  unlimited) puts it on a cancellable worker so teardown's
+  `future.cancel` drives `NtCancelIoFileEx`.
   `TCP_NODELAY` on Windows is blocked upstream for the same AFD reason
   and is a documented no-op; the one test that depends on Nagle-free
   small writes ("traffic resets the idle clock") carries a documented

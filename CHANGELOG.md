@@ -46,9 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   phase 1): ticks, idle reaping, and cross-thread wake now work on
   Windows. std's Windows sockets are raw AFD handles that winsock APIs
   (WSAPoll, setsockopt) reject, so the Windows run loop uses no readiness
-  primitive: a dedicated reader thread performs the blocking reads and
-  the run thread waits on a timed `std.Io.Condition` for read completion,
-  wake, or the tick timeout — callbacks all stay on the `run()` thread.
+  primitive: each blocking read runs as a cancellable `io.concurrent`
+  task while the run thread waits on a timed `std.Io.Condition` for read
+  completion, wake, or the tick timeout — callbacks all stay on the
+  `run()` thread. The read is on an io worker (not a raw thread) so
+  teardown can cancel it (`NtCancelIoFileEx` unblocks the pending AFD
+  receive); a raw-thread read has no cancellation token and would wedge
+  teardown for the kernel's multi-minute read timeout.
   `TCP_NODELAY` on Windows is a documented no-op until upstream exposes
   AFD socket options. The portable pair helper
   (`rpc.transport.tcp.createLoopbackSocketPair`) replaces POSIX-only
