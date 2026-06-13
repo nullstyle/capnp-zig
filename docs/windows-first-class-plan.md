@@ -1,10 +1,10 @@
 # Windows as a First-Class Target and Development OS
 
-Status: **Phases 0–3 landed and verified green on real Windows runners**
-(CI run on `9608ef0`: native test suite, soak smoke, check-api, and
-self-interop e2e all pass on windows-latest). One open owner decision
-below; Phase 4 is upstream-tracking only. Owner: rotating per session;
-this document is the source of truth for progress.
+Status: **Complete.** Phases 0–3 landed and verified green on real
+Windows runners (CI run on `9608ef0`: native test suite, soak smoke,
+check-api, and self-interop e2e all pass on windows-latest). Phase 4 is
+upstream-tracking only — nothing actionable locally. Owner: rotating per
+session; this document is the source of truth for progress.
 
 Progress notes:
 
@@ -13,11 +13,13 @@ Progress notes:
   the Io-backed monotonic clock (no libc dependency) and cross-compile
   for Windows; CONTRIBUTING gains a "Developing on Windows" quickstart
   (toolchain, shell, Docker Desktop path for cross-impl e2e, Defender
-  exclusion). **Open decision for the repo owner**: marking the Windows
-  jobs as required branch-protection checks — required status checks
-  also reject direct pushes to `main`, which is the current workflow,
-  so this is deliberately not configured by automation. Enable it
-  together with a PR-based flow when ready.
+  exclusion). **Resolved (2026-06-12)**: the project deliberately uses a
+  direct-push-to-`main` workflow, not pull requests, so the Windows jobs
+  are intentionally *not* required branch-protection checks (required
+  status checks would reject direct pushes). Gate parity is satisfied
+  instead by the Windows jobs running on every push with exactly the same
+  standing as their macOS/Linux peers — there is no per-OS asymmetry in
+  what runs or what blocks.
 
 - Phase 2 (2026-06-12): `zig build e2e-self` (tools/e2e_self.zig) drives
   the zig e2e client against the zig e2e server over real loopback TCP
@@ -113,8 +115,11 @@ Known divergences (the gap this plan closes):
 4. **Dev parity**: a fresh Windows machine can clone and run `just ci`
    (minus the docker e2e phase) green; CONTRIBUTING has a Windows
    quickstart; no line-ending or shell landmines.
-5. **Gate parity**: the Windows jobs are required checks alongside their
-   macOS/Linux peers.
+5. **Gate parity**: the Windows jobs run on every push with the same
+   standing as their macOS/Linux peers. (This project pushes directly to
+   `main` rather than using PRs, so "required status check" configuration
+   is intentionally not used — parity means no per-OS asymmetry in what
+   runs, which the per-push matrix already guarantees.)
 
 ## Phase 0 — guardrails and quick wins (~0.5 day)
 
