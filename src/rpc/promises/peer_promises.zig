@@ -4,4 +4,5 @@ pub const queuePendingCall = pending_calls.queuePendingCall;
 pub const deinitPendingCallOwnedFrame = pending_calls.deinitPendingCallOwnedFrame;
 pub const deinitPendingCallOwnedFrameForPeerFn = pending_calls.deinitPendingCallOwnedFrameForPeerFn;
 pub const recordResolvedAnswer = pending_calls.recordResolvedAnswer;
+pub const recordResolvedAnswerAssumeCapacity = pending_calls.recordResolvedAnswerAssumeCapacity;
 pub const replayResolvedPromiseExport = pending_calls.replayResolvedPromiseExport;

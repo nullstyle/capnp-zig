@@ -55,6 +55,18 @@ fn buildCallFrame(allocator: std.mem.Allocator, question_id: u32) ![]const u8 {
     return builder.finish();
 }
 
+/// A minimal, decodable inbound Call whose target is the local export
+/// `export_id` (delivered via handleFrame so it is a real remote call — not
+/// loopback — and its resolved answer is recorded).
+fn buildExportCallFrame(allocator: std.mem.Allocator, question_id: u32, export_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xABCD, 0);
+    try call.setTargetImportedCap(export_id);
+    _ = try call.initCapTableTyped(0);
+    return builder.finish();
+}
+
 fn newCapture(allocator: std.mem.Allocator) ReturnCapture {
     return .{ .allocator = allocator, .frames = std.ArrayList([]u8).empty };
 }
@@ -242,4 +254,61 @@ test "cancelling one queued call preserves send order of the survivors (E-order)
     defer second.deinit();
     try std.testing.expectEqual(@as(u32, 1), (try first.asCall()).question_id);
     try std.testing.expectEqual(@as(u32, 3), (try second.asCall()).question_id);
+}
+
+test "successful call at the resolved_answers cap sends exactly one Return" {
+    const allocator = std.testing.allocator;
+    // A small resolved-answers budget we can fill deterministically. A hostile
+    // peer reaches the real default (4096) by sending that many calls without
+    // Finish; the mechanism under test is identical.
+    var peer = Peer.initDetachedWithLimits(allocator, .{ .max_resolved_answers = 2 });
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // Export whose handler answers every call with an empty-struct results
+    // Return (a successful, results-bearing answer that gets recorded).
+    const Handlers = struct {
+        fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnEmptyStruct(call.question_id);
+        }
+    };
+    var server_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &server_ctx, .on_call = Handlers.onCall });
+
+    // Fill resolved_answers to the cap with successful, never-Finished inbound
+    // calls so their resolved-answer entries persist.
+    const cap = peer.limits.max_resolved_answers;
+    var qid: u32 = 1;
+    while (qid <= cap) : (qid += 1) {
+        const frame = try buildExportCallFrame(allocator, qid, export_id);
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(cap, peer.resolved_answers.count());
+
+    // A further successful call cannot record its resolved answer — the budget
+    // is full. It must still receive EXACTLY ONE Return. Before the fix the
+    // results frame was sent first and then recordResolvedAnswer's count-limit
+    // check failed, propagating into the dispatch catch which sent a SECOND
+    // (exception) Return for the same answer: two Returns for one call (audit
+    // 2026-07-03 item 7). The reserve-before-send rewrite rejects the call up
+    // front, so it now returns a single exception Return.
+    const boundary_qid: u32 = @intCast(cap + 1);
+    const frame = try buildExportCallFrame(allocator, boundary_qid, export_id);
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+
+    const results = capture.countReturns(boundary_qid, .results);
+    const exceptions = capture.countReturns(boundary_qid, .exception);
+    try std.testing.expectEqual(@as(usize, 1), results + exceptions);
+    // Current design: a limit rejection surfaces as a single exception Return,
+    // and no results frame reached the wire.
+    try std.testing.expectEqual(@as(usize, 0), results);
+    try std.testing.expectEqual(@as(usize, 1), exceptions);
+    // The rejected call left no resolved-answer entry (still exactly `cap`).
+    try std.testing.expectEqual(cap, peer.resolved_answers.count());
 }

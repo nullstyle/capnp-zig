@@ -70,12 +70,94 @@ pub fn recordResolvedAnswer(
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
 ) !void {
     const resolved_entry = try resolved_answers.getOrPut(question_id);
+    storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
+
+    drainPendingPromises(
+        PeerType,
+        PendingCallType,
+        InboundCapsType,
+        allocator,
+        peer,
+        question_id,
+        pending_promises,
+        resolve_promised_answer,
+        send_return_exception,
+        handle_resolved_call,
+        release_inbound_caps,
+        report_nonfatal_error,
+    );
+}
+
+/// Like `recordResolvedAnswer`, but the caller must have already reserved one
+/// unused slot in `resolved_answers` (via `ensureUnusedCapacity`). This makes
+/// the whole operation infallible so it can run AFTER the Return frame is on
+/// the wire — a propagating error there would drive the call-dispatch catch to
+/// send a second (exception) Return for the same answer, violating the
+/// exactly-one-Return-per-call invariant. See `Peer.reserveResolvedAnswer`.
+pub fn recordResolvedAnswerAssumeCapacity(
+    comptime PeerType: type,
+    comptime ResolvedAnswerType: type,
+    comptime PendingCallType: type,
+    comptime InboundCapsType: type,
+    allocator: std.mem.Allocator,
+    peer: *PeerType,
+    question_id: u32,
+    frame: []u8,
+    resolved_answers: *std.AutoHashMap(u32, ResolvedAnswerType),
+    pending_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
+    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
+    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+) void {
+    const resolved_entry = resolved_answers.getOrPutAssumeCapacity(question_id);
+    storeResolvedFrame(ResolvedAnswerType, allocator, question_id, resolved_entry, frame);
+
+    drainPendingPromises(
+        PeerType,
+        PendingCallType,
+        InboundCapsType,
+        allocator,
+        peer,
+        question_id,
+        pending_promises,
+        resolve_promised_answer,
+        send_return_exception,
+        handle_resolved_call,
+        release_inbound_caps,
+        report_nonfatal_error,
+    );
+}
+
+fn storeResolvedFrame(
+    comptime ResolvedAnswerType: type,
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    resolved_entry: anytype,
+    frame: []u8,
+) void {
     if (resolved_entry.found_existing) {
         log.debug("duplicate resolved answer for question_id={d}, replacing", .{question_id});
         allocator.free(resolved_entry.value_ptr.frame);
     }
-    resolved_entry.value_ptr.* = .{ .frame = frame };
+    resolved_entry.value_ptr.* = ResolvedAnswerType{ .frame = frame };
+}
 
+fn drainPendingPromises(
+    comptime PeerType: type,
+    comptime PendingCallType: type,
+    comptime InboundCapsType: type,
+    allocator: std.mem.Allocator,
+    peer: *PeerType,
+    question_id: u32,
+    pending_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
+    resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
+    send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
+    release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
+    report_nonfatal_error: *const fn (*PeerType, anyerror) void,
+) void {
     var pending = pending_promises.fetchRemove(question_id) orelse return;
     defer pending.value.deinit(allocator);
 

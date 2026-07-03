@@ -2071,9 +2071,6 @@ pub const Peer = struct {
         // loopback_questions and finished_early_answers entries for this id.
         const is_loopback = self.loopback_questions.contains(answer_id);
         const is_finished_early = self.finished_early_answers.contains(answer_id);
-        try self.sendReturnFrameWithLoopback(answer_id, bytes);
-        cap_table.commitOutboundCapEffects(&self.caps, &effects);
-        effects_committed = true;
 
         // Do not record a resolved answer when it can never be cleared by a
         // Finish: (1) loopback answers are delivered locally, are never
@@ -2082,11 +2079,23 @@ pub const Peer = struct {
         // (2) finished-early answers already had their Finish arrive before
         // this (late, async) Return. In both cases a recorded entry would leak
         // and poison DuplicateQuestionId checks against a compliant peer.
-        if (!is_loopback and !is_finished_early) {
-            const copy = try self.allocator.alloc(u8, bytes.len);
-            errdefer self.allocator.free(copy);
-            std.mem.copyForwards(u8, copy, bytes);
-            try self.recordResolvedAnswer(answer_id, copy);
+        const should_record = !is_loopback and !is_finished_early;
+
+        // Reserve the record resources (count budget, map slot, frame copy)
+        // BEFORE sending so recording is infallible afterward. If it could fail
+        // after the frame is on the wire, the error would drive the dispatch
+        // catch to send a second exception Return for this answer (audit item 7).
+        var reservation: ?ResolvedAnswerReservation = null;
+        errdefer if (reservation) |r| r.deinit(self.allocator);
+        if (should_record) reservation = try self.reserveResolvedAnswer(answer_id, bytes.len);
+
+        try self.sendReturnFrameWithLoopback(answer_id, bytes);
+        cap_table.commitOutboundCapEffects(&self.caps, &effects);
+        effects_committed = true;
+
+        if (reservation) |r| {
+            self.commitReservedResolvedAnswer(answer_id, r, bytes);
+            reservation = null;
         }
     }
 
@@ -2105,17 +2114,26 @@ pub const Peer = struct {
         // Capture before delivery consumes the loopback / finished-early entry.
         const is_loopback = self.loopback_questions.contains(ret.answer_id);
         const is_finished_early = self.finished_early_answers.contains(ret.answer_id);
-        try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
-        rollback_outbound_refs = false;
 
         // See sendReturnResults: neither loopback nor finished-early answers
         // may be recorded — no Finish will clear them and the id would be
         // poisoned for reuse.
-        if (ret.tag == .results and !is_loopback and !is_finished_early) {
-            const copy = try self.allocator.alloc(u8, frame.len);
-            errdefer self.allocator.free(copy);
-            std.mem.copyForwards(u8, copy, frame);
-            try self.recordResolvedAnswer(ret.answer_id, copy);
+        const should_record = ret.tag == .results and !is_loopback and !is_finished_early;
+
+        // Reserve record resources before the send so recording is infallible
+        // afterward and cannot force a second (exception) Return for this
+        // answer (audit item 7). A reserve failure here rolls the outbound cap
+        // refs back (via rollback_outbound_refs) since nothing was sent yet.
+        var reservation: ?ResolvedAnswerReservation = null;
+        errdefer if (reservation) |r| r.deinit(self.allocator);
+        if (should_record) reservation = try self.reserveResolvedAnswer(ret.answer_id, frame.len);
+
+        try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
+        rollback_outbound_refs = false;
+
+        if (reservation) |r| {
+            self.commitReservedResolvedAnswer(ret.answer_id, r, frame);
+            reservation = null;
         }
     }
 
@@ -3348,6 +3366,72 @@ pub const Peer = struct {
                 Peer.forwardResolvedCall,
             ),
             Peer.sendReturnException,
+        );
+    }
+
+    /// Pre-reserved resources for recording a resolved answer, obtained from
+    /// `reserveResolvedAnswer` before the Return frame is sent so that
+    /// `commitReservedResolvedAnswer` (run after the frame is on the wire)
+    /// cannot fail. See `reserveResolvedAnswer`.
+    const ResolvedAnswerReservation = struct {
+        frame_copy: []u8,
+
+        fn deinit(self: ResolvedAnswerReservation, allocator: std.mem.Allocator) void {
+            allocator.free(self.frame_copy);
+        }
+    };
+
+    /// Reserve everything needed to record a resolved answer BEFORE the Return
+    /// frame is sent: the resolved-answers count budget, one unused map slot,
+    /// and the frame copy. This must precede the send so that recording — which
+    /// happens only once the frame is already on the wire — is infallible.
+    ///
+    /// If the record step could fail after the send, the propagating error would
+    /// drive the call-dispatch catch to emit a SECOND (exception) Return for the
+    /// same answer_id: two Returns for one call, a remote-forceable protocol
+    /// violation (a peer fills resolved_answers to max_resolved_answers with
+    /// Finish-less calls, then any later successful call double-Returns). Audit
+    /// 2026-07-03 item 7.
+    fn reserveResolvedAnswer(self: *Peer, question_id: u32, frame_len: usize) !ResolvedAnswerReservation {
+        try ensureCountLimit(
+            self.resolved_answers.contains(question_id),
+            self.resolved_answers.count(),
+            self.limits.max_resolved_answers,
+        );
+        // Reserve a map slot so the post-send getOrPutAssumeCapacity cannot OOM.
+        try self.resolved_answers.ensureUnusedCapacity(1);
+        const frame_copy = try self.allocator.alloc(u8, frame_len);
+        return .{ .frame_copy = frame_copy };
+    }
+
+    /// Record a resolved answer using a reservation obtained (before the send)
+    /// from `reserveResolvedAnswer`. Infallible: the map slot and frame copy are
+    /// already reserved, so this only copies bytes and stores into the map.
+    /// Takes ownership of the reservation's `frame_copy` (moved into the map).
+    fn commitReservedResolvedAnswer(
+        self: *Peer,
+        question_id: u32,
+        reservation: ResolvedAnswerReservation,
+        source: []const u8,
+    ) void {
+        std.debug.assert(reservation.frame_copy.len == source.len);
+        std.mem.copyForwards(u8, reservation.frame_copy, source);
+        pending_calls.recordResolvedAnswerAssumeCapacity(
+            Peer,
+            ResolvedAnswer,
+            PendingCall,
+            cap_table.InboundCapTable,
+            self.allocator,
+            self,
+            question_id,
+            reservation.frame_copy,
+            &self.resolved_answers,
+            &self.pending_promises,
+            Peer.resolvePromisedAnswer,
+            Peer.sendReturnException,
+            Peer.handleResolvedCall,
+            Peer.releaseInboundCaps,
+            peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
         );
     }
 
