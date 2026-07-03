@@ -291,6 +291,13 @@ pub const ChatRoom = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -407,6 +414,13 @@ pub const ChatRoom = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -523,6 +537,13 @@ pub const ChatRoom = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -639,6 +660,13 @@ pub const ChatRoom = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -755,6 +783,13 @@ pub const ChatRoom = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -859,32 +894,47 @@ pub const ChatRoom = struct {
 
         pub fn callSendMessage(self: *Client, user_ctx: *anyopaque, build: ?SendMessage.BuildFn, on_return: SendMessage.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SendMessage.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, SendMessage.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callSendEmote(self: *Client, user_ctx: *anyopaque, build: ?SendEmote.BuildFn, on_return: SendEmote.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SendEmote.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, SendEmote.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callGetHistory(self: *Client, user_ctx: *anyopaque, build: ?GetHistory.BuildFn, on_return: GetHistory.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetHistory.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetHistory.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callGetInfo(self: *Client, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetInfo.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callLeave(self: *Client, user_ctx: *anyopaque, build: ?Leave.BuildFn, on_return: Leave.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Leave.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Leave.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
@@ -900,32 +950,47 @@ pub const ChatRoom = struct {
 
         pub fn callSendMessage(self: *PipelinedClient, user_ctx: *anyopaque, build: ?SendMessage.BuildFn, on_return: SendMessage.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SendMessage.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SendMessage.ordinal, ctx, SendMessage.callBuild, SendMessage.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, SendMessage.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callSendEmote(self: *PipelinedClient, user_ctx: *anyopaque, build: ?SendEmote.BuildFn, on_return: SendEmote.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SendEmote.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SendEmote.ordinal, ctx, SendEmote.callBuild, SendEmote.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, SendEmote.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callGetHistory(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetHistory.BuildFn, on_return: GetHistory.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetHistory.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetHistory.ordinal, ctx, GetHistory.callBuild, GetHistory.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetHistory.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callGetInfo(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInfo.ordinal, ctx, GetInfo.callBuild, GetInfo.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetInfo.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callLeave(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Leave.BuildFn, on_return: Leave.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Leave.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Leave.ordinal, ctx, Leave.callBuild, Leave.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Leave.CallContext.deinitCtx);
+            return question_id;
         }
 
     };
@@ -943,6 +1008,11 @@ pub const ChatRoom = struct {
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -978,8 +1048,11 @@ pub const ChatRoom = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
@@ -1449,6 +1522,13 @@ pub const ChatService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1565,6 +1645,13 @@ pub const ChatService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1681,6 +1768,13 @@ pub const ChatService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1797,6 +1891,13 @@ pub const ChatService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1901,26 +2002,38 @@ pub const ChatService = struct {
 
         pub fn callCreateRoom(self: *Client, user_ctx: *anyopaque, build: ?CreateRoom.BuildFn, on_return: CreateRoom.Callback) !u32 {
             const ctx = try self.peer.allocator.create(CreateRoom.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, CreateRoom.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callJoinRoom(self: *Client, user_ctx: *anyopaque, build: ?JoinRoom.BuildFn, on_return: JoinRoom.Callback) !u32 {
             const ctx = try self.peer.allocator.create(JoinRoom.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, JoinRoom.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callListRooms(self: *Client, user_ctx: *anyopaque, build: ?ListRooms.BuildFn, on_return: ListRooms.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ListRooms.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, ListRooms.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callWhisper(self: *Client, user_ctx: *anyopaque, build: ?Whisper.BuildFn, on_return: Whisper.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Whisper.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Whisper.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callCreateRoomPipelined(self: *Client, user_ctx: *anyopaque, build: ?CreateRoom.BuildFn, on_return: CreateRoom.Callback) !CreateRoomPipeline {
@@ -1966,26 +2079,38 @@ pub const ChatService = struct {
 
         pub fn callCreateRoom(self: *PipelinedClient, user_ctx: *anyopaque, build: ?CreateRoom.BuildFn, on_return: CreateRoom.Callback) !u32 {
             const ctx = try self.peer.allocator.create(CreateRoom.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CreateRoom.ordinal, ctx, CreateRoom.callBuild, CreateRoom.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, CreateRoom.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callJoinRoom(self: *PipelinedClient, user_ctx: *anyopaque, build: ?JoinRoom.BuildFn, on_return: JoinRoom.Callback) !u32 {
             const ctx = try self.peer.allocator.create(JoinRoom.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, JoinRoom.ordinal, ctx, JoinRoom.callBuild, JoinRoom.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, JoinRoom.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callListRooms(self: *PipelinedClient, user_ctx: *anyopaque, build: ?ListRooms.BuildFn, on_return: ListRooms.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ListRooms.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ListRooms.ordinal, ctx, ListRooms.callBuild, ListRooms.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, ListRooms.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callWhisper(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Whisper.BuildFn, on_return: Whisper.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Whisper.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Whisper.ordinal, ctx, Whisper.callBuild, Whisper.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Whisper.CallContext.deinitCtx);
+            return question_id;
         }
 
     };
@@ -2003,6 +2128,11 @@ pub const ChatService = struct {
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -2038,8 +2168,11 @@ pub const ChatService = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {

@@ -40,6 +40,13 @@ pub const Persistent = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -144,13 +151,17 @@ pub const Persistent = struct {
 
         pub fn callSave(self: *Client, user_ctx: *anyopaque, build: ?Save.BuildFn, on_return: Save.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Save.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Save.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
+
     };
 
     pub const PipelinedClient = struct {
@@ -160,9 +171,13 @@ pub const Persistent = struct {
 
         pub fn callSave(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Save.BuildFn, on_return: Save.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Save.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Save.ordinal, ctx, Save.callBuild, Save.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Save.CallContext.deinitCtx);
+            return question_id;
         }
+
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -178,6 +193,11 @@ pub const Persistent = struct {
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -213,8 +233,11 @@ pub const Persistent = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
@@ -245,15 +268,6 @@ pub const Persistent = struct {
 };
 
 pub const SaveParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -269,6 +283,7 @@ pub const SaveParams = struct {
         pub fn getSealFor(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -306,19 +321,11 @@ pub const SaveParams = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
+
     };
 };
 
 pub const SaveResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -334,6 +341,7 @@ pub const SaveResults = struct {
         pub fn getSturdyRef(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -371,6 +379,7 @@ pub const SaveResults = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
+
     };
 };
 
@@ -391,3 +400,4 @@ pub const persistent = struct {
         .annotation = false,
     };
 };
+

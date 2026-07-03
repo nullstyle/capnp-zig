@@ -12,15 +12,6 @@ pub fn capnpSchemaManifestJson() []const u8 {
 }
 
 pub const Message = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         unimplemented = 0,
         abort = 1,
@@ -56,36 +47,43 @@ pub const Message = struct {
         }
 
         pub fn getUnimplemented(self: Reader) !Message.Reader {
+            if (self._reader.isPointerNull(0)) return Message.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Message.Reader{ ._reader = value };
         }
 
         pub fn getAbort(self: Reader) !Exception.Reader {
+            if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
         }
 
         pub fn getCall(self: Reader) !Call.Reader {
+            if (self._reader.isPointerNull(0)) return Call.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Call.Reader{ ._reader = value };
         }
 
         pub fn getReturn(self: Reader) !Return.Reader {
+            if (self._reader.isPointerNull(0)) return Return.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Return.Reader{ ._reader = value };
         }
 
         pub fn getFinish(self: Reader) !Finish.Reader {
+            if (self._reader.isPointerNull(0)) return Finish.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Finish.Reader{ ._reader = value };
         }
 
         pub fn getResolve(self: Reader) !Resolve.Reader {
+            if (self._reader.isPointerNull(0)) return Resolve.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Resolve.Reader{ ._reader = value };
         }
 
         pub fn getRelease(self: Reader) !Release.Reader {
+            if (self._reader.isPointerNull(0)) return Release.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Release.Reader{ ._reader = value };
         }
@@ -95,6 +93,7 @@ pub const Message = struct {
         }
 
         pub fn getBootstrap(self: Reader) !Bootstrap.Reader {
+            if (self._reader.isPointerNull(0)) return Bootstrap.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Bootstrap.Reader{ ._reader = value };
         }
@@ -104,29 +103,35 @@ pub const Message = struct {
         }
 
         pub fn getProvide(self: Reader) !Provide.Reader {
+            if (self._reader.isPointerNull(0)) return Provide.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Provide.Reader{ ._reader = value };
         }
 
         pub fn getAccept(self: Reader) !Accept.Reader {
+            if (self._reader.isPointerNull(0)) return Accept.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Accept.Reader{ ._reader = value };
         }
 
         pub fn getJoin(self: Reader) !Join.Reader {
+            if (self._reader.isPointerNull(0)) return Join.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Join.Reader{ ._reader = value };
         }
 
         pub fn getDisembargo(self: Reader) !Disembargo.Reader {
+            if (self._reader.isPointerNull(0)) return Disembargo.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Disembargo.Reader{ ._reader = value };
         }
 
         pub fn getThirdPartyAnswer(self: Reader) !ThirdPartyAnswer.Reader {
+            if (self._reader.isPointerNull(0)) return ThirdPartyAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return ThirdPartyAnswer.Reader{ ._reader = value };
         }
+
     };
 
     pub const Builder = struct {
@@ -276,19 +281,11 @@ pub const Message = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return ThirdPartyAnswer.Builder{ ._builder = builder };
         }
+
     };
 };
 
 pub const Bootstrap = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -302,14 +299,13 @@ pub const Bootstrap = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getDeprecatedObjectId(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -325,8 +321,7 @@ pub const Bootstrap = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initDeprecatedObjectId(self: *Builder) !message.AnyPointerBuilder {
@@ -352,19 +347,11 @@ pub const Bootstrap = struct {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
         }
+
     };
 };
 
 pub const Call = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const SendResultsTo = struct {
         pub const WhichTag = enum(u16) {
             caller = 0,
@@ -396,6 +383,7 @@ pub const Call = struct {
             pub fn getThirdParty(self: @This()) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(2);
             }
+
         };
 
         pub const Builder = struct {
@@ -406,19 +394,20 @@ pub const Call = struct {
             }
 
             pub fn setCaller(self: *@This(), value: void) !void {
-                self._builder.writeU16(6, 0);
+            self._builder.writeU16(6, 0);
                 _ = value;
             }
 
             pub fn setYourself(self: *@This(), value: void) !void {
-                self._builder.writeU16(6, 1);
+            self._builder.writeU16(6, 1);
                 _ = value;
             }
 
             pub fn initThirdParty(self: *@This()) !message.AnyPointerBuilder {
-                self._builder.writeU16(6, 2);
+            self._builder.writeU16(6, 2);
                 return try self._builder.getAnyPointer(2);
             }
+
         };
     };
 
@@ -435,29 +424,25 @@ pub const Call = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
+            if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return MessageTarget.Reader{ ._reader = value };
         }
 
         pub fn getInterfaceId(self: Reader) !u64 {
-            const raw = self._reader.readU64(8);
-            const value = raw ^ @as(u64, 0);
-            return value;
+            return self._reader.readU64(8);
         }
 
         pub fn getMethodId(self: Reader) !u16 {
-            const raw = self._reader.readU16(4);
-            const value = raw ^ @as(u16, 0);
-            return value;
+            return self._reader.readU16(4);
         }
 
         pub fn getParams(self: Reader) !Payload.Reader {
+            if (self._reader.isPointerNull(1)) return Payload.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(1);
             return Payload.Reader{ ._reader = value };
         }
@@ -477,6 +462,7 @@ pub const Call = struct {
         pub fn getOnlyPromisePipeline(self: Reader) !bool {
             return self._reader.readBool(16, 2) != false;
         }
+
     };
 
     pub const Builder = struct {
@@ -492,8 +478,7 @@ pub const Call = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
@@ -502,13 +487,11 @@ pub const Call = struct {
         }
 
         pub fn setInterfaceId(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(8, stored);
+            self._builder.writeU64(8, @bitCast(value));
         }
 
         pub fn setMethodId(self: *Builder, value: u16) !void {
-            const stored = @as(u16, @bitCast(value)) ^ @as(u16, 0);
-            self._builder.writeU16(4, stored);
+            self._builder.writeU16(4, @bitCast(value));
         }
 
         pub fn initParams(self: *Builder) !Payload.Builder {
@@ -531,19 +514,11 @@ pub const Call = struct {
         pub fn setOnlyPromisePipeline(self: *Builder, value: bool) !void {
             self._builder.writeBool(16, 2, value != false);
         }
+
     };
 };
 
 pub const Return = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         results = 0,
         exception = 1,
@@ -570,9 +545,7 @@ pub const Return = struct {
         }
 
         pub fn getAnswerId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getReleaseParamCaps(self: Reader) !bool {
@@ -580,11 +553,13 @@ pub const Return = struct {
         }
 
         pub fn getResults(self: Reader) !Payload.Reader {
+            if (self._reader.isPointerNull(0)) return Payload.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Payload.Reader{ ._reader = value };
         }
 
         pub fn getException(self: Reader) !Exception.Reader {
+            if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
         }
@@ -600,9 +575,7 @@ pub const Return = struct {
         }
 
         pub fn getTakeFromOtherQuestion(self: Reader) !u32 {
-            const raw = self._reader.readU32(8);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(8);
         }
 
         pub fn getAwaitFromThirdParty(self: Reader) !message.AnyPointerReader {
@@ -612,6 +585,7 @@ pub const Return = struct {
         pub fn getNoFinishNeeded(self: Reader) !bool {
             return self._reader.readBool(4, 1) != false;
         }
+
     };
 
     pub const Builder = struct {
@@ -627,8 +601,7 @@ pub const Return = struct {
         }
 
         pub fn setAnswerId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn setReleaseParamCaps(self: *Builder, value: bool) !void {
@@ -659,8 +632,7 @@ pub const Return = struct {
 
         pub fn setTakeFromOtherQuestion(self: *Builder, value: u32) !void {
             self._builder.writeU16(6, 4);
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(8, stored);
+            self._builder.writeU32(8, @bitCast(value));
         }
 
         pub fn initAwaitFromThirdParty(self: *Builder) !message.AnyPointerBuilder {
@@ -695,19 +667,11 @@ pub const Return = struct {
         pub fn setNoFinishNeeded(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 1, value != false);
         }
+
     };
 };
 
 pub const Finish = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -721,9 +685,7 @@ pub const Finish = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getReleaseResultCaps(self: Reader) !bool {
@@ -733,6 +695,7 @@ pub const Finish = struct {
         pub fn getRequireEarlyCancellationWorkaround(self: Reader) !bool {
             return self._reader.readBool(4, 1) != true;
         }
+
     };
 
     pub const Builder = struct {
@@ -748,8 +711,7 @@ pub const Finish = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn setReleaseResultCaps(self: *Builder, value: bool) !void {
@@ -759,19 +721,11 @@ pub const Finish = struct {
         pub fn setRequireEarlyCancellationWorkaround(self: *Builder, value: bool) !void {
             self._builder.writeBool(4, 1, value != true);
         }
+
     };
 };
 
 pub const Resolve = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         cap = 0,
         exception = 1,
@@ -794,20 +748,21 @@ pub const Resolve = struct {
         }
 
         pub fn getPromiseId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getCap(self: Reader) !CapDescriptor.Reader {
+            if (self._reader.isPointerNull(0)) return CapDescriptor.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return CapDescriptor.Reader{ ._reader = value };
         }
 
         pub fn getException(self: Reader) !Exception.Reader {
+            if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
         }
+
     };
 
     pub const Builder = struct {
@@ -823,8 +778,7 @@ pub const Resolve = struct {
         }
 
         pub fn setPromiseId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initCap(self: *Builder) !CapDescriptor.Builder {
@@ -838,19 +792,11 @@ pub const Resolve = struct {
             const builder = try self._builder.initStruct(0, 1, 3);
             return Exception.Builder{ ._builder = builder };
         }
+
     };
 };
 
 pub const Release = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -864,16 +810,13 @@ pub const Release = struct {
         }
 
         pub fn getId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getReferenceCount(self: Reader) !u32 {
-            const raw = self._reader.readU32(4);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(4);
         }
+
     };
 
     pub const Builder = struct {
@@ -889,27 +832,17 @@ pub const Release = struct {
         }
 
         pub fn setId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn setReferenceCount(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(4, stored);
+            self._builder.writeU32(4, @bitCast(value));
         }
+
     };
 };
 
 pub const Disembargo = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Context = struct {
         pub const WhichTag = enum(u16) {
             senderLoopback = 0,
@@ -929,21 +862,18 @@ pub const Disembargo = struct {
             }
 
             pub fn getSenderLoopback(self: @This()) !u32 {
-                const raw = self._reader.readU32(0);
-                const value = raw ^ @as(u32, 0);
-                return value;
+                return self._reader.readU32(0);
             }
 
             pub fn getReceiverLoopback(self: @This()) !u32 {
-                const raw = self._reader.readU32(0);
-                const value = raw ^ @as(u32, 0);
-                return value;
+                return self._reader.readU32(0);
             }
 
             pub fn getAccept(self: @This()) ![]const u8 {
                 if (self._reader.isPointerNull(1)) return &[_]u8{};
                 return try self._reader.readData(1);
             }
+
         };
 
         pub const Builder = struct {
@@ -954,21 +884,20 @@ pub const Disembargo = struct {
             }
 
             pub fn setSenderLoopback(self: *@This(), value: u32) !void {
-                self._builder.writeU16(4, 0);
-                const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-                self._builder.writeU32(0, stored);
+            self._builder.writeU16(4, 0);
+                self._builder.writeU32(0, @bitCast(value));
             }
 
             pub fn setReceiverLoopback(self: *@This(), value: u32) !void {
-                self._builder.writeU16(4, 1);
-                const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-                self._builder.writeU32(0, stored);
+            self._builder.writeU16(4, 1);
+                self._builder.writeU32(0, @bitCast(value));
             }
 
             pub fn setAccept(self: *@This(), value: []const u8) !void {
-                self._builder.writeU16(4, 2);
+            self._builder.writeU16(4, 2);
                 try self._builder.writeData(1, value);
             }
+
         };
     };
 
@@ -985,6 +914,7 @@ pub const Disembargo = struct {
         }
 
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
+            if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return MessageTarget.Reader{ ._reader = value };
         }
@@ -992,6 +922,7 @@ pub const Disembargo = struct {
         pub fn getContext(self: Reader) Context.Reader {
             return .{ ._reader = self._reader };
         }
+
     };
 
     pub const Builder = struct {
@@ -1014,19 +945,11 @@ pub const Disembargo = struct {
         pub fn getContext(self: *Builder) Context.Builder {
             return .{ ._builder = self._builder };
         }
+
     };
 };
 
 pub const Provide = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -1040,12 +963,11 @@ pub const Provide = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
+            if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return MessageTarget.Reader{ ._reader = value };
         }
@@ -1053,6 +975,7 @@ pub const Provide = struct {
         pub fn getRecipient(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(1);
         }
+
     };
 
     pub const Builder = struct {
@@ -1068,8 +991,7 @@ pub const Provide = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
@@ -1100,19 +1022,11 @@ pub const Provide = struct {
             var any = try self._builder.getAnyPointer(1);
             try any.setCapability(cap);
         }
+
     };
 };
 
 pub const Accept = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -1126,9 +1040,7 @@ pub const Accept = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getProvision(self: Reader) !message.AnyPointerReader {
@@ -1139,6 +1051,7 @@ pub const Accept = struct {
             if (self._reader.isPointerNull(1)) return &[_]u8{};
             return try self._reader.readData(1);
         }
+
     };
 
     pub const Builder = struct {
@@ -1154,8 +1067,7 @@ pub const Accept = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initProvision(self: *Builder) !message.AnyPointerBuilder {
@@ -1185,19 +1097,11 @@ pub const Accept = struct {
         pub fn setEmbargo(self: *Builder, value: []const u8) !void {
             try self._builder.writeData(1, value);
         }
+
     };
 };
 
 pub const ThirdPartyAnswer = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -1215,10 +1119,9 @@ pub const ThirdPartyAnswer = struct {
         }
 
         pub fn getAnswerId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -1258,22 +1161,13 @@ pub const ThirdPartyAnswer = struct {
         }
 
         pub fn setAnswerId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
+
     };
 };
 
 pub const Join = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -1287,12 +1181,11 @@ pub const Join = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
+            if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return MessageTarget.Reader{ ._reader = value };
         }
@@ -1300,6 +1193,7 @@ pub const Join = struct {
         pub fn getKeyPart(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(1);
         }
+
     };
 
     pub const Builder = struct {
@@ -1315,8 +1209,7 @@ pub const Join = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
@@ -1347,19 +1240,11 @@ pub const Join = struct {
             var any = try self._builder.getAnyPointer(1);
             try any.setCapability(cap);
         }
+
     };
 };
 
 pub const MessageTarget = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         importedCap = 0,
         promisedAnswer = 1,
@@ -1382,15 +1267,15 @@ pub const MessageTarget = struct {
         }
 
         pub fn getImportedCap(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getPromisedAnswer(self: Reader) !PromisedAnswer.Reader {
+            if (self._reader.isPointerNull(0)) return PromisedAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return PromisedAnswer.Reader{ ._reader = value };
         }
+
     };
 
     pub const Builder = struct {
@@ -1407,8 +1292,7 @@ pub const MessageTarget = struct {
 
         pub fn setImportedCap(self: *Builder, value: u32) !void {
             self._builder.writeU16(4, 0);
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initPromisedAnswer(self: *Builder) !PromisedAnswer.Builder {
@@ -1416,18 +1300,13 @@ pub const MessageTarget = struct {
             const builder = try self._builder.initStruct(0, 1, 1);
             return PromisedAnswer.Builder{ ._builder = builder };
         }
+
     };
 };
 
 pub const Payload = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
     const StructListReader = message.typed_list_helpers.StructListReader;
     const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
 
     pub const Reader = struct {
         _reader: message.StructReader,
@@ -1446,9 +1325,11 @@ pub const Payload = struct {
         }
 
         pub fn getCapTable(self: Reader) !StructListReader(CapDescriptor) {
+            if (self._reader.isPointerNull(1)) return StructListReader(CapDescriptor){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(1);
             return StructListReader(CapDescriptor){ ._list = raw };
         }
+
     };
 
     pub const Builder = struct {
@@ -1491,19 +1372,11 @@ pub const Payload = struct {
             const raw = try self._builder.writeStructList(1, element_count, 1, 1);
             return StructListBuilder(CapDescriptor){ ._list = raw };
         }
+
     };
 };
 
 pub const CapDescriptor = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         none = 0,
         senderHosted = 1,
@@ -1535,29 +1408,25 @@ pub const CapDescriptor = struct {
         }
 
         pub fn getSenderHosted(self: Reader) !u32 {
-            const raw = self._reader.readU32(4);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(4);
         }
 
         pub fn getSenderPromise(self: Reader) !u32 {
-            const raw = self._reader.readU32(4);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(4);
         }
 
         pub fn getReceiverHosted(self: Reader) !u32 {
-            const raw = self._reader.readU32(4);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(4);
         }
 
         pub fn getReceiverAnswer(self: Reader) !PromisedAnswer.Reader {
+            if (self._reader.isPointerNull(0)) return PromisedAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return PromisedAnswer.Reader{ ._reader = value };
         }
 
         pub fn getThirdPartyHosted(self: Reader) !ThirdPartyCapDescriptor.Reader {
+            if (self._reader.isPointerNull(0)) return ThirdPartyCapDescriptor.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return ThirdPartyCapDescriptor.Reader{ ._reader = value };
         }
@@ -1567,6 +1436,7 @@ pub const CapDescriptor = struct {
             const value = raw ^ @as(u8, 255);
             return value;
         }
+
     };
 
     pub const Builder = struct {
@@ -1588,20 +1458,17 @@ pub const CapDescriptor = struct {
 
         pub fn setSenderHosted(self: *Builder, value: u32) !void {
             self._builder.writeU16(0, 1);
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(4, stored);
+            self._builder.writeU32(4, @bitCast(value));
         }
 
         pub fn setSenderPromise(self: *Builder, value: u32) !void {
             self._builder.writeU16(0, 2);
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(4, stored);
+            self._builder.writeU32(4, @bitCast(value));
         }
 
         pub fn setReceiverHosted(self: *Builder, value: u32) !void {
             self._builder.writeU16(0, 3);
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(4, stored);
+            self._builder.writeU32(4, @bitCast(value));
         }
 
         pub fn initReceiverAnswer(self: *Builder) !PromisedAnswer.Builder {
@@ -1620,18 +1487,13 @@ pub const CapDescriptor = struct {
             const stored = @as(u8, @bitCast(value)) ^ @as(u8, 255);
             self._builder.writeU8(2, stored);
         }
+
     };
 };
 
 pub const PromisedAnswer = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
     const StructListReader = message.typed_list_helpers.StructListReader;
     const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
 
     pub const Reader = struct {
         _reader: message.StructReader,
@@ -1646,15 +1508,15 @@ pub const PromisedAnswer = struct {
         }
 
         pub fn getQuestionId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getTransform(self: Reader) !StructListReader(Op) {
+            if (self._reader.isPointerNull(0)) return StructListReader(Op){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(0);
             return StructListReader(Op){ ._list = raw };
         }
+
     };
 
     pub const Builder = struct {
@@ -1670,27 +1532,18 @@ pub const PromisedAnswer = struct {
         }
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn initTransform(self: *Builder, element_count: u32) !StructListBuilder(Op) {
             const raw = try self._builder.writeStructList(0, element_count, 1, 0);
             return StructListBuilder(Op){ ._list = raw };
         }
+
     };
 };
 
 pub const Op = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         noop = 0,
         getPointerField = 1,
@@ -1718,10 +1571,9 @@ pub const Op = struct {
         }
 
         pub fn getGetPointerField(self: Reader) !u16 {
-            const raw = self._reader.readU16(2);
-            const value = raw ^ @as(u16, 0);
-            return value;
+            return self._reader.readU16(2);
         }
+
     };
 
     pub const Builder = struct {
@@ -1743,22 +1595,13 @@ pub const Op = struct {
 
         pub fn setGetPointerField(self: *Builder, value: u16) !void {
             self._builder.writeU16(0, 1);
-            const stored = @as(u16, @bitCast(value)) ^ @as(u16, 0);
-            self._builder.writeU16(2, stored);
+            self._builder.writeU16(2, @bitCast(value));
         }
+
     };
 };
 
 pub const ThirdPartyCapDescriptor = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -1776,10 +1619,9 @@ pub const ThirdPartyCapDescriptor = struct {
         }
 
         pub fn getVineId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -1819,21 +1661,15 @@ pub const ThirdPartyCapDescriptor = struct {
         }
 
         pub fn setVineId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
+
     };
 };
 
 pub const Exception = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
     const StructListReader = message.typed_list_helpers.StructListReader;
     const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
 
     pub const Reader = struct {
         _reader: message.StructReader,
@@ -1857,14 +1693,11 @@ pub const Exception = struct {
         }
 
         pub fn getObsoleteDurability(self: Reader) !u16 {
-            const raw = self._reader.readU16(2);
-            const value = raw ^ @as(u16, 0);
-            return value;
+            return self._reader.readU16(2);
         }
 
         pub fn getType(self: Reader) !Type {
-            const raw = self._reader.readU16(4) ^ @as(u16, 0);
-            return std.enums.fromInt(Type, raw) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(Type, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getTrace(self: Reader) ![]const u8 {
@@ -1873,9 +1706,11 @@ pub const Exception = struct {
         }
 
         pub fn getDetails(self: Reader) !StructListReader(Detail) {
+            if (self._reader.isPointerNull(2)) return StructListReader(Detail){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(2);
             return StructListReader(Detail){ ._list = raw };
         }
+
     };
 
     pub const Builder = struct {
@@ -1899,14 +1734,11 @@ pub const Exception = struct {
         }
 
         pub fn setObsoleteDurability(self: *Builder, value: u16) !void {
-            const stored = @as(u16, @bitCast(value)) ^ @as(u16, 0);
-            self._builder.writeU16(2, stored);
+            self._builder.writeU16(2, @bitCast(value));
         }
 
         pub fn setType(self: *Builder, value: Type) !void {
-            const raw = @as(u16, @intFromEnum(value));
-            const stored = raw ^ @as(u16, 0);
-            self._builder.writeU16(4, stored);
+            self._builder.writeU16(4, @as(u16, @intFromEnum(value)));
         }
 
         pub fn setTrace(self: *Builder, value: []const u8) !void {
@@ -1917,6 +1749,7 @@ pub const Exception = struct {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
             return StructListBuilder(Detail){ ._list = raw };
         }
+
     };
 };
 
@@ -1928,15 +1761,6 @@ pub const Type = enum(u16) {
 };
 
 pub const Detail = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -1950,15 +1774,14 @@ pub const Detail = struct {
         }
 
         pub fn getDetailId(self: Reader) !u64 {
-            const raw = self._reader.readU64(0);
-            const value = raw ^ @as(u64, 0);
-            return value;
+            return self._reader.readU64(0);
         }
 
         pub fn getData(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return &[_]u8{};
             return try self._reader.readData(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -1974,12 +1797,13 @@ pub const Detail = struct {
         }
 
         pub fn setDetailId(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(0, stored);
+            self._builder.writeU64(0, @bitCast(value));
         }
 
         pub fn setData(self: *Builder, value: []const u8) !void {
             try self._builder.writeData(0, value);
         }
+
     };
 };
+

@@ -1704,6 +1704,23 @@ pub const Peer = struct {
         try self.replayResolvedPromiseExport(promise_id, .none);
     }
 
+    /// Register a cleanup callback for a question's heap-allocated ctx,
+    /// invoked by `Peer.deinit` if the question is still outstanding (never
+    /// answered — e.g. the connection dropped without a full shutdown drain).
+    /// Also clears `restore_on_return_error`, since the callback frees the ctx
+    /// on the normal return path: restoring the question after a callback
+    /// error would leave `deinit_ctx` pointing at freed memory. No-op if the
+    /// question id is unknown. Intended for generated client stubs and other
+    /// external callers that cannot reach the questions table directly; it
+    /// mirrors what `sendSave`/`sendRestore` do inline.
+    pub fn setQuestionDeinitCtx(self: *Peer, question_id: u32, deinit_ctx: state.QuestionDeinitCtxFn) void {
+        self.assertThreadAffinity();
+        if (self.questions.getPtr(question_id)) |q| {
+            q.deinit_ctx = deinit_ctx;
+            q.restore_on_return_error = false;
+        }
+    }
+
     /// Send an RPC call to an imported capability, returning the question ID.
     pub fn sendCall(
         self: *Peer,

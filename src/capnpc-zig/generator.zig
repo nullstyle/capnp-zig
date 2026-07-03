@@ -1348,7 +1348,11 @@ pub const Generator = struct {
 
         try writer.writeAll("    const BootstrapContext = struct {\n");
         try writer.writeAll("        user_ctx: *anyopaque,\n");
-        try writer.writeAll("        callback: BootstrapCallback,\n");
+        try writer.writeAll("        callback: BootstrapCallback,\n\n");
+        try writer.writeAll("        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
+        try writer.writeAll("            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n");
+        try writer.writeAll("            ctx_allocator.destroy(dead);\n");
+        try writer.writeAll("        }\n");
         try writer.writeAll("    };\n\n");
 
         try writer.writeAll("    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
@@ -1384,8 +1388,11 @@ pub const Generator = struct {
 
         try writer.writeAll("    pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {\n");
         try writer.writeAll("        const ctx = try peer.allocator.create(BootstrapContext);\n");
+        try writer.writeAll("        errdefer peer.allocator.destroy(ctx);\n");
         try writer.writeAll("        ctx.* = .{ .user_ctx = user_ctx, .callback = callback };\n");
-        try writer.writeAll("        return peer.sendBootstrap(ctx, bootstrapReturn);\n");
+        try writer.writeAll("        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);\n");
+        try writer.writeAll("        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);\n");
+        try writer.writeAll("        return question_id;\n");
         try writer.writeAll("    }\n\n");
 
         // --- Server + VTable ---
@@ -1535,7 +1542,13 @@ pub const Generator = struct {
         try writer.writeAll("        const CallContext = struct {\n");
         try writer.writeAll("            user_ctx: *anyopaque,\n");
         try writer.writeAll("            build: ?BuildFn,\n");
-        try writer.writeAll("            callback: Callback,\n");
+        try writer.writeAll("            callback: Callback,\n\n");
+        try writer.writeAll("            // Frees the heap ctx if the question is still outstanding at\n");
+        try writer.writeAll("            // Peer.deinit (the normal return path frees it in callReturn).\n");
+        try writer.writeAll("            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
+        try writer.writeAll("                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
+        try writer.writeAll("                ctx_allocator.destroy(dead);\n");
+        try writer.writeAll("            }\n");
         try writer.writeAll("        };\n\n");
 
         if (!is_streaming) {
@@ -1761,10 +1774,13 @@ pub const Generator = struct {
             p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
+        try writer.writeAll("            errdefer self.peer.allocator.destroy(ctx);\n");
         try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
-        try writer.print("            return self.peer.sendCall(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
+        try writer.print("            const question_id = try self.peer.sendCall(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
             p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
+        try writer.print("            self.peer.setQuestionDeinitCtx(question_id, {s}{s}{s}.CallContext.deinitCtx);\n", .{ p.method_prefix, p.dot, p.zig_name });
+        try writer.writeAll("            return question_id;\n");
         try writer.writeAll("        }\n\n");
     }
 
@@ -1907,10 +1923,13 @@ pub const Generator = struct {
             p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
+        try writer.writeAll("            errdefer self.peer.allocator.destroy(ctx);\n");
         try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
-        try writer.print("            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
+        try writer.print("            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
             p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
+        try writer.print("            self.peer.setQuestionDeinitCtx(question_id, {s}{s}{s}.CallContext.deinitCtx);\n", .{ p.method_prefix, p.dot, p.zig_name });
+        try writer.writeAll("            return question_id;\n");
         try writer.writeAll("        }\n\n");
     }
 

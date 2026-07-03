@@ -219,6 +219,40 @@ test "late Return after Finish (async handler) is not recorded in resolved_answe
     try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
 }
 
+test "outstanding call context is freed at Peer.deinit via deinit_ctx" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // A valid import target for the outbound call.
+    try peer.caps.noteImport(7);
+
+    // Heap context exactly like generated client stubs allocate.
+    const Ctx = struct { value: u32 };
+    const CtxOps = struct {
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+        fn deinitCtx(a: std.mem.Allocator, ptr: *anyopaque) void {
+            a.destroy(@as(*Ctx, @ptrCast(@alignCast(ptr))));
+        }
+    };
+    const ctx = try allocator.create(Ctx);
+    ctx.* = .{ .value = 7 };
+
+    // Mirror the generated stub: sendCall, then register deinit_ctx.
+    const qid = try peer.sendCall(7, 0xABCD, 0, ctx, null, CtxOps.onReturn);
+    peer.setQuestionDeinitCtx(qid, CtxOps.deinitCtx);
+
+    // Deinit with the question still outstanding (connection dropped before a
+    // Return). deinit_ctx must free the heap ctx — before this fix generated
+    // code never registered it, so std.testing.allocator would report a leak.
+    peer.deinit();
+    // No explicit destroy(ctx): deinit_ctx now owns it.
+}
+
 test "cancelling one queued call preserves send order of the survivors (E-order)" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);

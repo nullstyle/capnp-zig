@@ -234,6 +234,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -350,6 +357,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -466,6 +480,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -582,6 +603,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -698,6 +726,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -814,6 +849,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -930,6 +972,13 @@ pub const TradeSession = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1034,44 +1083,65 @@ pub const TradeSession = struct {
 
         pub fn callOfferItems(self: *Client, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback) !u32 {
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, OfferItems.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callRemoveItems(self: *Client, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, RemoveItems.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callAccept(self: *Client, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Accept.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Accept.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callConfirm(self: *Client, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Confirm.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callCancel(self: *Client, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Cancel.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callViewOtherOffer(self: *Client, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, ViewOtherOffer.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callGetState(self: *Client, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetState.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetState.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
@@ -1087,44 +1157,65 @@ pub const TradeSession = struct {
 
         pub fn callOfferItems(self: *PipelinedClient, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback) !u32 {
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, OfferItems.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callRemoveItems(self: *PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, RemoveItems.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callAccept(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Accept.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Accept.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callConfirm(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Confirm.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callCancel(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Cancel.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callViewOtherOffer(self: *PipelinedClient, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, ViewOtherOffer.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callGetState(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetState.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetState.CallContext.deinitCtx);
+            return question_id;
         }
 
     };
@@ -1142,6 +1233,11 @@ pub const TradeSession = struct {
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -1177,8 +1273,11 @@ pub const TradeSession = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
@@ -1793,6 +1892,13 @@ pub const InventoryService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1909,6 +2015,13 @@ pub const InventoryService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -2025,6 +2138,13 @@ pub const InventoryService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -2141,6 +2261,13 @@ pub const InventoryService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -2257,6 +2384,13 @@ pub const InventoryService = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -2361,32 +2495,47 @@ pub const InventoryService = struct {
 
         pub fn callGetInventory(self: *Client, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetInventory.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callAddItem(self: *Client, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback) !u32 {
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, AddItem.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callRemoveItem(self: *Client, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, RemoveItem.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callStartTrade(self: *Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !u32 {
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, StartTrade.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callFilterByRarity(self: *Client, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, FilterByRarity.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callStartTradePipelined(self: *Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !StartTradePipeline {
@@ -2417,32 +2566,47 @@ pub const InventoryService = struct {
 
         pub fn callGetInventory(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, GetInventory.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callAddItem(self: *PipelinedClient, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback) !u32 {
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, AddItem.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callRemoveItem(self: *PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, RemoveItem.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callStartTrade(self: *PipelinedClient, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !u32 {
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, StartTrade.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn callFilterByRarity(self: *PipelinedClient, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback) !u32 {
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, FilterByRarity.CallContext.deinitCtx);
+            return question_id;
         }
 
     };
@@ -2460,6 +2624,11 @@ pub const InventoryService = struct {
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -2495,8 +2664,11 @@ pub const InventoryService = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
