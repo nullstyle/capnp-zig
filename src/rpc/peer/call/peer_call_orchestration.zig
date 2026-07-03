@@ -206,7 +206,12 @@ pub fn handleCallImportedTargetForPeer(
             return;
         },
         .queue_promise_export => {
-            // Queue ownership transfers inbound caps and frame bytes to pending state.
+            // Queue ownership transfers inbound caps and frame bytes to pending
+            // state on success. If the queue is rejected (budget) or fails
+            // mid-insert (OOM), the caller retains ownership and must release
+            // the import refs noted by InboundCapTable.init — arm the release
+            // before the fallible call.
+            release_caps = true;
             try queue_promise_export_call(peer, export_id, frame, inbound_caps);
             inbound_caps_owned = false;
             return;
@@ -300,13 +305,17 @@ pub fn handleCallPromisedTargetForPeer(
 
     switch (target_plan) {
         .queue_promised_call => {
-            // Queue ownership transfers inbound caps and frame bytes to pending state.
+            // Ownership transfers to pending state on success; on queue
+            // rejection (budget) or mid-insert failure (OOM) the caller retains
+            // ownership and must release the noted import refs. Arm the release
+            // before the fallible call.
+            release_caps = true;
             try queue_promised_call(peer, promised.question_id, frame, inbound_caps);
             inbound_caps_owned = false;
             return;
         },
         .queue_export_promise => |export_id| {
-            // Queue ownership transfers inbound caps and frame bytes to pending state.
+            release_caps = true;
             try queue_promise_export_call(peer, export_id, frame, inbound_caps);
             inbound_caps_owned = false;
             return;

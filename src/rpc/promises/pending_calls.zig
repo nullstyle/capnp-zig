@@ -12,8 +12,13 @@ pub fn queuePendingCall(
     frame: []const u8,
     inbound_caps: InboundCapsType,
 ) !void {
-    var inbound_caps_owned = inbound_caps;
-    errdefer inbound_caps_owned.deinit();
+    // Ownership contract: on SUCCESS the queued entry takes over `inbound_caps`
+    // (its slices), so the caller must not deinit it. On FAILURE the CALLER
+    // retains ownership and is responsible for releasing/deiniting it — we do
+    // NOT deinit it here. `inbound_caps` is passed by value but its slices are
+    // shared with the caller's copy, so deiniting here would double-free the
+    // slices the caller's error path also frees.
+    const inbound_caps_owned = inbound_caps;
 
     const copy = try allocator.alloc(u8, frame.len);
     errdefer allocator.free(copy);
