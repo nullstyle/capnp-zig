@@ -1369,7 +1369,49 @@ capnpc-zig.rpc.testing.peer_dispatch: struct
 capnpc-zig.rpc.testing.peer_embargo_accepts: struct
 capnpc-zig.rpc.testing.peer_finish: struct
 capnpc-zig.rpc.testing.peer_provide_accept_join: struct
+capnpc-zig.rpc.testing.peer_provide_join_orchestration: struct
 capnpc-zig.rpc.testing.peer_resolve: struct
+capnpc-zig.rpc.testing.peer_return_dispatch.dispatchQuestionReturn: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.dispatchQuestionReturn)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.dispatchQuestionReturnForPeer: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.dispatchQuestionReturnForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.dispatchQuestionReturnForPeerFn: fn (comptime type, comptime type, comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch.invokeQuestionReturnForPeer: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype) anyerror!void
+capnpc-zig.rpc.testing.peer_return_dispatch.invokeQuestionReturnForPeerFn: fn (comptime type, comptime type, comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch.maybeSendAutoFinish: fn (comptime type, comptime type, anytype, anytype, u32, bool, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.maybeSendAutoFinish)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.maybeSendAutoFinishForPeerFn: fn (comptime type, comptime type, comptime anytype) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch.releaseInboundCaps: fn (comptime type, comptime type, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.releaseInboundCaps)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.releaseInboundCapsForPeerFn: fn (comptime type, comptime type, comptime anytype) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch.reportNonfatalErrorForPeer: fn (comptime type, anytype, anyerror) void
+capnpc-zig.rpc.testing.peer_return_dispatch.reportNonfatalErrorForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch.restoreAdoptedAnswerOriginal: fn (*hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80), u32, u32) void
+capnpc-zig.rpc.testing.peer_return_dispatch.restoreAdoptedAnswerOriginalForPeer: fn (comptime type, anytype, u32, u32) void
+capnpc-zig.rpc.testing.peer_return_dispatch.restoreAdoptedAnswerOriginalForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnAcceptFromThirdPartyForPeer: fn (comptime type, anytype, u32, ?[]const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnAcceptFromThirdPartyForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnExceptionForPeer: fn (comptime type, anytype, u32, []const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnExceptionForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnTagForPeer: fn (comptime type, anytype, u32, rpc.gen.capnp.rpc.Return.WhichTag, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnTagForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer: fn (comptime type, anytype, u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_dispatch.takeAdoptedAnswerOriginal: fn (*hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80), u32) ?u32
+capnpc-zig.rpc.testing.peer_return_dispatch.takeAdoptedAnswerOriginalForPeer: fn (comptime type, anytype, u32) ?u32
+capnpc-zig.rpc.testing.peer_return_dispatch.takeAdoptedAnswerOriginalForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_dispatch: struct
+capnpc-zig.rpc.testing.peer_return_orchestration.completeQuestionRemovalForPeer: fn (comptime type, anytype) void
+capnpc-zig.rpc.testing.peer_return_orchestration.completeQuestionRemovalForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.deinitInboundCapsForType: fn (comptime type, anytype) void
+capnpc-zig.rpc.testing.peer_return_orchestration.deinitInboundCapsForTypeFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.getQuestionForPeer: fn (comptime type, comptime type, anytype, u32) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.getQuestionForPeerFn: fn (comptime type, comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.handleMissingReturnQuestionForPeer: fn (comptime type, anytype, []const u8, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.handleMissingReturnQuestionForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_orchestration.handleMissingReturnQuestionForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.handleReturn: fn (comptime type, comptime type, comptime type, anytype, []const u8, rpc.wire.protocol.Return, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) anyerror!void
+capnpc-zig.rpc.testing.peer_return_orchestration.handleReturnRegular: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.handleReturnRegular)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_orchestration.handleReturnRegularForPeer: fn (comptime type, comptime type, comptime type, comptime anytype, comptime anytype, anytype, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.handleReturnRegularForPeer)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_return_orchestration.handleReturnRegularForPeerFn: fn (comptime type, comptime type, comptime type, comptime anytype, comptime anytype) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.initInboundCapsForPeer: fn (comptime type, comptime type, anytype, rpc.wire.protocol.Return) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.initInboundCapsForPeer)).@"fn".return_type.?).error_union.error_set!anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.initInboundCapsForPeerFn: fn (comptime type, comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.removeQuestionForReturnForPeer: fn (comptime type, anytype, u32) bool
+capnpc-zig.rpc.testing.peer_return_orchestration.removeQuestionForReturnForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration.restoreQuestionForReturnForPeer: fn (comptime type, comptime type, anytype, u32, anytype) void
+capnpc-zig.rpc.testing.peer_return_orchestration.restoreQuestionForReturnForPeerFn: fn (comptime type, comptime type) anytype
+capnpc-zig.rpc.testing.peer_return_orchestration: struct
 capnpc-zig.rpc.testing.peer_return_send_helpers.clearSendResultsRoutingForPeer: fn (comptime type, anytype, u32, anytype) void
 capnpc-zig.rpc.testing.peer_return_send_helpers.clearSendResultsToThirdPartyForPeer: fn (comptime type, anytype, u32) void
 capnpc-zig.rpc.testing.peer_return_send_helpers.noteOutboundReturnCapRefsForPeer: fn (comptime type, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.promises.return_send.noteOutboundReturnCapRefsForPeer)).@"fn".return_type.?).error_union.error_set!void
@@ -1635,6 +1677,11 @@ capnpc-zig.rpc.wire.protocol.MessageBuilder: struct
 capnpc-zig.rpc.wire.protocol.MessageTag: enum
 capnpc-zig.rpc.wire.protocol.MessageTarget: struct
 capnpc-zig.rpc.wire.protocol.MessageTargetTag: enum
+capnpc-zig.rpc.wire.protocol.NO_ATTACHED_FD: const u8
+capnpc-zig.rpc.wire.protocol.OwnedPromisedAnswerMessage.deinit: fn (*rpc.wire.protocol.OwnedPromisedAnswerMessage, mem.Allocator) void
+capnpc-zig.rpc.wire.protocol.OwnedPromisedAnswerMessage.init: fn (mem.Allocator, rpc.wire.protocol.PromisedAnswer) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.OwnedPromisedAnswerMessage.init)).@"fn".return_type.?).error_union.error_set!rpc.wire.protocol.OwnedPromisedAnswerMessage
+capnpc-zig.rpc.wire.protocol.OwnedPromisedAnswerMessage.promised: fn (*const rpc.wire.protocol.OwnedPromisedAnswerMessage) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.OwnedPromisedAnswerMessage.promised)).@"fn".return_type.?).error_union.error_set!rpc.wire.protocol.PromisedAnswer
+capnpc-zig.rpc.wire.protocol.OwnedPromisedAnswerMessage: struct
 capnpc-zig.rpc.wire.protocol.PAYLOAD_CAP_TABLE_PTR: const usize
 capnpc-zig.rpc.wire.protocol.PAYLOAD_CONTENT_PTR: const usize
 capnpc-zig.rpc.wire.protocol.PAYLOAD_DATA_WORDS: const u16
