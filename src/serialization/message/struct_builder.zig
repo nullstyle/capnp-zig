@@ -21,7 +21,7 @@ pub fn define(
     comptime CapabilityType: type,
     comptime make_capability_pointer: *const fn (u32) anyerror!u64,
     comptime make_list_pointer: *const fn (i32, u3, u32) anyerror!u64,
-    comptime make_far_pointer: *const fn (bool, u32, u32) u64,
+    comptime make_far_pointer: *const fn (bool, u32, u32) anyerror!u64,
 ) type {
     return struct {
         /// Builder for a list of pointers (text, data, structs, or capabilities) within a message.
@@ -996,7 +996,7 @@ pub fn define(
                         const list_ptr = try make_list_pointer(rel_offset, 6, element_count);
                         std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
 
-                        const far_ptr = make_far_pointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
+                        const far_ptr = try make_far_pointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
                         std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
                     }
 
@@ -1016,13 +1016,13 @@ pub fn define(
                 const elements_offset = content_segment.items.len;
                 try content_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
 
-                const landing_far = make_far_pointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
+                const landing_far = try make_far_pointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
                 std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
 
                 const tag_word = try make_list_pointer(0, 6, element_count);
                 std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
 
-                const far_ptr = make_far_pointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
+                const far_ptr = try make_far_pointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
                 std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
 
                 return TextListBuilderType{
@@ -1077,7 +1077,7 @@ pub fn define(
                     const list_ptr = try make_list_pointer(rel_offset, 6, element_count);
                     std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
 
-                    const far_ptr = make_far_pointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
+                    const far_ptr = try make_far_pointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
                     std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
                 }
 

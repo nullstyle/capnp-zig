@@ -64,7 +64,12 @@ fn makeListPointer(offset_words: i32, element_size: u3, element_count: u32) !u64
     return pointer;
 }
 
-fn makeFarPointer(landing_pad_is_double: bool, landing_pad_offset_words: u32, segment_id: u32) u64 {
+fn makeFarPointer(landing_pad_is_double: bool, landing_pad_offset_words: u32, segment_id: u32) !u64 {
+    // The landing-pad offset occupies bits 3..32 (29 bits). An offset >= 2^29
+    // would overflow the `<< 3` shift into the segment-id field (bits 32..64),
+    // silently corrupting the segment id. Reject it instead. (Same 29-bit wire
+    // limit as list counts; reuse the constant.)
+    if (landing_pad_offset_words > MAX_LIST_ELEMENT_COUNT) return error.FarPointerOffsetTooLarge;
     var pointer: u64 = 2; // far pointer
     if (landing_pad_is_double) {
         pointer |= @as(u64, 1) << 2;
@@ -2031,7 +2036,7 @@ pub const MessageBuilder = struct {
             const root_pointer = try root_segment.addManyAsSlice(self.allocator, 8);
             @memset(root_pointer, 0);
         }
-        const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), segment_id);
+        const far_ptr = try makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), segment_id);
         std.mem.writeInt(u64, root_segment.items[0..8], far_ptr, .little);
 
         return StructBuilder{
@@ -2097,7 +2102,7 @@ pub const MessageBuilder = struct {
         const list_ptr = try makeListPointer(list_offset, 2, @as(u32, @intCast(text.len + 1)));
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], list_ptr, .little);
 
-        const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
+        const far_ptr = try makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
         std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], far_ptr, .little);
     }
 
@@ -2164,7 +2169,7 @@ pub const MessageBuilder = struct {
         const struct_ptr = try makeStructPointer(0, data_words, pointer_words);
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], struct_ptr, .little);
 
-        const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
+        const far_ptr = try makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
         std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], far_ptr, .little);
 
         return StructBuilder{
@@ -2230,7 +2235,7 @@ pub const MessageBuilder = struct {
             const list_ptr = try makeListPointer(rel_offset, element_size, element_count);
             std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
 
-            const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
+            const far_ptr = try makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
             std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], far_ptr, .little);
         }
 
@@ -2291,7 +2296,7 @@ pub const MessageBuilder = struct {
                 const list_ptr = try makeListPointer(rel_offset, 7, total_words);
                 std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
 
-                const far_ptr = makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
+                const far_ptr = try makeFarPointer(false, @as(u32, @intCast(landing_pos / 8)), landing_segment_id);
                 std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
             }
 
@@ -2313,13 +2318,13 @@ pub const MessageBuilder = struct {
         const elements_offset = content_segment.items.len;
         try content_segment.appendNTimes(self.allocator, 0, total_bytes);
 
-        const landing_far = makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
+        const landing_far = try makeFarPointer(false, @as(u32, @intCast(elements_offset / 8)), content_segment_id);
         std.mem.writeInt(u64, landing_segment.items[landing_pad_pos..][0..8], landing_far, .little);
 
         const tag_word = try makeStructPointer(@as(i32, @intCast(element_count)), data_words, pointer_words);
         std.mem.writeInt(u64, landing_segment.items[landing_pad_pos + 8 ..][0..8], tag_word, .little);
 
-        const far_ptr = makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
+        const far_ptr = try makeFarPointer(true, @as(u32, @intCast(landing_pad_pos / 8)), landing_segment_id);
         std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
 
         return StructListBuilder{
