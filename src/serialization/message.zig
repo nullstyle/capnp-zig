@@ -1223,6 +1223,14 @@ pub const Message = struct {
         // Read the root pointer
         const root_pointer = std.mem.readInt(u64, segment[0..8], .little);
 
+        // A null root pointer denotes an absent root: per the Cap'n Proto spec
+        // (and consistent with getRootAnyPointer and reference implementations)
+        // it reads as an empty default struct rather than error.InvalidPointer,
+        // which is what schema-evolution reads of an added struct field rely on.
+        if (root_pointer == 0) {
+            return .{ .message = self, .segment_id = 0, .offset = 0, .data_size = 0, .pointer_count = 0 };
+        }
+
         return try self.resolveStructPointer(0, 0, root_pointer);
     }
 
