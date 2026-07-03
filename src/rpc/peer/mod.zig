@@ -2905,7 +2905,9 @@ pub const Peer = struct {
             self.allocator,
             bootstrap_msg,
             self.bootstrap_export_id,
+            inboundQuestionIdInUse,
             noteExportRef,
+            rollbackExportRef,
             sendReturnException,
             sendFrame,
             recordResolvedAnswer,
@@ -3141,6 +3143,15 @@ pub const Peer = struct {
     }
 
     fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
+        // A Provide must not reuse a question id already live as a Call /
+        // Bootstrap answer or a pending Join (spec violation). Same-type
+        // (provide) collisions fall through to the orchestration's specific
+        // "duplicate provide question" abort below.
+        if (try self.inboundAnswerQuestionIdInUse(provide.question_id) or
+            self.pending_join_questions.contains(provide.question_id))
+        {
+            return error.DuplicateQuestionId;
+        }
         try peer_provide_join_orchestration.handleProvide(
             Peer,
             ProvideEntry,
@@ -3188,6 +3199,15 @@ pub const Peer = struct {
     }
 
     fn handleJoin(self: *Peer, join: protocol.Join) !void {
+        // A Join must not reuse a question id already live as a Call /
+        // Bootstrap answer or a Provide (spec violation). Same-type (join)
+        // collisions fall through to the orchestration's specific "duplicate
+        // join question" abort below.
+        if (try self.inboundAnswerQuestionIdInUse(join.question_id) or
+            self.provides_by_question.contains(join.question_id))
+        {
+            return error.DuplicateQuestionId;
+        }
         try peer_provide_join_orchestration.handleJoin(
             Peer,
             JoinKeyPart,
@@ -3272,16 +3292,37 @@ pub const Peer = struct {
         return false;
     }
 
+    /// True when `question_id` is already consumed by an inbound Call or
+    /// Bootstrap answer (active, resolved, forwarded, or queued for a promised
+    /// target). This is the shared answer namespace; it deliberately excludes
+    /// the provide/join question tables so their handlers can report their own
+    /// specific errors for same-type collisions.
+    fn inboundAnswerQuestionIdInUse(self: *Peer, question_id: u32) !bool {
+        return self.resolved_answers.contains(question_id) or
+            self.active_inbound_questions.contains(question_id) or
+            self.send_results_to_yourself.contains(question_id) or
+            self.send_results_to_third_party.contains(question_id) or
+            self.forwarded_questions.contains(question_id) or
+            self.forwarded_tail_questions.contains(question_id) or
+            try self.hasQueuedPendingQuestionId(question_id);
+    }
+
+    /// True when `question_id` is already consumed by any inbound question:
+    /// the shared Call/Bootstrap answer namespace plus in-flight Provide and
+    /// Join questions. Used by handlers that own no question table of their own
+    /// (Call, Bootstrap) so a spec-violating reuse across message types is
+    /// rejected before a second Return can be emitted on the id.
+    fn inboundQuestionIdInUse(self: *Peer, question_id: u32) !bool {
+        return (try self.inboundAnswerQuestionIdInUse(question_id)) or
+            self.provides_by_question.contains(question_id) or
+            self.pending_join_questions.contains(question_id);
+    }
+
     fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
         // Reject duplicate question IDs from the remote peer (spec violation).
-        if (self.resolved_answers.contains(call.question_id) or
-            self.active_inbound_questions.contains(call.question_id) or
-            self.send_results_to_yourself.contains(call.question_id) or
-            self.send_results_to_third_party.contains(call.question_id) or
-            self.forwarded_questions.contains(call.question_id) or
-            self.forwarded_tail_questions.contains(call.question_id) or
-            try self.hasQueuedPendingQuestionId(call.question_id))
-        {
+        // Covers the shared answer namespace plus in-flight Provide/Join
+        // questions so a Call can never collide with any other inbound question.
+        if (try self.inboundQuestionIdInUse(call.question_id)) {
             return error.DuplicateQuestionId;
         }
 

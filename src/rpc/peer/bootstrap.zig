@@ -92,11 +92,23 @@ pub fn handleBootstrap(
     allocator: std.mem.Allocator,
     bootstrap_msg: protocol.Bootstrap,
     bootstrap_export_id: ?u32,
+    question_id_in_use: *const fn (*PeerType, u32) anyerror!bool,
     note_export_ref: *const fn (*PeerType, u32) anyerror!void,
+    rollback_export_ref: *const fn (*PeerType, u32) void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     send_frame: *const fn (*PeerType, []const u8) anyerror!void,
     record_resolved_answer: *const fn (*PeerType, u32, []u8) anyerror!void,
 ) !void {
+    // Reject a Bootstrap whose question id is already live (spec violation),
+    // mirroring handleCall's defense. Without this a remote could reuse an
+    // active or resolved question id; we would emit a second Return on that id
+    // and recordResolvedAnswer would silently replace the cached frame, so
+    // pipelined PromisedAnswer references on the old answer would resolve
+    // against the new one.
+    if (try question_id_in_use(peer, bootstrap_msg.question_id)) {
+        return error.DuplicateQuestionId;
+    }
+
     const export_id = bootstrap_export_id orelse {
         try send_return_exception(peer, bootstrap_msg.question_id, "bootstrap not configured");
         return;
@@ -106,7 +118,16 @@ pub fn handleBootstrap(
     defer allocator.free(bytes);
 
     try note_export_ref(peer, export_id);
+    // If the send fails the remote never received the cap descriptor and will
+    // never Release it, so undo the ref-count bump to avoid overstating the
+    // export's ref-count for the connection lifetime. Cleared once the send
+    // succeeds: past that point the remote holds the descriptor and owns the
+    // ref, so a later recordResolvedAnswer failure must NOT roll it back
+    // (matching sendReturnResults / sendPrebuiltReturnFrame).
+    var rollback_ref = true;
+    errdefer if (rollback_ref) rollback_export_ref(peer, export_id);
     try send_frame(peer, bytes);
+    rollback_ref = false;
 
     const copy = try allocator.alloc(u8, bytes.len);
     errdefer allocator.free(copy);

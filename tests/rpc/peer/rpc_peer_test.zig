@@ -839,6 +839,54 @@ test "peer duplicate provide question sends abort" {
     try std.testing.expectEqualStrings("duplicate provide question", abort.exception.reason);
 }
 
+test "peer duplicate bootstrap question is rejected without a second return" {
+    const allocator = std.testing.allocator;
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var handler_state: u8 = 0;
+    _ = try peer.setBootstrap(.{
+        .ctx = &handler_state,
+        .on_call = NoopHandler.onCall,
+    });
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    // First Bootstrap answers with a single Return and caches the resolved
+    // answer under question id 555.
+    var first_builder = protocol.MessageBuilder.init(allocator);
+    defer first_builder.deinit();
+    try first_builder.buildBootstrap(555);
+    const first_frame = try first_builder.finish();
+    defer allocator.free(first_frame);
+    try peer.handleFrame(first_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+    var first_return = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+    defer first_return.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.@"return", first_return.tag);
+
+    // Reusing the still-resolved question id must be rejected: a second Return
+    // would overwrite the cached answer frame and poison pipelined
+    // PromisedAnswer references on the original answer.
+    var duplicate_builder = protocol.MessageBuilder.init(allocator);
+    defer duplicate_builder.deinit();
+    try duplicate_builder.buildBootstrap(555);
+    const duplicate_frame = try duplicate_builder.finish();
+    defer allocator.free(duplicate_frame);
+    try std.testing.expectError(error.DuplicateQuestionId, peer.handleFrame(duplicate_frame));
+
+    // No extra frame emitted for the rejected Bootstrap.
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+}
+
 test "peer join returns provided capability" {
     const allocator = std.testing.allocator;
 
