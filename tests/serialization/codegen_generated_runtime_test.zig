@@ -62,9 +62,16 @@ fn runGeneratedHarness(
     defer zig_argv.deinit(allocator);
     try zig_argv.append(allocator, "zig");
     try zig_argv.append(allocator, "test");
+    // root module depends on capnpc-zig
     try zig_argv.append(allocator, "--dep");
     try zig_argv.append(allocator, "capnpc-zig");
     try zig_argv.append(allocator, root_arg);
+    // capnpc-zig depends on itself: generated interface code imports the RPC
+    // runtime via `@import("capnpc-zig")`, which the library re-exports through
+    // its own module name. Without this self-dependency, interface schemas fail
+    // to compile with "no module named 'capnpc-zig'".
+    try zig_argv.append(allocator, "--dep");
+    try zig_argv.append(allocator, "capnpc-zig");
     try zig_argv.append(allocator, lib_arg);
 
     const zig_result = std.process.run(allocator, io, .{
@@ -359,6 +366,20 @@ test "Codegen generated schema evolution compiles and runs" {
         \\        try std.testing.expectEqual(@as(u32, 42), try as_new.getRevision());
         \\        try std.testing.expectEqualStrings("new-field-default", try as_new.getNote());
         \\        try std.testing.expectEqual(true, try as_new.getEnabled());
+        \\
+        \\        // BUG 3: pointer fields added in the newer schema were never
+        \\        // written by the old message (null pointers). Reading them must
+        \\        // return empty defaults, not error.InvalidPointer.
+        \\        const extra_profile = try as_new.getExtraProfile();
+        \\        try std.testing.expectEqualStrings("", try extra_profile.getName());
+        \\        const tags = try as_new.getTags();
+        \\        try std.testing.expectEqual(@as(u32, 0), tags.len());
+        \\        const numbers = try as_new.getNumbers();
+        \\        try std.testing.expectEqual(@as(u32, 0), numbers.len());
+        \\        const blob = try as_new.getBlob();
+        \\        try std.testing.expectEqual(@as(usize, 0), blob.len);
+        \\        const children = try as_new.getChildren();
+        \\        try std.testing.expectEqual(@as(u32, 0), children.len());
         \\    }
         \\
         \\    {
@@ -441,6 +462,89 @@ test "Codegen generated schema manifest compiles and runs" {
         \\    }
         \\    try std.testing.expect(saw_root);
         \\    try std.testing.expect(saw_child);
+        \\}
+        \\
+    );
+}
+
+// BUG 2: the pipelined client method's return type must be the sibling
+// `{Method}Pipeline` type, not `{Method}.Pipeline`. Zig lazily analyzes unused
+// decls, so the broken signature only fails when the decl is actually
+// referenced. This test force-analyzes `callGetInnerPipelined` so the compiler
+// type-checks its return type.
+test "Codegen pipelined client method compiles when referenced" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/nested_interfaces.capnp",
+        \\const std = @import("std");
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "pipelined client decl type-checks" {
+        \\    // Force semantic analysis of the pipelined method and its return
+        \\    // type (Outer.GetInnerPipeline). Before the fix this referenced
+        \\    // Outer.GetInner.Pipeline, which does not exist.
+        \\    _ = &generated.Outer.Client.callGetInnerPipelined;
+        \\    _ = generated.Outer.GetInnerPipeline;
+        \\    const info = @typeInfo(@TypeOf(generated.Outer.Client.callGetInnerPipelined));
+        \\    const ret = info.@"fn".return_type.?;
+        \\    const payload = @typeInfo(ret).error_union.payload;
+        \\    try std.testing.expect(payload == generated.Outer.GetInnerPipeline);
+        \\}
+        \\
+    );
+}
+
+test "Codegen union group init zeroes stale variant data" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/union_group_reset_runtime.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "union group init resets group slots" {
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\
+        \\    var shape = try generated.Shape.Builder.init(&builder);
+        \\    try shape.setName("s");
+        \\
+        \\    // Populate the group's shared storage (data words + pointer slots)
+        \\    // with non-default values via the dims variant.
+        \\    {
+        \\        var dims0 = shape.initDims();
+        \\        try dims0.setWidth(3.5);
+        \\        try dims0.setHeight(4.5);
+        \\        try dims0.setLabel("stale-label");
+        \\        try dims0.setNote("stale-note");
+        \\    }
+        \\
+        \\    // Switch to a scalar variant to leave stale bits in the shared data
+        \\    // word, and keep the stale group pointers dangling in the pointer
+        \\    // section.
+        \\    try shape.setScalar(1234.5);
+        \\
+        \\    // Now select the group variant again: init must zero the group's own
+        \\    // data words and null its pointer slots so nothing leaks through.
+        \\    var dims = shape.initDims();
+        \\    _ = &dims;
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\
+        \\    const root = try msg.getRootStruct();
+        \\    const reader = generated.Shape.Reader.wrap(root);
+        \\    const dims_reader = reader.getDims();
+        \\
+        \\    // All group fields must read back as defaults, not stale data.
+        \\    try std.testing.expectEqual(@as(f32, 0.0), try dims_reader.getWidth());
+        \\    try std.testing.expectEqual(@as(f32, 0.0), try dims_reader.getHeight());
+        \\    try std.testing.expectEqualStrings("", try dims_reader.getLabel());
+        \\    try std.testing.expectEqualStrings("", try dims_reader.getNote());
         \\}
         \\
     );

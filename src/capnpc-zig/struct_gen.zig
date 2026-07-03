@@ -392,12 +392,16 @@ pub const StructGenerator = struct {
                 try writer.print("            return try self._reader.readText({});\n", .{slot.offset});
             },
             .data => {
-                if (slot.default_value) |default_value| {
-                    if (self.defaultData(default_value)) |data| {
-                        try writer.print("            if (self._reader.isPointerNull({})) return ", .{slot.offset});
-                        try self.writeByteArrayLiteral(writer, data);
-                        try writer.writeAll(";\n");
-                    }
+                // A null data pointer reads back as an empty slice (spec: null
+                // pointer means default). Guard unconditionally so unset /
+                // newly-added data fields return "" instead of erroring.
+                const data_default: ?[]const u8 = if (slot.default_value) |dv| self.defaultData(dv) else null;
+                if (data_default) |data| {
+                    try writer.print("            if (self._reader.isPointerNull({})) return ", .{slot.offset});
+                    try self.writeByteArrayLiteral(writer, data);
+                    try writer.writeAll(";\n");
+                } else {
+                    try writer.print("            if (self._reader.isPointerNull({})) return &[_]u8{{}};\n", .{slot.offset});
                 }
                 try writer.print("            return try self._reader.readData({});\n", .{slot.offset});
             },
@@ -406,22 +410,27 @@ pub const StructGenerator = struct {
                     const enum_info = list_info.element_type.@"enum";
                     const enum_name = try self.enumTypeName(enum_info.type_id);
                     defer if (enum_name) |name| self.allocator.free(name);
-                    if (slot.default_value) |default_value| {
-                        if (self.defaultPointerBytes(default_value)) |bytes| {
-                            const const_name = try self.defaultConstName(field.name);
-                            defer self.allocator.free(const_name);
-                            if (enum_name) |name| {
-                                try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
-                                try writer.print("                const raw = try {s}();\n", .{const_name});
-                                try writer.print("                return EnumListReader({s}){{ ._list = raw }};\n", .{name});
-                                try writer.writeAll("            }\n");
-                            } else {
-                                try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{
-                                    slot.offset,
-                                    const_name,
-                                });
-                            }
-                            _ = bytes;
+                    // A null list pointer reads back as an empty list (spec: null
+                    // pointer means default). Guard unconditionally so unset /
+                    // newly-added list fields return an empty reader.
+                    if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                        defer self.allocator.free(const_name);
+                        if (enum_name) |name| {
+                            try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                            try writer.print("                const raw = try {s}();\n", .{const_name});
+                            try writer.print("                return EnumListReader({s}){{ ._list = raw }};\n", .{name});
+                            try writer.writeAll("            }\n");
+                        } else {
+                            try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{
+                                slot.offset,
+                                const_name,
+                            });
+                        }
+                    } else {
+                        if (enum_name) |name| {
+                            try writer.print("            if (self._reader.isPointerNull({})) return EnumListReader({s}){{ ._list = self._reader.emptyList(message.U16ListReader) }};\n", .{ slot.offset, name });
+                        } else {
+                            try writer.print("            if (self._reader.isPointerNull({})) return self._reader.emptyList(message.U16ListReader);\n", .{slot.offset});
                         }
                     }
                     if (enum_name) |name| {
@@ -434,16 +443,15 @@ pub const StructGenerator = struct {
                     return;
                 }
                 if (list_info.element_type.* == .data) {
-                    if (slot.default_value) |default_value| {
-                        if (self.defaultPointerBytes(default_value)) |bytes| {
-                            const const_name = try self.defaultConstName(field.name);
-                            defer self.allocator.free(const_name);
-                            try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
-                            try writer.print("                const raw = try {s}();\n", .{const_name});
-                            try writer.writeAll("                return DataListReader{ ._list = raw };\n");
-                            try writer.writeAll("            }\n");
-                            _ = bytes;
-                        }
+                    // Null list pointer -> empty list (spec: null means default).
+                    if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                        defer self.allocator.free(const_name);
+                        try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                        try writer.print("                const raw = try {s}();\n", .{const_name});
+                        try writer.writeAll("                return DataListReader{ ._list = raw };\n");
+                        try writer.writeAll("            }\n");
+                    } else {
+                        try writer.print("            if (self._reader.isPointerNull({})) return DataListReader{{ ._list = self._reader.emptyList(message.PointerListReader) }};\n", .{slot.offset});
                     }
                     try writer.print("            const raw = try self._reader.readPointerList({});\n", .{slot.offset});
                     try writer.writeAll("            return DataListReader{ ._list = raw };\n");
@@ -451,16 +459,15 @@ pub const StructGenerator = struct {
                     return;
                 }
                 if (list_info.element_type.* == .interface) {
-                    if (slot.default_value) |default_value| {
-                        if (self.defaultPointerBytes(default_value)) |bytes| {
-                            const const_name = try self.defaultConstName(field.name);
-                            defer self.allocator.free(const_name);
-                            try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
-                            try writer.print("                const raw = try {s}();\n", .{const_name});
-                            try writer.writeAll("                return CapabilityListReader{ ._list = raw };\n");
-                            try writer.writeAll("            }\n");
-                            _ = bytes;
-                        }
+                    // Null list pointer -> empty list (spec: null means default).
+                    if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                        defer self.allocator.free(const_name);
+                        try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                        try writer.print("                const raw = try {s}();\n", .{const_name});
+                        try writer.writeAll("                return CapabilityListReader{ ._list = raw };\n");
+                        try writer.writeAll("            }\n");
+                    } else {
+                        try writer.print("            if (self._reader.isPointerNull({})) return CapabilityListReader{{ ._list = self._reader.emptyList(message.PointerListReader) }};\n", .{slot.offset});
                     }
                     try writer.print("            const raw = try self._reader.readPointerList({});\n", .{slot.offset});
                     try writer.writeAll("            return CapabilityListReader{ ._list = raw };\n");
@@ -488,22 +495,25 @@ pub const StructGenerator = struct {
                     const struct_info = list_info.element_type.@"struct";
                     const struct_name = try self.structTypeName(struct_info.type_id);
                     defer if (struct_name) |name| self.allocator.free(name);
-                    if (slot.default_value) |default_value| {
-                        if (self.defaultPointerBytes(default_value)) |bytes| {
-                            const const_name = try self.defaultConstName(field.name);
-                            defer self.allocator.free(const_name);
-                            if (struct_name) |name| {
-                                try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
-                                try writer.print("                const raw = try {s}();\n", .{const_name});
-                                try writer.print("                return StructListReader({s}){{ ._list = raw }};\n", .{name});
-                                try writer.writeAll("            }\n");
-                            } else {
-                                try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{
-                                    slot.offset,
-                                    const_name,
-                                });
-                            }
-                            _ = bytes;
+                    // Null list pointer -> empty list (spec: null means default).
+                    if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                        defer self.allocator.free(const_name);
+                        if (struct_name) |name| {
+                            try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                            try writer.print("                const raw = try {s}();\n", .{const_name});
+                            try writer.print("                return StructListReader({s}){{ ._list = raw }};\n", .{name});
+                            try writer.writeAll("            }\n");
+                        } else {
+                            try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{
+                                slot.offset,
+                                const_name,
+                            });
+                        }
+                    } else {
+                        if (struct_name) |name| {
+                            try writer.print("            if (self._reader.isPointerNull({})) return StructListReader({s}){{ ._list = self._reader.emptyStructList() }};\n", .{ slot.offset, name });
+                        } else {
+                            try writer.print("            if (self._reader.isPointerNull({})) return self._reader.emptyStructList();\n", .{slot.offset});
                         }
                     }
                     if (struct_name) |name| {
@@ -517,34 +527,43 @@ pub const StructGenerator = struct {
                 }
 
                 const method = self.listReaderMethod(list_info.element_type.*);
-                if (slot.default_value) |default_value| {
-                    if (self.defaultPointerBytes(default_value)) |bytes| {
-                        const const_name = try self.defaultConstName(field.name);
-                        defer self.allocator.free(const_name);
-                        try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{ slot.offset, const_name });
-                        _ = bytes;
-                    }
+                // Null list pointer -> empty list (spec: null means default).
+                if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                    defer self.allocator.free(const_name);
+                    try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{ slot.offset, const_name });
+                } else {
+                    const reader_type = try self.listReaderTypeString(list_info.element_type.*);
+                    defer self.allocator.free(reader_type);
+                    try writer.print("            if (self._reader.isPointerNull({})) return self._reader.emptyList({s});\n", .{ slot.offset, reader_type });
                 }
                 try writer.print("            return try self._reader.{s}({});\n", .{ method, slot.offset });
             },
             .@"struct" => |struct_info| {
                 const struct_name = try self.structTypeName(struct_info.type_id);
                 defer if (struct_name) |name| self.allocator.free(name);
+                // A null struct pointer reads back as an all-defaults struct (spec:
+                // null pointer means default). Guard unconditionally so unset /
+                // newly-added struct fields return an empty reader instead of
+                // erroring, unless an explicit non-null default is configured.
                 if (struct_name) |name| {
-                    if (slot.default_value) |default_value| {
-                        if (self.defaultPointerBytes(default_value)) |bytes| {
-                            const const_name = try self.defaultConstName(field.name);
-                            defer self.allocator.free(const_name);
-                            try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
-                            try writer.print("                const value = try {s}();\n", .{const_name});
-                            try writer.print("                return {s}.Reader{{ ._reader = value }};\n", .{name});
-                            try writer.writeAll("            }\n");
-                            _ = bytes;
-                        }
+                    if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                        defer self.allocator.free(const_name);
+                        try writer.print("            if (self._reader.isPointerNull({})) {{\n", .{slot.offset});
+                        try writer.print("                const value = try {s}();\n", .{const_name});
+                        try writer.print("                return {s}.Reader{{ ._reader = value }};\n", .{name});
+                        try writer.writeAll("            }\n");
+                    } else {
+                        try writer.print("            if (self._reader.isPointerNull({})) return {s}.Reader{{ ._reader = self._reader.emptyStruct() }};\n", .{ slot.offset, name });
                     }
                     try writer.print("            const value = try self._reader.readStruct({});\n", .{slot.offset});
                     try writer.print("            return {s}.Reader{{ ._reader = value }};\n", .{name});
                 } else {
+                    if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                        defer self.allocator.free(const_name);
+                        try writer.print("            if (self._reader.isPointerNull({})) return try {s}();\n", .{ slot.offset, const_name });
+                    } else {
+                        try writer.print("            if (self._reader.isPointerNull({})) return self._reader.emptyStruct();\n", .{slot.offset});
+                    }
                     try writer.print("            return try self._reader.readStruct({});\n", .{slot.offset});
                 }
             },
@@ -613,6 +632,13 @@ pub const StructGenerator = struct {
         if (field.discriminant_value != 0xFFFF and struct_info.discriminant_count > 0) {
             const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
             try writer.print("        pub fn init{s}(self: *Builder) {s}.Builder {{\n", .{ cap_name, group_name });
+            // Union group members share the union's data/pointer space with the
+            // other variants. capnp's init<group>() zeroes the group's own slots
+            // so its fields read back as their defaults rather than stale bits
+            // left over from a previously-selected variant. Zero first, then write
+            // the discriminant so a group data word overlapping the discriminant
+            // does not clobber it.
+            try self.writeGroupSlotZeroing(group_node, writer);
             try writer.print("            self._builder.writeU16({}, {});\n", .{ disc_byte_offset, field.discriminant_value });
             try writer.writeAll("            return .{ ._builder = self._builder };\n");
             try writer.writeAll("        }\n\n");
@@ -620,6 +646,82 @@ pub const StructGenerator = struct {
             try writer.print("        pub fn get{s}(self: *Builder) {s}.Builder {{\n", .{ cap_name, group_name });
             try writer.writeAll("            return .{ ._builder = self._builder };\n");
             try writer.writeAll("        }\n\n");
+        }
+    }
+
+    /// Byte size of a scalar/data field type, used to compute which data words
+    /// a group field occupies. Pointer-typed fields live in the pointer section
+    /// and return null (handled separately).
+    fn scalarByteSize(typ: schema.Type) ?u32 {
+        return switch (typ) {
+            .bool => 1, // packed; the containing byte's word is zeroed
+            .int8, .uint8 => 1,
+            .int16, .uint16, .@"enum" => 2,
+            .int32, .uint32, .float32 => 4,
+            .int64, .uint64, .float64 => 8,
+            .void => 0,
+            else => null,
+        };
+    }
+
+    /// Recursively collect the data-word indices and pointer indices that a
+    /// group (including any nested groups) occupies within the enclosing
+    /// struct's storage. Used to zero a union group's own slots on init.
+    fn collectGroupSlots(
+        self: *StructGenerator,
+        group_node: *const schema.Node,
+        data_words: *std.ArrayList(u32),
+        pointer_indices: *std.ArrayList(u32),
+    ) !void {
+        const group_struct = group_node.struct_node orelse return;
+        for (group_struct.fields) |gfield| {
+            if (gfield.group) |nested| {
+                if (self.getNode(nested.type_id)) |nested_node| {
+                    try self.collectGroupSlots(nested_node, data_words, pointer_indices);
+                }
+                continue;
+            }
+            const slot = gfield.slot orelse continue;
+            if (scalarByteSize(slot.type)) |size| {
+                if (size == 0) continue; // void occupies no storage
+                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
+                const first_word = byte_offset / 8;
+                const last_word = (byte_offset + size - 1) / 8;
+                var w = first_word;
+                while (w <= last_word) : (w += 1) try self.appendUnique(data_words, w);
+            } else {
+                // Pointer-typed field (struct/list/text/data/interface/any): the
+                // slot offset is a pointer index.
+                try self.appendUnique(pointer_indices, slot.offset);
+            }
+        }
+    }
+
+    fn appendUnique(self: *StructGenerator, list: *std.ArrayList(u32), value: u32) !void {
+        for (list.items) |existing| {
+            if (existing == value) return;
+        }
+        try list.append(self.allocator, value);
+    }
+
+    /// Emit statements zeroing a union group's own data words and nulling its
+    /// pointer slots, mirroring capnp's `init<group>()` semantics.
+    fn writeGroupSlotZeroing(self: *StructGenerator, group_node: *const schema.Node, writer: anytype) !void {
+        var data_words = std.ArrayList(u32).empty;
+        defer data_words.deinit(self.allocator);
+        var pointer_indices = std.ArrayList(u32).empty;
+        defer pointer_indices.deinit(self.allocator);
+
+        try self.collectGroupSlots(group_node, &data_words, &pointer_indices);
+
+        std.mem.sort(u32, data_words.items, {}, std.sort.asc(u32));
+        std.mem.sort(u32, pointer_indices.items, {}, std.sort.asc(u32));
+
+        for (data_words.items) |word| {
+            try writer.print("            self._builder.writeU64({}, 0);\n", .{word * 8});
+        }
+        for (pointer_indices.items) |idx| {
+            try writer.print("            self._builder.clearPointer({});\n", .{idx});
         }
     }
 
@@ -1600,6 +1702,16 @@ pub const StructGenerator = struct {
         const zig_name = try self.type_gen.toZigIdentifier(field_name);
         defer self.allocator.free(zig_name);
         return std.fmt.allocPrint(self.allocator, "_default_{s}", .{zig_name});
+    }
+
+    /// If the slot carries an explicit non-null pointer default, return the
+    /// generated default-const name (caller owns it); otherwise return null.
+    /// A null result means the field's default is the implicit empty value, so
+    /// a null-pointer getter should fall back to an empty reader.
+    fn pointerDefaultConstName(self: *StructGenerator, field: schema.Field, slot: schema.FieldSlot) !?[]const u8 {
+        const default_value = slot.default_value orelse return null;
+        if (self.defaultPointerBytes(default_value) == null) return null;
+        return try self.defaultConstName(field.name);
     }
 
     fn defaultPointerReturnType(self: *StructGenerator, typ: schema.Type) ![]const u8 {

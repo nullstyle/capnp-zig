@@ -1268,6 +1268,50 @@ pub const StructReader = struct {
         return pointer_word == 0;
     }
 
+    /// An empty (zero-size) struct reader anchored to this reader's message.
+    ///
+    /// Used by generated getters as the default for an unset (null-pointer)
+    /// struct field: per the Cap'n Proto spec a null struct pointer reads back
+    /// as a struct with all fields at their defaults, which a zero data/pointer
+    /// StructReader provides. This mirrors how `readText` returns "" for null.
+    pub fn emptyStruct(self: StructReader) StructReader {
+        return .{
+            .message = self.message,
+            .segment_id = self.segment_id,
+            .offset = self.offset,
+            .data_size = 0,
+            .pointer_count = 0,
+        };
+    }
+
+    /// An empty struct-list reader anchored to this reader's message. Used by
+    /// generated getters as the default for an unset (null-pointer) List(struct)
+    /// field, mirroring the null-pointer-means-default semantics.
+    pub fn emptyStructList(self: StructReader) StructListReader {
+        return .{
+            .message = self.message,
+            .segment_id = self.segment_id,
+            .elements_offset = 0,
+            .element_count = 0,
+            .data_words = 0,
+            .pointer_words = 0,
+        };
+    }
+
+    /// An empty list reader of type `ListReader` anchored to this reader's
+    /// message. Works for every primitive/text/pointer list reader (which share
+    /// the `{ message, segment_id, elements_offset, element_count }` layout) as
+    /// well as `VoidListReader` (which carries only `element_count`). Used by
+    /// generated getters as the default for an unset (null-pointer) list field.
+    pub fn emptyList(self: StructReader, comptime ListReader: type) ListReader {
+        var reader: ListReader = undefined;
+        reader.element_count = 0;
+        if (@hasField(ListReader, "message")) reader.message = self.message;
+        if (@hasField(ListReader, "segment_id")) reader.segment_id = self.segment_id;
+        if (@hasField(ListReader, "elements_offset")) reader.elements_offset = 0;
+        return reader;
+    }
+
     /// Read a u64 from the struct's data section at the given byte offset.
     ///
     /// Returns 0 if `byte_offset` falls outside the data section. This is

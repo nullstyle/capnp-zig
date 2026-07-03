@@ -577,6 +577,21 @@ pub fn define(
                 };
             }
 
+            /// Write a null pointer word to the slot at the given pointer index.
+            ///
+            /// Silently drops the write if `pointer_index` is out of range,
+            /// mirroring `writeU64`'s schema-evolution-tolerant semantics. Used by
+            /// generated `init<group>()` to zero a union group's own pointer slots
+            /// so stale pointers from a previously-selected variant do not leak.
+            pub fn clearPointer(self: @This(), pointer_index: usize) void {
+                if (pointer_index >= self.pointer_count) return;
+                if (self.segment_id >= self.builder.segments.items.len) return;
+                const segment = &self.builder.segments.items[self.segment_id];
+                const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
+                if (pointer_pos + 8 > segment.items.len) return;
+                std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], 0, .little);
+            }
+
             fn writePrimitiveListInSegment(
                 self: @This(),
                 pointer_index: usize,

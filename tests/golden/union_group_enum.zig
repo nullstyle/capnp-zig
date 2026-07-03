@@ -111,6 +111,8 @@ pub const Shape = struct {
         }
 
         pub fn initRectangle(self: *Builder) Rectangle.Builder {
+            self._builder.writeU64(0, 0);
+            self._builder.writeU64(8, 0);
             self._builder.writeU16(2, 1);
             return .{ ._builder = self._builder };
         }

@@ -1156,12 +1156,14 @@ pub const Generator = struct {
 
         try writer.print("pub const {s} = enum(u16) {{\n", .{decl_name});
 
-        for (enum_info.enumerants) |enumerant| {
+        // The enumerants list is ordered by ordinal (numeric value), not declaration
+        // order (code_order). The wire value IS the list index, so use it directly.
+        for (enum_info.enumerants, 0..) |enumerant, ordinal| {
             const zig_name = try self.toZigIdentifier(enumerant.name);
             defer self.allocator.free(zig_name);
             const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
             defer self.allocator.free(escaped_name);
-            try writer.print("    {s} = {},\n", .{ escaped_name, enumerant.code_order });
+            try writer.print("    {s} = {},\n", .{ escaped_name, ordinal });
         }
 
         try writer.writeAll("};\n\n");
@@ -1247,17 +1249,19 @@ pub const Generator = struct {
         try writer.print("    pub const interface_id: u64 = 0x{x};\n", .{node.id});
         // Zero-method interfaces produce an empty enum; this is valid Zig but uninhabitable.
         try writer.writeAll("    pub const Method = enum(u16) {\n");
-        for (interface_info.methods) |method| {
+        // The methods list is ordered by ordinal, not declaration order (code_order).
+        // The wire ordinal IS the list index, so use it directly.
+        for (interface_info.methods, 0..) |method, ordinal| {
             const zig_name = try self.toZigIdentifier(method.name);
             defer self.allocator.free(zig_name);
             const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
             defer self.allocator.free(escaped_name);
-            try writer.print("        {s} = {},\n", .{ escaped_name, method.code_order });
+            try writer.print("        {s} = {},\n", .{ escaped_name, ordinal });
         }
         try writer.writeAll("    };\n\n");
 
-        for (interface_info.methods) |method| {
-            try self.generateMethodStruct(method, writer);
+        for (interface_info.methods, 0..) |method, ordinal| {
+            try self.generateMethodStruct(method, ordinal, writer);
         }
 
         // --- Client ---
@@ -1484,7 +1488,9 @@ pub const Generator = struct {
     }
 
     /// Generate a single method struct inside an interface.
-    fn generateMethodStruct(self: *Generator, method: schema.Method, writer: anytype) !void {
+    /// `ordinal` is the method's index in the interface's methods list, which capnp
+    /// guarantees equals its wire ordinal (methods are ordered by ordinal).
+    fn generateMethodStruct(self: *Generator, method: schema.Method, ordinal: usize, writer: anytype) !void {
         const zig_name = try self.toZigIdentifier(method.name);
         defer self.allocator.free(zig_name);
         const escaped_zig_name = try types.escapeZigKeyword(self.allocator, zig_name);
@@ -1503,7 +1509,7 @@ pub const Generator = struct {
         const is_streaming = method.isStreaming();
 
         try writer.print("    pub const {s} = struct {{\n", .{escaped_zig_name});
-        try writer.print("        pub const ordinal: u16 = {};\n", .{method.code_order});
+        try writer.print("        pub const ordinal: u16 = {};\n", .{ordinal});
         try writer.print("        pub const is_streaming: bool = {};\n", .{is_streaming});
         try writer.print("        pub const Params = {s};\n", .{param_name});
         try writer.print("        pub const Results = {s};\n", .{result_name});
@@ -1848,11 +1854,16 @@ pub const Generator = struct {
         const zig_name = try self.toZigIdentifier(method.name);
         defer self.allocator.free(zig_name);
 
+        // The Pipeline type is declared as a sibling of Client named `{Method}Pipeline`
+        // (see generatePipelineType / allocMethodPipelineName), NOT `{Method}.Pipeline`.
+        const pipeline_name = try self.allocMethodPipelineName(method.name);
+        defer self.allocator.free(pipeline_name);
+
         const method_prefix = ancestor_name orelse "";
         const dot = if (ancestor_name != null) "." else "";
 
-        try writer.print("        pub fn call{s}Pipelined(self: *Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s}.Pipeline {{\n", .{
-            zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name,
+        try writer.print("        pub fn call{s}Pipelined(self: *Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
+            zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
         });
         try writer.print("            const qid = try self.call{s}(user_ctx, build, on_return);\n", .{zig_name});
         try writer.writeAll("            return .{ .peer = self.peer, .question_id = qid };\n");

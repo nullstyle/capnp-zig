@@ -73,6 +73,7 @@ pub const AllTypes = struct {
         }
 
         pub fn getDataField(self: Reader) ![]const u8 {
+            if (self._reader.isPointerNull(1)) return &[_]u8{};
             return try self._reader.readData(1);
         }
 
