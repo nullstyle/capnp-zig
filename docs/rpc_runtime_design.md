@@ -162,6 +162,30 @@ Outbound call:
 - Transport errors propagate to `Connection` and trigger cleanup.
 - Application errors are serialized as RPC exceptions.
 
+### Terminal question failure on disconnect
+
+When the transport closes (EOF, transport error, or explicit close), every
+still-outstanding outbound question is failed so a caller awaiting a `Return`
+is resolved rather than hung. The chosen signal is a **synthetic exception
+`Return`** (`reason = "disconnected"`, exported as `peer.disconnected_reason`)
+delivered through the question's normal `QuestionCallback` (`on_return`) — the
+lowest-churn shape, since `QuestionCallback` already receives a
+`protocol.Return`, and it reuses the existing `deliverLocalException` /
+`forceCancelAllQuestions` path used by the shutdown drain.
+
+Contract:
+- Delivered from `Peer.onConnectionClose` **before** the owner's `on_close`
+  callback runs, while the peer's maps are still intact — so a callback that
+  re-enters the peer is safe and waiters are resolved before any teardown.
+- Delivered **exactly once** per question (the question is removed from the
+  table as it is failed; `on_close`/`deinit` then see an empty table).
+- The synthetic failure is **never** recorded in `resolved_answers` and is
+  **never** replayed to pipelining/`pending_promises` — it is purely an
+  outbound-question terminal signal, distinct from an inbound answer.
+- Direct `Peer.deinit` without a prior transport close only frees state (runs
+  each question's `deinit_ctx`); owners that need waiter notification must
+  close/shutdown the transport first, which drives `onConnectionClose`.
+
 ## Current Module Layout
 - `src/rpc/transport/tcp/runtime.zig`
 - `src/rpc/transport/tcp/connection.zig`

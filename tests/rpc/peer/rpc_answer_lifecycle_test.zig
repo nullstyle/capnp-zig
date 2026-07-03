@@ -219,6 +219,50 @@ test "late Return after Finish (async handler) is not recorded in resolved_answe
     try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
 }
 
+test "outstanding questions are failed with Disconnected on connection close" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const Noop = struct {
+        fn send(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+    peer.setSendFrameOverride(&peer, Noop.send);
+
+    const Waiter = struct {
+        fired: usize = 0,
+        disconnects: usize = 0,
+        fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.fired += 1;
+            if (ret.tag == .exception) {
+                if (ret.exception) |ex| {
+                    if (std.mem.eql(u8, ex.reason, "disconnected")) self.disconnects += 1;
+                }
+            }
+        }
+    };
+
+    // Two outstanding questions whose Returns never arrive.
+    var w1 = Waiter{};
+    var w2 = Waiter{};
+    _ = try peer.sendBootstrap(&w1, Waiter.onReturn);
+    _ = try peer.sendBootstrap(&w2, Waiter.onReturn);
+    try std.testing.expectEqual(@as(usize, 2), peer.questions.count());
+
+    // The transport drops: the connection's on_close drives onConnectionClose.
+    peer_test_hooks.onConnectionClose(&peer);
+
+    // Every waiter's callback fired exactly once with the Disconnected signal,
+    // and no question is left hanging.
+    try std.testing.expectEqual(@as(usize, 1), w1.fired);
+    try std.testing.expectEqual(@as(usize, 1), w1.disconnects);
+    try std.testing.expectEqual(@as(usize, 1), w2.fired);
+    try std.testing.expectEqual(@as(usize, 1), w2.disconnects);
+    try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+}
+
 test "a queued pipelined call's question id is still detected as duplicate" {
     // Guards the quadratic-scan fix: duplicate detection now matches the id
     // decoded once at enqueue instead of re-decoding every queued frame. The

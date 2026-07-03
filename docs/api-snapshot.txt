@@ -1095,6 +1095,7 @@ capnpc-zig.rpc.peer.bootstrap.handleUnimplemented: fn (comptime type, anytype, r
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestion: fn (comptime type, anytype, u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplementedQuestion)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestionForPeerFn: fn (comptime type, comptime anytype) anytype
 capnpc-zig.rpc.peer.bootstrap: struct
+capnpc-zig.rpc.peer.disconnected_reason: const *const [12:0]u8
 capnpc-zig.rpc.peer.disembargo.DisembargoOps: fn (comptime type) type
 capnpc-zig.rpc.peer.disembargo.clearResolvedImportEmbargoForPeer: fn (comptime type, anytype, u32) void
 capnpc-zig.rpc.peer.disembargo.clearResolvedImportEmbargoForPeerFn: fn (comptime type) anytype

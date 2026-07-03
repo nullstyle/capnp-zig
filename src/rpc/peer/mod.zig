@@ -62,6 +62,13 @@ pub const QuestionCallback = *const fn (ctx: *anyopaque, peer: *Peer, ret: proto
 /// Optional override for outbound frame delivery (used in testing).
 pub const SendFrameOverride = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
 
+/// Exception reason delivered to every outstanding question's `on_return` when
+/// the transport closes (see `onConnectionClose`). The terminal
+/// disconnect-failure signal is a synthetic exception `Return` routed through
+/// the normal `QuestionCallback`; it is never recorded in `resolved_answers`
+/// nor replayed to pipelining, so callers observe a one-shot failure.
+pub const disconnected_reason = "disconnected";
+
 /// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
     ctx: *anyopaque,
@@ -2834,6 +2841,15 @@ pub const Peer = struct {
         log.debug("connection closed", .{});
         events.emitClose(self.observer, .peer, .unknown, null);
         events.emitConnection(self.observer, .peer, .unknown, .closed);
+        // Resolve every still-outstanding question with a synthetic
+        // "disconnected" exception Return delivered through its on_return
+        // callback, BEFORE the owner's on_close (which typically deinits the
+        // peer). Without this a caller awaiting a Return whose transport just
+        // dropped hangs forever — a liveness gap and a trivial DoS. The peer's
+        // maps are still intact here, so a callback that re-enters the peer is
+        // safe; the synthetic Return is delivered only to the question's
+        // callback and is never cached as an answer or replayed to pipelining.
+        _ = self.forceCancelAllQuestions(disconnected_reason);
         if (self.on_close) |cb| cb(self);
     }
 
