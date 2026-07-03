@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Rapid pushes to a branch (or PR) supersede in-flight runs: cancel the older
+# run so the 11-job matrix does not pile up and starve runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
