@@ -721,6 +721,19 @@ pub const Peer = struct {
                 if (q.deinit_ctx) |deinit_ctx| deinit_ctx(self.allocator, q.ctx);
             }
         }
+        // Questions parked in pending_third_party_awaits were moved out of the
+        // questions map, so the loop above never sees them. Invoke their
+        // deinit_ctx too (heap Save/Restore/ForwardCallContext), or a teardown
+        // with in-flight three-party handoffs leaks them. The owned map keys are
+        // freed by deinitOwnedStringKeyMap below.
+        {
+            var await_it = self.pending_third_party_awaits.valueIterator();
+            while (await_it.next()) |pending_await| {
+                if (pending_await.question.deinit_ctx) |deinit_ctx| {
+                    deinit_ctx(self.allocator, pending_await.question.ctx);
+                }
+            }
+        }
         self.questions.deinit();
         self.active_inbound_questions.deinit();
         self.finished_early_answers.deinit();
@@ -1592,6 +1605,11 @@ pub const Peer = struct {
             cancelled += 1;
         }
 
+        // Parked third-party-await questions are not in the questions map, so
+        // the loop above misses them; sweep expired ones so they cannot escape
+        // deadline enforcement.
+        cancelled += self.sweepThirdPartyAwaits(true);
+
         if (self.is_shutting_down) {
             if (self.shutdown_deadline_ns) |drain_deadline| {
                 if (now >= drain_deadline and self.questions.count() != 0) {
@@ -1652,10 +1670,49 @@ pub const Peer = struct {
             };
             cancelled += 1;
         }
+        cancelled += self.sweepThirdPartyAwaits(false);
         if (self.is_shutting_down and self.questions.count() == 0) {
             self.completeShutdown();
         }
         return cancelled;
+    }
+
+    /// Remove parked third-party-await questions, freeing each question's heap
+    /// ctx (via deinit_ctx) and the owned map key. With `only_expired` true,
+    /// only deadline-expired awaits are removed; otherwise all are. This bounds
+    /// the memory a peer can pin by answering questions with awaitFromThirdParty
+    /// and never completing the handoff — otherwise those contexts escape both
+    /// deadline enforcement and the shutdown drain entirely.
+    fn sweepThirdPartyAwaits(self: *Peer, only_expired: bool) usize {
+        const now: ?i64 = if (only_expired) self.clockNow() else null;
+        if (only_expired and now == null) return 0;
+
+        var keys: std.ArrayList([]const u8) = .empty;
+        defer keys.deinit(self.allocator);
+        {
+            var it = self.pending_third_party_awaits.iterator();
+            while (it.next()) |kv| {
+                if (only_expired) {
+                    const deadline = kv.value_ptr.question.deadline_ns orelse continue;
+                    if (now.? < deadline) continue;
+                }
+                keys.append(self.allocator, kv.key_ptr.*) catch break;
+            }
+        }
+
+        var swept: usize = 0;
+        for (keys.items) |key| {
+            const removed = self.pending_third_party_awaits.fetchRemove(key) orelse continue;
+            if (removed.value.question.deinit_ctx) |deinit_ctx| {
+                deinit_ctx(self.allocator, removed.value.question.ctx);
+            }
+            self.allocator.free(removed.key);
+            if (only_expired) {
+                events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, removed.value.question_id);
+            }
+            swept += 1;
+        }
+        return swept;
     }
 
     /// Resolve a previously exported promise to point at a concrete export.
@@ -2206,26 +2263,20 @@ pub const Peer = struct {
                 defer pending_call.caps.deinit();
                 defer self.allocator.free(pending_call.frame);
 
-                var decoded = protocol.DecodedMessage.init(self.allocator, pending_call.frame) catch |err| {
-                    self.reportNonfatalError(err);
-                    continue;
-                };
-                defer decoded.deinit();
-                if (decoded.tag != .call) continue;
-                const call = decoded.asCall() catch |err| {
-                    self.reportNonfatalError(err);
-                    continue;
-                };
+                // question_id was decoded once at enqueue; a value of 0 means the
+                // frame was not a decodable Call, so there is nothing to fail.
+                const child_qid = pending_call.question_id;
+                if (child_qid == 0) continue;
 
                 // Non-draining send: descendants are handled by the worklist,
                 // not by re-entering this drain.
-                self.sendReturnExceptionNoDrain(call.question_id, reason) catch |err| {
+                self.sendReturnExceptionNoDrain(child_qid, reason) catch |err| {
                     self.reportNonfatalError(err);
                 };
                 self.releaseInboundCaps(&pending_call.caps) catch |err| {
                     self.reportNonfatalError(err);
                 };
-                worklist.append(self.allocator, call.question_id) catch |err| {
+                worklist.append(self.allocator, child_qid) catch |err| {
                     // Cannot enqueue this child's descendants for draining;
                     // they leak under memory pressure. Report and continue.
                     self.reportNonfatalError(err);
@@ -3002,15 +3053,8 @@ pub const Peer = struct {
             const pending_list = entry.value_ptr;
             var idx: usize = 0;
             while (idx < pending_list.items.len) {
-                var decoded = try protocol.DecodedMessage.init(self.allocator, pending_list.items[idx].frame);
-                defer decoded.deinit();
-                if (decoded.tag != .call) {
-                    idx += 1;
-                    continue;
-                }
-
-                const queued_call = try decoded.asCall();
-                if (queued_call.question_id != question_id) {
+                // Match on the id decoded once at enqueue — no per-scan re-parse.
+                if (pending_list.items[idx].question_id != question_id) {
                     idx += 1;
                     continue;
                 }
@@ -3289,24 +3333,21 @@ pub const Peer = struct {
         self: *Peer,
         pending_map: *std.AutoHashMap(u32, std.ArrayList(PendingCall)),
         question_id: u32,
-    ) !bool {
+    ) bool {
+        _ = self;
         var pending_it = pending_map.valueIterator();
         while (pending_it.next()) |pending_list| {
+            // Compare the id decoded once at enqueue — no per-scan re-parse.
             for (pending_list.items) |pending_call| {
-                var decoded = try protocol.DecodedMessage.init(self.allocator, pending_call.frame);
-                defer decoded.deinit();
-                if (decoded.tag != .call) continue;
-                const queued_call = try decoded.asCall();
-                if (queued_call.question_id == question_id) return true;
+                if (pending_call.question_id == question_id) return true;
             }
         }
         return false;
     }
 
-    fn hasQueuedPendingQuestionId(self: *Peer, question_id: u32) !bool {
-        if (try self.pendingMapHasQueuedQuestionId(&self.pending_promises, question_id)) return true;
-        if (try self.pendingMapHasQueuedQuestionId(&self.pending_export_promises, question_id)) return true;
-        return false;
+    fn hasQueuedPendingQuestionId(self: *Peer, question_id: u32) bool {
+        return self.pendingMapHasQueuedQuestionId(&self.pending_promises, question_id) or
+            self.pendingMapHasQueuedQuestionId(&self.pending_export_promises, question_id);
     }
 
     /// True when `question_id` is already consumed by an inbound Call or
@@ -3321,7 +3362,7 @@ pub const Peer = struct {
             self.send_results_to_third_party.contains(question_id) or
             self.forwarded_questions.contains(question_id) or
             self.forwarded_tail_questions.contains(question_id) or
-            try self.hasQueuedPendingQuestionId(question_id);
+            self.hasQueuedPendingQuestionId(question_id);
     }
 
     /// True when `question_id` is already consumed by any inbound question:

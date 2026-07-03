@@ -74,6 +74,10 @@ pub const ResolvedAnswer = struct {
 pub const PendingCall = struct {
     frame: []u8,
     caps: cap_table.InboundCapTable,
+    /// The queued call's own question id, decoded once at enqueue so the
+    /// per-inbound-message duplicate-id and cancellation scans never re-run a
+    /// validating parse over every stored frame (an amplification vector).
+    question_id: u32,
 };
 
 pub const ResolvedImport = struct {

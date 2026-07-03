@@ -219,6 +219,31 @@ test "late Return after Finish (async handler) is not recorded in resolved_answe
     try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
 }
 
+test "a queued pipelined call's question id is still detected as duplicate" {
+    // Guards the quadratic-scan fix: duplicate detection now matches the id
+    // decoded once at enqueue instead of re-decoding every queued frame. The
+    // behavior (reject a reused id) must be unchanged.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // Queue a pipelined call with question id 100 behind unresolved answer 5.
+    const child = try buildCallFrame(allocator, 100);
+    defer allocator.free(child);
+    const inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 5, child, inbound);
+
+    // An inbound Call reusing question id 100 must be rejected as a duplicate.
+    const dup = try buildCallFrame(allocator, 100);
+    defer allocator.free(dup);
+    try std.testing.expectError(error.DuplicateQuestionId, peer.handleFrame(dup));
+}
+
 test "outstanding call context is freed at Peer.deinit via deinit_ctx" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);

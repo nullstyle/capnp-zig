@@ -24,6 +24,18 @@ pub fn queuePendingCall(
     errdefer allocator.free(copy);
     std.mem.copyForwards(u8, copy, frame);
 
+    // Decode the call's question id once, here, so the per-inbound-message
+    // duplicate-id and cancellation scans can match on the stored id instead of
+    // re-validating-parsing every queued frame (an O(n)-decode amplifier). A
+    // non-call/undecodable frame stores 0; such frames are skipped by the drain.
+    const call_question_id: u32 = blk: {
+        var decoded = protocol.DecodedMessage.init(allocator, copy) catch break :blk 0;
+        defer decoded.deinit();
+        if (decoded.tag != .call) break :blk 0;
+        const call = decoded.asCall() catch break :blk 0;
+        break :blk call.question_id;
+    };
+
     var entry = try pending_calls.getOrPut(key);
     const inserted = !entry.found_existing;
     if (!entry.found_existing) {
@@ -32,7 +44,7 @@ pub fn queuePendingCall(
     errdefer if (inserted and entry.value_ptr.items.len == 0) {
         _ = pending_calls.remove(key);
     };
-    try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps_owned });
+    try entry.value_ptr.append(allocator, .{ .frame = copy, .caps = inbound_caps_owned, .question_id = call_question_id });
 }
 
 pub fn deinitPendingCallOwnedFrame(comptime PendingCallType: type, pending_call: *PendingCallType, allocator: std.mem.Allocator) void {
@@ -246,6 +258,7 @@ test "pending_calls queuePendingCall clones frame and appends" {
     const PendingCall = struct {
         frame: []u8,
         caps: DummyCaps,
+        question_id: u32 = 0,
     };
 
     var pending = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(std.testing.allocator);
@@ -303,6 +316,7 @@ test "pending_calls deinitPendingCallOwnedFrameForPeerFn releases caps and frame
     const PendingCall = struct {
         frame: []u8,
         caps: DummyCaps,
+        question_id: u32 = 0,
     };
     const Peer = struct {};
 
@@ -326,6 +340,7 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
     const PendingCall = struct {
         frame: []u8,
         caps: DummyCaps,
+        question_id: u32 = 0,
     };
     const FakePeer = struct {
         exception_count: usize = 0,
