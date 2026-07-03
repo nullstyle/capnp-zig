@@ -876,13 +876,22 @@ pub const Generator = struct {
     fn validateInterfaceGeneratedNames(self: *Generator, node: *const schema.Node) !void {
         const interface_info = node.interface_node orelse return error.InvalidInterfaceNode;
 
+        // Inherited methods are emitted into the same Client / PipelinedClient /
+        // StreamClient / VTable namespaces as own methods (see generateInterface),
+        // so the validator must walk the same ancestor set to catch collisions
+        // between an own method and an inherited one, or between two inherited
+        // methods that happen to share a Zig name.
+        const ancestors = try self.collectAncestors(node);
+        defer self.freeAncestors(ancestors);
+        const has_streaming = self.hasStreamingMethods(node, ancestors);
+
         var interface_scope = GeneratedNameScope.init(self.allocator);
         defer interface_scope.deinit();
 
         try interface_scope.addCopy("interface_id");
         try interface_scope.addCopy("Method");
         try interface_scope.addCopy("Client");
-        if (self.interfaceHasStreamingMethods(interface_info)) {
+        if (has_streaming) {
             try interface_scope.addCopy("StreamClient");
         }
         try interface_scope.addCopy("PipelinedClient");
@@ -915,7 +924,7 @@ pub const Generator = struct {
 
         var stream_scope = GeneratedNameScope.init(self.allocator);
         defer stream_scope.deinit();
-        if (self.interfaceHasStreamingMethods(interface_info)) {
+        if (has_streaming) {
             try stream_scope.addCopy("client");
             try stream_scope.addCopy("stream");
             try stream_scope.addCopy("init");
@@ -925,34 +934,84 @@ pub const Generator = struct {
         var vtable_scope = GeneratedNameScope.init(self.allocator);
         defer vtable_scope.deinit();
 
+        const scopes = InterfaceMethodScopes{
+            .interface_scope = &interface_scope,
+            .method_enum_scope = &method_enum_scope,
+            .client_scope = &client_scope,
+            .pipelined_scope = &pipelined_scope,
+            .stream_scope = &stream_scope,
+            .vtable_scope = &vtable_scope,
+            .has_streaming = has_streaming,
+        };
+
+        // Own methods: these additionally introduce the Method enum value, the
+        // {Method} call-struct declaration, and (for interface-typed results) the
+        // {Method}Pipeline type into the interface's own namespace.
         for (interface_info.methods) |method| {
+            try self.registerInterfaceMethodNames(method, scopes, true);
+        }
+        // Inherited methods: only the Client/PipelinedClient/StreamClient/VTable
+        // members are re-emitted; the call-struct and Pipeline type live on the
+        // ancestor, so they are not re-registered in the interface namespace.
+        for (ancestors) |ancestor| {
+            for (ancestor.methods) |method| {
+                try self.registerInterfaceMethodNames(method, scopes, false);
+            }
+        }
+    }
+
+    /// Bundle of the per-declaration name scopes an interface's methods populate,
+    /// so inherited and own methods can share one registration routine.
+    const InterfaceMethodScopes = struct {
+        interface_scope: *GeneratedNameScope,
+        method_enum_scope: *GeneratedNameScope,
+        client_scope: *GeneratedNameScope,
+        pipelined_scope: *GeneratedNameScope,
+        stream_scope: *GeneratedNameScope,
+        vtable_scope: *GeneratedNameScope,
+        has_streaming: bool,
+    };
+
+    /// Register the generated names a single method contributes. `is_own`
+    /// controls whether the method also claims names in the interface's own
+    /// namespace (Method enum value, call-struct type, Pipeline type); inherited
+    /// methods reuse the ancestor's declarations and only add call/vtable names.
+    fn registerInterfaceMethodNames(
+        self: *Generator,
+        method: schema.Method,
+        scopes: InterfaceMethodScopes,
+        is_own: bool,
+    ) !void {
+        if (is_own) {
             const method_name = try self.allocEscapedTypeIdentifier(method.name);
-            try interface_scope.addOwned(method_name);
+            try scopes.interface_scope.addOwned(method_name);
 
             const enum_name = try self.allocEscapedTypeIdentifier(method.name);
-            try method_enum_scope.addOwned(enum_name);
+            try scopes.method_enum_scope.addOwned(enum_name);
+        }
 
-            const call_name = try self.allocMethodCallName(method.name);
-            defer self.allocator.free(call_name);
-            try client_scope.addCopy(call_name);
-            try pipelined_scope.addCopy(call_name);
-            if (self.interfaceHasStreamingMethods(interface_info)) {
-                try stream_scope.addCopy(call_name);
-            }
+        const call_name = try self.allocMethodCallName(method.name);
+        defer self.allocator.free(call_name);
+        try scopes.client_scope.addCopy(call_name);
+        try scopes.pipelined_scope.addCopy(call_name);
+        if (scopes.has_streaming) {
+            try scopes.stream_scope.addCopy(call_name);
+        }
 
-            if (try self.methodHasInterfaceResultFields(method)) {
+        if (try self.methodHasInterfaceResultFields(method)) {
+            if (is_own) {
                 const pipeline_name = try self.allocMethodPipelineName(method.name);
-                try interface_scope.addOwned(pipeline_name);
+                try scopes.interface_scope.addOwned(pipeline_name);
                 try self.validatePipelineGeneratedNames(method);
-                try client_scope.addPrint("{s}Pipelined", .{call_name});
             }
+            try scopes.client_scope.addPrint("{s}Pipelined", .{call_name});
+        }
 
-            const field_name = try self.allocMethodVTableFieldName(method.name);
-            defer self.allocator.free(field_name);
-            try vtable_scope.addCopy(field_name);
-            if (!method.isStreaming()) {
-                try vtable_scope.addPrint("{s}_deferred", .{field_name});
-            }
+        const field_name = try self.allocMethodVTableFieldName(method.name);
+        defer self.allocator.free(field_name);
+        try scopes.vtable_scope.addCopy(field_name);
+        if (!method.isStreaming()) {
+            try scopes.vtable_scope.addPrint("{s}_deferred", .{field_name});
         }
     }
 
@@ -972,14 +1031,6 @@ pub const Generator = struct {
             defer self.allocator.free(field_name);
             try scope.addPrint("get{s}", .{field_name});
         }
-    }
-
-    fn interfaceHasStreamingMethods(self: *Generator, interface_info: schema.InterfaceNode) bool {
-        _ = self;
-        for (interface_info.methods) |method| {
-            if (method.isStreaming()) return true;
-        }
-        return false;
     }
 
     fn methodHasInterfaceResultFields(self: *Generator, method: schema.Method) !bool {

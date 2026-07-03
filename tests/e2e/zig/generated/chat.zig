@@ -72,21 +72,22 @@ pub const ChatMessage = struct {
             }
 
             pub fn getNormal(self: @This()) !void {
-                _ = self;
+                if ((try self.which()) != .normal) return error.WrongUnionMember;
                 return {};
             }
 
             pub fn getEmote(self: @This()) !void {
-                _ = self;
+                if ((try self.which()) != .emote) return error.WrongUnionMember;
                 return {};
             }
 
             pub fn getSystem(self: @This()) !void {
-                _ = self;
+                if ((try self.which()) != .system) return error.WrongUnionMember;
                 return {};
             }
 
             pub fn getWhisper(self: @This()) !game_types.PlayerId.Reader {
+                if ((try self.which()) != .whisper) return error.WrongUnionMember;
                 const value = try self._reader.readStruct(3);
                 return game_types.PlayerId.Reader{ ._reader = value };
             }

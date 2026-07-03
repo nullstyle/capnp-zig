@@ -80,6 +80,7 @@ pub const Shape = struct {
         }
 
         pub fn getCircle(self: Reader) !f64 {
+            if ((try self.which()) != .circle) return error.WrongUnionMember;
             return @bitCast(self._reader.readU64(8));
         }
 

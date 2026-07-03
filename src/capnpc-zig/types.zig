@@ -23,9 +23,24 @@ pub const zig_keywords = std.StaticStringMap(void).initComptime(.{
     .{ "true", {} },      .{ "false", {} },       .{ "null", {} },
 });
 
-/// Escape a name with @"..." if it collides with a Zig keyword.
+/// Return true if `name` cannot be used as a bare Zig identifier and must be
+/// wrapped in `@"..."`. This covers Zig keywords, primitive type/value names
+/// (`bool`, `void`, `usize`, `u8`, `i32`, `f64`, ...), and identifiers whose
+/// first character is a digit (which the lexer would parse as a number).
+fn needsIdentifierEscape(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.ascii.isDigit(name[0])) return true;
+    if (zig_keywords.has(name)) return true;
+    // std.zig primitives cover bool/void/usize/isize/type/true/false/null and
+    // the integer type syntax (u8, i32, ...) plus f16..f128.
+    if (std.zig.primitives.isPrimitive(name)) return true;
+    return false;
+}
+
+/// Escape a name with @"..." if it would otherwise be an invalid or ambiguous
+/// bare Zig identifier (keyword, primitive type/value name, or digit-leading).
 pub fn escapeZigKeyword(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
-    if (zig_keywords.has(name)) {
+    if (needsIdentifierEscape(name)) {
         return std.fmt.allocPrint(allocator, "@\"{s}\"", .{name});
     }
     return allocator.dupe(u8, name);
@@ -251,6 +266,46 @@ test "escapeZigKeyword passes through non-keywords" {
 
     const non_keywords = [_][]const u8{ "myField", "fooBar", "hello", "x", "data_word_count", "Type", "Error", "Return" };
     for (non_keywords) |name| {
+        const result = try escapeZigKeyword(alloc, name);
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings(name, result);
+    }
+}
+
+test "escapeZigKeyword escapes primitive type names" {
+    const alloc = std.testing.allocator;
+
+    // Primitive types/values that are legal capnp identifiers but reserved in Zig.
+    const primitives = [_][]const u8{ "u8", "i32", "u64", "f16", "f32", "f64", "f128", "bool", "void", "usize", "isize", "type", "anyopaque", "anyerror", "noreturn", "comptime_int" };
+    for (primitives) |name| {
+        const result = try escapeZigKeyword(alloc, name);
+        defer alloc.free(result);
+        const expected = try std.fmt.allocPrint(alloc, "@\"{s}\"", .{name});
+        defer alloc.free(expected);
+        try std.testing.expectEqualStrings(expected, result);
+    }
+}
+
+test "escapeZigKeyword escapes identifiers starting with a digit" {
+    const alloc = std.testing.allocator;
+
+    const digit_leading = [_][]const u8{ "0foo", "1", "42abc", "3d" };
+    for (digit_leading) |name| {
+        const result = try escapeZigKeyword(alloc, name);
+        defer alloc.free(result);
+        const expected = try std.fmt.allocPrint(alloc, "@\"{s}\"", .{name});
+        defer alloc.free(expected);
+        try std.testing.expectEqualStrings(expected, result);
+    }
+}
+
+test "escapeZigKeyword does not escape names that merely contain digits" {
+    const alloc = std.testing.allocator;
+
+    // Digits after the first character are fine; only leading digits and exact
+    // primitive/keyword matches are escaped.
+    const ok = [_][]const u8{ "foo8", "u8field", "x1", "value2", "http2" };
+    for (ok) |name| {
         const result = try escapeZigKeyword(alloc, name);
         defer alloc.free(result);
         try std.testing.expectEqualStrings(name, result);

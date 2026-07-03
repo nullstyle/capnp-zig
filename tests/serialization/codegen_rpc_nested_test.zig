@@ -193,3 +193,45 @@ test "Codegen enum values and method ordinals use ordinal, not declaration order
     try std.testing.expect(alpha_idx < ord0);
     try std.testing.expect(ord0 < beta_idx);
 }
+
+// BUG 2: an interface may inherit a method whose generated Zig name collides
+// with one of its own (or another ancestor's) methods. The generator emits
+// callXxx/VTable members for own AND inherited methods into the same Client /
+// PipelinedClient / VTable namespaces, so a name clash would previously emit
+// duplicate declarations = uncompilable Zig. The name validator must instead
+// reject the collision with a clean error.DuplicateGeneratedName before any
+// code is emitted.
+test "Codegen rejects inherited method-name collisions with a clean error" {
+    const allocator = std.testing.allocator;
+
+    const argv = &[_][]const u8{
+        "capnp",
+        "compile",
+        "-o-",
+        "tests/test_schemas/inherited_method_collision.capnp",
+    };
+
+    const result = std.process.run(allocator, std.testing.io, .{
+        .argv = argv,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+
+    try std.testing.expect(request.requested_files.len >= 1);
+    const file = request.requested_files[0];
+
+    var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
+    defer generator.deinit();
+
+    // Derived.ping collides with the inherited Base.ping -> clean plugin error,
+    // not uncompilable duplicate-declaration output.
+    try std.testing.expectError(error.DuplicateGeneratedName, generator.generateFile(file));
+}

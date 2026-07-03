@@ -549,3 +549,118 @@ test "Codegen union group init zeroes stale variant data" {
         \\
     );
 }
+
+// BUG 1: a group nested inside a union group (its group-typed union variant) and
+// a plain group nested inside another group were previously dropped by codegen —
+// no nested type, no getXxx/initXxx accessor — leaving the variant unusable.
+// This verifies the nested types now exist, can be selected/written, and read
+// back correctly, and that switching variants zeroes the group's slots.
+test "Codegen nested groups compile and round-trip" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/nested_group_runtime.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "nested group round-trip" {
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\
+        \\    var root = try generated.Shape.Builder.init(&builder);
+        \\
+        \\    // Select the group-typed union variant `circle` inside group `u`.
+        \\    var u = root.getU();
+        \\    var circle = u.initCircle();
+        \\    try circle.setRadius(3.5);
+        \\    try circle.setFilled(true);
+        \\
+        \\    // A plain group nested inside another plain group.
+        \\    var outer = root.getOuter();
+        \\    try outer.setLabel("hi");
+        \\    var inner = outer.getInner();
+        \\    try inner.setValue(42);
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\
+        \\    const reader = try generated.Shape.Reader.init(&msg);
+        \\    const ur = reader.getU();
+        \\    try std.testing.expectEqual(generated.Shape.U.WhichTag.circle, try ur.which());
+        \\    const cr = ur.getCircle();
+        \\    try std.testing.expectEqual(@as(f64, 3.5), try cr.getRadius());
+        \\    try std.testing.expectEqual(true, try cr.getFilled());
+        \\
+        \\    const outr = reader.getOuter();
+        \\    try std.testing.expectEqualStrings("hi", try outr.getLabel());
+        \\    try std.testing.expectEqual(@as(u32, 42), try outr.getInner().getValue());
+        \\}
+        \\
+        \\test "nested union-group variant switch zeroes slots" {
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\
+        \\    var root = try generated.Shape.Builder.init(&builder);
+        \\    var u = root.getU();
+        \\    // Write a non-zero value into the variant-shared word via `square`,
+        \\    // then switch to `circle`; initCircle must zero the group's slots.
+        \\    try u.setSquare(9.0);
+        \\    var circle = u.initCircle();
+        \\    _ = &circle;
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\
+        \\    const reader = try generated.Shape.Reader.init(&msg);
+        \\    const ur = reader.getU();
+        \\    try std.testing.expectEqual(generated.Shape.U.WhichTag.circle, try ur.which());
+        \\    try std.testing.expectEqual(@as(f64, 0.0), try ur.getCircle().getRadius());
+        \\}
+        \\
+    );
+}
+
+// BUG 3: a union member getter must check the discriminant and return
+// error.WrongUnionMember when a different variant is selected, instead of
+// silently reinterpreting the other variant's bits.
+test "Codegen union member getters check the discriminant" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/union_member_guard_runtime.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "wrong union member read errors" {
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\
+        \\    var root = try generated.ShapeGuard.Builder.init(&builder);
+        \\    try root.setSquare(5.0);
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\
+        \\    var msg = try message.Message.init(std.testing.allocator, bytes, .{});
+        \\    defer msg.deinit();
+        \\
+        \\    const reader = try generated.ShapeGuard.Reader.init(&msg);
+        \\    // `square` is selected: reading `circle` or `empty` must error.
+        \\    try std.testing.expectError(error.WrongUnionMember, reader.getCircle());
+        \\    try std.testing.expectError(error.WrongUnionMember, reader.getEmpty());
+        \\    // The selected member reads normally.
+        \\    try std.testing.expectEqual(@as(f64, 5.0), try reader.getSquare());
+        \\    // A non-union field is always readable.
+        \\    _ = try reader.getArea();
+        \\}
+        \\
+    );
+}

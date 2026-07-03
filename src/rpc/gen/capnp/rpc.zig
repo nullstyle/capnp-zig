@@ -47,86 +47,101 @@ pub const Message = struct {
         }
 
         pub fn getUnimplemented(self: Reader) !Message.Reader {
+            if ((try self.which()) != .unimplemented) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Message.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Message.Reader{ ._reader = value };
         }
 
         pub fn getAbort(self: Reader) !Exception.Reader {
+            if ((try self.which()) != .abort) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
         }
 
         pub fn getCall(self: Reader) !Call.Reader {
+            if ((try self.which()) != .call) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Call.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Call.Reader{ ._reader = value };
         }
 
         pub fn getReturn(self: Reader) !Return.Reader {
+            if ((try self.which()) != .@"return") return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Return.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Return.Reader{ ._reader = value };
         }
 
         pub fn getFinish(self: Reader) !Finish.Reader {
+            if ((try self.which()) != .finish) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Finish.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Finish.Reader{ ._reader = value };
         }
 
         pub fn getResolve(self: Reader) !Resolve.Reader {
+            if ((try self.which()) != .resolve) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Resolve.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Resolve.Reader{ ._reader = value };
         }
 
         pub fn getRelease(self: Reader) !Release.Reader {
+            if ((try self.which()) != .release) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Release.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Release.Reader{ ._reader = value };
         }
 
         pub fn getObsoleteSave(self: Reader) !message.AnyPointerReader {
+            if ((try self.which()) != .obsoleteSave) return error.WrongUnionMember;
             return try self._reader.readAnyPointer(0);
         }
 
         pub fn getBootstrap(self: Reader) !Bootstrap.Reader {
+            if ((try self.which()) != .bootstrap) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Bootstrap.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Bootstrap.Reader{ ._reader = value };
         }
 
         pub fn getObsoleteDelete(self: Reader) !message.AnyPointerReader {
+            if ((try self.which()) != .obsoleteDelete) return error.WrongUnionMember;
             return try self._reader.readAnyPointer(0);
         }
 
         pub fn getProvide(self: Reader) !Provide.Reader {
+            if ((try self.which()) != .provide) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Provide.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Provide.Reader{ ._reader = value };
         }
 
         pub fn getAccept(self: Reader) !Accept.Reader {
+            if ((try self.which()) != .accept) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Accept.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Accept.Reader{ ._reader = value };
         }
 
         pub fn getJoin(self: Reader) !Join.Reader {
+            if ((try self.which()) != .join) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Join.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Join.Reader{ ._reader = value };
         }
 
         pub fn getDisembargo(self: Reader) !Disembargo.Reader {
+            if ((try self.which()) != .disembargo) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Disembargo.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Disembargo.Reader{ ._reader = value };
         }
 
         pub fn getThirdPartyAnswer(self: Reader) !ThirdPartyAnswer.Reader {
+            if ((try self.which()) != .thirdPartyAnswer) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return ThirdPartyAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return ThirdPartyAnswer.Reader{ ._reader = value };
@@ -371,16 +386,17 @@ pub const Call = struct {
             }
 
             pub fn getCaller(self: @This()) !void {
-                _ = self;
+                if ((try self.which()) != .caller) return error.WrongUnionMember;
                 return {};
             }
 
             pub fn getYourself(self: @This()) !void {
-                _ = self;
+                if ((try self.which()) != .yourself) return error.WrongUnionMember;
                 return {};
             }
 
             pub fn getThirdParty(self: @This()) !message.AnyPointerReader {
+                if ((try self.which()) != .thirdParty) return error.WrongUnionMember;
                 return try self._reader.readAnyPointer(2);
             }
 
@@ -553,32 +569,36 @@ pub const Return = struct {
         }
 
         pub fn getResults(self: Reader) !Payload.Reader {
+            if ((try self.which()) != .results) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Payload.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Payload.Reader{ ._reader = value };
         }
 
         pub fn getException(self: Reader) !Exception.Reader {
+            if ((try self.which()) != .exception) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
         }
 
         pub fn getCanceled(self: Reader) !void {
-            _ = self;
+            if ((try self.which()) != .canceled) return error.WrongUnionMember;
             return {};
         }
 
         pub fn getResultsSentElsewhere(self: Reader) !void {
-            _ = self;
+            if ((try self.which()) != .resultsSentElsewhere) return error.WrongUnionMember;
             return {};
         }
 
         pub fn getTakeFromOtherQuestion(self: Reader) !u32 {
+            if ((try self.which()) != .takeFromOtherQuestion) return error.WrongUnionMember;
             return self._reader.readU32(8);
         }
 
         pub fn getAwaitFromThirdParty(self: Reader) !message.AnyPointerReader {
+            if ((try self.which()) != .awaitFromThirdParty) return error.WrongUnionMember;
             return try self._reader.readAnyPointer(0);
         }
 
@@ -752,12 +772,14 @@ pub const Resolve = struct {
         }
 
         pub fn getCap(self: Reader) !CapDescriptor.Reader {
+            if ((try self.which()) != .cap) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return CapDescriptor.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return CapDescriptor.Reader{ ._reader = value };
         }
 
         pub fn getException(self: Reader) !Exception.Reader {
+            if ((try self.which()) != .exception) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
@@ -862,14 +884,17 @@ pub const Disembargo = struct {
             }
 
             pub fn getSenderLoopback(self: @This()) !u32 {
+                if ((try self.which()) != .senderLoopback) return error.WrongUnionMember;
                 return self._reader.readU32(0);
             }
 
             pub fn getReceiverLoopback(self: @This()) !u32 {
+                if ((try self.which()) != .receiverLoopback) return error.WrongUnionMember;
                 return self._reader.readU32(0);
             }
 
             pub fn getAccept(self: @This()) ![]const u8 {
+                if ((try self.which()) != .accept) return error.WrongUnionMember;
                 if (self._reader.isPointerNull(1)) return &[_]u8{};
                 return try self._reader.readData(1);
             }
@@ -1267,10 +1292,12 @@ pub const MessageTarget = struct {
         }
 
         pub fn getImportedCap(self: Reader) !u32 {
+            if ((try self.which()) != .importedCap) return error.WrongUnionMember;
             return self._reader.readU32(0);
         }
 
         pub fn getPromisedAnswer(self: Reader) !PromisedAnswer.Reader {
+            if ((try self.which()) != .promisedAnswer) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return PromisedAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return PromisedAnswer.Reader{ ._reader = value };
@@ -1403,29 +1430,34 @@ pub const CapDescriptor = struct {
         }
 
         pub fn getNone(self: Reader) !void {
-            _ = self;
+            if ((try self.which()) != .none) return error.WrongUnionMember;
             return {};
         }
 
         pub fn getSenderHosted(self: Reader) !u32 {
+            if ((try self.which()) != .senderHosted) return error.WrongUnionMember;
             return self._reader.readU32(4);
         }
 
         pub fn getSenderPromise(self: Reader) !u32 {
+            if ((try self.which()) != .senderPromise) return error.WrongUnionMember;
             return self._reader.readU32(4);
         }
 
         pub fn getReceiverHosted(self: Reader) !u32 {
+            if ((try self.which()) != .receiverHosted) return error.WrongUnionMember;
             return self._reader.readU32(4);
         }
 
         pub fn getReceiverAnswer(self: Reader) !PromisedAnswer.Reader {
+            if ((try self.which()) != .receiverAnswer) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return PromisedAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return PromisedAnswer.Reader{ ._reader = value };
         }
 
         pub fn getThirdPartyHosted(self: Reader) !ThirdPartyCapDescriptor.Reader {
+            if ((try self.which()) != .thirdPartyHosted) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return ThirdPartyCapDescriptor.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return ThirdPartyCapDescriptor.Reader{ ._reader = value };
@@ -1566,11 +1598,12 @@ pub const Op = struct {
         }
 
         pub fn getNoop(self: Reader) !void {
-            _ = self;
+            if ((try self.which()) != .noop) return error.WrongUnionMember;
             return {};
         }
 
         pub fn getGetPointerField(self: Reader) !u16 {
+            if ((try self.which()) != .getPointerField) return error.WrongUnionMember;
             return self._reader.readU16(2);
         }
 

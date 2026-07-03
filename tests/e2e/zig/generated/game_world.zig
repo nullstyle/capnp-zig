@@ -256,15 +256,17 @@ pub const AreaQuery = struct {
             }
 
             pub fn getAll(self: @This()) !void {
-                _ = self;
+                if ((try self.which()) != .all) return error.WrongUnionMember;
                 return {};
             }
 
             pub fn getByKind(self: @This()) !EntityKind {
+                if ((try self.which()) != .byKind) return error.WrongUnionMember;
                 return std.enums.fromInt(EntityKind, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
             }
 
             pub fn getByFaction(self: @This()) !game_types.Faction {
+                if ((try self.which()) != .byFaction) return error.WrongUnionMember;
                 return std.enums.fromInt(game_types.Faction, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
             }
 

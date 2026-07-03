@@ -753,3 +753,258 @@ test "Codegen: group union generates WhichTag and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setAccept(self: *@This(), value: []const u8) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 2)"));
 }
+
+test "Codegen: group-typed union variant emits nested type and accessors" {
+    // BUG 1: a group nested inside a union group (a group-typed union variant)
+    // was silently dropped — no nested type, no getXxx/initXxx. The parent group
+    // `U` is a union whose `circle` variant is itself a group.
+    var circle_fields = [_]schema.Field{
+        .{
+            .name = "radius",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{ .offset = 0, .type = .float64, .default_value = null },
+            .group = null,
+        },
+    };
+
+    const circle_node = schema.Node{
+        .id = 4,
+        .display_name = "test.capnp:Shape.u.circle",
+        .display_name_prefix_length = 19, // simple name "circle" (25 - 6)
+        .scope_id = 3,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 1,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = true,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &circle_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    // The `u` group is a union with a group variant `circle` and a scalar
+    // variant `square`.
+    var u_fields = [_]schema.Field{
+        .{
+            .name = "circle",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0,
+            .slot = null,
+            .group = .{ .type_id = 4 },
+        },
+        .{
+            .name = "square",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 1,
+            .slot = .{ .offset = 0, .type = .float64, .default_value = null },
+            .group = null,
+        },
+    };
+
+    const u_node = schema.Node{
+        .id = 3,
+        .display_name = "test.capnp:Shape.u",
+        .display_name_prefix_length = 17, // simple name "u" (18 - 1)
+        .scope_id = 2,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 2,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = true,
+            .discriminant_count = 2,
+            .discriminant_offset = 5, // byte offset = 5 * 2 = 10
+            .fields = &u_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var shape_fields = [_]schema.Field{
+        .{
+            .name = "u",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = null,
+            .group = .{ .type_id = 3 },
+        },
+    };
+
+    const shape_node = schema.Node{
+        .id = 2,
+        .display_name = "Shape",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 2,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 0,
+            .discriminant_offset = 0,
+            .fields = &shape_fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "Shape", .id = 2 },
+    };
+
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "test.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ file_node, shape_node, u_node, circle_node };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "test.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    // The nested Circle group type must be emitted inside the U group namespace.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const Circle = struct"));
+    // Its own field accessors must exist.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getRadius(self: @This())"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setRadius(self: *@This()"));
+    // The group Reader must expose getCircle returning the nested reader.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getCircle(self: @This()) Circle.Reader"));
+    // The group Builder must expose initCircle that writes the discriminant.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initCircle(self: *@This()) Circle.Builder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(10, 0)"));
+}
+
+test "Codegen: union member getters emit a discriminant guard" {
+    // BUG 3: getters for union slot fields must check the discriminant and
+    // return error.WrongUnionMember, while non-union fields must not.
+    var fields = [_]schema.Field{
+        .{
+            .name = "circle",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0,
+            .slot = .{ .offset = 0, .type = .float64, .default_value = null },
+            .group = null,
+        },
+        .{
+            .name = "square",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 1,
+            .slot = .{ .offset = 0, .type = .float64, .default_value = null },
+            .group = null,
+        },
+        .{
+            .name = "area",
+            .code_order = 2,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF, // not a union member
+            .slot = .{ .offset = 2, .type = .float64, .default_value = null },
+            .group = null,
+        },
+    };
+
+    const shape_node = schema.Node{
+        .id = 2,
+        .display_name = "Shape",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = &[_]schema.Node.NestedNode{},
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .@"struct",
+        .struct_node = .{
+            .data_word_count = 3,
+            .pointer_count = 0,
+            .preferred_list_encoding = .inline_composite,
+            .is_group = false,
+            .discriminant_count = 2,
+            .discriminant_offset = 8, // byte offset = 16
+            .fields = &fields,
+        },
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    var nested = [_]schema.Node.NestedNode{
+        .{ .name = "Shape", .id = 2 },
+    };
+
+    const file_node = schema.Node{
+        .id = 1,
+        .display_name = "test.capnp",
+        .display_name_prefix_length = 0,
+        .scope_id = 0,
+        .nested_nodes = nested[0..],
+        .annotations = &[_]schema.AnnotationUse{},
+        .kind = .file,
+        .struct_node = null,
+        .enum_node = null,
+        .interface_node = null,
+        .const_node = null,
+        .annotation_node = null,
+    };
+
+    const nodes = [_]schema.Node{ file_node, shape_node };
+    var gen = try Generator.init(testing.allocator, &nodes);
+    defer gen.deinit();
+
+    const requested_file = schema.RequestedFile{
+        .id = 1,
+        .filename = "test.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested_file);
+    defer testing.allocator.free(output);
+
+    // Union member getters must guard on the discriminant.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .circle) return error.WrongUnionMember;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .square) return error.WrongUnionMember;"));
+    // The non-union `area` getter must NOT contain a guard.
+    const area_idx = std.mem.indexOf(u8, output, "pub fn getArea(self: Reader)").?;
+    const after_area = output[area_idx..];
+    const area_body_end = std.mem.indexOf(u8, after_area, "}").?;
+    try testing.expect(std.mem.indexOf(u8, after_area[0..area_body_end], "WrongUnionMember") == null);
+}

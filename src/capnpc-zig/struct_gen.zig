@@ -125,46 +125,162 @@ pub const StructGenerator = struct {
         for (struct_info.fields) |field| {
             const group = field.group orelse continue;
             const group_node = self.getNode(group.type_id) orelse continue;
-            const group_struct_info = group_node.struct_node orelse continue;
-            const group_name = try self.allocTypeName(group_node);
-            defer self.allocator.free(group_name);
+            try self.renderGroupBlock(group_node, writer);
+        }
+    }
 
-            try writer.print("    pub const {s} = struct {{\n", .{group_name});
+    /// Render a single group's Zig type block (nested type declarations, Reader,
+    /// and Builder) at the canonical indent used for a struct's direct group
+    /// members. Nested group types are emitted recursively into the parent
+    /// group's namespace, re-indented so a group nested arbitrarily deep still
+    /// produces well-formed source. `writer` receives the finished block.
+    fn renderGroupBlock(self: *StructGenerator, group_node: *const schema.Node, writer: anytype) !void {
+        const group_struct_info = group_node.struct_node orelse return;
+        const group_name = try self.allocTypeName(group_node);
+        defer self.allocator.free(group_name);
 
-            if (group_struct_info.discriminant_count > 0) {
-                try writer.writeAll("        pub const WhichTag = enum(u16) {\n");
-                for (group_struct_info.fields) |group_field| {
-                    if (group_field.discriminant_value == 0xFFFF) continue;
-                    const zig_name = try self.type_gen.toZigIdentifier(group_field.name);
-                    defer self.allocator.free(zig_name);
-                    const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
-                    defer self.allocator.free(escaped_name);
-                    try writer.print("            {s} = {},\n", .{ escaped_name, group_field.discriminant_value });
-                }
-                try writer.writeAll("        };\n\n");
-            }
+        try writer.print("    pub const {s} = struct {{\n", .{group_name});
 
-            // Generate group Reader
-            try self.writeGroupWrapStruct(writer, "Reader", "_reader", "message.StructReader", "reader");
-            if (group_struct_info.discriminant_count > 0) {
-                const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
-                try writer.writeAll("            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {\n");
-                try writer.print("                return std.enums.fromInt(WhichTag, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{disc_byte_offset});
-                try writer.writeAll("            }\n\n");
-            }
+        if (group_struct_info.discriminant_count > 0) {
+            try writer.writeAll("        pub const WhichTag = enum(u16) {\n");
             for (group_struct_info.fields) |group_field| {
-                try self.generateGroupFieldGetter(group_field, writer);
+                if (group_field.discriminant_value == 0xFFFF) continue;
+                const zig_name = try self.type_gen.toZigIdentifier(group_field.name);
+                defer self.allocator.free(zig_name);
+                const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+                defer self.allocator.free(escaped_name);
+                try writer.print("            {s} = {},\n", .{ escaped_name, group_field.discriminant_value });
             }
             try writer.writeAll("        };\n\n");
+        }
 
-            // Generate group Builder
-            try self.writeGroupWrapStruct(writer, "Builder", "_builder", "message.StructBuilder", "builder");
-            for (group_struct_info.fields) |group_field| {
+        // Emit nested group types (groups declared inside this group, including
+        // group-typed union variants) as siblings of this group's Reader/Builder.
+        // Each nested block is rendered at the canonical indent, then shifted one
+        // level deeper to sit inside this group's namespace.
+        for (group_struct_info.fields) |group_field| {
+            const nested_group = group_field.group orelse continue;
+            const nested_node = self.getNode(nested_group.type_id) orelse continue;
+            try self.renderNestedGroupBlock(nested_node, writer);
+        }
+
+        // Generate group Reader
+        try self.writeGroupWrapStruct(writer, "Reader", "_reader", "message.StructReader", "reader");
+        if (group_struct_info.discriminant_count > 0) {
+            const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
+            try writer.writeAll("            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {\n");
+            try writer.print("                return std.enums.fromInt(WhichTag, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{disc_byte_offset});
+            try writer.writeAll("            }\n\n");
+        }
+        for (group_struct_info.fields) |group_field| {
+            if (group_field.group != null) {
+                try self.generateGroupNestedReaderAccessor(group_field, writer);
+            } else {
+                try self.generateGroupFieldGetter(group_field, group_struct_info, writer);
+            }
+        }
+        try writer.writeAll("        };\n\n");
+
+        // Generate group Builder
+        try self.writeGroupWrapStruct(writer, "Builder", "_builder", "message.StructBuilder", "builder");
+        for (group_struct_info.fields) |group_field| {
+            if (group_field.group != null) {
+                try self.generateGroupNestedBuilderAccessor(group_field, group_struct_info, writer);
+            } else {
                 try self.generateGroupFieldSetter(group_field, group_struct_info, writer);
             }
-            try writer.writeAll("        };\n");
+        }
+        try writer.writeAll("        };\n");
 
-            try writer.writeAll("    };\n\n");
+        try writer.writeAll("    };\n\n");
+    }
+
+    /// Render a nested group's block into a scratch buffer at canonical indent,
+    /// then emit it into `writer` shifted 4 spaces deeper so it nests correctly
+    /// inside its parent group struct.
+    /// Error set for group-block rendering. Declared explicitly so the mutual
+    /// recursion between `renderGroupBlock` and `renderNestedGroupBlock` does not
+    /// form an inferred-error-set dependency loop.
+    const GroupRenderError = std.mem.Allocator.Error || error{
+        CodegenBudgetExceeded,
+        InvalidDiscriminantOffset,
+        InvalidFieldOffset,
+        InvalidStructNode,
+        InvalidDefaultPointerType,
+    };
+
+    fn renderNestedGroupBlock(self: *StructGenerator, nested_node: *const schema.Node, writer: anytype) GroupRenderError!void {
+        var buf = std.ArrayList(u8).empty;
+        defer buf.deinit(self.allocator);
+        const buf_writer = ArrayListWriter{ .list = &buf, .allocator = self.allocator };
+        try self.renderGroupBlock(nested_node, buf_writer);
+        try writeReindented(writer, buf.items, 4);
+    }
+
+    /// Copy `block` to `writer`, prefixing every non-empty line with `spaces`
+    /// additional spaces. Blank lines are left untouched so trailing newlines do
+    /// not accumulate whitespace.
+    fn writeReindented(writer: anytype, block: []const u8, spaces: usize) !void {
+        var it = std.mem.splitScalar(u8, block, '\n');
+        var first = true;
+        while (it.next()) |line| {
+            if (!first) try writer.writeByte('\n');
+            first = false;
+            if (line.len == 0) continue;
+            var i: usize = 0;
+            while (i < spaces) : (i += 1) try writer.writeByte(' ');
+            try writer.writeAll(line);
+        }
+    }
+
+    /// Emit a group-typed field accessor inside a group's Reader. Mirrors the
+    /// top-level `generateGroupFieldAccessor` but at the group's inner indent
+    /// with a `@This()` receiver.
+    fn generateGroupNestedReaderAccessor(self: *StructGenerator, field: schema.Field, writer: anytype) !void {
+        const group = field.group orelse return;
+        const group_node = self.getNode(group.type_id) orelse return;
+        const group_name = try self.allocTypeName(group_node);
+        defer self.allocator.free(group_name);
+
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const cap_name = try self.capitalizeFirst(zig_name);
+        defer self.allocator.free(cap_name);
+
+        try writer.print("            pub fn get{s}(self: @This()) {s}.Reader {{\n", .{ cap_name, group_name });
+        try writer.writeAll("                return .{ ._reader = self._reader };\n");
+        try writer.writeAll("            }\n\n");
+    }
+
+    /// Emit a group-typed field accessor inside a group's Builder. Mirrors the
+    /// top-level `generateGroupBuilderAccessor`: union-member groups get an
+    /// `initXxx` that zeroes their slots and writes the discriminant; plain
+    /// groups get a `getXxx`.
+    fn generateGroupNestedBuilderAccessor(self: *StructGenerator, field: schema.Field, parent_struct_info: schema.StructNode, writer: anytype) !void {
+        const group = field.group orelse return;
+        const group_node = self.getNode(group.type_id) orelse return;
+        const group_name = try self.allocTypeName(group_node);
+        defer self.allocator.free(group_name);
+
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const cap_name = try self.capitalizeFirst(zig_name);
+        defer self.allocator.free(cap_name);
+
+        if (field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0) {
+            const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
+            try writer.print("            pub fn init{s}(self: *@This()) {s}.Builder {{\n", .{ cap_name, group_name });
+            // Zero the group's own slots first (capnp init<group>() semantics),
+            // then write the discriminant so an overlapping data word does not
+            // clobber it. Uses the deeper builder indent.
+            try self.writeGroupSlotZeroingIndented(group_node, "                ", writer);
+            try writer.print("                self._builder.writeU16({}, {});\n", .{ disc_byte_offset, field.discriminant_value });
+            try writer.writeAll("                return .{ ._builder = self._builder };\n");
+            try writer.writeAll("            }\n\n");
+        } else {
+            try writer.print("            pub fn get{s}(self: *@This()) {s}.Builder {{\n", .{ cap_name, group_name });
+            try writer.writeAll("                return .{ ._builder = self._builder };\n");
+            try writer.writeAll("            }\n\n");
         }
     }
 
@@ -275,14 +391,34 @@ pub const StructGenerator = struct {
             if (field.group != null) {
                 try self.generateGroupFieldAccessor(field, writer);
             } else {
-                try self.generateFieldGetter(field, writer);
+                try self.generateFieldGetter(field, struct_info, writer);
             }
         }
 
         try writer.writeAll("    };\n\n");
     }
 
-    fn generateFieldGetter(self: *StructGenerator, field: schema.Field, writer: anytype) !void {
+    /// Emit a discriminant guard at the top of a union member's getter so that
+    /// reading a variant that is not currently selected returns
+    /// `error.WrongUnionMember` instead of reinterpreting another variant's
+    /// bits. `receiver` is `Reader` for a struct's own getters or `@This()` for
+    /// a group's inner getters; `indent` is the getter body indentation.
+    fn writeUnionMemberGuard(
+        self: *StructGenerator,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (field.discriminant_value == 0xFFFF or parent_struct_info.discriminant_count == 0) return;
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const escaped_name = try types.escapeZigKeyword(self.allocator, zig_name);
+        defer self.allocator.free(escaped_name);
+        try writer.print("{s}if ((try self.which()) != .{s}) return error.WrongUnionMember;\n", .{ indent, escaped_name });
+    }
+
+    fn generateFieldGetter(self: *StructGenerator, field: schema.Field, parent_struct_info: schema.StructNode, writer: anytype) !void {
         const slot = field.slot orelse return;
         const zig_name = try self.type_gen.toZigIdentifier(field.name);
         defer self.allocator.free(zig_name);
@@ -293,17 +429,22 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
 
+        const is_union_member = field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0;
+
         try writer.print("        pub fn get{s}(self: Reader) !{s} {{\n", .{
             cap_name,
             zig_type,
         });
 
+        try self.writeUnionMemberGuard(field, parent_struct_info, "            ", writer);
+
         switch (slot.type) {
-            .void => try writer.writeAll(
-                \\            _ = self;
-                \\            return {};
-                \\
-            ),
+            .void => {
+                // The guard already consumes `self` for union members; only
+                // discard it when no guard was emitted.
+                if (!is_union_member) try writer.writeAll("            _ = self;\n");
+                try writer.writeAll("            return {};\n");
+            },
             .bool => {
                 const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
@@ -707,6 +848,13 @@ pub const StructGenerator = struct {
     /// Emit statements zeroing a union group's own data words and nulling its
     /// pointer slots, mirroring capnp's `init<group>()` semantics.
     fn writeGroupSlotZeroing(self: *StructGenerator, group_node: *const schema.Node, writer: anytype) !void {
+        try self.writeGroupSlotZeroingIndented(group_node, "            ", writer);
+    }
+
+    /// Indent-parameterized variant of `writeGroupSlotZeroing`, used when the
+    /// init accessor is emitted deeper in the type tree (e.g. a union-group
+    /// variant nested inside another group).
+    fn writeGroupSlotZeroingIndented(self: *StructGenerator, group_node: *const schema.Node, indent: []const u8, writer: anytype) !void {
         var data_words = std.ArrayList(u32).empty;
         defer data_words.deinit(self.allocator);
         var pointer_indices = std.ArrayList(u32).empty;
@@ -718,15 +866,15 @@ pub const StructGenerator = struct {
         std.mem.sort(u32, pointer_indices.items, {}, std.sort.asc(u32));
 
         for (data_words.items) |word| {
-            try writer.print("            self._builder.writeU64({}, 0);\n", .{word * 8});
+            try writer.print("{s}self._builder.writeU64({}, 0);\n", .{ indent, word * 8 });
         }
         for (pointer_indices.items) |idx| {
-            try writer.print("            self._builder.clearPointer({});\n", .{idx});
+            try writer.print("{s}self._builder.clearPointer({});\n", .{ indent, idx });
         }
     }
 
     /// Generate field getter for a group's internal field (used inside group Reader)
-    fn generateGroupFieldGetter(self: *StructGenerator, field: schema.Field, writer: anytype) !void {
+    fn generateGroupFieldGetter(self: *StructGenerator, field: schema.Field, parent_struct_info: schema.StructNode, writer: anytype) !void {
         const slot = field.slot orelse return;
         const zig_name = try self.type_gen.toZigIdentifier(field.name);
         defer self.allocator.free(zig_name);
@@ -737,14 +885,17 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
 
+        const is_union_member = field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0;
+
         try writer.print("            pub fn get{s}(self: @This()) !{s} {{\n", .{ cap_name, zig_type });
 
+        try self.writeUnionMemberGuard(field, parent_struct_info, "                ", writer);
+
         switch (slot.type) {
-            .void => try writer.writeAll(
-                \\                _ = self;
-                \\                return {};
-                \\
-            ),
+            .void => {
+                if (!is_union_member) try writer.writeAll("                _ = self;\n");
+                try writer.writeAll("                return {};\n");
+            },
             .bool => {
                 const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const bit_offset = @as(u3, @truncate(slot.offset % 8));
