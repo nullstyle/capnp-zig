@@ -1,10 +1,10 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const WorkerPool = capnpc.rpc.integration.worker_pool.WorkerPool;
 const Connection = capnpc.rpc.transport.tcp.Connection;
 const Peer = capnpc.rpc.peer.Peer;
+const tcp = capnpc.rpc.transport.tcp;
 const net = std.Io.net;
 
 fn onAcceptNoop(_: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
@@ -140,76 +140,30 @@ const ActiveCounter = struct {
     }
 };
 
-// POSIX-only helpers and integration test — guarded because std.posix
-// socket/getsockname APIs do not compile on Windows.
-const posix_helpers = if (builtin.target.os.tag != .windows) struct {
-    /// Helper: create a raw TCP connection to addr, return the fd.
-    fn rawTcpConnect(addr: net.IpAddress) !std.posix.fd_t {
-        const socket_cloexec_unsupported = builtin.target.os.tag.isDarwin() or builtin.target.os.tag == .haiku;
-        const family: c_uint = switch (addr) {
-            .ip4 => std.posix.AF.INET,
-            .ip6 => std.posix.AF.INET6,
-        };
-        const flags: c_uint = std.posix.SOCK.STREAM | if (socket_cloexec_unsupported) @as(c_uint, 0) else std.posix.SOCK.CLOEXEC;
-        const fd_rc = std.posix.system.socket(family, flags, 0);
-        if (std.posix.errno(fd_rc) != .SUCCESS) return error.SocketCreateFailed;
-        const fd: std.posix.fd_t = @intCast(fd_rc);
-        errdefer closeFd(fd);
+// Cross-platform connection helpers over std.Io so the
+// shutdown-with-active-connection tests below run on every platform,
+// including Windows. Earlier versions used std.posix
+// socket/connect/getsockname/nanosleep, which do not compile on Windows and
+// forced those tests to skip there — leaving the Connection.requestClose
+// shutdown path (commit fb5fbfc) with zero Windows regression coverage.
 
-        if (socket_cloexec_unsupported) {
-            _ = std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC));
-        }
+/// Open a raw TCP connection to `addr` via std.Io and return the connected
+/// socket handle. The caller owns the handle and must close it with
+/// `tcp.closeFd`.
+fn rawTcpConnect(io: std.Io, addr: net.IpAddress) !tcp.SocketFd {
+    var connect_addr = addr;
+    const stream = try net.IpAddress.connect(&connect_addr, io, .{ .mode = .stream, .protocol = .tcp });
+    return .{ .handle = stream.socket.handle };
+}
 
-        const storage = ipAddressToSockaddr(addr);
-        while (true) {
-            switch (std.posix.errno(std.posix.system.connect(fd, &storage.addr.any, storage.len))) {
-                .SUCCESS => return fd,
-                .INTR => continue,
-                .CONNREFUSED => return error.ConnectionRefused,
-                .CONNRESET => return error.ConnectionResetByPeer,
-                .NETUNREACH => return error.NetworkUnreachable,
-                .HOSTUNREACH => return error.HostUnreachable,
-                .TIMEDOUT => return error.Timeout,
-                else => return error.ConnectFailed,
-            }
-        }
-    }
-
-    fn sleepMs(ms: u64) void {
-        const ts = std.posix.timespec{
-            .sec = @intCast(ms / 1000),
-            .nsec = @intCast((ms % 1000) * 1_000_000),
-        };
-        _ = std.posix.system.nanosleep(&ts, null);
-    }
-
-    fn closeFd(fd: std.posix.fd_t) void {
-        switch (std.posix.errno(std.posix.system.close(fd))) {
-            .SUCCESS, .INTR, .BADF => {},
-            else => {},
-        }
-    }
-
-    const SockAddrStorage = capnpc.rpc.transport.tcp.SockAddrStorage;
-    const ipAddressToSockaddr = capnpc.rpc.transport.tcp.ipAddressToSockaddr;
-
-    fn getSockPort(fd: std.posix.fd_t) !u16 {
-        var storage: std.posix.sockaddr.storage = undefined;
-        var addr_len: std.posix.socklen_t = @sizeOf(std.posix.sockaddr.storage);
-        if (std.posix.errno(std.posix.system.getsockname(fd, @ptrCast(&storage), &addr_len)) != .SUCCESS) {
-            return error.GetSockNameFailed;
-        }
-        const sa: *const std.posix.sockaddr = @ptrCast(&storage);
-        if (sa.family == std.posix.AF.INET) {
-            const sa_in: *const std.posix.sockaddr.in = @ptrCast(@alignCast(sa));
-            return std.mem.bigToNative(u16, sa_in.port);
-        } else if (sa.family == std.posix.AF.INET6) {
-            const sa_in6: *const std.posix.sockaddr.in6 = @ptrCast(@alignCast(sa));
-            return std.mem.bigToNative(u16, sa_in6.port);
-        }
-        return error.UnsupportedAddressFamily;
-    }
-} else struct {};
+/// Sleep `ms` milliseconds on the awake clock via std.Io.
+fn sleepMs(io: std.Io, ms: u64) void {
+    const duration: std.Io.Clock.Duration = .{
+        .raw = .{ .nanoseconds = @as(i96, @intCast(ms)) * std.time.ns_per_ms },
+        .clock = .awake,
+    };
+    duration.sleep(io) catch {};
+}
 
 fn spawnPoolThread(pool: *WorkerPool) !std.Thread {
     return std.Thread.spawn(.{}, struct {
@@ -220,19 +174,20 @@ fn spawnPoolThread(pool: *WorkerPool) !std.Thread {
 }
 
 fn connectUntilAccepted(
+    io: std.Io,
     addr: net.IpAddress,
     count: *std.atomic.Value(u32),
     keep_connected: bool,
-) !?std.posix.fd_t {
+) !?tcp.SocketFd {
     var attempts: u32 = 0;
     while (count.load(.acquire) == 0 and attempts < 200) : (attempts += 1) {
-        const client_fd = posix_helpers.rawTcpConnect(addr) catch |err| {
+        const client = rawTcpConnect(io, addr) catch |err| {
             switch (err) {
                 error.ConnectionRefused,
                 error.ConnectionResetByPeer,
                 error.NetworkUnreachable,
                 => {
-                    posix_helpers.sleepMs(10);
+                    sleepMs(io, 10);
                     continue;
                 },
                 else => return err,
@@ -241,22 +196,21 @@ fn connectUntilAccepted(
 
         var wait_attempts: u32 = 0;
         while (count.load(.acquire) == 0 and wait_attempts < 20) : (wait_attempts += 1) {
-            posix_helpers.sleepMs(10);
+            sleepMs(io, 10);
         }
 
         if (count.load(.acquire) > 0) {
-            if (keep_connected) return client_fd;
-            posix_helpers.closeFd(client_fd);
+            if (keep_connected) return client;
+            tcp.closeFd(io, client);
             return null;
         }
 
-        posix_helpers.closeFd(client_fd);
+        tcp.closeFd(io, client);
     }
     return error.AcceptTimedOut;
 }
 
 test "WorkerPool: single worker accepts connection then shuts down" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = AcceptCounter{};
@@ -270,8 +224,8 @@ test "WorkerPool: single worker accepts connection then shuts down" {
     );
     defer pool.deinit();
 
-    // Retrieve the actual bound port from the shared listen fd.
-    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    // listen() resolves the ephemeral port into the bound address; connect there.
+    const connect_addr = pool.server.socket.address;
 
     const pool_thread = try spawnPoolThread(&pool);
     errdefer {
@@ -279,8 +233,7 @@ test "WorkerPool: single worker accepts connection then shuts down" {
         pool_thread.join();
     }
 
-    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-    _ = try connectUntilAccepted(connect_addr, &counter.count, false);
+    _ = try connectUntilAccepted(std.testing.io, connect_addr, &counter.count, false);
 
     pool.shutdown();
     pool_thread.join();
@@ -289,7 +242,6 @@ test "WorkerPool: single worker accepts connection then shuts down" {
 }
 
 test "WorkerPool: on_accept error closes accepted connection" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = AcceptFailureCounter{};
@@ -303,15 +255,14 @@ test "WorkerPool: on_accept error closes accepted connection" {
     );
     defer pool.deinit();
 
-    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const connect_addr = pool.server.socket.address;
     const pool_thread = try spawnPoolThread(&pool);
     errdefer {
         pool.shutdown();
         pool_thread.join();
     }
 
-    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-    _ = try connectUntilAccepted(connect_addr, &counter.count, false);
+    _ = try connectUntilAccepted(std.testing.io, connect_addr, &counter.count, false);
 
     pool.shutdown();
     pool_thread.join();
@@ -320,7 +271,6 @@ test "WorkerPool: on_accept error closes accepted connection" {
 }
 
 test "WorkerPool: on_accept reject closes accepted connection" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = RejectCounter{};
@@ -334,15 +284,14 @@ test "WorkerPool: on_accept reject closes accepted connection" {
     );
     defer pool.deinit();
 
-    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const connect_addr = pool.server.socket.address;
     const pool_thread = try spawnPoolThread(&pool);
     errdefer {
         pool.shutdown();
         pool_thread.join();
     }
 
-    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-    _ = try connectUntilAccepted(connect_addr, &counter.count, false);
+    _ = try connectUntilAccepted(std.testing.io, connect_addr, &counter.count, false);
 
     pool.shutdown();
     pool_thread.join();
@@ -351,7 +300,6 @@ test "WorkerPool: on_accept reject closes accepted connection" {
 }
 
 test "WorkerPool: shutdown closes active connection so run can return" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = ActiveCounter{};
@@ -365,16 +313,15 @@ test "WorkerPool: shutdown closes active connection so run can return" {
     );
     defer pool.deinit();
 
-    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const connect_addr = pool.server.socket.address;
     const pool_thread = try spawnPoolThread(&pool);
     errdefer {
         pool.shutdown();
         pool_thread.join();
     }
 
-    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-    const client_fd = (try connectUntilAccepted(connect_addr, &counter.count, true)).?;
-    defer posix_helpers.closeFd(client_fd);
+    const client_fd = (try connectUntilAccepted(std.testing.io, connect_addr, &counter.count, true)).?;
+    defer tcp.closeFd(std.testing.io, client_fd);
 
     pool.shutdown();
     pool_thread.join();
@@ -387,7 +334,6 @@ fn nowNs(io: std.Io) i64 {
 }
 
 test "WorkerPool: graceful shutdown returns promptly with no active connections" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = AcceptCounter{};
@@ -417,7 +363,6 @@ test "WorkerPool: graceful shutdown returns promptly with no active connections"
 }
 
 test "WorkerPool: graceful shutdown drains an active connection that finishes on its own" {
-    if (comptime builtin.target.os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
 
     var counter = ActiveCounter{};
@@ -431,26 +376,25 @@ test "WorkerPool: graceful shutdown drains an active connection that finishes on
     );
     defer pool.deinit();
 
-    const port = try posix_helpers.getSockPort(pool.server.socket.handle);
+    const connect_addr = pool.server.socket.address;
     const pool_thread = try spawnPoolThread(&pool);
     errdefer {
         pool.shutdown();
         pool_thread.join();
     }
 
-    const connect_addr: net.IpAddress = .{ .ip4 = .loopback(port) };
-    const client_fd = (try connectUntilAccepted(connect_addr, &counter.count, true)).?;
+    const client_fd = (try connectUntilAccepted(std.testing.io, connect_addr, &counter.count, true)).?;
 
     // The client disconnects on its own shortly after the graceful
     // shutdown starts; the drain should observe the worker going idle and
     // return well before the full bound.
     const Disconnecter = struct {
-        fn run(fd: std.posix.fd_t) void {
-            posix_helpers.sleepMs(80);
-            posix_helpers.closeFd(fd);
+        fn run(fd: tcp.SocketFd, disc_io: std.Io) void {
+            sleepMs(disc_io, 80);
+            tcp.closeFd(disc_io, fd);
         }
     };
-    const disconnect_thread = try std.Thread.spawn(.{}, Disconnecter.run, .{client_fd});
+    const disconnect_thread = try std.Thread.spawn(.{}, Disconnecter.run, .{ client_fd, std.testing.io });
 
     const start = nowNs(std.testing.io);
     pool.shutdownGraceful(10_000);
