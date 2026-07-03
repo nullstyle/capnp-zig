@@ -302,6 +302,12 @@ pub const Peer = struct {
     resolved_answers: std.AutoHashMap(u32, ResolvedAnswer),
     /// Inbound call question IDs accepted from the remote peer until Return or Finish.
     active_inbound_questions: std.AutoHashMap(u32, void),
+    /// Inbound question ids whose Finish arrived before their (async) Return.
+    /// A late Return for one of these must NOT be recorded in resolved_answers:
+    /// no further Finish will ever clear it, and a stale entry poisons legal
+    /// reuse of the id (DuplicateQuestionId against a compliant peer). Bounded
+    /// by max_active_inbound_questions.
+    finished_early_answers: std.AutoHashMap(u32, void),
 
     // -- Promise queueing ---------------------------------------------------
 
@@ -486,6 +492,7 @@ pub const Peer = struct {
             .questions = std.AutoHashMap(u32, Question).init(allocator),
             .resolved_answers = std.AutoHashMap(u32, ResolvedAnswer).init(allocator),
             .active_inbound_questions = std.AutoHashMap(u32, void).init(allocator),
+            .finished_early_answers = std.AutoHashMap(u32, void).init(allocator),
             .pending_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .pending_export_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .forwarded_questions = std.AutoHashMap(u32, u32).init(allocator),
@@ -716,6 +723,7 @@ pub const Peer = struct {
         }
         self.questions.deinit();
         self.active_inbound_questions.deinit();
+        self.finished_early_answers.deinit();
         {
             var p_it = self.persistent_exports.valueIterator();
             while (p_it.next()) |st| self.allocator.destroy(st.*);
@@ -2060,19 +2068,21 @@ pub const Peer = struct {
         defer self.allocator.free(bytes);
 
         // Capture before delivery: sendReturnFrameWithLoopback consumes the
-        // loopback_questions entry for this answer.
+        // loopback_questions and finished_early_answers entries for this id.
         const is_loopback = self.loopback_questions.contains(answer_id);
+        const is_finished_early = self.finished_early_answers.contains(answer_id);
         try self.sendReturnFrameWithLoopback(answer_id, bytes);
         cap_table.commitOutboundCapEffects(&self.caps, &effects);
         effects_committed = true;
 
-        // Loopback answers are delivered locally, are never referenced by a
-        // remote PromisedAnswer (the peer does not know our loopback question
-        // ids), and receive no Finish. Recording one would leak the frame
-        // until deinit and let a loopback id — allocated from our outbound
-        // counter — collide with a remote question id (both spaces start at 0),
-        // spuriously tripping DuplicateQuestionId against a compliant peer.
-        if (!is_loopback) {
+        // Do not record a resolved answer when it can never be cleared by a
+        // Finish: (1) loopback answers are delivered locally, are never
+        // referenced by a remote PromisedAnswer, and get no Finish — and their
+        // outbound-counter ids would collide with the remote question-id space;
+        // (2) finished-early answers already had their Finish arrive before
+        // this (late, async) Return. In both cases a recorded entry would leak
+        // and poison DuplicateQuestionId checks against a compliant peer.
+        if (!is_loopback and !is_finished_early) {
             const copy = try self.allocator.alloc(u8, bytes.len);
             errdefer self.allocator.free(copy);
             std.mem.copyForwards(u8, copy, bytes);
@@ -2092,14 +2102,16 @@ pub const Peer = struct {
         };
         try self.noteOutboundReturnCapRefs(ret);
         self.clearSendResultsRouting(ret.answer_id);
-        // Capture before delivery consumes the loopback_questions entry.
+        // Capture before delivery consumes the loopback / finished-early entry.
         const is_loopback = self.loopback_questions.contains(ret.answer_id);
+        const is_finished_early = self.finished_early_answers.contains(ret.answer_id);
         try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
         rollback_outbound_refs = false;
 
-        // See sendReturnResults: loopback answers must not be recorded (no
-        // Finish clears them; their ids collide with the remote's id space).
-        if (ret.tag == .results and !is_loopback) {
+        // See sendReturnResults: neither loopback nor finished-early answers
+        // may be recorded — no Finish will clear them and the id would be
+        // poisoned for reuse.
+        if (ret.tag == .results and !is_loopback and !is_finished_early) {
             const copy = try self.allocator.alloc(u8, frame.len);
             errdefer self.allocator.free(copy);
             std.mem.copyForwards(u8, copy, frame);
@@ -2259,6 +2271,9 @@ pub const Peer = struct {
             sendFrameControl,
         );
         _ = self.active_inbound_questions.remove(answer_id);
+        // Any terminal Return for this answer discharges a finished-early
+        // tombstone (see finished_early_answers / handleFinish).
+        _ = self.finished_early_answers.remove(answer_id);
     }
 
     fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {
@@ -2880,7 +2895,21 @@ pub const Peer = struct {
     }
 
     fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
-        _ = self.active_inbound_questions.remove(finish_msg.question_id);
+        const qid = finish_msg.question_id;
+        const was_active = self.active_inbound_questions.remove(qid);
+        // Cancellation race: a Finish for an in-flight inbound call (still
+        // active, not yet resolved) means an async handler will answer later.
+        // Tombstone the id so that late Return is not recorded in
+        // resolved_answers (nothing would ever clear it, and it would poison
+        // legal reuse of the id). Bounded by max_active_inbound_questions;
+        // best-effort under OOM. Synchronous handlers already removed the
+        // active entry before this Finish, so was_active is false for them.
+        if (was_active and
+            !self.resolved_answers.contains(qid) and
+            self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
+        {
+            self.finished_early_answers.put(qid, {}) catch |err| self.reportNonfatalError(err);
+        }
         if (!finish_msg.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
             // deliverable, cancel the queued call immediately.

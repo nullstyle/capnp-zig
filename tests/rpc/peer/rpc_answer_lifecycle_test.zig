@@ -157,6 +157,56 @@ test "loopback answer with results is not recorded in resolved_answers" {
     try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
 }
 
+test "late Return after Finish (async handler) is not recorded in resolved_answers" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // Async handler: stashes the answer id and returns WITHOUT answering, so
+    // the inbound question stays active past the Finish.
+    const Async = struct {
+        var pending_answer: ?u32 = null;
+        fn onCall(_: *anyopaque, _: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            pending_answer = call.question_id;
+        }
+    };
+    Async.pending_answer = null;
+
+    var server_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &server_ctx, .on_call = Async.onCall });
+
+    // Inbound Call (question 7) targeting the export; handler leaves it pending.
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(7, 0xABCD, 0);
+    try call.setTargetImportedCap(export_id);
+    _ = try call.initCapTableTyped(0);
+    const call_frame = try builder.finish();
+    defer allocator.free(call_frame);
+    try peer.handleFrame(call_frame);
+    try std.testing.expectEqual(@as(?u32, 7), Async.pending_answer);
+
+    // Finish for question 7 arrives before the async Return (cancellation race).
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 7,
+        .release_result_caps = true,
+        .require_early_cancellation = false,
+    });
+
+    // The async handler finally answers.
+    try peer.sendReturnEmptyStruct(7);
+
+    // The late Return is delivered exactly once but NOT recorded: no lingering
+    // resolved_answers entry to poison reuse of question id 7.
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(7, .results));
+    try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
+}
+
 test "cancelling one queued call preserves send order of the survivors (E-order)" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);
