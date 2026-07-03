@@ -27,9 +27,19 @@ pub const Status = struct {
 };
 
 /// Tracks the first terminal close status and its sanitized wire reason.
+///
+/// `record` is safe to call from any thread: the QUIC run loop records the
+/// terminal status while flushing the wire close frame, while a cross-thread
+/// `requestClose` may record a normal close concurrently. A `claimed` latch
+/// gives the first recorder exclusive ownership of `reason_buf`/`reason_len`,
+/// and `published` is released only after those fields are fully written.
+/// Readers of `status`/`reason` acquire `published`, so they observe either no
+/// status at all or a completely written snapshot — never a torn reason.
 pub const State = struct {
     reveal_detail_on_wire: bool = false,
-    status_value: ?Status = null,
+    claimed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    published: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    status_value: Status = undefined,
     reason_buf: [max_wire_reason_bytes]u8 = undefined,
     reason_len: usize = 0,
 
@@ -40,10 +50,12 @@ pub const State = struct {
     }
 
     pub fn status(self: *const State) ?Status {
+        if (!self.published.load(.acquire)) return null;
         return self.status_value;
     }
 
     pub fn reason(self: *const State) []const u8 {
+        if (!self.published.load(.acquire)) return &.{};
         return self.reason_buf[0..self.reason_len];
     }
 
@@ -52,7 +64,10 @@ pub const State = struct {
         code: ApplicationCloseCode,
         err: ?anyerror,
     ) void {
-        if (self.status_value != null) return;
+        // First recorder wins the claim and owns the buffer writes; concurrent
+        // recorders return immediately, leaving the first terminal status
+        // intact.
+        if (self.claimed.swap(true, .acq_rel)) return;
         const prepared = prepareWireReason(
             &self.reason_buf,
             code,
@@ -66,6 +81,9 @@ pub const State = struct {
             .reason_truncated = prepared.truncated,
             .reason_reveals_detail = prepared.reveals_detail,
         };
+        // Publish last: a reader that observes `published` via acquire sees the
+        // fully written status and reason above.
+        self.published.store(true, .release);
     }
 };
 

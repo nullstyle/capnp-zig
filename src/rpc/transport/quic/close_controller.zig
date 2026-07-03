@@ -9,6 +9,11 @@ const log = std.log.scoped(.rpc_quic_close);
 
 pub const Controller = struct {
     requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Set by a cross-thread `requestNormalCrossThread` so the run loop performs
+    /// the actual engine close and status record on its own thread. This keeps
+    /// all mutation of `state` and the engines on the loop thread, avoiding a
+    /// data race with the loop's own close/record path.
+    normal_close_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     state: quic_close.State = .{},
 
     pub fn init(reveal_detail_on_wire: bool) Controller {
@@ -41,6 +46,30 @@ pub const Controller = struct {
     ) void {
         self.enterClosing(baseline, native);
         self.record(.normal, null);
+    }
+
+    /// Cross-thread normal-close request. Only flips atomic flags — the actual
+    /// engine close and status record are deferred to the run loop, which calls
+    /// `drainPendingClose` on its own thread. `requested` is published so an
+    /// already-running loop observes the shutdown and exits; the loop wake is
+    /// the caller's responsibility.
+    pub fn requestNormalCrossThread(self: *Controller) void {
+        _ = self.normal_close_pending.swap(true, .acq_rel);
+        self.request();
+    }
+
+    /// Loop-thread side of `requestNormalCrossThread`. Runs the deferred
+    /// engine close and status record exactly once, on the loop thread that
+    /// owns the engines and close state. Returns true when a pending request
+    /// was consumed.
+    pub fn drainPendingClose(
+        self: *Controller,
+        baseline: anytype,
+        native: anytype,
+    ) bool {
+        if (!self.normal_close_pending.swap(false, .acq_rel)) return false;
+        self.requestNormal(baseline, native);
+        return true;
     }
 
     pub fn closeEngines(

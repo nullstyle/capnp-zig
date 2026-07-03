@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
 const baseline_engine = @import("baseline_engine.zig");
@@ -52,6 +53,13 @@ pub const Server = struct {
     sessions: std.ArrayList(ServerSession) = .empty,
     wake_state: wake_mod.Handle = .{},
     close_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Identifies the thread that drives the step/run loop. `sessions` is only
+    /// ever appended to or swap-removed on this thread, so cross-thread
+    /// `close`/`requestClose` must never touch the list — they only raise the
+    /// `close_requested` flag and wake the loop, which then closes every
+    /// session on its own thread. Claimed on the first loop-thread step and
+    /// used by `assertLoopThread` for a debug-only affinity check.
+    loop_thread_id: ?std.Thread.Id = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -137,6 +145,13 @@ pub const Server = struct {
     }
 
     pub fn stepOnce(self: *Server, mode: StepMode) !StepResult {
+        self.claimLoopThread();
+        // Apply any cross-thread server- or session-level close requests on the
+        // loop thread before touching the session list, so all list mutation
+        // and close-state mutation stays single-threaded.
+        self.closeAllSessionsOnLoop();
+        self.drainSessionCloseRequests();
+
         var now_us = self.listener.nowUs();
         const next_deadline_us = self.nextTimerDeadlineUs(now_us);
         const waited_for = scheduler.receiveWaitDuration(.{
@@ -170,6 +185,9 @@ pub const Server = struct {
     }
 
     pub fn stepSession(self: *Server, index: usize) !void {
+        self.claimLoopThread();
+        self.closeAllSessionsOnLoop();
+        self.drainSessionCloseRequests();
         if (index >= self.sessions.items.len) return error.InvalidSession;
         const now_us = self.listener.nowUs();
         try self.stepSessionAt(&self.sessions.items[index], now_us);
@@ -195,19 +213,21 @@ pub const Server = struct {
         }
     }
 
+    /// Request shutdown of the server and all of its sessions.
+    ///
+    /// Safe to call from any thread. Only raises the atomic `close_requested`
+    /// flag and wakes the loop; the actual per-session close runs on the loop
+    /// thread via `closeAllSessionsOnLoop`, which is the sole mutator of the
+    /// session list. This avoids racing the loop's accept/reap path.
     pub fn close(self: *Server) void {
         self.requestClose();
-        for (self.sessions.items) |*session| {
-            session.close();
-        }
-        self.wake();
     }
 
+    /// Request shutdown without forcing an immediate connection-level close.
+    ///
+    /// Safe to call from any thread; see `close` for the cross-thread contract.
     pub fn requestClose(self: *Server) void {
         _ = self.close_requested.swap(true, .acq_rel);
-        for (self.sessions.items) |*session| {
-            session.requestClose();
-        }
         self.wake();
     }
 
@@ -217,6 +237,40 @@ pub const Server = struct {
 
     pub fn wake(self: *Server) void {
         self.wake_state.request();
+    }
+
+    /// Record the current thread as the loop thread on first step. Subsequent
+    /// steps assert affinity in debug builds so accidental cross-thread
+    /// stepping (which would race the session list) fails loudly.
+    fn claimLoopThread(self: *Server) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        if (self.loop_thread_id == null) {
+            self.loop_thread_id = std.Thread.getCurrentId();
+            return;
+        }
+        if (builtin.mode == .Debug) {
+            if (std.Thread.getCurrentId() != self.loop_thread_id.?) {
+                @panic("QUIC Server stepped from a thread other than the loop thread");
+            }
+        }
+    }
+
+    /// Loop-thread close of every live session when the server is shutting
+    /// down. Iterates and mutates close state only on the loop thread, so it
+    /// cannot race the accept/reap path.
+    fn closeAllSessionsOnLoop(self: *Server) void {
+        if (!self.isClosing()) return;
+        for (self.sessions.items) |*session| {
+            session.closeOnLoop();
+        }
+    }
+
+    /// Loop-thread drain of any per-session cross-thread `requestClose`, run
+    /// before the session list is otherwise touched.
+    fn drainSessionCloseRequests(self: *Server) void {
+        for (self.sessions.items) |*session| {
+            session.drainPendingClose();
+        }
     }
 
     fn receiveOneFor(self: *Server, wait_duration: std.Io.Duration) !ReceiveResult {
@@ -313,7 +367,7 @@ pub const Server = struct {
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 
         if (conn.isClosed() and server_session.outboundEmpty()) {
-            server_session.requestClose();
+            server_session.closeOnLoop();
         }
         if (server_session.isClosing()) {
             try self.flushClosingSession(server_session, now_us);
@@ -498,12 +552,28 @@ pub const ServerSession = struct {
         return try Dispatch.sendFrame(self, frame);
     }
 
+    /// Request a normal close of this session. Safe to call from any thread:
+    /// only flags + wakes; the run loop performs the engine close and status
+    /// record on its own thread via `drainPendingClose`/`closeOnLoop`.
     pub fn close(self: *ServerSession) void {
+        Termination.requestClose(self);
+    }
+
+    /// Request a normal close of this session. Safe to call from any thread;
+    /// see `close`.
+    pub fn requestClose(self: *ServerSession) void {
+        Termination.requestClose(self);
+    }
+
+    /// Loop-thread synchronous close. Closes the engines and records the
+    /// terminal status on the caller's thread; only the run loop may call this.
+    fn closeOnLoop(self: *ServerSession) void {
         Termination.close(self);
     }
 
-    pub fn requestClose(self: *ServerSession) void {
-        Termination.requestClose(self);
+    /// Loop-thread drain of a deferred cross-thread `close`/`requestClose`.
+    fn drainPendingClose(self: *ServerSession) void {
+        Termination.drainPendingClose(self);
     }
 
     pub fn isClosing(self: *const ServerSession) bool {

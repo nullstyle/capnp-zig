@@ -111,6 +111,10 @@ pub fn runQuicConnection(conn: *quic.Connection) void {
     conn.run();
 }
 
+pub fn runQuicServer(server: *quic.Server) void {
+    server.run();
+}
+
 pub fn waitForClientMessageOrError(
     client_state: *const QuicEndpointState,
     server_state: *const QuicEndpointState,

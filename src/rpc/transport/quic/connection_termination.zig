@@ -27,8 +27,18 @@ pub fn State(comptime Connection: type) type {
 
         pub fn requestClose(conn: *Connection) void {
             events.emitConnection(conn.observer, eventSource(conn.mode), eventRole(conn.role), .closing);
-            conn.close_controller.requestNormal(&conn.baseline, &conn.native);
+            // Defer the engine close and status record to the run loop so all
+            // mutation of the close state and engines stays on one thread. The
+            // loop drains the request via `drainPendingClose` (fanout server)
+            // or records it during teardown (compat connection).
+            conn.close_controller.requestNormalCrossThread();
             conn.wake();
+        }
+
+        /// Loop-thread drain of a deferred cross-thread `requestClose`. Safe to
+        /// call every tick; only does work when a request is pending.
+        pub fn drainPendingClose(conn: *Connection) void {
+            _ = conn.close_controller.drainPendingClose(&conn.baseline, &conn.native);
         }
 
         pub fn isClosing(conn: *const Connection) bool {

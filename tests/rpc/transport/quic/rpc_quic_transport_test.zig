@@ -15,6 +15,7 @@ const OrderedQuicEndpointState = loopback.OrderedQuicEndpointState;
 const buildBootstrapFrame = loopback.buildBootstrapFrame;
 const buildCallFrameWithData = loopback.buildCallFrameWithData;
 const runQuicConnection = loopback.runQuicConnection;
+const runQuicServer = loopback.runQuicServer;
 const waitForClientMessageOrError = loopback.waitForClientMessageOrError;
 const waitForServerError = loopback.waitForServerError;
 const waitForOrderedClientMessagesOrError = loopback.waitForOrderedClientMessagesOrError;
@@ -101,6 +102,49 @@ test "quic transport exposes typed application close policy" {
 
     try std.testing.expect(prepared.truncated);
     try std.testing.expectEqualStrings("bad?fram", reason_buf[0..prepared.len]);
+}
+
+test "quic close state serializes concurrent cross-thread record calls" {
+    // Two threads race record() the way the run loop and a cross-thread
+    // requestClose can. The first recorder must win and readers must always see
+    // a consistent (untorn) status/reason snapshot — never a partially written
+    // reason buffer.
+    const Racer = struct {
+        fn recordFrameError(state: *quic.close.State) void {
+            state.record(.frame_error, error.InvalidFrame);
+        }
+
+        fn recordInternalError(state: *quic.close.State) void {
+            state.record(.internal_error, error.OutOfMemory);
+        }
+    };
+
+    var iteration: usize = 0;
+    while (iteration < 200) : (iteration += 1) {
+        var state = quic.close.State.init(true);
+
+        var a = try std.Thread.spawn(.{}, Racer.recordFrameError, .{&state});
+        var b = try std.Thread.spawn(.{}, Racer.recordInternalError, .{&state});
+        a.join();
+        b.join();
+
+        const status = state.status() orelse return error.QuicCloseStatusMissing;
+        const reason = state.reason();
+
+        // Whichever recorder won, the published reason must exactly match that
+        // status's code+detail — proving the buffer was not interleaved.
+        switch (status.code) {
+            .frame_error => {
+                try std.testing.expectEqual(@as(?anyerror, error.InvalidFrame), status.err);
+                try std.testing.expectEqualStrings("rpc frame error: InvalidFrame", reason);
+            },
+            .internal_error => {
+                try std.testing.expectEqual(@as(?anyerror, error.OutOfMemory), status.err);
+                try std.testing.expectEqualStrings("rpc transport error: OutOfMemory", reason);
+            },
+            else => return error.QuicCloseStatusUnexpected,
+        }
+    }
 }
 
 test "quic exposes listener and session API boundary" {
@@ -649,6 +693,57 @@ test "quic native fanout server drives two sessions independently" {
     try std.testing.expectEqualSlices(u8, frame_b, client_state_b.receivedSlice());
     try std.testing.expectEqual(@as(usize, 1), server_state_a.messages.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), server_state_b.messages.load(.acquire));
+}
+
+test "quic fanout server run loop terminates on cross-thread requestClose" {
+    // Drives Server.run() on a spawned loop thread while a live client keeps the
+    // accept/reap path mutating the session list, then requests close from the
+    // test thread. The cross-thread requestClose must never touch the session
+    // list — it only raises the atomic flag and wakes the loop, which closes
+    // every session on its own thread — so run() returns without a data race or
+    // hang.
+    const allocator = std.testing.allocator;
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer client.deinit();
+
+    var client_state = QuicEndpointState{};
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    var server_thread = try std.Thread.spawn(.{}, runQuicServer, .{&server});
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+
+    // Give the handshake time to complete so the loop thread has appended a
+    // live session to the list; the cross-thread close below then races the
+    // accept/reap path. State is owned by the loop threads, so the test thread
+    // only sleeps rather than inspecting connection internals cross-thread.
+    loopback.sleepMs(loopback.loopback_poll_ms * 5);
+
+    // Cross-thread close of both the server loop and the client loop. Neither
+    // requestClose iterates the loop-owned session list.
+    server.requestClose();
+    client.requestClose();
+
+    client_thread.join();
+    server_thread.join();
+
+    try std.testing.expect(server.isClosing());
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
 }
 
 test "quic fanout server fires on_close for a live session on deinit" {
