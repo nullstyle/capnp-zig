@@ -166,11 +166,15 @@ pub fn releaseEmbargoedAccepts(
         pending_list.deinit(allocator);
     }
 
+    // Unlink every queued answer id from pending_accept_embargo_by_question up
+    // front. Its values borrow pending_entry.key (freed in the defer above), so
+    // any entry that survived a mid-loop error propagation from the send loop
+    // below would dangle and cause a use-after-free on the next lookup.
     for (pending_list.items) |pending| {
-        // Remove the borrowed reference; the key allocation is owned by
-        // pending_accepts_by_embargo and freed in the outer defer.
         _ = pending_accept_embargo_by_question.remove(pending.answer_id);
+    }
 
+    for (pending_list.items) |pending| {
         const provided = provides_by_question.getPtr(pending.provided_question_id) orelse {
             try send_return_exception(peer, pending.answer_id, "unknown provision");
             continue;

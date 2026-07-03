@@ -5,6 +5,8 @@ const peer_return_dispatch = @import("./peer_return_dispatch.zig");
 const peer_third_party = @import("../third_party.zig");
 const peer_third_party_returns = peer_third_party.returns;
 
+const log = std.log.scoped(.rpc_peer);
+
 pub fn getQuestionForPeer(
     comptime PeerType: type,
     comptime QuestionType: type,
@@ -50,7 +52,15 @@ pub fn restoreQuestionForReturnForPeer(
     answer_id: u32,
     question: QuestionType,
 ) void {
-    peer.questions.putAssumeCapacity(answer_id, question);
+    // The question was removed before dispatch, so the map still has a free
+    // slot for this key in the common case. But re-entrant callbacks fired
+    // during dispatch (e.g. adoptThirdPartyAnswer inserting a new question)
+    // can consume that slot, so a plain put may need to grow. Use the fallible
+    // put and degrade gracefully on OOM rather than tripping the
+    // putAssumeCapacity capacity assertion.
+    peer.questions.put(answer_id, question) catch |err| {
+        log.warn("failed to restore question id={} on return error: {}", .{ answer_id, err });
+    };
 }
 
 pub fn restoreQuestionForReturnForPeerFn(

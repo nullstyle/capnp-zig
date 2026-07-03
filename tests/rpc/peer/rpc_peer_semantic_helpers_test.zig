@@ -6,9 +6,13 @@ const message = capnpc.message;
 const protocol = capnpc.rpc.wire.protocol;
 const peer_bootstrap = capnpc.rpc.testing.peer_bootstrap;
 const peer_disembargo = capnpc.rpc.testing.peer_disembargo;
+const peer_embargo_accepts = capnpc.rpc.testing.peer_embargo_accepts;
 const peer_finish = capnpc.rpc.testing.peer_finish;
 const peer_provide_accept_join = capnpc.rpc.testing.peer_provide_accept_join;
+const peer_provide_join_orchestration = capnpc.rpc.testing.peer_provide_join_orchestration;
 const peer_resolve = capnpc.rpc.testing.peer_resolve;
+const peer_return_dispatch = capnpc.rpc.testing.peer_return_dispatch;
+const peer_return_orchestration = capnpc.rpc.testing.peer_return_orchestration;
 const peer_third_party = capnpc.rpc.testing.peer_third_party;
 
 const allocateEmbargoIdForPeerFn = peer_resolve.allocateEmbargoIdForPeerFn;
@@ -920,4 +924,327 @@ test "peer bootstrap handleUnimplementedQuestionForPeerFn ignores unknown questi
     const callback = handleUnimplementedQuestionForPeerFn(State, Hooks.onReturn);
     try callback(&state, 55);
     try std.testing.expectEqual(@as(usize, 1), state.calls);
+}
+
+const EmbargoTestPendingAccept = struct {
+    answer_id: u32,
+    provided_question_id: u32,
+};
+
+fn deinitEmbargoTestMaps(
+    allocator: std.mem.Allocator,
+    pending_accepts_by_embargo: *std.StringHashMap(std.ArrayList(EmbargoTestPendingAccept)),
+    pending_accept_embargo_by_question: *std.AutoHashMap(u32, []u8),
+) void {
+    var it = pending_accepts_by_embargo.iterator();
+    while (it.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        entry.value_ptr.deinit(allocator);
+    }
+    pending_accepts_by_embargo.deinit();
+    // Values here borrow keys already freed above; only the table needs deinit.
+    pending_accept_embargo_by_question.deinit();
+}
+
+test "peer embargo release unlinks all borrowed question refs before a mid-fanout send failure" {
+    // BUG 1 regression: releaseEmbargoedAccepts frees the shared embargo key in
+    // its defer. Every value in pending_accept_embargo_by_question borrows that
+    // key. If send_return_exception errors partway through the fan-out, the
+    // `try` propagates and breaks the send loop; any answer id whose borrowed
+    // reference had not yet been unlinked would then dangle into the freed key.
+    // The fix unlinks all queued answer ids up front, so the question map is
+    // fully cleared regardless of where the send loop aborts.
+    const ProvideEntry = struct { target: u32 };
+    const State = struct {
+        provided_calls: usize = 0,
+        exception_calls: usize = 0,
+    };
+    const Hooks = struct {
+        fn sendProvided(state: *State, answer_id: u32, entry: *const ProvideEntry) !void {
+            _ = answer_id;
+            _ = entry;
+            state.provided_calls += 1;
+            // Force the fan-out to fail so send_return_exception runs.
+            return error.TestProvidedSendFailed;
+        }
+
+        fn sendException(state: *State, answer_id: u32, reason: []const u8) !void {
+            _ = answer_id;
+            _ = reason;
+            state.exception_calls += 1;
+            // Exception send also fails: the `try` in releaseEmbargoedAccepts
+            // propagates and breaks the loop before the remaining entries are
+            // processed by the send loop.
+            return error.TestExceptionSendFailed;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+
+    var pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(EmbargoTestPendingAccept)).init(allocator);
+    var pending_accept_embargo_by_question = std.AutoHashMap(u32, []u8).init(allocator);
+    defer deinitEmbargoTestMaps(
+        allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+    );
+
+    var provides_by_question = std.AutoHashMap(u32, ProvideEntry).init(allocator);
+    defer provides_by_question.deinit();
+    try provides_by_question.put(500, .{ .target = 1 });
+    try provides_by_question.put(501, .{ .target = 2 });
+
+    // Two accepts under the same embargo share one heap-allocated key.
+    try peer_embargo_accepts.queueEmbargoedAccept(
+        EmbargoTestPendingAccept,
+        allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+        60,
+        500,
+        "shared-embargo",
+    );
+    try peer_embargo_accepts.queueEmbargoedAccept(
+        EmbargoTestPendingAccept,
+        allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+        61,
+        501,
+        "shared-embargo",
+    );
+
+    try std.testing.expectEqual(@as(usize, 2), pending_accept_embargo_by_question.count());
+
+    var state = State{};
+    try std.testing.expectError(error.TestExceptionSendFailed, peer_embargo_accepts.releaseEmbargoedAccepts(
+        State,
+        EmbargoTestPendingAccept,
+        ProvideEntry,
+        &state,
+        allocator,
+        &pending_accepts_by_embargo,
+        &pending_accept_embargo_by_question,
+        &provides_by_question,
+        "shared-embargo",
+        Hooks.sendProvided,
+        Hooks.sendException,
+    ));
+
+    // The send loop aborted after the first entry, but no borrowed reference to
+    // the now-freed key survives: the whole question map was unlinked up front.
+    try std.testing.expectEqual(@as(usize, 0), pending_accept_embargo_by_question.count());
+    try std.testing.expect(!pending_accept_embargo_by_question.contains(60));
+    try std.testing.expect(!pending_accept_embargo_by_question.contains(61));
+    // The embargo bucket (and its key allocation) was also removed by release.
+    try std.testing.expectEqual(@as(usize, 0), pending_accepts_by_embargo.count());
+}
+
+test "peer join orchestration budget rejection frees no ProvideTarget" {
+    // BUG 2 regression: a promised-answer Join heap-allocates a ProvideTarget in
+    // make_target. When ensure_join_budget rejected the join AFTER that
+    // allocation with no errdefer covering the target, the clone leaked. The fix
+    // enforces the budget before make_target runs, so a rejection allocates
+    // nothing. This test uses the testing allocator so a leak fails the test.
+    const JoinKeyPart = struct {
+        join_id: u32,
+        part_count: u16,
+        part_num: u16,
+    };
+    // ProvideTarget owns a heap allocation, mirroring cloned transform ops.
+    const ProvideTarget = struct {
+        ops: []u8,
+    };
+    const JoinPartEntry = struct {
+        question_id: u32,
+        target: ProvideTarget,
+    };
+    const JoinState = struct {
+        part_count: u16,
+        parts: std.AutoHashMap(u16, JoinPartEntry),
+
+        fn init(allocator: std.mem.Allocator, part_count: u16) @This() {
+            return .{
+                .part_count = part_count,
+                .parts = std.AutoHashMap(u16, JoinPartEntry).init(allocator),
+            };
+        }
+
+        fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            _ = allocator;
+            self.parts.deinit();
+        }
+    };
+    const PendingJoinQuestion = struct {
+        join_id: u32,
+        part_num: u16,
+    };
+    const State = struct {
+        allocator: std.mem.Allocator,
+        make_target_calls: usize = 0,
+        budget_calls: usize = 0,
+        exception_calls: usize = 0,
+    };
+    const Hooks = struct {
+        fn sendAbort(state: *State, reason: []const u8) !void {
+            _ = state;
+            _ = reason;
+            unreachable;
+        }
+
+        fn resolveTarget(state: *State, target: protocol.MessageTarget) !cap_table.ResolvedCap {
+            _ = state;
+            _ = target;
+            return .{ .exported = .{ .id = 1 } };
+        }
+
+        fn makeTarget(state: *State, resolved: cap_table.ResolvedCap) !ProvideTarget {
+            _ = resolved;
+            state.make_target_calls += 1;
+            // Heap-allocate to model cloned transform ops. If this is reached
+            // and then abandoned without a free, the testing allocator flags it.
+            return .{ .ops = try state.allocator.dupe(u8, "cloned-ops") };
+        }
+
+        fn deinitTarget(target: *ProvideTarget, allocator: std.mem.Allocator) void {
+            allocator.free(target.ops);
+        }
+
+        fn initJoinState(allocator: std.mem.Allocator, part_count: u16) JoinState {
+            return JoinState.init(allocator, part_count);
+        }
+
+        fn ensureJoinBudget(state: *State, join_key_part: JoinKeyPart, question_id: u32) !void {
+            _ = join_key_part;
+            _ = question_id;
+            state.budget_calls += 1;
+            return error.PeerLimitExceeded;
+        }
+
+        fn completeJoin(state: *State, join_id: u32) !void {
+            _ = state;
+            _ = join_id;
+            unreachable;
+        }
+
+        fn sendReturnException(state: *State, question_id: u32, reason: []const u8) !void {
+            _ = question_id;
+            _ = reason;
+            state.exception_calls += 1;
+        }
+    };
+
+    const allocator = std.testing.allocator;
+
+    var pending_joins = std.AutoHashMap(u32, JoinState).init(allocator);
+    defer {
+        var it = pending_joins.valueIterator();
+        while (it.next()) |join_state| join_state.deinit(allocator);
+        pending_joins.deinit();
+    }
+    var pending_join_questions = std.AutoHashMap(u32, PendingJoinQuestion).init(allocator);
+    defer pending_join_questions.deinit();
+
+    // Build a valid key_part payload so parseJoinKeyPart succeeds and the
+    // budget check is reached: [join_id:u32, part_count:u16, part_num:u16].
+    var key_part_builder = message.MessageBuilder.init(allocator);
+    defer key_part_builder.deinit();
+    const key_part_root = try key_part_builder.initRootAnyPointer();
+    var key_part_struct = try key_part_root.initStruct(1, 0);
+    key_part_struct.writeU32(0, 0x99);
+    key_part_struct.writeU16(4, 1);
+    key_part_struct.writeU16(6, 0);
+    const key_part_bytes = try key_part_builder.toBytes();
+    defer allocator.free(key_part_bytes);
+    var key_part_msg = try message.Message.init(allocator, key_part_bytes, .{});
+    defer key_part_msg.deinit();
+    const key_part_ptr = try key_part_msg.getRootAnyPointer();
+
+    var state = State{ .allocator = allocator };
+
+    // A promised-answer target reaches make_target; the budget must reject it.
+    try std.testing.expectError(error.PeerLimitExceeded, peer_provide_join_orchestration.handleJoin(
+        State,
+        JoinKeyPart,
+        JoinState,
+        PendingJoinQuestion,
+        ProvideTarget,
+        &state,
+        allocator,
+        .{
+            .question_id = 8,
+            .target = .{
+                .tag = .importedCap,
+                .imported_cap = 1,
+                .promised_answer = null,
+            },
+            .key_part = key_part_ptr,
+        },
+        &pending_joins,
+        &pending_join_questions,
+        Hooks.sendAbort,
+        Hooks.resolveTarget,
+        Hooks.makeTarget,
+        Hooks.deinitTarget,
+        Hooks.initJoinState,
+        Hooks.ensureJoinBudget,
+        Hooks.completeJoin,
+        Hooks.sendReturnException,
+    ));
+
+    // The budget runs before make_target, so no ProvideTarget was allocated.
+    try std.testing.expectEqual(@as(usize, 1), state.budget_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.make_target_calls);
+    try std.testing.expectEqual(@as(usize, 0), pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), pending_join_questions.count());
+}
+
+test "peer return restore helpers degrade gracefully when the map has no spare slot" {
+    // BUG 3 regression: restoreQuestionForReturnForPeer and
+    // restoreAdoptedAnswerOriginal previously used putAssumeCapacity. A
+    // re-entrant callback during dispatch could insert into the same map and
+    // consume the slot freed by the preceding remove, so a later restore ran
+    // without capacity and tripped the capacity assertion. The helpers now use a
+    // fallible put and grow on demand. Force a zero-spare-capacity map so the
+    // restore must allocate, and confirm it succeeds without assertion.
+    const Question = struct { marker: u32 };
+    const FakePeer = struct {
+        questions: std.AutoHashMap(u32, Question),
+        adopted_third_party_answers: std.AutoHashMap(u32, u32),
+    };
+
+    const allocator = std.testing.allocator;
+    var peer = FakePeer{
+        .questions = std.AutoHashMap(u32, Question).init(allocator),
+        .adopted_third_party_answers = std.AutoHashMap(u32, u32).init(allocator),
+    };
+    defer {
+        peer.questions.deinit();
+        peer.adopted_third_party_answers.deinit();
+    }
+
+    // Drive the questions map to exactly its available capacity so a restore has
+    // no spare slot and must grow (the scenario that broke putAssumeCapacity).
+    var next: u32 = 0;
+    while (peer.questions.unmanaged.available > 0) : (next += 1) {
+        try peer.questions.put(next, .{ .marker = next });
+    }
+    try std.testing.expectEqual(@as(u32, 0), peer.questions.unmanaged.available);
+
+    const restore_question = peer_return_orchestration.restoreQuestionForReturnForPeerFn(FakePeer, Question);
+    restore_question(&peer, 9999, .{ .marker = 42 });
+    const restored = peer.questions.get(9999) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 42), restored.marker);
+
+    // Same for the adopted-answer map.
+    var next_adopted: u32 = 0;
+    while (peer.adopted_third_party_answers.unmanaged.available > 0) : (next_adopted += 1) {
+        try peer.adopted_third_party_answers.put(next_adopted, next_adopted);
+    }
+    try std.testing.expectEqual(@as(u32, 0), peer.adopted_third_party_answers.unmanaged.available);
+
+    const restore_adopted = peer_return_dispatch.restoreAdoptedAnswerOriginalForPeerFn(FakePeer);
+    restore_adopted(&peer, 8888, 77);
+    const restored_adopted = peer.adopted_third_party_answers.get(8888) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u32, 77), restored_adopted);
 }

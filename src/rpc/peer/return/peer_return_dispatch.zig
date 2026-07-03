@@ -3,6 +3,8 @@ const message = @import("../../../serialization/message.zig");
 const protocol = @import("../../wire/protocol.zig");
 const peer_return_frames = @import("./peer_return_frames.zig");
 
+const log = std.log.scoped(.rpc_peer);
+
 pub fn takeAdoptedAnswerOriginal(
     adopted_answers: *std.AutoHashMap(u32, u32),
     answer_id: u32,
@@ -30,7 +32,14 @@ pub fn restoreAdoptedAnswerOriginal(
     answer_id: u32,
     original_answer_id: u32,
 ) void {
-    adopted_answers.putAssumeCapacity(answer_id, original_answer_id);
+    // The mapping was removed via takeAdoptedAnswerOriginal before dispatch, so
+    // the slot is normally still free. Re-entrant callbacks during dispatch can
+    // insert into the same map and consume it, so restore with the fallible put
+    // and degrade gracefully on OOM instead of tripping putAssumeCapacity's
+    // capacity assertion.
+    adopted_answers.put(answer_id, original_answer_id) catch |err| {
+        log.warn("failed to restore adopted answer id={} on return error: {}", .{ answer_id, err });
+    };
 }
 
 pub fn restoreAdoptedAnswerOriginalForPeer(

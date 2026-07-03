@@ -191,6 +191,12 @@ pub fn handleJoin(
         return;
     };
 
+    // Enforce the join budget before allocating a ProvideTarget. make_target
+    // heap-allocates cloned transform ops for promised-answer targets, and a
+    // budget rejection propagates an error with no target in scope yet, so
+    // there is nothing to leak on that path.
+    try ensure_join_budget(peer, join_key_part, join.question_id);
+
     const resolved = resolve_target(peer, join.target) catch |err| {
         try send_return_exception(peer, join.question_id, @errorName(err));
         return;
@@ -213,8 +219,6 @@ pub fn handleJoin(
             return;
         }
     }
-
-    try ensure_join_budget(peer, join_key_part, join.question_id);
 
     const outcome = peer_join_state.insertJoinPart(
         JoinKeyPartType,
