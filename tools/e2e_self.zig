@@ -97,11 +97,29 @@ fn runSchema(
         return .{ .fail = 1 };
     }
 
-    const result = try std.process.run(allocator, io, .{
+    // Bound the client run with an absolute deadline so a hung client fails
+    // this one schema fast instead of burning the entire CI job timeout. A
+    // `.deadline` (rather than `.duration`) timeout is a single wall-clock
+    // bound across every internal read; a `.duration` would be a per-read
+    // idle timeout that a slow trickle of output could reset forever.
+    // std.process.run kills the child via its own `defer child.kill` when the
+    // deadline trips, surfacing the wait as error.Timeout.
+    const client_deadline: std.Io.Timeout = .{ .deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = std.Io.Duration.fromMilliseconds(client_timeout_ms),
+        .clock = .awake,
+    }) };
+    const result = std.process.run(allocator, io, .{
         .argv = &.{ client_bin, "--host", "127.0.0.1", "--port", port_text, "--schema", schema },
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
-    });
+        .timeout = client_deadline,
+    }) catch |err| switch (err) {
+        error.Timeout => {
+            std.debug.print("not ok - {s}: client timed out after {d}ms\n", .{ schema, client_timeout_ms });
+            return .{ .fail = 1 };
+        },
+        else => return err,
+    };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
