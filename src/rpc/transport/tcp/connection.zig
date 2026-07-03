@@ -83,6 +83,14 @@ pub const Connection = struct {
     /// uses `socketpair(2)`; Windows uses a loopback TCP pair.
     wake_fds: ?[2]std.posix.fd_t = null,
 
+    /// Serializes POSIX `wake()` (called from any thread) against the fd close
+    /// in `deinitNow` (owner thread). Without it a wake racing teardown reads
+    /// `wake_fds` just before deinit closes them and writes to a closed —
+    /// possibly kernel-recycled — descriptor. Uses `std.atomic.Mutex` (like the
+    /// transport's fd lock) rather than `std.Io.Mutex` because `wake()` may run
+    /// outside any io task; the critical sections are tiny so a spin is fine.
+    wake_mu: std.atomic.Mutex = .unlocked,
+
     /// Called on the run loop's thread when woken by `wake()`.
     /// Use this to drain a per-connection work queue on the correct thread.
     on_wake: ?*const fn (conn: *Connection) void = null,
@@ -194,6 +202,10 @@ pub const Connection = struct {
     /// the socket. Windows needs no channel: the run loop there waits on a
     /// timed condition (see `WinReadBridge`) that `wake()` signals
     /// directly.
+    fn lockWake(self: *Connection) void {
+        while (!self.wake_mu.tryLock()) std.atomic.spinLoopHint();
+    }
+
     pub fn enableWake(
         self: *Connection,
         on_wake: *const fn (conn: *Connection) void,
@@ -203,6 +215,14 @@ pub const Connection = struct {
             var fds: [2]std.posix.fd_t = undefined;
             if (std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds) != 0) {
                 return error.WakePipeCreateFailed;
+            }
+            self.lockWake();
+            defer self.wake_mu.unlock();
+            // Close a previously installed pair so a second enableWake does not
+            // leak the first socketpair.
+            if (self.wake_fds) |old| {
+                runtime_helpers.closeFd(self.io, .{ .handle = old[0] });
+                runtime_helpers.closeFd(self.io, .{ .handle = old[1] });
             }
             self.wake_fds = fds;
         }
@@ -220,6 +240,10 @@ pub const Connection = struct {
             self.win_read.mu.unlock(io);
             return;
         }
+        // Hold wake_mu across the write so deinitNow cannot close the fd
+        // mid-write (which could otherwise land on a kernel-recycled fd).
+        self.lockWake();
+        defer self.wake_mu.unlock();
         const fds = self.wake_fds orelse return;
         const pattern: []const u8 = &.{};
         const data: [1][]const u8 = .{pattern};
@@ -261,10 +285,16 @@ pub const Connection = struct {
         self.on_close = null;
         self.on_wake = null;
         self.observer = null;
-        if (self.wake_fds) |fds| {
-            runtime_helpers.closeFd(self.io, .{ .handle = fds[0] });
-            runtime_helpers.closeFd(self.io, .{ .handle = fds[1] });
-            self.wake_fds = null;
+        {
+            // Serialize with wake(): take wake_mu so no concurrent waker is
+            // mid-write when we close and null the fds.
+            self.lockWake();
+            defer self.wake_mu.unlock();
+            if (self.wake_fds) |fds| {
+                runtime_helpers.closeFd(self.io, .{ .handle = fds[0] });
+                runtime_helpers.closeFd(self.io, .{ .handle = fds[1] });
+                self.wake_fds = null;
+            }
         }
         self.transport.deinit();
         self.framer.deinit();
