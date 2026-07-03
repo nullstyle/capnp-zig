@@ -51,7 +51,25 @@ pub const Connection = struct {
     /// If close includes an error, `on_error` is dispatched first and then
     /// `on_close`. If a callback calls `deinit()`, cleanup is deferred until
     /// after `on_close` returns so the active callback stack can unwind.
+    ///
+    /// **Do not free the `Connection`'s memory from `on_close`.** `run()`
+    /// still dereferences `self` after `on_close` returns (unwinding the
+    /// callback stack and finishing deferred deinit), so destroying the
+    /// object here is a use-after-free. To free a heap-allocated
+    /// `Connection` as part of its own lifecycle, register `on_destroy`;
+    /// otherwise free it after `run()` returns.
     on_close: ?*const fn (conn: *Connection) void = null,
+    /// Called as the very last action of `run()`, after the run loop has
+    /// exited, `on_close` has fired, and internal state has been released.
+    /// This is the only callback from which it is safe to free the
+    /// `Connection`'s own memory: `run()` touches `self` no further once
+    /// `on_destroy` is invoked.
+    ///
+    /// When set, `run()` guarantees `deinit()` has run (idempotently) before
+    /// calling `on_destroy`, so the hook only needs to release the heap
+    /// allocation, e.g. `allocator.destroy(conn)`. Leave it null for
+    /// stack-allocated connections or when the owner frees after `run()`.
+    on_destroy: ?*const fn (conn: *Connection) void = null,
     callback_depth: usize = 0,
     deinit_requested: bool = false,
     deinitialized: bool = false,
@@ -303,7 +321,7 @@ pub const Connection = struct {
             if (self.on_close) |cb| {
                 self.invokeCloseCallback(cb);
             }
-            self.completeDeferredDeinit();
+            self.finishTeardown();
             return;
         };
 
@@ -312,7 +330,7 @@ pub const Connection = struct {
         } else self.runLoopShared();
 
         // Stop the writer thread before invoking on_close, since on_close
-        // may deinit/destroy the connection.
+        // may deinit the connection.
         self.transport.stopWriter();
 
         // Signal close to the owner (typically the Peer).
@@ -320,7 +338,22 @@ pub const Connection = struct {
         if (self.on_close) |cb| {
             self.invokeCloseCallback(cb);
         }
+        self.finishTeardown();
+    }
+
+    /// Final teardown of `run()`: complete any deferred deinit, then hand
+    /// the (possibly heap-allocated) object to `on_destroy`. Nothing may
+    /// touch `self` after `on_destroy` returns, because the hook may free
+    /// the memory — so this is intentionally the last statement of `run()`.
+    fn finishTeardown(self: *Connection) void {
         self.completeDeferredDeinit();
+        if (self.on_destroy) |destroy| {
+            // Guarantee internal state is released even if no callback
+            // called deinit(). deinitNow is idempotent, so this is safe
+            // whether or not a deferred deinit already ran above.
+            self.deinitNow(false);
+            destroy(self);
+        }
     }
 
     /// The POSIX/freestanding read loop: optional poll-based readiness for
@@ -357,7 +390,7 @@ pub const Connection = struct {
                             events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
                             break;
                         }
-                        if (self.on_tick) |cb| cb(self);
+                        if (self.on_tick) |cb| self.invokeTickWakeCallback(cb);
                         if (self.deinit_requested) break;
                         continue;
                     }
@@ -370,7 +403,8 @@ pub const Connection = struct {
                                 var wake_stream = std.Io.net.Stream{ .socket = .{ .handle = wake_fds[0], .address = undefined } };
                                 _ = wake_stream.read(self.io, &bufs) catch {};
                             }
-                            if (self.on_wake) |cb| cb(self);
+                            if (self.on_wake) |cb| self.invokeTickWakeCallback(cb);
+                            if (self.deinit_requested) break;
                         }
                         // POLLNVAL means the fd is invalid — break out of the run loop.
                         if (fds_buf[0].revents & poll_nval_mask != 0) {
@@ -490,7 +524,8 @@ pub const Connection = struct {
             }
 
             if (woke) {
-                if (self.on_wake) |cb| cb(self);
+                if (self.on_wake) |cb| self.invokeTickWakeCallback(cb);
+                if (self.deinit_requested) break;
             }
 
             const r = outcome orelse {
@@ -501,7 +536,7 @@ pub const Connection = struct {
                     events.emitTimeout(self.observer, .tcp, .unknown, .idle_connection, null);
                     break;
                 }
-                if (self.on_tick) |cb| cb(self);
+                if (self.on_tick) |cb| self.invokeTickWakeCallback(cb);
                 if (self.deinit_requested) break;
                 continue;
             };
@@ -688,6 +723,20 @@ pub const Connection = struct {
     }
 
     fn invokeCloseCallback(
+        self: *Connection,
+        cb: *const fn (conn: *Connection) void,
+    ) void {
+        self.callback_depth += 1;
+        defer self.callback_depth -= 1;
+        cb(self);
+    }
+
+    /// Invoke `on_tick`/`on_wake` under callback-depth accounting so that a
+    /// `deinit()` from inside them is deferred (like every other callback)
+    /// rather than freeing state — including, on Windows, the `read_buf`
+    /// targeted by an in-flight concurrent read — out from under the loop.
+    /// Callers must check `deinit_requested` afterwards and break the loop.
+    fn invokeTickWakeCallback(
         self: *Connection,
         cb: *const fn (conn: *Connection) void,
     ) void {

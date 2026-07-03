@@ -157,6 +157,7 @@ ci:
     zig build test --summary all
     just e2e-self
     just e2e-zig
+    zig build example-rpc
 
 # Complete local release preflight, including heavier CI build/regression jobs
 release-preflight:

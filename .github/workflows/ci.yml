@@ -57,6 +57,9 @@ jobs:
       - name: Self-interop e2e (zig client vs zig server, loopback)
         run: zig build e2e-self --summary all
 
+      - name: RPC ping-pong example (guards the connection teardown seam)
+        run: zig build example-rpc
+
   fmt-check:
     name: Format check
     runs-on: ubuntu-latest

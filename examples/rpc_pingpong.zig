@@ -29,17 +29,17 @@ fn onPeerError(peer: *rpc.peer.Peer, _: anyerror) void {
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
-fn onPeerClose(peer: *rpc.peer.Peer) void {
+/// Tear down a peer and its heap-allocated connection. Only safe to call
+/// after `conn.run()` has returned — freeing the connection from `on_close`
+/// (which fires *inside* `run()`) is a use-after-free. See the `on_close`
+/// / `on_destroy` docs on `Connection`.
+fn teardown(peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection) void {
     const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
-
+    _ = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
     peer.deinit();
     allocator.destroy(peer);
-
-    if (conn) |attached| {
-        attached.deinit();
-        allocator.destroy(attached);
-    }
+    conn.deinit();
+    allocator.destroy(conn);
 }
 
 // ---------------------------------------------------------------------------
@@ -48,12 +48,20 @@ fn onPeerClose(peer: *rpc.peer.Peer) void {
 
 fn serverThread(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
     const conn = listener.accept() catch return;
-    const peer_ptr = conn.allocator.create(rpc.peer.Peer) catch return;
-    peer_ptr.* = rpc.peer.Peer.init(conn.allocator, conn);
+    const allocator = conn.allocator;
+    const peer_ptr = allocator.create(rpc.peer.Peer) catch {
+        conn.deinit();
+        allocator.destroy(conn);
+        return;
+    };
+    peer_ptr.* = rpc.peer.Peer.init(allocator, conn);
 
-    _ = PingPong.setBootstrap(peer_ptr, server) catch return;
-    peer_ptr.start(onPeerError, onPeerClose);
-    conn.run();
+    if (PingPong.setBootstrap(peer_ptr, server)) |_| {
+        peer_ptr.start(onPeerError, null);
+        conn.run();
+    } else |_| {}
+
+    teardown(peer_ptr, conn);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,15 +173,17 @@ fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) 
         return;
     };
     peer_ptr.* = rpc.peer.Peer.init(allocator, conn);
-    peer_ptr.start(onPeerError, onPeerClose);
+    peer_ptr.start(onPeerError, null);
 
-    _ = PingPong.Client.fromBootstrap(peer_ptr, state, onBootstrap) catch |err| {
+    if (PingPong.Client.fromBootstrap(peer_ptr, state, onBootstrap)) |_| {
+        conn.run();
+    } else |err| {
         state.err = err;
         state.done = true;
-        return;
-    };
+    }
 
-    conn.run();
+    // Safe only after run() has returned; see teardown()'s doc comment.
+    teardown(peer_ptr, conn);
 }
 
 // ---------------------------------------------------------------------------
