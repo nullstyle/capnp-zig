@@ -51,10 +51,11 @@ pub const Router = struct {
         self: Router,
         owner: EngineOwner,
         conn: *quic_zig.Connection,
+        now_us: u64,
     ) !void {
         switch (self.mode) {
             .baseline => try self.baseline.service(owner.baseline(), conn),
-            .native => try self.native.service(owner.native(), conn),
+            .native => try self.native.service(owner.native(), conn, now_us),
         }
     }
 };

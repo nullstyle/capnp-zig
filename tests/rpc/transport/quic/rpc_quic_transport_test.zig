@@ -1218,6 +1218,16 @@ test "quic native options reject unusable budgets with specific errors" {
         },
     }));
 
+    try std.testing.expectError(error.NativeDataStreamDeadlineRequired, quic.serverConfigFromOptions(std.testing.allocator, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = "cert",
+        .tls_key_pem = "key",
+        .mode = .native,
+        .native = .{
+            .data_stream_completion_deadline_us = 0,
+        },
+    }));
+
     try std.testing.expectError(error.NativeInlineFrameExceedsControlFrameLimit, quic.serverConfigFromOptions(std.testing.allocator, .{
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",

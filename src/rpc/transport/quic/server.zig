@@ -359,11 +359,11 @@ pub const Server = struct {
         if (!conn.handshakeDone()) {
             try conn.advance();
         }
-        try server_session.serviceMode(conn);
+        try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 
         try conn.tick(now_us);
-        try server_session.serviceMode(conn);
+        try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 
         if (conn.isClosed() and server_session.outboundEmpty()) {
@@ -604,8 +604,8 @@ pub const ServerSession = struct {
         Termination.internalError(self, err);
     }
 
-    fn serviceMode(self: *ServerSession, conn: *quic_zig.Connection) !void {
-        try mode_router.fromConnection(self).service(self.engineOwner(), conn);
+    fn serviceMode(self: *ServerSession, conn: *quic_zig.Connection, now_us: u64) !void {
+        try mode_router.fromConnection(self).service(self.engineOwner(), conn, now_us);
     }
 
     fn outboundEmpty(self: *ServerSession) bool {

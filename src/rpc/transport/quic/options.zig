@@ -27,6 +27,12 @@ pub const default_native_inline_frame_threshold: usize = 64 * 1024;
 pub const default_native_max_control_frame_bytes: usize = native_framer.rpc_header_bytes + default_native_inline_frame_threshold;
 pub const default_native_max_pending_data_streams: usize = 16;
 pub const default_native_max_pending_data_bytes: usize = default_max_message_bytes;
+/// Default wall-clock budget for completing an announced data-stream payload.
+/// Bounds slow-loris peers that announce a data stream then drip or withhold
+/// bytes: the completion window is (re)armed on each byte-delivering read, so a
+/// stream that makes no progress for this long is aborted. 30s matches the
+/// default QUIC idle-timeout order of magnitude while still bounding the stall.
+pub const default_native_data_stream_completion_deadline_us: u64 = 30 * 1_000_000;
 pub const default_quic_local_cid_len: u8 = 8;
 pub const default_quic_source_rate_window_us: u64 = 1_000_000;
 pub const default_quic_source_rate_table_capacity: u32 = 4096;
@@ -65,6 +71,13 @@ pub const NativeOptions = struct {
     /// Maximum queued outbound data-stream payload bytes before backpressure
     /// rejects `sendFrame`. The inbound side applies the same per-frame budget.
     max_pending_data_bytes: usize = default_native_max_pending_data_bytes,
+    /// Wall-clock budget (microseconds) for a peer to finish delivering an
+    /// announced inbound data-stream payload. The window is re-armed whenever a
+    /// read delivers bytes, so it bounds a stall — not the total transfer time.
+    /// `null` disables the deadline (unbounded, matching the pre-deadline
+    /// behavior). Guards against slow-loris peers that announce a large data
+    /// stream then drip or withhold bytes to pin the session open.
+    data_stream_completion_deadline_us: ?u64 = default_native_data_stream_completion_deadline_us,
 };
 
 pub const NativeConfigError = error{
@@ -73,6 +86,7 @@ pub const NativeConfigError = error{
     NativePendingDataByteLimitRequired,
     NativeInlineFrameExceedsControlFrameLimit,
     NativeControlFrameLimitExceedsWireLimit,
+    NativeDataStreamDeadlineRequired,
 };
 
 pub const ServerQlogCallback = quic_zig.QlogCallback;
@@ -292,4 +306,7 @@ fn validateNativeOptions(
         if (required_control > native.max_control_frame_bytes) return error.NativeInlineFrameExceedsControlFrameLimit;
     }
     if (native.max_control_frame_bytes > std.math.maxInt(u32)) return error.NativeControlFrameLimitExceedsWireLimit;
+    if (native.data_stream_completion_deadline_us) |deadline| {
+        if (deadline == 0) return error.NativeDataStreamDeadlineRequired;
+    }
 }

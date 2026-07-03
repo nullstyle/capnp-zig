@@ -29,15 +29,27 @@ pub fn Access(comptime Connection: type) type {
         }
 
         pub fn processNativeControlFrames(conn: *Connection) !void {
+            try processNativeControlFramesAt(conn, 0);
+        }
+
+        pub fn processNativeControlFramesAt(conn: *Connection, now_us: u64) !void {
             const active = Hooks.activeQuicConn(conn) orelse return error.ConnectionNotReady;
-            try conn.native.processControlFrames(Hooks.nativeOwner(conn), active);
+            try conn.native.processControlFrames(Hooks.nativeOwner(conn), active, now_us);
         }
 
         pub fn startNativePendingData(
             conn: *Connection,
             data: native_framer.DataRpc,
         ) !void {
-            try conn.native.startPendingData(Hooks.nativeOwner(conn), data);
+            try startNativePendingDataAt(conn, data, 0);
+        }
+
+        pub fn startNativePendingDataAt(
+            conn: *Connection,
+            data: native_framer.DataRpc,
+            now_us: u64,
+        ) !void {
+            try conn.native.startPendingData(Hooks.nativeOwner(conn), data, now_us);
         }
 
         pub fn resetNativeInbound(

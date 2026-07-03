@@ -35,7 +35,7 @@ pub const NativePendingData = native_pending_data.PendingData;
 
 fn isNativeFrameError(err: anyerror) bool {
     return switch (err) {
-        error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory => true,
+        error.InvalidFrame, error.FrameTooLarge, error.OutOfMemory, error.DataStreamTimeout => true,
         else => false,
     };
 }
@@ -56,6 +56,9 @@ pub const NativeEngine = struct {
     outbound: NativeOutboundQueue,
     next_in_sequence: u64 = 0,
     pending_data: ?NativePendingData = null,
+    /// Wall-clock stall budget for an announced inbound data stream, or `null`
+    /// when disabled. See `NativeOptions.data_stream_completion_deadline_us`.
+    data_stream_completion_deadline_us: ?u64 = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -76,6 +79,7 @@ pub const NativeEngine = struct {
                 max_outbound_queue_bytes,
                 native_options,
             ),
+            .data_stream_completion_deadline_us = native_options.data_stream_completion_deadline_us,
         };
     }
 
@@ -119,6 +123,7 @@ pub const NativeEngine = struct {
         self: *NativeEngine,
         owner: Owner,
         conn: *quic_zig.Connection,
+        now_us: u64,
     ) !void {
         if (!try self.ensureControlStream(owner.role, conn)) return;
         if (!try self.flushPreamble(conn)) return;
@@ -130,7 +135,7 @@ pub const NativeEngine = struct {
             }
             return err;
         };
-        self.processControlFrames(owner, conn) catch |err| {
+        self.processControlFrames(owner, conn, now_us) catch |err| {
             if (isNativeFrameError(err)) {
                 owner.terminate_frame_error(owner.ptr, err);
                 return;
@@ -221,10 +226,11 @@ pub const NativeEngine = struct {
         self: *NativeEngine,
         owner: Owner,
         conn: *quic_zig.Connection,
+        now_us: u64,
     ) !void {
         while (!owner.is_closing(owner.ptr)) {
             if (self.pending_data != null) {
-                if (!try self.readPendingData(owner, conn)) return;
+                if (!try self.readPendingData(owner, conn, now_us)) return;
                 continue;
             }
 
@@ -244,8 +250,8 @@ pub const NativeEngine = struct {
                 },
                 .data_rpc => |data| {
                     try self.ensureRpcSequence(data.sequence);
-                    try self.startPendingData(owner, data);
-                    if (!try self.readPendingData(owner, conn)) return;
+                    try self.startPendingData(owner, data, now_us);
+                    if (!try self.readPendingData(owner, conn, now_us)) return;
                 },
             }
         }
@@ -260,6 +266,7 @@ pub const NativeEngine = struct {
         self: *NativeEngine,
         owner: Owner,
         data: native_framer.DataRpc,
+        now_us: u64,
     ) !void {
         try native_pending_data.start(
             owner.allocator,
@@ -268,6 +275,8 @@ pub const NativeEngine = struct {
             self.outbound.max_pending_data_bytes,
             &self.pending_data,
             data,
+            now_us,
+            self.data_stream_completion_deadline_us,
         );
     }
 
@@ -275,8 +284,14 @@ pub const NativeEngine = struct {
         self: *NativeEngine,
         owner: Owner,
         conn: *quic_zig.Connection,
+        now_us: u64,
     ) !bool {
-        const bytes = (try native_pending_data.readComplete(&self.pending_data, conn)) orelse {
+        const bytes = (try native_pending_data.readComplete(
+            &self.pending_data,
+            conn,
+            now_us,
+            self.data_stream_completion_deadline_us,
+        )) orelse {
             return self.pending_data == null;
         };
         defer owner.allocator.free(bytes);

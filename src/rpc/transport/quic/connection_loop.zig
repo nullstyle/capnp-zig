@@ -84,12 +84,12 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
 
     now_us = driver.nowUs();
     try advanceActive(driver);
-    try serviceModeStreams(owner, driver);
+    try serviceModeStreams(owner, driver, now_us);
     try datagram_io.drainOutgoingDatagrams(driver, owner.udp_tx_buf, now_us);
 
     now_us = driver.nowUs();
     try tickActive(driver, now_us);
-    try serviceModeStreams(owner, driver);
+    try serviceModeStreams(owner, driver, now_us);
     try datagram_io.drainOutgoingDatagrams(driver, owner.udp_tx_buf, now_us);
 
     if (driver.reapClosed()) {
@@ -136,7 +136,7 @@ fn tickActive(driver: endpoint_mod.EndpointDriver, now_us: u64) !void {
     try conn.tick(now_us);
 }
 
-fn serviceModeStreams(owner: Owner, driver: endpoint_mod.EndpointDriver) !void {
+fn serviceModeStreams(owner: Owner, driver: endpoint_mod.EndpointDriver, now_us: u64) !void {
     const conn = driver.quicConnection() orelse return;
-    try owner.selected_mode(owner.ptr).service(owner.engine_owner(owner.ptr), conn);
+    try owner.selected_mode(owner.ptr).service(owner.engine_owner(owner.ptr), conn, now_us);
 }

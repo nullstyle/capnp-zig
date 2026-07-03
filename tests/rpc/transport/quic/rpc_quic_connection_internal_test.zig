@@ -263,6 +263,49 @@ test "QUIC native validates data stream references and budgets" {
     try std.testing.expectEqual(@as(usize, 4), conn.native.pending_data.?.bytes.len);
 }
 
+test "QUIC native aborts a stalled announced data stream at the completion deadline" {
+    const deadline_us: u64 = 1_000;
+
+    var conn = try initTestNativeClient(std.testing.allocator, .{
+        .inline_frame_threshold = 1,
+        .max_control_frame_bytes = 64,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 64,
+        .data_stream_completion_deadline_us = deadline_us,
+    });
+    defer conn.deinit();
+
+    conn.native.hello_received = true;
+
+    // Announce a peer-initiated (server) unidirectional data stream at t=0 but
+    // never open or feed it: the buffer is allocated (std.testing.allocator)
+    // and the completion deadline is armed.
+    try TestAccess.startNativePendingDataAt(&conn, .{
+        .sequence = 0,
+        .stream_id = 3,
+        .length = 8,
+    }, 0);
+    try std.testing.expect(conn.native.pending_data != null);
+    try std.testing.expectEqual(@as(?u64, deadline_us), conn.native.pending_data.?.deadline_us);
+
+    // Before the deadline the stream is still pending, not aborted.
+    try TestAccess.processNativeControlFramesAt(&conn, deadline_us - 1);
+    try std.testing.expect(conn.native.pending_data != null);
+
+    // At/after the deadline with no progress the session is aborted with a
+    // protocol close and the pending buffer is freed (no std.testing.allocator
+    // leak). service() maps the timeout onto terminate_frame_error, so drive
+    // that same path here.
+    try std.testing.expectError(error.DataStreamTimeout, TestAccess.processNativeControlFramesAt(&conn, deadline_us + 1));
+    TestAccess.terminateFrameError(&conn, error.DataStreamTimeout);
+
+    try std.testing.expect(conn.native.pending_data == null);
+    try std.testing.expect(conn.isClosing());
+    const status = conn.closeStatus().?;
+    try std.testing.expectEqual(TestAccess.ApplicationCloseCode.protocol_error, status.code);
+    try std.testing.expectEqual(@as(?anyerror, error.DataStreamTimeout), status.err);
+}
+
 test "QUIC native frame errors record typed terminal close status" {
     const Harness = struct {
         const State = struct {
