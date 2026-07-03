@@ -202,6 +202,17 @@ pub const WorkerPool = struct {
         self.allocator.free(self.workers);
     }
 
+    /// Short fixed backoff after an accept() error, so a persistent failure
+    /// (e.g. fd exhaustion) cannot spin a worker at 100% CPU. Long enough to
+    /// keep the loop off a core, short enough not to delay recovery.
+    fn backoffAfterAcceptError(pool: *WorkerPool) void {
+        const backoff: std.Io.Clock.Duration = .{
+            .raw = .{ .nanoseconds = 20 * std.time.ns_per_ms },
+            .clock = .awake,
+        };
+        backoff.sleep(pool.io) catch {};
+    }
+
     fn workerMain(pool: *WorkerPool, worker_index: u32) void {
         var listener = Listener.initFd(
             pool.allocator,
@@ -213,18 +224,19 @@ pub const WorkerPool = struct {
         while (!pool.should_stop.load(.acquire)) {
             const conn_ptr = listener.accept() catch |err| {
                 if (pool.should_stop.load(.acquire)) break;
-                log.debug("worker {}: accept failed: {}", .{ worker_index, err });
+                // Back off before retrying: a persistent accept failure (fd
+                // exhaustion — EMFILE/ENFILE under a connection flood, each
+                // connection also costing a read buffer and a writer thread)
+                // would otherwise spin this worker at 100% CPU across every
+                // core, starving the very connections whose close would free
+                // the fds.
+                log.debug("worker {}: accept failed: {}, backing off", .{ worker_index, err });
+                pool.backoffAfterAcceptError();
                 continue;
             };
 
             // A shutdown nudge (see nudgeAcceptors) pops blocked accepts
             // with a throwaway connection; discard it and exit.
-            if (pool.should_stop.load(.acquire)) {
-                conn_ptr.deinit();
-                pool.allocator.destroy(conn_ptr);
-                break;
-            }
-
             if (pool.should_stop.load(.acquire)) {
                 destroyConnection(pool.allocator, conn_ptr);
                 break;
