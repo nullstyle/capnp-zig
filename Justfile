@@ -154,10 +154,23 @@ ci:
     zig build test-release-safe --summary all
     just ci-quic
     just src/rpc/check-rpc
+    just check-generated
     zig build test --summary all
     just e2e-self
     just e2e-zig
     zig build example-rpc
+
+# Regenerate every committed generated artifact and fail if any drifted from
+# the current generator/public API. Guards against the recurring "changed the
+# generator/API but forgot to regenerate the checked-in files" class that has
+# turned CI red more than once. Needs the `capnp` CLI.
+check-generated:
+    zig build
+    cd src/rpc && just gen-rpc
+    cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp
+    zig build api-snapshot
+    just fmt
+    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Complete local release preflight, including heavier CI build/regression jobs
 release-preflight:

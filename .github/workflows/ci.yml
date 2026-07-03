@@ -57,6 +57,17 @@ jobs:
         # this is the gate that keeps it that way.
         run: zig build check-api --summary all
 
+      - name: Vendor RPC schema sync (check-rpc)
+        if: runner.os == 'Linux'
+        run: just src/rpc/check-rpc
+
+      - name: Generated-artifact drift check
+        # Linux only (needs the capnp CLI). Regenerates every committed
+        # generated file + the API snapshot and fails if any drifted — the
+        # class of bug that turned this workflow red mid-sprint more than once.
+        if: runner.os == 'Linux'
+        run: just check-generated
+
       - name: Soak smoke (2s, loopback TCP)
         run: zig build soak -- --seconds 2
 
