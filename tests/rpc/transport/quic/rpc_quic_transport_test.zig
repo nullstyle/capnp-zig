@@ -651,6 +651,73 @@ test "quic native fanout server drives two sessions independently" {
     try std.testing.expectEqual(@as(usize, 1), server_state_b.messages.load(.acquire));
 }
 
+test "quic fanout server fires on_close for a live session on deinit" {
+    const allocator = std.testing.allocator;
+
+    const native_options = quic.NativeOptions{
+        .inline_frame_threshold = 128,
+        .max_control_frame_bytes = 256,
+        .max_pending_data_streams = 4,
+        .max_pending_data_bytes = 8192,
+    };
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 1,
+        .mode = .native,
+        .native = native_options,
+    });
+    var server_deinited = false;
+    defer if (!server_deinited) server.deinit();
+
+    const server_addr = server.getAddress();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .mode = .native,
+        .native = native_options,
+    });
+    defer client.deinit();
+
+    var client_state = QuicEndpointState{};
+    client.start(&client_state, captureQuicMessage, recordQuicError, recordQuicClose);
+
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+    };
+
+    try waitForFanoutSessions(&server, 1);
+
+    var server_state = QuicEndpointState{};
+    server.sessionAt(0).?.start(&server_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+
+    // Tear down the client thread, leaving the server session live and
+    // unreaped (we do not step the server afterwards).
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(usize, 1), server.sessionCount());
+    try std.testing.expectEqual(@as(usize, 0), server_state.closes.load(.acquire));
+
+    // Deinit the server while the session is still live: on_close must fire
+    // exactly once. Previously deinit dropped sessions with no close callback.
+    server.deinit();
+    server_deinited = true;
+
+    try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
+}
+
 test "quic native localhost streams large RPC data payload" {
     const allocator = std.testing.allocator;
     const frame = try buildCallFrameWithData(allocator, 0xD17A, 128 * 1024);

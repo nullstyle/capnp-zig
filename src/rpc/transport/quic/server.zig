@@ -87,6 +87,10 @@ pub const Server = struct {
         var i: usize = self.sessions.items.len;
         while (i > 0) {
             i -= 1;
+            // Fire on_close exactly once for every still-live session before
+            // dropping it, so tearing down the server with active sessions
+            // notifies their owners (matching connection_loop.run).
+            self.sessions.items[i].invokeCloseCallbackOnce();
             self.sessions.items[i].deinit(self.allocator);
         }
         self.sessions.deinit(self.allocator);
@@ -344,6 +348,12 @@ pub const Server = struct {
     }
 
     fn removeSessionAt(self: *Server, index: usize) void {
+        // Guarantee on_close fires exactly once for every session before it is
+        // dropped — mirroring connection_loop.run's unconditional close
+        // callback. invokeCloseCallbackOnce is idempotent (a session already
+        // flushed through flushClosingSession will not double-fire) and a
+        // no-op when no close callback is registered.
+        self.sessions.items[index].invokeCloseCallbackOnce();
         self.sessions.items[index].deinit(self.allocator);
         _ = self.sessions.swapRemove(index);
     }
@@ -533,10 +543,16 @@ pub const ServerSession = struct {
     }
 
     fn hasImmediateWork(self: *ServerSession, conn: *quic_zig.Connection) bool {
+        // Only report immediate work when there is actually something queued to
+        // send. The engine's hasImmediateWork returns true unconditionally once
+        // stream 0 is established (server role), so without this guard an idle
+        // established session reports immediate work forever — receiveWaitDuration
+        // then returns zero and Server.run() spins the socket at 100% CPU.
+        // Mirrors connection_loop.hasImmediateWork.
         if (!self.outboundEmpty()) {
             return mode_router.fromConnection(self).hasImmediateWork(.server, conn);
         }
-        return mode_router.fromConnection(self).hasImmediateWork(.server, conn);
+        return false;
     }
 
     fn invokeCloseCallbackOnce(self: *ServerSession) void {

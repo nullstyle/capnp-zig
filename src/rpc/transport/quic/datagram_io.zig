@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.rpc_quic);
 
 const endpoint_mod = @import("endpoint.zig");
 const wake_mod = @import("wake.zig");
@@ -6,6 +7,9 @@ const wake_mod = @import("wake.zig");
 pub const ReceiveResult = struct {
     received_datagram: bool = false,
     wake_drained: bool = false,
+    /// A datagram was received but dropped as a per-datagram fault (e.g.
+    /// truncation) rather than processed. The endpoint stays alive.
+    dropped_datagram: bool = false,
 };
 
 pub const ReceiveInput = struct {
@@ -41,7 +45,16 @@ pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
         error.Timeout => return result,
         else => return err,
     };
-    if (msg.flags.trunc) return error.DatagramTooLarge;
+    if (msg.flags.trunc) {
+        // A datagram larger than rx_buf was truncated. UDP is unauthenticated
+        // and spoofable, so a single oversized datagram from any host must not
+        // tear down the endpoint (and, for a fanout server, every session on
+        // it). Treat it as a per-datagram fault: drop it and keep serving.
+        // Socket-fatal errors still propagate via the switch above.
+        log.warn("dropping truncated UDP datagram (exceeds {d}-byte rx buffer)", .{input.rx_buf.len});
+        result.dropped_datagram = true;
+        return result;
+    }
     result.received_datagram = true;
 
     _ = try input.driver.handleDatagram(msg.data, msg.from, input.now_us);
