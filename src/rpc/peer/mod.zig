@@ -2059,14 +2059,25 @@ pub const Peer = struct {
         const bytes = try builder.finish();
         defer self.allocator.free(bytes);
 
+        // Capture before delivery: sendReturnFrameWithLoopback consumes the
+        // loopback_questions entry for this answer.
+        const is_loopback = self.loopback_questions.contains(answer_id);
         try self.sendReturnFrameWithLoopback(answer_id, bytes);
         cap_table.commitOutboundCapEffects(&self.caps, &effects);
         effects_committed = true;
 
-        const copy = try self.allocator.alloc(u8, bytes.len);
-        errdefer self.allocator.free(copy);
-        std.mem.copyForwards(u8, copy, bytes);
-        try self.recordResolvedAnswer(answer_id, copy);
+        // Loopback answers are delivered locally, are never referenced by a
+        // remote PromisedAnswer (the peer does not know our loopback question
+        // ids), and receive no Finish. Recording one would leak the frame
+        // until deinit and let a loopback id — allocated from our outbound
+        // counter — collide with a remote question id (both spaces start at 0),
+        // spuriously tripping DuplicateQuestionId against a compliant peer.
+        if (!is_loopback) {
+            const copy = try self.allocator.alloc(u8, bytes.len);
+            errdefer self.allocator.free(copy);
+            std.mem.copyForwards(u8, copy, bytes);
+            try self.recordResolvedAnswer(answer_id, copy);
+        }
     }
 
     /// Send a pre-built return frame, tracking outbound cap refs and recording
@@ -2081,10 +2092,14 @@ pub const Peer = struct {
         };
         try self.noteOutboundReturnCapRefs(ret);
         self.clearSendResultsRouting(ret.answer_id);
+        // Capture before delivery consumes the loopback_questions entry.
+        const is_loopback = self.loopback_questions.contains(ret.answer_id);
         try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
         rollback_outbound_refs = false;
 
-        if (ret.tag == .results) {
+        // See sendReturnResults: loopback answers must not be recorded (no
+        // Finish clears them; their ids collide with the remote's id space).
+        if (ret.tag == .results and !is_loopback) {
             const copy = try self.allocator.alloc(u8, frame.len);
             errdefer self.allocator.free(copy);
             std.mem.copyForwards(u8, copy, frame);

@@ -117,6 +117,46 @@ test "Finish cancelling a queued pipelined call sends Return(canceled)" {
     try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
 }
 
+test "loopback answer with results is not recorded in resolved_answers" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const Handlers = struct {
+        fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            // Return real results (an empty struct) so that, before the fix,
+            // the loopback answer would be recorded in resolved_answers.
+            try p.sendReturnEmptyStruct(call.question_id);
+        }
+        fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const returned: *bool = @ptrCast(@alignCast(ctx));
+            returned.* = true;
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+        }
+    };
+
+    var server_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &server_ctx, .on_call = Handlers.onCall });
+
+    var returned = false;
+    // A call whose resolved target is a local export is delivered via loopback.
+    _ = try peer.sendCallResolved(
+        .{ .exported = .{ .id = export_id } },
+        0x99,
+        0,
+        &returned,
+        null,
+        Handlers.onReturn,
+    );
+
+    try std.testing.expect(returned);
+    // The loopback answer must not linger in resolved_answers: no Finish ever
+    // clears it, and its id (from our outbound counter) would otherwise
+    // collide with the remote's inbound question-id space.
+    try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
+}
+
 test "cancelling one queued call preserves send order of the survivors (E-order)" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);
