@@ -962,6 +962,12 @@ pub const Message = struct {
         const far = decodeFarPointer(pointer_word);
         const pad = try self.resolveFarLandingPad(far);
 
+        // Charge the landing-pad words (1 for a single far, 2 for a double far)
+        // against the traversal budget so far-pointer hops are accounted for
+        // rather than free — otherwise a message can traverse extra words per
+        // hop without touching the amplification cap.
+        try consumeWords(remaining_words, if (far.landing_pad_is_double) 2 else 1);
+
         if (!far.landing_pad_is_double) {
             const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
             return self.validatePointer(far.segment_id, pad.landing_pos, landing_word, remaining_words, remaining_inline_composite_elements, nesting);
