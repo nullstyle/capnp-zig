@@ -403,3 +403,81 @@ test "encodeCallPayloadCaps rolls back applied callbacks when a later callback f
     try std.testing.expectEqual(@as(usize, 1), ctx.rollbacks);
     try std.testing.expectEqual(@as(u32, 40), ctx.rolled_id.?);
 }
+
+test "InboundCapTable.clone owns promised answers independently of the frame" {
+    const allocator = std.testing.allocator;
+
+    const ops = [_]protocol.PromisedAnswerOp{
+        .{ .tag = .noop, .pointer_index = 0 },
+        .{ .tag = .getPointerField, .pointer_index = 3 },
+    };
+
+    // Build a Return frame whose cap table has a receiverAnswer (promised)
+    // entry. Its transform reads directly out of these frame bytes.
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var ret = try builder.beginReturn(7, .results);
+    var any_payload = try ret.payloadTyped();
+    var any = try any_payload.initContent();
+    try any.setCapability(.{ .id = 0 });
+
+    var cap_list = try ret.initCapTableTyped(1);
+    const entry0 = try cap_list.get(0);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry0, 88, &ops);
+
+    // Copy the finished frame into a buffer we can free on demand to simulate
+    // the transport freeing the frame after the on_message callback returns.
+    const finished = try builder.finish();
+    const frame = try allocator.dupe(u8, finished);
+    allocator.free(finished);
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    // Decode the frame and build the frame-backed inbound table, then clone.
+    var clone = blk: {
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+
+        const ret_decoded = try decoded.asReturn();
+        const payload = ret_decoded.results orelse return error.MissingPayload;
+
+        var inbound = try cap_table.InboundCapTable.init(allocator, payload.cap_table, &caps);
+        defer inbound.deinit();
+
+        // Sanity: the original resolves the promised answer from the frame.
+        const original_resolved = try inbound.get(0);
+        switch (original_resolved) {
+            .promised => |pa| try std.testing.expectEqual(@as(u32, 88), pa.question_id),
+            else => return error.UnexpectedCapType,
+        }
+
+        break :blk try inbound.clone();
+    };
+    defer clone.deinit();
+
+    // Free the frame bytes NOW, while the clone is still alive. The original
+    // inbound table and decoded message are already gone. A shallow clone would
+    // read freed memory here; the owned clone must survive.
+    allocator.free(frame);
+
+    const cloned_resolved = try clone.get(0);
+    switch (cloned_resolved) {
+        .promised => |pa| {
+            try std.testing.expectEqual(@as(u32, 88), pa.question_id);
+            try std.testing.expectEqual(@as(u32, ops.len), pa.transform.len());
+
+            const op0 = try pa.transform.get(0);
+            try std.testing.expectEqual(protocol.PromisedAnswerOpTag.noop, op0.tag);
+
+            const op1 = try pa.transform.get(1);
+            try std.testing.expectEqual(protocol.PromisedAnswerOpTag.getPointerField, op1.tag);
+            try std.testing.expectEqual(@as(u16, 3), op1.pointer_index);
+        },
+        else => return error.UnexpectedCapType,
+    }
+
+    // `clone.deinit()` (via defer) and the testing allocator together assert the
+    // owned promised storage is freed exactly once with no leak or double-free.
+}

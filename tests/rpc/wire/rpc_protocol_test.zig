@@ -449,10 +449,13 @@ test "RPC resolve preserves attached_fd on cap descriptor" {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
+    // rpc.capnp declares `attachedFd :UInt8 = 0xff`, so the logical fd is stored
+    // XOR 0xff on the wire. fd 3 must serialize to raw byte 0xfc for a
+    // conformant peer to decode it back to 3.
     const descriptor = protocol.CapDescriptor{
         .tag = .senderHosted,
         .id = 99,
-        .attached_fd = 7,
+        .attached_fd = 3,
     };
 
     try builder.buildResolveCap(10, descriptor);
@@ -470,7 +473,47 @@ test "RPC resolve preserves attached_fd on cap descriptor" {
     const cap = resolve.cap orelse return error.MissingResolveCap;
     try std.testing.expectEqual(protocol.CapDescriptorTag.senderHosted, cap.tag);
     try std.testing.expectEqual(@as(u32, 99), cap.id.?);
-    try std.testing.expectEqual(@as(u8, 7), cap.attached_fd.?);
+    try std.testing.expectEqual(@as(u8, 3), cap.attached_fd.?);
+
+    // Assert the SPEC wire encoding: the raw attachedFd byte must be the
+    // XOR-0xff form of the logical fd, i.e. 3 ^ 0xff == 0xfc.
+    const message_root = try decoded.msg.getRootStruct();
+    const resolve_reader = rpc_capnp.Resolve.Reader.wrap(try message_root.readStruct(0));
+    const cap_reader = try resolve_reader.getCap();
+    const raw_fd_byte = cap_reader._reader.readU8(2);
+    try std.testing.expectEqual(@as(u8, 0xfc), raw_fd_byte);
+}
+
+test "RPC cap descriptor with no attached_fd stays at spec default" {
+    const allocator = std.testing.allocator;
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    // No attachedFd set: the field must stay at its schema default, which is a
+    // raw wire byte of 0x00 (0xff ^ 0xff), and must decode back to "no fd".
+    const descriptor = protocol.CapDescriptor{
+        .tag = .senderHosted,
+        .id = 5,
+    };
+
+    try builder.buildResolveCap(11, descriptor);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+
+    const resolve = try decoded.asResolve();
+    const cap = resolve.cap orelse return error.MissingResolveCap;
+    try std.testing.expect(cap.attached_fd == null);
+
+    const message_root = try decoded.msg.getRootStruct();
+    const resolve_reader = rpc_capnp.Resolve.Reader.wrap(try message_root.readStruct(0));
+    const cap_reader = try resolve_reader.getCap();
+    const raw_fd_byte = cap_reader._reader.readU8(2);
+    try std.testing.expectEqual(@as(u8, 0x00), raw_fd_byte);
 }
 
 test "RPC resolve encodes thirdPartyHosted cap descriptor" {

@@ -73,8 +73,12 @@ pub const CapDescriptor = struct {
             },
             .none => {},
         }
-        const fd_value = reader.readU8(CAP_DESCRIPTOR_ATTACHED_FD_OFFSET_BYTES);
-        if (fd_value != 0) {
+        // attachedFd carries a `= 0xff` schema default, so the wire byte is the
+        // logical fd XOR 0xff. Route through the generated accessor so we apply
+        // the default correctly. The decoded 0xff sentinel means "no fd".
+        const generated = rpc_capnp.CapDescriptor.Reader.wrap(reader);
+        const fd_value = try generated.getAttachedFd();
+        if (fd_value != NO_ATTACHED_FD) {
             attached_fd = fd_value;
         }
         return .{
@@ -251,7 +255,11 @@ pub const CAP_DESCRIPTOR_POINTER_WORDS: u16 = 1;
 const CAP_DESCRIPTOR_DISCRIMINANT_OFFSET_BYTES: usize = 0;
 const CAP_DESCRIPTOR_ID_OFFSET: u32 = 1;
 const CAP_DESCRIPTOR_PTR: usize = 0;
-const CAP_DESCRIPTOR_ATTACHED_FD_OFFSET_BYTES: usize = 2;
+
+/// Sentinel decoded `attachedFd` value meaning "no file descriptor attached".
+/// Mirrors the `attachedFd :UInt8 = 0xff` default in rpc.capnp: a field left at
+/// its default decodes to this value (raw wire byte 0x00 XOR 0xff).
+pub const NO_ATTACHED_FD: u8 = 0xff;
 
 const THIRD_PARTY_CAP_DESCRIPTOR_DATA_WORDS: u16 = 1;
 const THIRD_PARTY_CAP_DESCRIPTOR_POINTER_WORDS: u16 = 1;
@@ -664,6 +672,45 @@ pub const PromisedAnswerTransform = struct {
     }
 };
 
+/// A `PromisedAnswer` serialized into a standalone, heap-owned Cap'n Proto
+/// message. Reading `.promised` yields a `PromisedAnswer` whose transform list
+/// is backed by this owned message rather than the frame it was decoded from,
+/// so it stays valid after the original frame bytes are freed.
+///
+/// Callers own the value and must call `deinit`.
+pub const OwnedPromisedAnswerMessage = struct {
+    bytes: []const u8,
+    msg: message.Message,
+
+    /// Serialize `source` (its question ID and transform ops) into a fresh
+    /// standalone message. `source` may reference frame-backed wire memory;
+    /// after this returns the result is fully independent of it.
+    pub fn init(allocator: std.mem.Allocator, source: PromisedAnswer) !OwnedPromisedAnswerMessage {
+        var builder = message.MessageBuilder.init(allocator);
+        defer builder.deinit();
+
+        var promised_builder = try rpc_capnp.PromisedAnswer.Builder.init(&builder);
+        try writePromisedAnswerGenerated(&promised_builder, source);
+
+        const bytes = try builder.toBytes();
+        errdefer allocator.free(bytes);
+
+        const msg = try message.Message.init(allocator, bytes, .{});
+        return .{ .bytes = bytes, .msg = msg };
+    }
+
+    pub fn deinit(self: *OwnedPromisedAnswerMessage, allocator: std.mem.Allocator) void {
+        self.msg.deinit();
+        allocator.free(self.bytes);
+    }
+
+    /// A frame-independent `PromisedAnswer` reading from the owned message.
+    pub fn promised(self: *const OwnedPromisedAnswerMessage) !PromisedAnswer {
+        const root = try self.msg.getRootStruct();
+        return PromisedAnswer.fromReader(root);
+    }
+};
+
 pub const PromisedAnswerOp = struct {
     tag: PromisedAnswerOpTag,
     pointer_index: u16,
@@ -746,9 +793,10 @@ fn writeCapDescriptorGenerated(builder: *rpc_capnp.CapDescriptor.Builder, descri
     }
 
     if (descriptor.attached_fd) |fd| {
-        // Preserve legacy protocol semantics for attached_fd while resolve encode
-        // is only partially migrated to generated builders.
-        builder._builder.writeU8(CAP_DESCRIPTOR_ATTACHED_FD_OFFSET_BYTES, fd);
+        // attachedFd carries a `= 0xff` schema default, so it is stored XOR 0xff
+        // on the wire. Route through the generated setter so a conformant peer
+        // decodes the fd correctly (e.g. fd 3 stored as raw byte 0xfc).
+        try builder.setAttachedFd(fd);
     }
 }
 
