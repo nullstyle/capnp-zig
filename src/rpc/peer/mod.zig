@@ -2093,8 +2093,22 @@ pub const Peer = struct {
     }
 
     /// Send a return with an exception for a previously received call.
+    ///
+    /// A failed answer carries no results, so any pipelined calls queued
+    /// against it can never be satisfied. After sending the exception this
+    /// drains those queued calls, failing each with its own Return so the
+    /// exactly-one-Return-per-call invariant holds and the caller's question
+    /// table can drain (a compliant peer otherwise hangs forever).
     pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
         self.assertThreadAffinity();
+        try self.sendReturnExceptionNoDrain(answer_id, reason);
+        self.failQueuedPromisedCalls(answer_id, reason);
+    }
+
+    /// Send an exception Return without draining queued pipelined children.
+    /// Used internally where the queued-call drain must not re-enter (e.g.
+    /// while iterating the live `pending_promises` map).
+    fn sendReturnExceptionNoDrain(self: *Peer, answer_id: u32, reason: []const u8) !void {
         try peer_return_dispatch.sendReturnExceptionForPeer(
             Peer,
             self,
@@ -2103,6 +2117,63 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
+    }
+
+    /// Fail and drain every pipelined call queued against `answer_id` (and,
+    /// transitively, calls pipelined on those). Each queued call is sent a
+    /// Return(exception) and has its inbound caps released.
+    ///
+    /// Drains iteratively via an explicit worklist rather than recursing, so
+    /// a hostile peer cannot exhaust the stack with a deep pipelined chain.
+    /// The caller must NOT be iterating the live `pending_promises` map when
+    /// invoking this (it fetchRemoves buckets); callers that resolve a
+    /// detached bucket, or fail a parent answer outside iteration, are safe.
+    fn failQueuedPromisedCalls(self: *Peer, answer_id: u32, reason: []const u8) void {
+        var worklist = std.ArrayList(u32).empty;
+        defer worklist.deinit(self.allocator);
+        // Best-effort under OOM: if we cannot even seed the worklist the
+        // queued children leak rather than crash; report and bail.
+        worklist.append(self.allocator, answer_id) catch |err| {
+            self.reportNonfatalError(err);
+            return;
+        };
+        while (worklist.pop()) |aid| {
+            var pending = self.pending_promises.fetchRemove(aid) orelse continue;
+            defer pending.value.deinit(self.allocator);
+            for (pending.value.items) |*pending_call| {
+                defer pending_call.caps.deinit();
+                defer self.allocator.free(pending_call.frame);
+
+                var decoded = protocol.DecodedMessage.init(self.allocator, pending_call.frame) catch |err| {
+                    self.reportNonfatalError(err);
+                    continue;
+                };
+                defer decoded.deinit();
+                if (decoded.tag != .call) continue;
+                const call = decoded.asCall() catch |err| {
+                    self.reportNonfatalError(err);
+                    continue;
+                };
+
+                // Non-draining send: descendants are handled by the worklist,
+                // not by re-entering this drain.
+                self.sendReturnExceptionNoDrain(call.question_id, reason) catch |err| {
+                    self.reportNonfatalError(err);
+                };
+                self.releaseInboundCaps(&pending_call.caps) catch |err| {
+                    self.reportNonfatalError(err);
+                };
+                worklist.append(self.allocator, call.question_id) catch |err| {
+                    // Cannot enqueue this child's descendants for draining;
+                    // they leak under memory pressure. Report and continue.
+                    self.reportNonfatalError(err);
+                };
+            }
+        }
+    }
+
+    fn reportNonfatalError(self: *Peer, err: anyerror) void {
+        peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
     }
 
     /// Send a return with an empty struct result (0 data words, 0 pointers).
@@ -2863,12 +2934,24 @@ pub const Peer = struct {
                     continue;
                 }
 
-                var pending_call = pending_list.swapRemove(idx);
+                // orderedRemove, not swapRemove: the surviving queued calls
+                // must keep send order so replay honors Cap'n Proto's E-order
+                // guarantee (calls to one target delivered in send order).
+                var pending_call = pending_list.orderedRemove(idx);
                 defer {
                     pending_call.caps.deinit();
                     self.allocator.free(pending_call.frame);
                 }
                 try self.releaseInboundCaps(&pending_call.caps);
+                // Spec: every Call receives exactly one Return, even when
+                // cancelled by a Finish. Send Return(canceled) so the caller's
+                // question entry can drain (a compliant peer keeps it reserved
+                // until this arrives) and shutdown can complete. Non-draining
+                // by construction (sendReturnTag does not touch
+                // pending_promises), so it is safe while iterating that map.
+                self.sendReturnTag(question_id, .canceled) catch |err| {
+                    self.reportNonfatalError(err);
+                };
                 canceled = true;
             }
 
@@ -2913,8 +2996,14 @@ pub const Peer = struct {
     fn hasKnownDisembargoTarget(self: *Peer, target: protocol.MessageTarget) bool {
         return switch (target.tag) {
             .importedCap => blk: {
-                const import_id = target.imported_cap orelse break :blk false;
-                break :blk self.caps.imports.contains(import_id);
+                // Per the RPC spec, MessageTarget.importedCap names an entry
+                // in the *sender's* import table — i.e. one of our exports. A
+                // senderLoopback disembargo issued after we resolve a promise
+                // export targets that export, so validate against the export
+                // table. (Also accept a matching import id for robustness
+                // against either addressing convention.)
+                const cap_id = target.imported_cap orelse break :blk false;
+                break :blk self.exports.contains(cap_id) or self.caps.imports.contains(cap_id);
             },
             .promisedAnswer => blk: {
                 const promised = target.promised_answer orelse break :blk false;
