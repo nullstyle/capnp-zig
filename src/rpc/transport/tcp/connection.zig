@@ -617,6 +617,21 @@ pub const Connection = struct {
     pub fn requestClose(self: *Connection) void {
         events.emitConnection(self.observer, .tcp, .unknown, .closing);
         self.transport.shutdown();
+        if (comptime builtin.target.os.tag == .windows) {
+            // On Windows the run loop parks on win_read.cond when it has no tick
+            // cadence, and a bare socket shutdown never unblocks the pending AFD
+            // receive (the reason runLoopWindows runs reads as cancellable
+            // io.concurrent tasks). Nudge the bridge — the same channel wake()
+            // uses — so the loop wakes, sees isClosing()==true at the top, and
+            // exits; the defer-cancel then reaps the in-flight read. Without
+            // this a cross-thread requestClose (e.g. WorkerPool shutdown against
+            // a silent connection) hangs until the kernel's multi-minute read
+            // timeout. Thread-safe via win_read.mu.
+            self.win_read.mu.lockUncancelable(self.io);
+            self.win_read.wake_requested = true;
+            self.win_read.cond.broadcast(self.io);
+            self.win_read.mu.unlock(self.io);
+        }
     }
 
     pub fn isClosing(self: *const Connection) bool {
