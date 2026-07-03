@@ -106,9 +106,10 @@ const ERROR_INVALID_FREE: u32 = 12;
 const DEFAULT_MAX_PEERS: usize = 128;
 const DEFAULT_MAX_OUTSTANDING_ALLOCATIONS: usize = 1024;
 const DEFAULT_MAX_OUTSTANDING_ALLOCATION_BYTES: usize = 32 * 1024 * 1024;
-const PEER_OUTGOING_SCRATCH_BYTES: usize = 1024 * 1024;
 const DEFAULT_PEER_OUTBOUND_COUNT_LIMIT: usize = 1024;
-const DEFAULT_PEER_OUTBOUND_BYTES_LIMIT: usize = PEER_OUTGOING_SCRATCH_BYTES;
+// Caps total outstanding outbound bytes per peer (frames not yet popped/freed),
+// enforced by HostPeer's outbound_bytes_limit.
+const DEFAULT_PEER_OUTBOUND_BYTES_LIMIT: usize = 1024 * 1024;
 
 const EXAMPLE_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const EXAMPLE_MAX_JSON_BYTES: usize = 1024 * 1024;
@@ -126,10 +127,6 @@ const PersonJson = struct {
 };
 
 const PeerState = struct {
-    const OUTGOING_SCRATCH_BYTES: usize = PEER_OUTGOING_SCRATCH_BYTES;
-
-    outgoing_storage: [OUTGOING_SCRATCH_BYTES]u8 = undefined,
-    outgoing_fba: std.heap.FixedBufferAllocator = undefined,
     host: HostPeer = undefined,
     last_popped: ?[]u8 = null,
     outstanding_host_call_frames: std.AutoHashMap(usize, u32) = undefined,
@@ -137,8 +134,13 @@ const PeerState = struct {
 
     fn init(self: *PeerState) !void {
         self.outstanding_host_call_frames = std.AutoHashMap(usize, u32).init(allocator);
-        self.outgoing_fba = std.heap.FixedBufferAllocator.init(&self.outgoing_storage);
-        self.host = HostPeer.initWithOutgoingAllocator(allocator, self.outgoing_fba.allocator());
+        // Outgoing frames are allocated from the reclaiming module allocator
+        // (wasm_allocator/page_allocator) rather than a fixed per-peer scratch
+        // buffer: a FixedBufferAllocator only reclaims on a full reset (when the
+        // peer is fully idle), so interleaved host-call traffic would fill it
+        // monotonically and wedge the peer with OutOfMemory. Total outstanding
+        // outbound bytes stay bounded by outbound_bytes_limit below.
+        self.host = HostPeer.init(allocator);
         errdefer self.host.deinit();
         errdefer self.outstanding_host_call_frames.deinit();
         self.host.setLimits(.{
@@ -167,12 +169,6 @@ const PeerState = struct {
         }
         self.outstanding_host_call_frames.deinit();
         self.host.deinit();
-    }
-
-    fn resetScratchIfIdle(self: *PeerState) void {
-        if (self.last_popped != null) return;
-        if (self.host.pendingOutgoingCount() != 0) return;
-        self.outgoing_fba.reset();
     }
 };
 
@@ -733,7 +729,6 @@ pub export fn capnp_peer_pop_out_frame(peer: u32, out_ptr_ptr: AbiPtr, out_len_p
             setError(ERROR_INVALID_ARG, @errorName(err));
             return 0;
         };
-        state.resetScratchIfIdle();
         return 0;
     };
 
@@ -780,7 +775,6 @@ pub export fn capnp_peer_pop_commit(peer: u32) void {
     if (state.last_popped) |frame| {
         state.host.freeFrame(frame);
         state.last_popped = null;
-        state.resetScratchIfIdle();
     }
 }
 
