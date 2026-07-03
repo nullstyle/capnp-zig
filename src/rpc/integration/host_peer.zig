@@ -211,7 +211,30 @@ pub const HostPeer = struct {
     pub fn respondHostCallResults(self: *HostPeer, question_id: u32, payload_frame: []const u8) !void {
         self.peer.assertThreadAffinity();
         if (!self.pending_host_call_questions.contains(question_id)) return error.UnknownQuestion;
-        var payload_msg = try message.Message.initUnvalidated(self.allocator, payload_frame);
+
+        // A hostile guest can hand us a small payload whose pointer graph
+        // aliases one blob thousands of times, or a deep pointer chain, then
+        // rely on cloneAnyPointer (no traversal budget, no visited-set) to
+        // amplify the work into an effectively unbounded clone while we hold
+        // the ABI global mutex. Bound the raw frame size and run the full
+        // pointer-graph validation walk (the same bounded budget the sibling
+        // respondHostCallReturnFrame path gets via protocol.DecodedMessage.init)
+        // so the traversal limit defeats aliasing amplification before we clone.
+        if (payload_frame.len > MAX_CAPTURED_FRAME_BYTES) {
+            log.debug("host call result payload too large: {} bytes", .{payload_frame.len});
+            events.emitResourceRejection(
+                self.observer,
+                .host_peer,
+                .unknown,
+                .frame_bytes,
+                payload_frame.len,
+                MAX_CAPTURED_FRAME_BYTES,
+                error.FrameTooLarge,
+            );
+            return error.FrameTooLarge;
+        }
+
+        var payload_msg = try message.Message.init(self.allocator, payload_frame, .{});
         defer payload_msg.deinit();
         const payload_any = try payload_msg.getRootAnyPointer();
 

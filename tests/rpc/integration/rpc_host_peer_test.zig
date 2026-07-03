@@ -662,3 +662,204 @@ test "host peer host-call bridge can respond with results payload" {
     try std.testing.expect(client_ctx.call_returned);
     try std.testing.expect(client_ctx.saw_expected_text);
 }
+
+// --- respondHostCallResults amplification-DoS hardening ---
+//
+// respondHostCallResults deep-copies the guest-supplied payload via
+// cloneAnyPointer, which enforces per-read bounds and a depth limit but no
+// traversal budget and no visited-set. A hostile guest can hand us a small
+// physical frame whose pointer graph either aliases one large blob thousands
+// of times or forms a deep chain, turning the clone into effectively unbounded
+// work while the ABI global mutex is held. The fix runs the payload through
+// Message.init (full validation walk with a bounded traversal/nesting budget)
+// and caps the raw frame size, so these payloads are rejected up front.
+
+// Build a single-segment framed message from a segment's word buffer.
+// `segment_words` holds the little-endian u64 words of segment 0; word 0 is
+// the root pointer. Caller owns the returned slice.
+fn framedSingleSegment(allocator: std.mem.Allocator, segment_words: []const u64) ![]u8 {
+    const seg_bytes = segment_words.len * 8;
+    var out = try allocator.alloc(u8, 8 + seg_bytes);
+    // Header: segment_count-1 = 0, then segment 0 size in words. One segment is
+    // odd, so no trailing padding word is required.
+    std.mem.writeInt(u32, out[0..4], 0, .little);
+    std.mem.writeInt(u32, out[4..8], @intCast(segment_words.len), .little);
+    for (segment_words, 0..) |word, i| {
+        std.mem.writeInt(u64, out[8 + i * 8 ..][0..8], word, .little);
+    }
+    return out;
+}
+
+fn structPtr(offset_words: i32, data_words: u16, pointer_words: u16) u64 {
+    var word: u64 = 0; // struct pointer tag (0)
+    // Encode the 30-bit signed word offset in bits 2..32 (two's complement).
+    const raw_offset: u32 = @bitCast(offset_words);
+    word |= @as(u64, raw_offset & 0x3FFF_FFFF) << 2;
+    word |= @as(u64, data_words) << 32;
+    word |= @as(u64, pointer_words) << 48;
+    return word;
+}
+
+// Drive the host-call bridge handshake and invoke `respondHostCallResults` with
+// `crafted_payload` against the real pending question id. Returns the result so
+// the caller can assert on the error (or success). Fully self-contained: sets up
+// two host peers, performs bootstrap + call, then responds.
+fn respondWithCraftedPayload(allocator: std.mem.Allocator, crafted_payload: []const u8) !void {
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        call_returned: bool = false,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.call_returned = true;
+        }
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            _ = try call.initCapTableTyped(0);
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null);
+
+    var server = HostPeer.init(allocator);
+    defer server.deinit();
+    server.start(null, null);
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x2222,
+        3,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+
+    try pumpAll(&client, &server);
+    const call = server.popHostCall() orelse return error.MissingHostCall;
+    defer server.freeHostCallFrame(call.frame);
+
+    // Propagate the exact error from respondHostCallResults to the caller.
+    try server.respondHostCallResults(call.question_id, crafted_payload);
+    // On success, drain the outbound frame so no allocation leaks.
+    try pumpAll(&server, &client);
+}
+
+test "respondHostCallResults rejects pointer-aliasing amplification payload" {
+    const allocator = std.testing.allocator;
+
+    // Root struct has N pointer words, each a struct pointer aliasing the same
+    // blob struct (D data words). Physically tiny, but the validator counts
+    // every logical visit (N * D words) with no visited-set, so a bounded
+    // traversal budget rejects it. N * D is chosen to exceed the 8M-word
+    // default traversal_limit_words.
+    const n_pointers: u16 = 300;
+    const blob_data_words: u16 = 30_000; // 300 * 30000 = 9,000,000 > 8,388,608
+
+    const total_words = 1 + @as(usize, n_pointers) + @as(usize, blob_data_words);
+    const words = try allocator.alloc(u64, total_words);
+    defer allocator.free(words);
+    @memset(words, 0);
+
+    // Word 0: root struct pointer -> root struct at word 1 (offset 0), with
+    // 0 data words and n_pointers pointer words.
+    words[0] = structPtr(0, 0, n_pointers);
+
+    // Root struct pointer section occupies words 1..1+n_pointers. The blob
+    // struct begins at word 1 + n_pointers.
+    const blob_word: usize = 1 + @as(usize, n_pointers);
+    var i: usize = 0;
+    while (i < n_pointers) : (i += 1) {
+        const ptr_word_index = 1 + i;
+        // A struct pointer at word `ptr_word_index` points to `ptr_word_index
+        // + 1 + offset`. Aim all of them at the single blob.
+        const offset: i32 = @intCast(blob_word - (ptr_word_index + 1));
+        words[ptr_word_index] = structPtr(offset, blob_data_words, 0);
+    }
+
+    const payload = try framedSingleSegment(allocator, words);
+    defer allocator.free(payload);
+
+    try std.testing.expectError(error.TraversalLimitExceeded, respondWithCraftedPayload(allocator, payload));
+}
+
+test "respondHostCallResults rejects deep pointer-chain payload" {
+    const allocator = std.testing.allocator;
+
+    // A chain of `depth` structs, each 0 data words + 1 pointer word pointing
+    // to the next. depth > nesting_limit (default 64) trips NestingLimitExceeded.
+    const depth: usize = 70;
+    // Layout: word 0 root pointer, then `depth` structs each occupying 1 word
+    // (their single pointer word). Struct k's pointer lives at word 1+k and
+    // points to struct k+1 at word 2+k. The final struct's pointer is null.
+    const total_words = 1 + depth;
+    const words = try allocator.alloc(u64, total_words);
+    defer allocator.free(words);
+    @memset(words, 0);
+
+    // Root pointer -> struct 0 at word 1 (offset 0), 0 data, 1 pointer.
+    words[0] = structPtr(0, 0, 1);
+    var k: usize = 0;
+    while (k < depth) : (k += 1) {
+        const this_word = 1 + k;
+        if (k + 1 < depth) {
+            // Point at the next struct's pointer word (word this_word + 1).
+            // Offset from word `this_word` to word `this_word + 1` is 0.
+            words[this_word] = structPtr(0, 0, 1);
+        } else {
+            words[this_word] = 0; // terminate the chain with a null pointer
+        }
+    }
+
+    const payload = try framedSingleSegment(allocator, words);
+    defer allocator.free(payload);
+
+    try std.testing.expectError(error.NestingLimitExceeded, respondWithCraftedPayload(allocator, payload));
+}
+
+test "respondHostCallResults rejects an oversized payload frame" {
+    const allocator = std.testing.allocator;
+
+    // A frame larger than MAX_CAPTURED_FRAME_BYTES must be rejected before any
+    // validation/clone work. Build a header claiming a huge segment; the guard
+    // trips on payload_frame.len alone, so the (zeroed) body is never walked.
+    const cap = 16 * 1024 * 1024; // HostPeer.MAX_CAPTURED_FRAME_BYTES
+    const oversized = try allocator.alloc(u8, cap + 64);
+    defer allocator.free(oversized);
+    @memset(oversized, 0);
+
+    try std.testing.expectError(error.FrameTooLarge, respondWithCraftedPayload(allocator, oversized));
+}
+
+test "respondHostCallResults still accepts a normal small valid payload" {
+    const allocator = std.testing.allocator;
+
+    var payload_builder = capnpc.message.MessageBuilder.init(allocator);
+    defer payload_builder.deinit();
+    const root = try payload_builder.initRootAnyPointer();
+    try root.setText("ok");
+    const payload = try payload_builder.toBytes();
+    defer allocator.free(payload);
+
+    try respondWithCraftedPayload(allocator, payload);
+}

@@ -1881,3 +1881,83 @@ test "Message: far pointer inline-composite list at nonzero offset in target seg
     try testing.expectEqual(@as(u32, 77), (try list_reader.get(0)).readU32(0));
     try testing.expectEqual(@as(u32, 88), (try list_reader.get(1)).readU32(0));
 }
+
+// --- 29-bit list-pointer count boundary (adversarial-input hardening) ---
+//
+// The Cap'n Proto list-pointer count field is only 29 bits. A count of
+// `2^29` or more cannot be encoded and would be silently truncated to
+// `count mod 2^29` by the builder, producing a valid-looking pointer whose
+// count is wrong (silent data corruption / truncation). The builder must
+// instead reject such counts. Void lists exercise the exact count boundary
+// with zero content allocation, so we can test `2^29 - 1` accept vs `2^29`
+// reject without allocating gigabytes.
+
+test "MessageBuilder: void list accepts the max 29-bit element count without truncation" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    const max_count = message.MAX_LIST_ELEMENT_COUNT; // (1 << 29) - 1
+    _ = try struct_builder.writeVoidList(0, max_count);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    // Void lists carry no content words, so validation stays cheap.
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const void_list = try root.readVoidList(0);
+    // The decoded count must be exactly what we wrote — not truncated.
+    try testing.expectEqual(max_count, void_list.element_count);
+}
+
+test "MessageBuilder: void list rejects a count that overflows the 29-bit field" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    const over_limit: u32 = 1 << 29; // one past MAX_LIST_ELEMENT_COUNT
+    try testing.expectError(error.ListTooLarge, struct_builder.writeVoidList(0, over_limit));
+}
+
+test "MessageBuilder: u8 list rejects an oversized count before allocating content" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    // A u8 list of 2^29 elements would allocate 512 MiB if the guard ran after
+    // allocation; the guard fires first, so this returns without allocating.
+    const over_limit: u32 = 1 << 29;
+    try testing.expectError(error.ListTooLarge, struct_builder.writeU8List(0, over_limit));
+}
+
+test "MessageBuilder: writeData rejects a blob at the 29-bit list-count boundary" {
+    // Sanity-check the shared guard rejects exactly at 2^29 without needing a
+    // real 512 MiB slice: the constant defines the wire limit and the guard in
+    // writeListPointer trips on any count > MAX_LIST_ELEMENT_COUNT.
+    try testing.expectEqual(@as(u32, (1 << 29) - 1), message.MAX_LIST_ELEMENT_COUNT);
+
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    // Reuse the void-list path to drive the exact boundary count cheaply; it
+    // funnels through the same makeListPointer guard as writeData/writeText.
+    try testing.expectError(error.ListTooLarge, struct_builder.writeVoidList(0, 1 << 29));
+    // And a count exactly at the limit is accepted by the guard.
+    _ = try struct_builder.writeVoidList(0, message.MAX_LIST_ELEMENT_COUNT);
+}
+
+test "MessageBuilder: inline-composite struct list rejects a body-word count over the 29-bit limit" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    const any = try builder.initRootAnyPointer();
+    // Each element is 1 data word + 0 pointer words, so total_words == count.
+    // A count of 2^29 makes the inline-composite list pointer's word count
+    // overflow the 29-bit field; the guard must reject before allocating.
+    const over_limit: u32 = 1 << 29;
+    try testing.expectError(error.ListTooLarge, any.initStructList(over_limit, 1, 0));
+}

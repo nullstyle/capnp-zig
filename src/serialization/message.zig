@@ -44,7 +44,19 @@ fn makeStructPointer(offset_words: i32, data_words: u16, pointer_words: u16) !u6
     return pointer;
 }
 
+/// Maximum value representable in a Cap'n Proto list-pointer count field.
+///
+/// The count occupies bits 35..64 of a list pointer (29 bits). For inline
+/// composite lists (element size 7) the same field holds the total word count
+/// of the list body. Any count `>= (1 << 29)` cannot be encoded and would be
+/// silently truncated by the `<< 35` shift, producing a valid-looking pointer
+/// whose count is `count mod 2^29` (silent data corruption). Every list-pointer
+/// write path funnels through `makeListPointer`, so guarding here rejects any
+/// oversized count with `error.ListTooLarge`.
+pub const MAX_LIST_ELEMENT_COUNT: u32 = (1 << 29) - 1;
+
 fn makeListPointer(offset_words: i32, element_size: u3, element_count: u32) !u64 {
+    if (element_count > MAX_LIST_ELEMENT_COUNT) return error.ListTooLarge;
     var pointer: u64 = 1; // list pointer
     pointer |= @as(u64, try encodeOffsetWords(offset_words)) << 2;
     pointer |= @as(u64, element_size) << 32;
@@ -2044,7 +2056,10 @@ pub const MessageBuilder = struct {
         const pointer_segment = &self.segments.items[pointer_segment_id];
         try bounds.checkBoundsMut(pointer_segment.items, pointer_pos, 8);
 
-        if (text.len >= std.math.maxInt(u32)) return error.TextTooLong;
+        // Text is a List(UInt8) with a NUL terminator, so the on-wire element
+        // count is `text.len + 1`. The 29-bit list-pointer count field caps
+        // that at MAX_LIST_ELEMENT_COUNT; reject longer text before allocating.
+        if (text.len >= MAX_LIST_ELEMENT_COUNT) return error.TextTooLong;
 
         const target_segment = &self.segments.items[target_segment_id];
         const padding = (8 - ((text.len + 1) % 8)) % 8;
@@ -2172,6 +2187,11 @@ pub const MessageBuilder = struct {
         if (pointer_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
         if (target_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
 
+        // Reject counts the 29-bit list-pointer field cannot hold before
+        // allocating content (a hostile count would otherwise allocate up to
+        // gigabytes and then silently truncate to `count mod 2^29`).
+        if (element_count > MAX_LIST_ELEMENT_COUNT) return error.ListTooLarge;
+
         const pointer_segment = &self.segments.items[pointer_segment_id];
         try bounds.checkBoundsMut(pointer_segment.items, pointer_pos, 8);
 
@@ -2231,7 +2251,9 @@ pub const MessageBuilder = struct {
 
         const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
         const total_words_u64 = @as(u64, element_count) * @as(u64, words_per_element);
-        if (total_words_u64 > std.math.maxInt(u32)) return error.ListTooLarge;
+        // The inline-composite list pointer stores `total_words` in the 29-bit
+        // count field; reject anything the field cannot hold before allocating.
+        if (total_words_u64 > MAX_LIST_ELEMENT_COUNT) return error.ListTooLarge;
         const total_words = @as(u32, @intCast(total_words_u64));
         const total_bytes = @as(usize, total_words) * 8;
 
