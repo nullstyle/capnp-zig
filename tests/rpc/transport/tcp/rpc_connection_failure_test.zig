@@ -804,12 +804,16 @@ test "listener concurrent close calls socket close once" {
     const CountingIo = struct {
         const State = struct {
             close_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+            shutdown_count: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
         };
 
         var active_state: ?*State = null;
 
         fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {
             _ = active_state.?.close_count.fetchAdd(1, .acq_rel);
+        }
+        fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {
+            _ = active_state.?.shutdown_count.fetchAdd(1, .acq_rel);
         }
     };
 
@@ -825,6 +829,7 @@ test "listener concurrent close calls socket close once" {
 
     var vtable = std.testing.io.vtable.*;
     vtable.netClose = CountingIo.netClose;
+    vtable.netShutdown = CountingIo.netShutdown;
     const io = std.Io{
         .userdata = std.testing.io.userdata,
         .vtable = &vtable,
@@ -837,5 +842,7 @@ test "listener concurrent close calls socket close once" {
     }
     for (threads) |thread| thread.join();
 
+    // Idempotent across concurrent close(): exactly one shutdown + one close.
+    try std.testing.expectEqual(@as(usize, 1), state.shutdown_count.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), state.close_count.load(.acquire));
 }

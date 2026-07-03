@@ -102,6 +102,10 @@ pub const Listener = struct {
     /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {
         if (self.close_requested.swap(true, .acq_rel)) return;
+        // Shut the socket down before closing: on POSIX a bare close does not
+        // reliably wake a thread parked in accept() on this fd (the documented
+        // contract of this method), while shutdown does.
+        shutdownFd(self.io, .{ .handle = self.server.socket.handle });
         closeFd(self.io, .{ .handle = self.server.socket.handle });
     }
 
@@ -169,6 +173,13 @@ pub fn createListenSocket(io: std.Io, addr: net.IpAddress, backlog: u31, _: bool
 /// Close a socket via Io.
 pub fn closeFd(io: std.Io, socket: SocketFd) void {
     io.vtable.netClose(io.userdata, (&socket.handle)[0..1]);
+}
+
+/// Shut down a socket for both directions via Io, ignoring errors. On POSIX a
+/// bare `close()` does not reliably unblock a thread parked in `accept()`/
+/// `read()` on the fd; a prior `shutdown()` does. Harmless on Windows.
+pub fn shutdownFd(io: std.Io, socket: SocketFd) void {
+    io.vtable.netShutdown(io.userdata, socket.handle, .both) catch {};
 }
 
 /// Create a pair of connected stream sockets over loopback TCP using
