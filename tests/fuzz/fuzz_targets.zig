@@ -14,6 +14,8 @@ const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const framing = capnpc.rpc.wire.framing;
 const Peer = capnpc.rpc.peer.Peer;
+const request_reader = capnpc.request;
+const Generator = capnpc.codegen.Generator;
 
 const max_fuzz_input = 8 * 1024;
 
@@ -90,8 +92,44 @@ fn fuzzPeerHandleFrame(_: void, smith: *std.testing.Smith) anyerror!void {
     }
 }
 
+/// The compiler plugin's untrusted-input surface: a hostile capnp toolchain
+/// (or a crafted CodeGeneratorRequest piped to stdin) must never crash, hang,
+/// leak, or blow the codegen budget. Parse random bytes as a request and run
+/// the generator over every requested file with tight caps.
+fn fuzzCodeGeneratorRequest(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buf: [max_fuzz_input]u8 = undefined;
+    const len = smith.slice(&buf);
+    const bytes = buf[0..len];
+
+    const request = request_reader.parseCodeGeneratorRequest(std.testing.allocator, bytes) catch return;
+    defer request_reader.freeCodeGeneratorRequest(std.testing.allocator, request);
+
+    var generator = Generator.init(std.testing.allocator, request.nodes) catch return;
+    defer generator.deinit();
+    // Tight budget so a hostile schema cannot amplify a tiny input into
+    // unbounded generation work/output during fuzzing.
+    generator.setCodegenBudget(.{
+        .max_nodes = 1024,
+        .max_imports = 1024,
+        .max_fields = 4096,
+        .max_name_bytes = 256 * 1024,
+        .max_default_bytes = 256 * 1024,
+        .max_manifest_bytes = 256 * 1024,
+        .max_output_bytes = 1024 * 1024,
+    });
+
+    for (request.requested_files) |requested_file| {
+        const output = generator.generateFile(requested_file) catch continue;
+        std.testing.allocator.free(output);
+    }
+}
+
 test "fuzz: Message.init validated parse" {
     try std.testing.fuzz({}, fuzzMessageInit, .{});
+}
+
+test "fuzz: CodeGeneratorRequest parse + generate" {
+    try std.testing.fuzz({}, fuzzCodeGeneratorRequest, .{});
 }
 
 test "fuzz: packed decode" {
