@@ -436,7 +436,6 @@ pub fn build(b: *std.Build) void {
     const e2e_self_step = b.step("e2e-self", "Run self-interop e2e (zig client vs zig server over loopback)");
     e2e_self_step.dependOn(&run_e2e_self.step);
 
-
     // Unit tests for main
     const main_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -524,6 +523,33 @@ pub fn build(b: *std.Build) void {
     const run_rpc_deadline_tests = addLibTest(b, "tests/rpc/peer/rpc_deadline_test.zig", target, optimize, lib_module);
     const run_rpc_persistence_tests = addLibTest(b, "tests/rpc/peer/rpc_persistence_test.zig", target, optimize, lib_module);
     const run_rpc_persistence_reconnect_tests = addLibTest(b, "tests/rpc/integration/rpc_persistence_reconnect_test.zig", target, optimize, lib_module);
+
+    // Runtime probe for the generated typed-pipelining stubs: drives the
+    // checked-in e2e generated modules (tests/e2e/zig/generated) end-to-end
+    // over two in-process peers. The generated files import each other by
+    // relative path plus "capnpc-zig", so they form one module rooted at
+    // bootstrap.zig.
+    const e2e_generated_module = b.createModule(.{
+        .root_source_file = b.path("tests/e2e/zig/generated/bootstrap.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig", .module = lib_module },
+        },
+    });
+    const rpc_typed_pipelining_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/rpc/integration/rpc_typed_pipelining_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "e2e_generated", .module = e2e_generated_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &rpc_typed_pipelining_tests.step) catch @panic("OOM");
+    const run_rpc_typed_pipelining_tests = &b.addRunArtifact(rpc_typed_pipelining_tests).step;
 
     const wasm_host_abi_test_module = b.createModule(.{
         .root_source_file = b.path("src/wasm/capnp_host_abi.zig"),
@@ -701,6 +727,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_integration_step.dependOn(run_rpc_host_peer_tests);
     test_rpc_integration_step.dependOn(run_rpc_worker_pool_tests);
     test_rpc_integration_step.dependOn(run_rpc_persistence_reconnect_tests);
+    test_rpc_integration_step.dependOn(run_rpc_typed_pipelining_tests);
 
     const test_rpc_step = b.step("test-rpc", "Run all RPC tests");
     test_rpc_step.dependOn(test_rpc_wire_step);
