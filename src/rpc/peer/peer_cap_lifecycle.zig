@@ -328,8 +328,9 @@ pub fn releaseResultCaps(
     defer decoded.deinit();
     if (decoded.tag != .@"return") return;
     const ret = try decoded.asReturn();
-    if (ret.tag != .results or ret.results == null) return;
-    const cap_list = ret.results.?.cap_table orelse return;
+    if (ret.tag != .results) return;
+    const results = ret.results orelse return;
+    const cap_list = results.cap_table orelse return;
     var idx: u32 = 0;
     while (idx < cap_list.len()) : (idx += 1) {
         const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(idx));

@@ -1066,7 +1066,7 @@ capnpc-zig.rpc.peer.TransportSendFn: type = *const fn (*anyopaque, []const u8) a
 capnpc-zig.rpc.peer.TransportStartFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.bootstrap.buildBootstrapReturnFrame: fn (mem.Allocator, u32, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.buildBootstrapReturnFrame)).@"fn".return_type.?).error_union.error_set![]const u8
 capnpc-zig.rpc.peer.bootstrap.handleAbort: fn (mem.Allocator, *?[]u8, rpc.wire.protocol.Abort) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleAbort)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.bootstrap.handleBootstrap: fn (comptime type, anytype, mem.Allocator, rpc.wire.protocol.Bootstrap, ?u32, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleBootstrap)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.bootstrap.handleBootstrap: fn (comptime type, anytype, mem.Allocator, rpc.wire.protocol.Bootstrap, ?u32, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleBootstrap)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplemented: fn (comptime type, anytype, rpc.wire.protocol.Unimplemented, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplemented)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestion: fn (comptime type, anytype, u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplementedQuestion)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestionForPeerFn: fn (comptime type, comptime anytype) anytype
@@ -1101,9 +1101,9 @@ capnpc-zig.rpc.peer.finish.clearFinishQuestionState: fn (comptime type, anytype,
 capnpc-zig.rpc.peer.finish.forwardTailFinishIfNeeded: fn (comptime type, anytype, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.finish.forwardTailFinishIfNeeded)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.finish.freeOwnedFrameForPeer: fn (comptime type, anytype, []u8) void
 capnpc-zig.rpc.peer.finish.freeOwnedFrameForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.peer.finish.handleFinish: fn (comptime type, anytype, u32, bool, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.finish.handleFinish)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.finish.handleFinish: fn (comptime type, anytype, u32, bool, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.finish.handleFinish)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.finish.handleFinishWithOps: fn (comptime type, anytype, u32, bool, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.finish.handleFinishWithOps)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.finish.handleResolvedAnswerCleanup: fn (comptime type, anytype, u32, bool, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.finish.handleResolvedAnswerCleanup)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.finish.handleResolvedAnswerCleanup: fn (comptime type, anytype, u32, bool, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.finish.handleResolvedAnswerCleanup)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.finish.takeResolvedAnswerFrameForPeer: fn (comptime type, anytype, u32) ?[]u8
 capnpc-zig.rpc.peer.finish.takeResolvedAnswerFrameForPeerFn: fn (comptime type) anytype
 capnpc-zig.rpc.peer.finish: struct
@@ -1325,7 +1325,10 @@ capnpc-zig.rpc.testing.peer_cap_lifecycle.clearExportForPeerFn: fn (comptime typ
 capnpc-zig.rpc.testing.peer_cap_lifecycle.handleRelease: fn (comptime type, anytype, rpc.wire.protocol.Release, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.handleRelease)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.testing.peer_cap_lifecycle.importRefCountForPeer: fn (comptime type, anytype, u32) u32
 capnpc-zig.rpc.testing.peer_cap_lifecycle.importRefCountForPeerFn: fn (comptime type) anytype
+capnpc-zig.rpc.testing.peer_cap_lifecycle.noteAnswerExportRef: fn (comptime type, anytype, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.noteAnswerExportRef)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_cap_lifecycle.noteAnswerHeldResultCaps: fn (comptime type, anytype, mem.Allocator, []const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.noteAnswerHeldResultCaps)).@"fn".return_type.?).error_union.error_set![]u32
 capnpc-zig.rpc.testing.peer_cap_lifecycle.noteExportRef: fn (comptime type, anytype, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.noteExportRef)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseAnswerHeldExport: fn (comptime type, comptime type, comptime type, anytype, mem.Allocator, anytype, anytype, ?u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseAnswerHeldExport)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseExport: fn (comptime type, comptime type, comptime type, anytype, mem.Allocator, anytype, anytype, ?u32, u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseExport)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseImport: fn (comptime type, anytype, u32, u32, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseImport)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseImportRefForPeer: fn (comptime type, anytype, u32) bool
