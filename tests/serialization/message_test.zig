@@ -1961,3 +1961,32 @@ test "MessageBuilder: inline-composite struct list rejects a body-word count ove
     const over_limit: u32 = 1 << 29;
     try testing.expectError(error.ListTooLarge, any.initStructList(over_limit, 1, 0));
 }
+
+test "Message.validate exposes the frozen MessageValidationError contract" {
+    // The public validation error set is a frozen v0.2.0 contract. Pin it by
+    // exact type equality against a locally reconstructed set: Zig error sets
+    // are order-independent and interned, so this equality holds iff the
+    // membership is identical — a silent widening OR narrowing breaks the test.
+    // (The validator's internal call tree already returns this exact type, so a
+    // newly-reachable error also fails the build until deliberately added here.)
+    const Expected = error{
+        EmptyMessage,
+        SegmentCountLimitExceeded,
+        TruncatedMessage,
+        InvalidSegmentId,
+        OutOfBounds,
+        InvalidPointer,
+        InvalidFarPointer,
+        InvalidInlineCompositePointer,
+        ListTooLarge,
+        NestingLimitExceeded,
+        TraversalLimitExceeded,
+    };
+    try testing.expect(message.Message.MessageValidationError == Expected);
+
+    // validate/validateCounted return the narrowed set, not anyerror.
+    const validate_err = @typeInfo(@typeInfo(@TypeOf(message.Message.validate)).@"fn".return_type.?).error_union.error_set;
+    try testing.expect(validate_err == message.Message.MessageValidationError);
+    const counted_err = @typeInfo(@typeInfo(@TypeOf(message.Message.validateCounted)).@"fn".return_type.?).error_union.error_set;
+    try testing.expect(counted_err == message.Message.MessageValidationError);
+}

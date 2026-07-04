@@ -910,10 +910,28 @@ pub const Message = struct {
         return error.InvalidInlineCompositePointer;
     }
 
+    /// The complete set of errors `validate`/`validateCounted` can return. This
+    /// is the frozen public contract for message validation — enforced by the
+    /// compiler (a returned error outside this set fails to build), so it stays
+    /// exact as the validator evolves.
+    pub const MessageValidationError = error{
+        EmptyMessage,
+        SegmentCountLimitExceeded,
+        TruncatedMessage,
+        InvalidSegmentId,
+        OutOfBounds,
+        InvalidPointer,
+        InvalidFarPointer,
+        InvalidInlineCompositePointer,
+        ListTooLarge,
+        NestingLimitExceeded,
+        TraversalLimitExceeded,
+    };
+
     /// Walk the entire pointer graph starting from the root, enforcing traversal
     /// and nesting limits from `options`. Returns an error if the message exceeds
     /// the configured segment count, word traversal budget, or nesting depth.
-    pub fn validate(self: *const Message, options: ValidationOptions) anyerror!void {
+    pub fn validate(self: *const Message, options: ValidationOptions) MessageValidationError!void {
         _ = try self.validateCounted(options);
     }
 
@@ -921,7 +939,7 @@ pub const Message = struct {
     /// visited (the amplification-relevant cost, which can far exceed the
     /// on-wire size for shared/cyclic structures). Used to charge a cumulative
     /// per-connection validation-work budget.
-    pub fn validateCounted(self: *const Message, options: ValidationOptions) anyerror!usize {
+    pub fn validateCounted(self: *const Message, options: ValidationOptions) MessageValidationError!usize {
         if (self.segments.len == 0) return error.EmptyMessage;
         if (self.segments.len > options.segment_count_limit) return error.SegmentCountLimitExceeded;
         const segment = self.segments[0];
@@ -952,7 +970,7 @@ pub const Message = struct {
         remaining_words: *usize,
         remaining_inline_composite_elements: *usize,
         nesting: usize,
-    ) anyerror!void {
+    ) MessageValidationError!void {
         if (pointer_word == 0) return;
         if (nesting == 0) return error.NestingLimitExceeded;
         if (segment_id >= self.segments.len) return error.InvalidSegmentId;
@@ -976,7 +994,7 @@ pub const Message = struct {
         remaining_words: *usize,
         remaining_inline_composite_elements: *usize,
         nesting: usize,
-    ) anyerror!void {
+    ) MessageValidationError!void {
         _ = segment_id;
         _ = pointer_pos;
         const far = decodeFarPointer(pointer_word);
@@ -1029,7 +1047,7 @@ pub const Message = struct {
         remaining_words: *usize,
         remaining_inline_composite_elements: *usize,
         nesting: usize,
-    ) anyerror!void {
+    ) MessageValidationError!void {
         const data_size = @as(u16, @truncate((pointer_word >> 32) & 0xFFFF));
         const pointer_count = @as(u16, @truncate((pointer_word >> 48) & 0xFFFF));
 
@@ -1074,7 +1092,7 @@ pub const Message = struct {
         remaining_words: *usize,
         remaining_inline_composite_elements: *usize,
         nesting: usize,
-    ) anyerror!void {
+    ) MessageValidationError!void {
         const element_size = @as(u3, @truncate((pointer_word >> 32) & 0x7));
         if (element_size == 7 and content_override == null) {
             return self.validateInlineCompositeList(segment_id, pointer_pos, pointer_word, remaining_words, remaining_inline_composite_elements, nesting);
@@ -1164,7 +1182,7 @@ pub const Message = struct {
         remaining_words: *usize,
         remaining_inline_composite_elements: *usize,
         nesting: usize,
-    ) anyerror!void {
+    ) MessageValidationError!void {
         const list = try self.resolveInlineCompositeList(segment_id, pointer_pos, pointer_word);
         const word_count = @as(u32, @truncate(pointer_word >> 35));
         try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, list.element_count));
@@ -1196,7 +1214,7 @@ pub const Message = struct {
         remaining_words: *usize,
         remaining_inline_composite_elements: *usize,
         nesting: usize,
-    ) anyerror!void {
+    ) MessageValidationError!void {
         const element_count_signed = decodeOffsetWords(tag_word);
         if (element_count_signed < 0) return error.InvalidInlineCompositePointer;
         const element_count = @as(u32, @intCast(element_count_signed));
