@@ -1567,7 +1567,7 @@ capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, rpc.transport.tcp.stream_t
 capnpc-zig.rpc.transport.tcp.runtime.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
 capnpc-zig.rpc.transport.tcp.runtime.createLoopbackSocketPair: fn (Io) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createLoopbackSocketPair)).@"fn".return_type.?).error_union.error_set![2]rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
-capnpc-zig.rpc.transport.tcp.runtime.setTcpNoDelay: fn (i32) void
+capnpc-zig.rpc.transport.tcp.runtime.setTcpNoDelay: fn (rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime.shutdownFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime: struct
 capnpc-zig.rpc.transport.tcp.stream.SocketFd: struct

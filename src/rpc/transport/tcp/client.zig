@@ -80,7 +80,7 @@ pub const ClientSession = struct {
         const fd = tcp_stream.socket.handle;
         var socket_owned = true;
         errdefer if (socket_owned) runtime.closeFd(io, .{ .handle = fd });
-        runtime.setTcpNoDelay(fd);
+        runtime.setTcpNoDelay(.{ .handle = fd });
 
         const self = try gpa.create(ClientSession);
         errdefer gpa.destroy(self);

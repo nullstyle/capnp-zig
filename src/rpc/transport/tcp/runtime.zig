@@ -93,7 +93,7 @@ pub const Listener = struct {
         const client_fd = stream.socket.handle;
         errdefer closeFd(self.io, .{ .handle = client_fd });
 
-        setTcpNoDelay(client_fd);
+        setTcpNoDelay(.{ .handle = client_fd });
 
         return self.createConnection(client_fd);
     }
@@ -139,7 +139,10 @@ pub const Listener = struct {
 /// Disable Nagle on a connected TCP socket. Loopback control channels and
 /// RPC frames are latency-sensitive; with Nagle on, delayed ACKs can hold
 /// small writes for ~40-200ms, which breaks tick/idle timing.
-pub fn setTcpNoDelay(fd: net.Socket.Handle) void {
+// Takes the SocketFd wrapper (not net.Socket.Handle): the raw handle type
+// varies by target (i32 vs *anyopaque), which would break the
+// platform-identical api-snapshot invariant for a pub decl.
+pub fn setTcpNoDelay(socket: SocketFd) void {
     if (comptime builtin.target.os.tag == .windows) {
         // std's Windows sockets are raw AFD handles: ws2_32.setsockopt
         // rejects them, and std does not yet expose its internal AFD
@@ -149,7 +152,7 @@ pub fn setTcpNoDelay(fd: net.Socket.Handle) void {
         return;
     }
     std.posix.setsockopt(
-        fd,
+        socket.handle,
         std.posix.IPPROTO.TCP,
         std.posix.TCP.NODELAY,
         &std.mem.toBytes(@as(c_int, 1)),
@@ -201,8 +204,8 @@ pub fn createLoopbackSocketPair(io: std.Io) ![2]SocketFd {
     const accepted_stream = try server.accept(io);
     // Nagle + delayed ACK can hold sub-MSS writes for ~40-200ms, which is
     // longer than the tick/idle windows this pair exists to exercise.
-    setTcpNoDelay(client_stream.socket.handle);
-    setTcpNoDelay(accepted_stream.socket.handle);
+    setTcpNoDelay(.{ .handle = client_stream.socket.handle });
+    setTcpNoDelay(.{ .handle = accepted_stream.socket.handle });
     return .{
         .{ .handle = client_stream.socket.handle },
         .{ .handle = accepted_stream.socket.handle },
