@@ -72,10 +72,40 @@ const Config = struct {
 };
 
 const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
-// The docker interop matrix only covers schemas with reference backends.
-// resolve_disembargo is a Zig-only scenario for now (the four reference
-// backends will mirror it later), so it is deliberately absent here.
-const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking };
+// The docker interop matrix covers every (schema x backend x direction) case
+// EXCEPT the per-direction reference-impl gaps in resolve_disembargo (see
+// resolveDisembargoSkip below), which are recorded as SKIP rather than run.
+const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo };
+
+/// resolve_disembargo is the only scenario with per-direction reference-impl
+/// gaps — all in the reference libraries, not capnp-zig. Returns a SKIP status
+/// (recorded green, not run) when the given backend cannot play the required
+/// role, else null. `zig_is_client` selects the direction: when Zig is the
+/// client the reference plays the reflecting SERVER; when Zig is the server the
+/// reference plays the embargo-driving CLIENT.
+///   - Reflecting SERVER: must export an unresolved promise capability and
+///     resolve it later. pycapnp has no such API, so python is client-only here.
+///   - Embargo CLIENT: must consume the Level-1 `takeFromOtherQuestion` return
+///     Zig emits when it relays a reflected-loopback pipelined call. go-capnp
+///     cannot parse that return; capnp-rpc parses it but only completes the call
+///     when the forwarded call used `sendResultsTo=yourself` (Zig uses
+///     `.caller`), so it hangs. cpp and python consume it correctly.
+fn resolveDisembargoSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
+    if (schema != .resolve_disembargo) return null;
+    if (zig_is_client) {
+        // Reference is the reflecting server.
+        return switch (backend) {
+            .python => "SKIP(python-cannot-reflect-as-server)",
+            else => null,
+        };
+    }
+    // Reference is the embargo-driving client.
+    return switch (backend) {
+        .go => "SKIP(go-capnp-cannot-parse-takeFromOtherQuestion)",
+        .rust => "SKIP(capnp-rpc-hangs-on-takeFromOtherQuestion)",
+        else => null,
+    };
+}
 
 const Paths = struct {
     repo_root: []const u8,
@@ -993,6 +1023,12 @@ fn runZigClientPhase(
 
             std.debug.print("    case {s}\n", .{key});
 
+            if (resolveDisembargoSkip(schema, backend, true)) |reason| {
+                std.debug.print("      {s}\n", .{reason});
+                try appendResult(allocator, results, key, reason);
+                continue;
+            }
+
             startRefServer(allocator, io, paths, backend, schema) catch |err| {
                 const status = try std.fmt.allocPrint(allocator, "FAIL(server-start:{s})", .{@errorName(err)});
                 defer allocator.free(status);
@@ -1054,6 +1090,12 @@ fn runZigServerPhase(
 
             const key = try std.fmt.allocPrint(allocator, "zig-server:{s}:{s}", .{ schemaName(schema), backendName(backend) });
             defer allocator.free(key);
+
+            if (resolveDisembargoSkip(schema, backend, false)) |reason| {
+                std.debug.print("    case {s} — {s}\n", .{ key, reason });
+                try appendResult(allocator, results, key, reason);
+                continue;
+            }
 
             const port = findFreePort() catch |err| {
                 const status = try std.fmt.allocPrint(allocator, "FAIL(port-reserve:{s})", .{@errorName(err)});

@@ -77,6 +77,14 @@ and Rust reference implementations in the cross-implementation e2e matrix
 (returned-capability invocation, typed pipelining with E-order, and capability
 release).
 
+The reflected-capability resolve/embargo handshake — a promise capability
+resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
+the `senderLoopback`/`receiverLoopback` `Disembargo` — is exercised end to end by
+the `resolve_disembargo` e2e scenario. capnp-zig plays both roles: it originates
+the reflection (server) against C++ and Python clients, and receives-and-embargoes
+(client) against C++, Go, and Rust servers. The matrix is asymmetric only because
+of reference-library gaps, not capnp-zig behavior — see Known limitations #4.
+
 Beyond Level 1:
 
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present
@@ -113,6 +121,24 @@ cooperating peer.
    translated and degrade to a clean exception Return rather than corrupt state
    (`src/rpc/peer/forward/peer_forwarded_return_logic.zig:90-96`). Reachable only in
    a proxy topology no two-party deployment exercises.
+
+4. **Reflected-loopback return interop (`takeFromOtherQuestion`)** — when capnp-zig
+   resolves a promise to a *caller-hosted* capability and relays the caller's parked
+   pipelined calls back to it, it returns the original question with
+   `takeFromOtherQuestion` and forwards the relayed call with `sendResultsTo=caller`
+   (`src/rpc/peer/forward/peer_forward_orchestration.zig`). This is protocol-correct
+   and consumed transparently by kj-capnp (C++) and pycapnp, but two reference
+   *clients* cannot follow it: go-capnp does not parse a `takeFromOtherQuestion`
+   return at all, and capnp-rpc (Rust) parses it but only completes the call when the
+   forwarded call used `sendResultsTo=yourself`, so it stalls. Reachable only in the
+   reflected-loopback topology (a peer pipelining on a promise that resolves to its
+   own cap); the `resolve_disembargo` e2e scenario skips those two reference-client
+   directions (recorded as `SKIP`, not failures). A related consequence: a *direct*
+   (non-deferred) generated handler on a reflected-to cap does not run its body,
+   because the results-build closure is skipped on the `resultsSentElsewhere` path —
+   use a deferred handler for caps that may be reflected to. Emitting
+   `sendResultsTo=yourself` for the relayed loopback call would run direct handlers,
+   deliver results inline, and broaden client interop; tracked separately.
 
 These are tracked as the top targets for the post-tag conformance push; they do
 not affect correctness for a standard two-party client/server.

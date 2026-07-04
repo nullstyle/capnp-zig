@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cross-impl `resolve_disembargo` e2e scenario** — a reflected-capability
+  resolve/embargo scenario in the Docker interop matrix, exercising the full
+  `senderLoopback`/`receiverLoopback` `Disembargo` handshake end to end against
+  the C++, Go, Python, and Rust reference implementations. capnp-zig both
+  originates the reflection (server, via `resolvePromiseExportToImport`) and
+  drives the embargo (client). The matrix is asymmetric only because of
+  reference-library gaps (recorded as `SKIP`, never run): pycapnp cannot host the
+  reflecting server, and go-capnp / capnp-rpc clients cannot consume Zig's
+  Level-1 `takeFromOtherQuestion` loopback return. Net 5 pass / 3 skip / 0 fail,
+  stable across repeated runs. See `docs/supported-surface.md` Known limitations
+  #4.
 - **`Peer.resolvePromiseExportToImport`** — resolve a previously exported
   promise capability to a cap the *remote* peer hosts (one we hold as an
   import). This is the "reflected capability" resolution: because the promise
