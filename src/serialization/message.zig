@@ -415,6 +415,10 @@ pub const Message = struct {
     segments: []const []const u8,
     segments_owned: bool = true,
     backing_data: ?[]u8,
+    /// Number of traversal words the validation walk visited (set by `init`;
+    /// 0 for unvalidated messages). Lets a transport charge a cumulative
+    /// per-connection validation-work budget without re-walking the graph.
+    traversal_words_used: usize = 0,
 
     const ResolvedPointer = struct {
         segment_id: u32,
@@ -477,7 +481,7 @@ pub const Message = struct {
         var msg = try initUnvalidated(allocator, data);
         errdefer msg.deinit();
         try msg.validateTotalSegmentWords(options.total_segment_words_limit);
-        try msg.validate(options);
+        msg.traversal_words_used = try msg.validateCounted(options);
         return msg;
     }
 
@@ -903,6 +907,14 @@ pub const Message = struct {
     /// and nesting limits from `options`. Returns an error if the message exceeds
     /// the configured segment count, word traversal budget, or nesting depth.
     pub fn validate(self: *const Message, options: ValidationOptions) anyerror!void {
+        _ = try self.validateCounted(options);
+    }
+
+    /// Like `validate`, but returns the number of traversal words the walk
+    /// visited (the amplification-relevant cost, which can far exceed the
+    /// on-wire size for shared/cyclic structures). Used to charge a cumulative
+    /// per-connection validation-work budget.
+    pub fn validateCounted(self: *const Message, options: ValidationOptions) anyerror!usize {
         if (self.segments.len == 0) return error.EmptyMessage;
         if (self.segments.len > options.segment_count_limit) return error.SegmentCountLimitExceeded;
         const segment = self.segments[0];
@@ -912,6 +924,7 @@ pub const Message = struct {
         var remaining_words = options.traversal_limit_words;
         var remaining_inline_composite_elements = options.inline_composite_element_limit;
         try self.validatePointer(0, 0, root_pointer, &remaining_words, &remaining_inline_composite_elements, options.nesting_limit);
+        return options.traversal_limit_words - remaining_words;
     }
 
     fn consumeWords(remaining: *usize, words: usize) !void {

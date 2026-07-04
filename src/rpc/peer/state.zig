@@ -43,6 +43,15 @@ pub const PeerLimits = struct {
     /// Bound on a single sturdy-ref payload, applied both to save-handler
     /// output and to inbound restore parameters.
     max_sturdy_ref_bytes: usize = 64 * 1024,
+    /// Cumulative per-connection validation-work rate limit: a token bucket over
+    /// the traversal words each inbound frame's validation walk visits. Bounds
+    /// the aggregate CPU one connection can spend on validation amplification
+    /// (many frames each just under the per-frame traversal cap, or small frames
+    /// with large shared-DAG visit counts). Generous by default so legitimate
+    /// traffic is never throttled; set the rate to 0 to disable. Enforced only
+    /// when a Clock is configured (see `Peer.setClock`).
+    max_validation_words_per_second: usize = 128 * 1024 * 1024,
+    max_validation_burst_words: usize = 256 * 1024 * 1024,
 };
 
 /// Time-domain policy for a peer. All fields are opt-in: a null field

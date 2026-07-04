@@ -219,6 +219,37 @@ test "late Return after Finish (async handler) is not recorded in resolved_answe
     try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
 }
 
+test "validation-work budget aborts a connection that exceeds its rate" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    // A frozen clock so no time-based refill happens between frames.
+    var clock = capnpc.rpc.time.TestClock{};
+    peer.setClock(clock.clock());
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // Learn one frame's exact validation cost, then set the burst to exactly
+    // that: the first frame fits, a second (no elapsed time → no refill) does not.
+    const frame = try buildCallFrame(allocator, 1);
+    defer allocator.free(frame);
+    var probe = try protocol.DecodedMessage.init(allocator, frame);
+    const cost = probe.msg.traversal_words_used;
+    probe.deinit();
+    try std.testing.expect(cost > 0);
+
+    peer.setLimits(.{ .max_validation_words_per_second = 1000, .max_validation_burst_words = cost });
+
+    // First frame fits the budget exactly (the bucket starts full).
+    try peer.handleFrame(frame);
+    // Second frame at the same instant exhausts the bucket → abort.
+    try std.testing.expectError(error.ValidationBudgetExceeded, peer.handleFrame(frame));
+}
+
 test "outstanding questions are failed with Disconnected on connection close" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);

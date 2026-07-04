@@ -418,6 +418,15 @@ pub const Peer = struct {
     /// configured. Enforced by `checkDeadlines`.
     shutdown_deadline_ns: ?i64 = null,
 
+    // -- Validation-work rate limit -----------------------------------------
+
+    /// Token-bucket state for the per-connection validation-work budget (see
+    /// PeerLimits.max_validation_words_per_second). `validation_tokens` counts
+    /// available traversal-words; it starts full on the first charged frame and
+    /// refills by elapsed time. Inert until a Clock is configured.
+    validation_tokens: i64 = 0,
+    validation_last_refill_ns: ?i64 = null,
+
     // -- Diagnostics --------------------------------------------------------
 
     /// Tag of the most recently decoded inbound message (for debugging).
@@ -2858,6 +2867,35 @@ pub const Peer = struct {
     /// Decodes the message tag and dispatches to the appropriate handler
     /// (call, return, finish, resolve, etc.). Unknown message types trigger
     /// an Unimplemented response per the Cap'n Proto RPC spec.
+    /// Charge `words` (the traversal words an inbound frame's validation walk
+    /// visited) against the per-connection token bucket, refilling by elapsed
+    /// time first. Bounds the aggregate validation CPU one connection can drive
+    /// with amplifying frames. Inert when the rate is 0 or no Clock is set.
+    fn chargeValidationBudget(self: *Peer, words: usize) !void {
+        const rate = self.limits.max_validation_words_per_second;
+        if (rate == 0) return;
+        const now = self.clockNow() orelse return;
+
+        const i64_max: u64 = std.math.maxInt(i64);
+        const burst: i64 = @intCast(@min(@as(u64, self.limits.max_validation_burst_words), i64_max));
+        if (self.validation_last_refill_ns) |last| {
+            const elapsed_ns = now - last;
+            if (elapsed_ns > 0) {
+                const refill = @divTrunc(@as(i128, elapsed_ns) * @as(i128, @as(u64, rate)), std.time.ns_per_s);
+                const refilled = @as(i128, self.validation_tokens) + refill;
+                self.validation_tokens = @intCast(@min(refilled, @as(i128, burst)));
+            }
+        } else {
+            // First charged frame: start the bucket full.
+            self.validation_tokens = burst;
+        }
+        self.validation_last_refill_ns = now;
+
+        const cost: i64 = @intCast(@min(@as(u64, words), i64_max));
+        if (cost > self.validation_tokens) return error.ValidationBudgetExceeded;
+        self.validation_tokens -= cost;
+    }
+
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
         events.emitFrame(self.observer, .peer, .unknown, .received, frame.len);
@@ -2878,6 +2916,18 @@ pub const Peer = struct {
             return err;
         };
         defer decoded.deinit();
+
+        // Charge this frame's validation cost against the per-connection budget.
+        // On exhaustion the peer is spending disproportionate CPU on validation
+        // amplification: abort and drop the connection.
+        self.chargeValidationBudget(decoded.msg.traversal_words_used) catch |err| {
+            log.warn("validation-work budget exceeded (frame words={}); aborting connection", .{decoded.msg.traversal_words_used});
+            events.emitProtocolError(self.observer, .peer, .unknown, err, null);
+            self.sendAbortForError(err);
+            if (!self.isAttachedTransportClosing()) self.closeAttachedTransport();
+            return err;
+        };
+
         self.last_inbound_tag = decoded.tag;
         log.debug("dispatching inbound {s}", .{@tagName(decoded.tag)});
 
