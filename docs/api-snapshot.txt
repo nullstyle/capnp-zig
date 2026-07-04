@@ -933,7 +933,7 @@ capnpc-zig.rpc.integration.host_peer.HostPeer.respondHostCallReturnFrame: fn (*r
 capnpc-zig.rpc.integration.host_peer.HostPeer.setErrorDisclosurePolicy: fn (*rpc.integration.host_peer.HostPeer, rpc.integration.host_peer.HostPeer.ErrorDisclosurePolicy) void
 capnpc-zig.rpc.integration.host_peer.HostPeer.setLimits: fn (*rpc.integration.host_peer.HostPeer, rpc.integration.host_peer.HostPeer.Limits) void
 capnpc-zig.rpc.integration.host_peer.HostPeer.setObserver: fn (*rpc.integration.host_peer.HostPeer, ?rpc.events.Observer) void
-capnpc-zig.rpc.integration.host_peer.HostPeer.start: fn (*rpc.integration.host_peer.HostPeer, ?*const fn (*rpc.peer.mod.Peer, anyerror) void, ?*const fn (*rpc.peer.mod.Peer) void) void
+capnpc-zig.rpc.integration.host_peer.HostPeer.start: fn (*rpc.integration.host_peer.HostPeer, ?*anyopaque, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer, anyerror) void, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer) void) void
 capnpc-zig.rpc.integration.host_peer.HostPeer: struct
 capnpc-zig.rpc.integration.host_peer: struct
 capnpc-zig.rpc.integration.worker_pool.WorkerPool.AcceptDecision: enum
@@ -1006,7 +1006,7 @@ capnpc-zig.rpc.peer.Peer.setRestorer: fn (*rpc.peer.mod.Peer, *anyopaque, *const
 capnpc-zig.rpc.peer.Peer.setSendFrameOverride: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (*anyopaque, []const u8) anyerror!void) void
 capnpc-zig.rpc.peer.Peer.setTimeouts: fn (*rpc.peer.mod.Peer, rpc.peer.state.PeerTimeouts) void
 capnpc-zig.rpc.peer.Peer.shutdown: fn (*rpc.peer.mod.Peer, ?*const fn (*rpc.peer.mod.Peer) void) void
-capnpc-zig.rpc.peer.Peer.start: fn (*rpc.peer.mod.Peer, ?*const fn (*rpc.peer.mod.Peer, anyerror) void, ?*const fn (*rpc.peer.mod.Peer) void) void
+capnpc-zig.rpc.peer.Peer.start: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer, anyerror) void, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer) void) void
 capnpc-zig.rpc.peer.Peer.stats: fn (*const rpc.peer.mod.Peer) rpc.peer.mod.Peer.PeerStats
 capnpc-zig.rpc.peer.Peer.takeAttachedConnection: fn (*rpc.peer.mod.Peer, comptime type) anytype
 capnpc-zig.rpc.peer.Peer.test_hooks.ForwardCallContextType: struct
@@ -1068,6 +1068,7 @@ capnpc-zig.rpc.peer.bootstrap.handleUnimplemented: fn (comptime type, anytype, r
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestion: fn (comptime type, anytype, u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplementedQuestion)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestionForPeerFn: fn (comptime type, comptime anytype) anytype
 capnpc-zig.rpc.peer.bootstrap: struct
+capnpc-zig.rpc.peer.deadline_reason: const *const [17:0]u8
 capnpc-zig.rpc.peer.disconnected_reason: const *const [12:0]u8
 capnpc-zig.rpc.peer.disembargo.DisembargoOps: fn (comptime type) type
 capnpc-zig.rpc.peer.disembargo.clearResolvedImportEmbargoForPeer: fn (comptime type, anytype, u32) void
@@ -1211,6 +1212,7 @@ capnpc-zig.rpc.peer.resolve.rememberPendingEmbargoForPeerFn: fn (comptime type) 
 capnpc-zig.rpc.peer.resolve.resolveCapDescriptorForPeer: fn (comptime type, anytype, rpc.wire.protocol.CapDescriptor) @typeInfo(@typeInfo(@TypeOf(rpc.peer.resolve.resolveCapDescriptorForPeer)).@"fn".return_type.?).error_union.error_set!rpc.caps.descriptors.ResolvedCap
 capnpc-zig.rpc.peer.resolve.resolveCapDescriptorForPeerFn: fn (comptime type) anytype
 capnpc-zig.rpc.peer.resolve: struct
+capnpc-zig.rpc.peer.shutdown_reason: const *const [18:0]u8
 capnpc-zig.rpc.peer.state.ExportEntry: fn (comptime type) type
 capnpc-zig.rpc.peer.state.JoinKeyPart: struct
 capnpc-zig.rpc.peer.state.JoinPartEntry: struct
