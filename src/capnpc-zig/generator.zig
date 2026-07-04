@@ -606,7 +606,7 @@ pub const Generator = struct {
                 }
             },
             .@"enum" => try self.generateEnum(node, writer),
-            .interface => try self.generateInterface(node, writer, children),
+            .interface => try self.generateInterface(node, writer, children, self_qualify),
             .@"const" => try self.generateConst(node, writer),
             .file => {}, // File nodes are handled separately
             .annotation => try self.generateAnnotation(node, writer),
@@ -660,13 +660,15 @@ pub const Generator = struct {
             };
             // A struct's nested type declarations are shadowed by the parent
             // struct's Reader/Builder/WhichTag → they must self-qualify. An
-            // interface declares no Reader/Builder, so its method param/result
-            // structs (and nested types) do not. Nested INTERFACES are not
-            // nested here — they are emitted flat below.
-            const child_self_qualify = node.kind == .@"struct";
+            // interface declares no Reader/Builder, but a nested INTERFACE's own
+            // Client/Server/VTable/… ARE shadowed by the enclosing interface's
+            // same-named decls, so nested interfaces self-qualify too. An
+            // interface's method param/result structs (and nested structs/enums)
+            // are not shadowed by the interface (which has no Reader/Builder), so
+            // they stay bare — unless the nested child is itself an interface.
             for (node.nested_nodes) |nested| {
                 const child = self.getNode(nested.id) orelse continue;
-                if (child.kind == .interface) continue;
+                const child_self_qualify = node.kind == .@"struct" or child.kind == .interface;
                 try self.generateNodeRecursive(nested.id, generated, child_writer, child_self_qualify);
             }
             if (node.kind == .interface) {
@@ -682,14 +684,6 @@ pub const Generator = struct {
 
         const children: ?[]const u8 = if (child_blob.items.len > 0) child_blob.items else null;
         try self.generateNode(node, writer, children, self_qualify);
-
-        // Nested interfaces are emitted flat at this scope (after the node), so
-        // their Server/Client/VTable declarations are not shadowed by a parent's.
-        for (node.nested_nodes) |nested| {
-            const child = self.getNode(nested.id) orelse continue;
-            if (child.kind != .interface) continue;
-            try self.generateNodeRecursive(nested.id, generated, writer, false);
-        }
     }
 
     fn validateGeneratedNames(self: *Generator, file_node: *const schema.Node, needs_rpc: bool) !void {
@@ -743,12 +737,11 @@ pub const Generator = struct {
         defer child_scope.deinit();
 
         for (node.nested_nodes) |nested| {
-            const child = self.getNode(nested.id) orelse continue;
-            // Nested interfaces are emitted flat at the enclosing scope, so they
-            // compete for names there; nested structs/enums live in this node's
-            // own scope.
-            const target = if (child.kind == .interface) scope else &child_scope;
-            try self.validateGeneratedNodeRecursive(nested.id, generated, target);
+            // Every nested named type — structs, enums, AND interfaces — now emits
+            // inside this node's body, so it lives in this node's own scope. A
+            // nested `Handle` under `Alpha` no longer competes with a nested
+            // `Handle` under `Beta` at file scope.
+            try self.validateGeneratedNodeRecursive(nested.id, generated, &child_scope);
         }
 
         if (node.kind == .interface) {
@@ -1420,7 +1413,7 @@ pub const Generator = struct {
         }
     }
 
-    fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8) !void {
+    fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8, self_qualify: bool) !void {
         const interface_info = node.interface_node orelse return error.InvalidInterfaceNode;
         const decl_name = try self.allocTypeDeclName(node);
         defer self.allocator.free(decl_name);
@@ -1428,6 +1421,20 @@ pub const Generator = struct {
         const ancestors = try self.collectAncestors(node);
         defer self.freeAncestors(ancestors);
         const has_ancestors = ancestors.len > 0;
+
+        // When this interface is nested inside another interface, its own
+        // Client/Server/VTable/Method/BootstrapResponse/… decls (and per-method
+        // structs) are shadowed by the enclosing interface's same-named decls, so
+        // every self-reference to one of them is ambiguous. Qualify them with the
+        // interface's own decl name (`Handle.Client`), which is unambiguous from
+        // anywhere inside the body — mirroring the nested-struct `<Name>.WhichTag`
+        // scheme. A file-scoped interface uses an empty prefix, so its output is
+        // byte-identical to the pre-nesting generator.
+        const qual = if (self_qualify)
+            try std.fmt.allocPrint(self.allocator, "{s}.", .{decl_name})
+        else
+            try self.allocator.dupe(u8, "");
+        defer self.allocator.free(qual);
 
         try writer.print("pub const {s} = struct {{\n", .{decl_name});
         try writer.print("    pub const interface_id: u64 = 0x{x};\n", .{node.id});
@@ -1445,54 +1452,54 @@ pub const Generator = struct {
         try writer.writeAll("    };\n\n");
 
         for (interface_info.methods, 0..) |method, ordinal| {
-            try self.generateMethodStruct(node, method, ordinal, writer);
+            try self.generateMethodStruct(node, method, ordinal, qual, writer);
         }
 
         // --- Client ---
         try writer.writeAll("    pub const Client = struct {\n");
         try writer.writeAll("        peer: *rpc.peer.Peer,\n");
         try writer.writeAll("        cap_id: u32,\n\n");
-        try writer.writeAll("        pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {\n");
+        try writer.print("        pub fn init(peer: *rpc.peer.Peer, cap_id: u32) {s}Client {{\n", .{qual});
         try writer.writeAll("            return .{ .peer = peer, .cap_id = cap_id };\n");
         try writer.writeAll("        }\n\n");
         try writer.writeAll("        /// Release the import ref this Client owns (balances the bootstrap-return\n");
         try writer.writeAll("        /// retainCapability). Call at most once per owned Client; best-effort —\n");
         try writer.writeAll("        /// peer teardown's import release is the backstop.\n");
-        try writer.writeAll("        pub fn release(self: Client) void {\n");
+        try writer.print("        pub fn release(self: {s}Client) void {{\n", .{qual});
         try writer.writeAll("            self.peer.releaseImport(self.cap_id, 1) catch {};\n");
         try writer.writeAll("        }\n\n");
 
         // Own call methods
         for (interface_info.methods) |method| {
-            try self.generateClientCallMethod(method, "interface_id", null, writer);
+            try self.generateClientCallMethod(method, "interface_id", null, qual, writer);
         }
         // Inherited call methods
         for (ancestors) |ancestor| {
             for (ancestor.methods) |method| {
-                try self.generateClientCallMethod(method, null, ancestor.name, writer);
+                try self.generateClientCallMethod(method, null, ancestor.name, qual, writer);
             }
         }
 
         // Generate callXxxPipelined methods for own methods with interface-typed results
         for (interface_info.methods) |method| {
-            try self.generateClientPipelinedMethod(method, null, writer);
+            try self.generateClientPipelinedMethod(method, null, qual, writer);
         }
         // Inherited pipelined call methods
         for (ancestors) |ancestor| {
             for (ancestor.methods) |method| {
-                try self.generateClientPipelinedMethod(method, ancestor.name, writer);
+                try self.generateClientPipelinedMethod(method, ancestor.name, qual, writer);
             }
         }
 
-        try writer.writeAll("        pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {\n");
-        try writer.writeAll("            return bootstrap(peer, user_ctx, callback);\n");
+        try writer.print("        pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: {s}BootstrapCallback) !u32 {{\n", .{qual});
+        try writer.print("            return {s}bootstrap(peer, user_ctx, callback);\n", .{qual});
         try writer.writeAll("        }\n\n");
 
         try writer.writeAll("    };\n\n");
 
         // --- StreamClient (only when interface or ancestors have streaming methods) ---
         if (self.hasStreamingMethods(node, ancestors)) {
-            try self.generateStreamClient(node, interface_info, ancestors, writer);
+            try self.generateStreamClient(node, interface_info, ancestors, qual, writer);
         }
 
         // Generate Pipeline types for methods with interface-typed results (own methods)
@@ -1514,12 +1521,12 @@ pub const Generator = struct {
 
         // Own pipelined call methods
         for (interface_info.methods) |method| {
-            try self.generatePipelinedClientCallMethod(method, "interface_id", null, writer);
+            try self.generatePipelinedClientCallMethod(method, "interface_id", null, qual, writer);
         }
         // Inherited pipelined call methods
         for (ancestors) |ancestor| {
             for (ancestor.methods) |method| {
-                try self.generatePipelinedClientCallMethod(method, null, ancestor.name, writer);
+                try self.generatePipelinedClientCallMethod(method, null, ancestor.name, qual, writer);
             }
         }
 
@@ -1527,7 +1534,7 @@ pub const Generator = struct {
 
         // --- Bootstrap ---
         try writer.writeAll("    pub const BootstrapResponse = union(enum) {\n");
-        try writer.writeAll("        client: Client,\n");
+        try writer.print("        client: {s}Client,\n", .{qual});
         try writer.writeAll("        exception: rpc.wire.protocol.Exception,\n");
         try writer.writeAll("        canceled,\n");
         try writer.writeAll("        results_sent_elsewhere,\n");
@@ -1537,7 +1544,7 @@ pub const Generator = struct {
         try writer.writeAll("        /// rpc.peer.CallError. Locally synthesized exception reasons map to\n");
         try writer.writeAll("        /// their dedicated errors; every other exception is RemoteException\n");
         try writer.writeAll("        /// (reason available on the union arm).\n");
-        try writer.writeAll("        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {\n");
+        try writer.print("        pub fn unwrap(self: {s}BootstrapResponse) rpc.peer.CallError!{s}Client {{\n", .{ qual, qual });
         try writer.writeAll("            return switch (self) {\n");
         try writer.writeAll("                .client => |c| c,\n");
         try writer.writeAll("                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))\n");
@@ -1553,21 +1560,21 @@ pub const Generator = struct {
         try writer.writeAll("            };\n");
         try writer.writeAll("        }\n");
         try writer.writeAll("    };\n");
-        try writer.writeAll("    pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;\n\n");
+        try writer.print("    pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: {s}BootstrapResponse) anyerror!void;\n\n", .{qual});
 
         try writer.writeAll("    const BootstrapContext = struct {\n");
         try writer.writeAll("        user_ctx: *anyopaque,\n");
-        try writer.writeAll("        callback: BootstrapCallback,\n\n");
+        try writer.print("        callback: {s}BootstrapCallback,\n\n", .{qual});
         try writer.writeAll("        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
-        try writer.writeAll("            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n");
+        try writer.print("            const dead: *{s}BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n", .{qual});
         try writer.writeAll("            ctx_allocator.destroy(dead);\n");
         try writer.writeAll("        }\n");
         try writer.writeAll("    };\n\n");
 
         try writer.writeAll("    fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
-        try writer.writeAll("        const ctx: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n");
+        try writer.print("        const ctx: *{s}BootstrapContext = @ptrCast(@alignCast(ctx_ptr));\n", .{qual});
         try writer.writeAll("        defer peer.allocator.destroy(ctx);\n");
-        try writer.writeAll("        var response: BootstrapResponse = undefined;\n");
+        try writer.print("        var response: {s}BootstrapResponse = undefined;\n", .{qual});
         try writer.writeAll("        switch (ret.tag) {\n");
         try writer.writeAll("            .results => {\n");
         try writer.writeAll("                const payload = ret.results orelse return error.MissingReturnPayload;\n");
@@ -1576,7 +1583,7 @@ pub const Generator = struct {
         try writer.writeAll("                try mutable_caps.retainCapability(cap);\n");
         try writer.writeAll("                const resolved = try caps.resolveCapability(cap);\n");
         try writer.writeAll("                switch (resolved) {\n");
-        try writer.writeAll("                    .imported => |imported| response = .{ .client = Client.init(peer, imported.id) },\n");
+        try writer.print("                    .imported => |imported| response = .{{ .client = {s}Client.init(peer, imported.id) }},\n", .{qual});
         try writer.writeAll("                    else => return error.UnexpectedBootstrapCapability,\n");
         try writer.writeAll("                }\n");
         try writer.writeAll("            },\n");
@@ -1595,45 +1602,45 @@ pub const Generator = struct {
         try writer.writeAll("        try ctx.callback(ctx.user_ctx, peer, response);\n");
         try writer.writeAll("    }\n\n");
 
-        try writer.writeAll("    pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {\n");
-        try writer.writeAll("        const ctx = try peer.allocator.create(BootstrapContext);\n");
+        try writer.print("    pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: {s}BootstrapCallback) !u32 {{\n", .{qual});
+        try writer.print("        const ctx = try peer.allocator.create({s}BootstrapContext);\n", .{qual});
         try writer.writeAll("        errdefer peer.allocator.destroy(ctx);\n");
         try writer.writeAll("        ctx.* = .{ .user_ctx = user_ctx, .callback = callback };\n");
-        try writer.writeAll("        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);\n");
-        try writer.writeAll("        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);\n");
+        try writer.print("        const question_id = try peer.sendBootstrap(ctx, {s}bootstrapReturn);\n", .{qual});
+        try writer.print("        peer.setQuestionDeinitCtx(question_id, {s}BootstrapContext.deinitCtx);\n", .{qual});
         try writer.writeAll("        return question_id;\n");
         try writer.writeAll("    }\n\n");
 
         // --- Server + VTable ---
         try writer.writeAll("    pub const Server = struct {\n");
         try writer.writeAll("        ctx: *anyopaque,\n");
-        try writer.writeAll("        vtable: VTable,\n");
+        try writer.print("        vtable: {s}VTable,\n", .{qual});
         try writer.writeAll("    };\n\n");
 
         try writer.writeAll("    pub const VTable = struct {\n");
         // Own method fields
         for (interface_info.methods) |method| {
-            try self.generateVTableField(method, null, writer);
+            try self.generateVTableField(method, null, qual, writer);
         }
         // Inherited method fields
         for (ancestors) |ancestor| {
             for (ancestor.methods) |method| {
-                try self.generateVTableField(method, ancestor.name, writer);
+                try self.generateVTableField(method, ancestor.name, qual, writer);
             }
         }
         try writer.writeAll("    };\n\n");
 
-        try writer.writeAll("    pub fn exportServer(peer: *rpc.peer.Peer, server: *Server) !u32 {\n");
-        try writer.writeAll("        return peer.addExport(.{ .ctx = server, .on_call = onCall });\n");
+        try writer.print("    pub fn exportServer(peer: *rpc.peer.Peer, server: *{s}Server) !u32 {{\n", .{qual});
+        try writer.print("        return peer.addExport(.{{ .ctx = server, .on_call = {s}onCall }});\n", .{qual});
         try writer.writeAll("    }\n\n");
 
-        try writer.writeAll("    pub fn setBootstrap(peer: *rpc.peer.Peer, server: *Server) !u32 {\n");
-        try writer.writeAll("        return peer.setBootstrap(.{ .ctx = server, .on_call = onCall });\n");
+        try writer.print("    pub fn setBootstrap(peer: *rpc.peer.Peer, server: *{s}Server) !u32 {{\n", .{qual});
+        try writer.print("        return peer.setBootstrap(.{{ .ctx = server, .on_call = {s}onCall }});\n", .{qual});
         try writer.writeAll("    }\n\n");
 
         // --- onCall dispatch ---
         try writer.writeAll("    fn onCall(ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
-        try writer.writeAll("        const server: *Server = @ptrCast(@alignCast(ctx));\n");
+        try writer.print("        const server: *{s}Server = @ptrCast(@alignCast(ctx));\n", .{qual});
 
         var dispatch_method_count: usize = interface_info.methods.len;
         for (ancestors) |ancestor| {
@@ -1646,12 +1653,12 @@ pub const Generator = struct {
 
         if (has_ancestors) {
             // Dispatch by interface_id first, then method_id
-            try writer.writeAll("        if (call.interface_id == interface_id) {\n");
+            try writer.print("        if (call.interface_id == {s}interface_id) {{\n", .{qual});
             try writer.writeAll("            switch (call.method_id) {\n");
             for (interface_info.methods) |method| {
                 const zig_name = try self.toZigIdentifier(method.name);
                 defer self.allocator.free(zig_name);
-                try writer.print("                {s}.ordinal => try {s}.handleCall(server, peer, call, caps),\n", .{ zig_name, zig_name });
+                try writer.print("                {s}{s}.ordinal => try {s}{s}.handleCall(server, peer, call, caps),\n", .{ qual, zig_name, qual, zig_name });
             }
             try writer.writeAll("                else => try peer.sendReturnException(call.question_id, \"unknown method\"),\n");
             try writer.writeAll("            }\n");
@@ -1692,7 +1699,7 @@ pub const Generator = struct {
             for (interface_info.methods) |method| {
                 const zig_name = try self.toZigIdentifier(method.name);
                 defer self.allocator.free(zig_name);
-                try writer.print("            {s}.ordinal => try {s}.handleCall(server, peer, call, caps),\n", .{ zig_name, zig_name });
+                try writer.print("            {s}{s}.ordinal => try {s}{s}.handleCall(server, peer, call, caps),\n", .{ qual, zig_name, qual, zig_name });
             }
             try writer.writeAll("            else => try peer.sendReturnException(call.question_id, \"unknown method\"),\n");
             try writer.writeAll("        }\n");
@@ -1712,7 +1719,7 @@ pub const Generator = struct {
     /// Generate a single method struct inside an interface.
     /// `ordinal` is the method's index in the interface's methods list, which capnp
     /// guarantees equals its wire ordinal (methods are ordered by ordinal).
-    fn generateMethodStruct(self: *Generator, iface_node: *const schema.Node, method: schema.Method, ordinal: usize, writer: anytype) !void {
+    fn generateMethodStruct(self: *Generator, iface_node: *const schema.Node, method: schema.Method, ordinal: usize, qual: []const u8, writer: anytype) !void {
         const zig_name = try self.toZigIdentifier(method.name);
         defer self.allocator.free(zig_name);
         const escaped_zig_name = try types.escapeZigKeyword(self.allocator, zig_name);
@@ -1857,7 +1864,7 @@ pub const Generator = struct {
             try writer.writeAll("        }\n\n");
 
             // handleCall delegates to handleCallDirect
-            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+            try writer.print("        fn handleCall(server: *{s}Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{qual});
             try writer.print("            try handleCallDirect(server.vtable.{s}, server.ctx, peer, call, caps);\n", .{escaped_method_field});
             try writer.writeAll("        }\n\n");
 
@@ -1908,7 +1915,7 @@ pub const Generator = struct {
             try writer.writeAll("        }\n\n");
 
             // handleCall delegates to handleCallDirect
-            try writer.writeAll("        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
+            try writer.print("        fn handleCall(server: *{s}Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {{\n", .{qual});
             const deferred_field = try std.fmt.allocPrint(self.allocator, "{s}_deferred", .{method_field});
             defer self.allocator.free(deferred_field);
             const escaped_deferred_field = try types.escapeZigKeyword(self.allocator, deferred_field);
@@ -1936,8 +1943,10 @@ pub const Generator = struct {
         try writer.writeAll("    };\n\n");
     }
 
-    /// Generate a VTable field for a method. If `ancestor_name` is set, uses the ancestor's types.
-    fn generateVTableField(self: *Generator, method: schema.Method, ancestor_name: ?[]const u8, writer: anytype) !void {
+    /// Generate a VTable field for a method. If `ancestor_name` is set, uses the
+    /// ancestor's (fully qualified) types; otherwise `qual` disambiguates the own
+    /// method struct when this interface is nested inside another.
+    fn generateVTableField(self: *Generator, method: schema.Method, ancestor_name: ?[]const u8, qual: []const u8, writer: anytype) !void {
         const zig_name = try self.toZigIdentifier(method.name);
         defer self.allocator.free(zig_name);
         const method_field = try self.lowerFirst(zig_name);
@@ -1957,10 +1966,10 @@ pub const Generator = struct {
             }
         } else {
             if (method.isStreaming()) {
-                try writer.print("        {s}: {s}.StreamHandler,\n", .{ escaped_field, zig_name });
+                try writer.print("        {s}: {s}{s}.StreamHandler,\n", .{ escaped_field, qual, zig_name });
             } else {
-                try writer.print("        {s}: {s}.Handler,\n", .{ escaped_field, zig_name });
-                try writer.print("        {s}: ?{s}.DeferredHandler = null,\n", .{ escaped_deferred_field, zig_name });
+                try writer.print("        {s}: {s}{s}.Handler,\n", .{ escaped_field, qual, zig_name });
+                try writer.print("        {s}: ?{s}{s}.DeferredHandler = null,\n", .{ escaped_deferred_field, qual, zig_name });
             }
         }
     }
@@ -1975,13 +1984,24 @@ pub const Generator = struct {
         iface_id_owned: bool,
     };
 
-    fn resolveMethodCallParams(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8) !MethodCallParams {
+    /// `qual` is the own-interface disambiguation prefix (e.g. "Handle." for a
+    /// nested interface, "" for a file-scoped one). For an OWN method the method
+    /// struct and `interface_id` are referenced as `{qual}{Method}` /
+    /// `{qual}interface_id`; for an INHERITED method the ancestor's fully
+    /// qualified name is used instead and `qual` is irrelevant.
+    fn resolveMethodCallParams(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, qual: []const u8) !MethodCallParams {
         const zig_name = try self.toZigIdentifier(method.name);
         errdefer self.allocator.free(zig_name);
         const call_name = try std.fmt.allocPrint(self.allocator, "call{s}", .{zig_name});
         errdefer self.allocator.free(call_name);
 
-        const iface_id = if (interface_id_expr) |expr| expr else blk: {
+        // Own methods: qualify `interface_id` with the interface's own prefix so a
+        // nested interface's dispatch doesn't bind the enclosing interface's
+        // `interface_id`. Inherited methods reference the ancestor's constant.
+        const iface_id = if (interface_id_expr) |expr| blk: {
+            const temp = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ qual, expr });
+            break :blk temp;
+        } else blk: {
             const temp = try std.fmt.allocPrint(self.allocator, "{s}.interface_id", .{ancestor_name.?});
             break :blk temp;
         };
@@ -1989,10 +2009,13 @@ pub const Generator = struct {
         return .{
             .zig_name = zig_name,
             .call_name = call_name,
-            .method_prefix = ancestor_name orelse "",
+            // Own: `{qual}{Method}` (qual carries its own trailing dot, so dot="").
+            // Inherited: `{ancestor}.{Method}`.
+            .method_prefix = ancestor_name orelse qual,
             .dot = if (ancestor_name != null) "." else "",
             .iface_id = iface_id,
-            .iface_id_owned = interface_id_expr == null,
+            // iface_id is now always freshly allocated (both branches).
+            .iface_id_owned = true,
         };
     }
 
@@ -2002,13 +2025,15 @@ pub const Generator = struct {
         if (params.iface_id_owned) self.allocator.free(params.iface_id);
     }
 
-    /// Generate a Client call method. Uses `interface_id_expr` for own methods or ancestor_name for inherited.
-    fn generateClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, writer: anytype) !void {
-        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
+    /// Generate a Client call method. Uses `interface_id_expr` for own methods or
+    /// ancestor_name for inherited; `qual` disambiguates the Client receiver and
+    /// own method structs when this interface is nested inside another.
+    fn generateClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, qual: []const u8, writer: anytype) !void {
+        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name, qual);
         defer self.freeMethodCallParams(p);
 
-        try writer.print("        pub fn {s}(self: Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
-            p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
+        try writer.print("        pub fn {s}(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
+            p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            errdefer self.peer.allocator.destroy(ctx);\n");
@@ -2027,29 +2052,30 @@ pub const Generator = struct {
         node: *const schema.Node,
         interface_info: schema.InterfaceNode,
         ancestors: []const AncestorInfo,
+        qual: []const u8,
         writer: anytype,
     ) !void {
         _ = node;
         try writer.writeAll("    pub const StreamClient = struct {\n");
-        try writer.writeAll("        client: Client,\n");
+        try writer.print("        client: {s}Client,\n", .{qual});
         try writer.writeAll("        stream: rpc.transport.stream_state.StreamState = .{},\n\n");
 
-        try writer.writeAll("        pub fn init(client: Client) StreamClient {\n");
+        try writer.print("        pub fn init(client: {s}Client) {s}StreamClient {{\n", .{ qual, qual });
         try writer.writeAll("            return .{ .client = client };\n");
         try writer.writeAll("        }\n\n");
 
         // Own methods
         for (interface_info.methods) |method| {
-            try self.generateStreamClientCallMethod(method, "interface_id", null, writer);
+            try self.generateStreamClientCallMethod(method, "interface_id", null, qual, writer);
         }
         // Inherited methods
         for (ancestors) |ancestor| {
             for (ancestor.methods) |method| {
-                try self.generateStreamClientCallMethod(method, null, ancestor.name, writer);
+                try self.generateStreamClientCallMethod(method, null, ancestor.name, qual, writer);
             }
         }
 
-        try writer.writeAll("        pub fn waitStreaming(self: *StreamClient, ctx: *anyopaque, callback: rpc.transport.stream_state.StreamState.DrainCallback) void {\n");
+        try writer.print("        pub fn waitStreaming(self: *{s}StreamClient, ctx: *anyopaque, callback: rpc.transport.stream_state.StreamState.DrainCallback) void {{\n", .{qual});
         try writer.writeAll("            self.stream.waitStreaming(ctx, callback);\n");
         try writer.writeAll("        }\n");
 
@@ -2063,15 +2089,16 @@ pub const Generator = struct {
         method: schema.Method,
         interface_id_expr: ?[]const u8,
         ancestor_name: ?[]const u8,
+        qual: []const u8,
         writer: anytype,
     ) !void {
-        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
+        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name, qual);
         defer self.freeMethodCallParams(p);
 
         if (method.isStreaming()) {
             // Fire-and-forget streaming call
-            try writer.print("        pub fn {s}(self: *StreamClient, build_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn) !void {{\n", .{
-                p.call_name, p.method_prefix, p.dot, p.zig_name,
+            try writer.print("        pub fn {s}(self: *{s}StreamClient, build_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn) !void {{\n", .{
+                p.call_name, qual, p.method_prefix, p.dot, p.zig_name,
             });
             try writer.writeAll("            if (self.stream.hasFailed()) return self.stream.stream_error.?;\n");
             try writer.writeAll("            try self.stream.noteCallSent();\n");
@@ -2090,8 +2117,8 @@ pub const Generator = struct {
             try writer.writeAll("        }\n\n");
         } else {
             // Pass-through to inner Client
-            try writer.print("        pub fn {s}(self: *StreamClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
-                p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
+            try writer.print("        pub fn {s}(self: *{s}StreamClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
+                p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
             });
             try writer.print("            return self.client.{s}(user_ctx, build, on_return);\n", .{p.call_name});
             try writer.writeAll("        }\n\n");
@@ -2099,7 +2126,9 @@ pub const Generator = struct {
     }
 
     /// Generate a callXxxPipelined method on Client if the method has interface-typed results.
-    fn generateClientPipelinedMethod(self: *Generator, method: schema.Method, ancestor_name: ?[]const u8, writer: anytype) !void {
+    /// `qual` disambiguates the Client receiver, the own `{Method}Pipeline` return
+    /// type, and the own method struct when this interface is nested inside another.
+    fn generateClientPipelinedMethod(self: *Generator, method: schema.Method, ancestor_name: ?[]const u8, qual: []const u8, writer: anytype) !void {
         const iface_fields = try self.getInterfaceFields(method.result_struct_type);
         defer self.freeInterfaceFields(iface_fields);
         if (iface_fields.len == 0) return;
@@ -2112,11 +2141,13 @@ pub const Generator = struct {
         const pipeline_name = try self.allocMethodPipelineName(method.name);
         defer self.allocator.free(pipeline_name);
 
-        const method_prefix = ancestor_name orelse "";
+        // Own method: `{qual}{Method}` (qual carries its trailing dot). Inherited:
+        // `{ancestor}.{Method}`, and the Pipeline type lives on the ancestor.
+        const method_prefix = ancestor_name orelse qual;
         const dot = if (ancestor_name != null) "." else "";
 
-        try writer.print("        pub fn call{s}Pipelined(self: Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
-            zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
+        try writer.print("        pub fn call{s}Pipelined(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
+            zig_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
         });
         try writer.print("            const qid = try self.call{s}(user_ctx, build, on_return);\n", .{zig_name});
         try writer.writeAll("            return .{ .peer = self.peer, .question_id = qid };\n");
@@ -2151,13 +2182,14 @@ pub const Generator = struct {
         try writer.writeAll("    };\n\n");
     }
 
-    /// Generate a PipelinedClient call method.
-    fn generatePipelinedClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, writer: anytype) !void {
-        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
+    /// Generate a PipelinedClient call method. `qual` disambiguates the
+    /// PipelinedClient receiver and own method structs under nesting.
+    fn generatePipelinedClientCallMethod(self: *Generator, method: schema.Method, interface_id_expr: ?[]const u8, ancestor_name: ?[]const u8, qual: []const u8, writer: anytype) !void {
+        const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name, qual);
         defer self.freeMethodCallParams(p);
 
-        try writer.print("        pub fn {s}(self: PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
-            p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
+        try writer.print("        pub fn {s}(self: {s}PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
+            p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            errdefer self.peer.allocator.destroy(ctx);\n");
@@ -2466,10 +2498,10 @@ pub const Generator = struct {
         }
 
         const start = self.getNode(id) orelse return self.allocator.dupe(u8, "");
-        // Interfaces are emitted flat at file scope (not nested under their
-        // parent), because a nested interface's Server/Client/VTable/… would be
-        // shadowed by the parent's. They are therefore referenced by bare name.
-        if (start.kind == .interface) return self.allocator.dupe(u8, "");
+        // Nested interfaces are emitted INSIDE their parent's body (self-qualified,
+        // like nested structs), so their scope path walks parents too. A file-scoped
+        // interface's `scope_id` is the file node, so the walk yields "" — same as
+        // any file-scoped type — keeping file-scope output byte-identical.
         var current_id = start.scope_id;
         var depth: u32 = 0;
         while (depth < 64) : (depth += 1) {

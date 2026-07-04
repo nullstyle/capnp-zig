@@ -91,9 +91,31 @@ test "Codegen emits nested interface definitions" {
     try expectContains(output, "pub fn callGetInner");
     try expectContains(output, "pub fn callPing");
 
-    // GAP-5: Typed capability resolution in readers
+    // Parent-qualified nested interface: `Inner` is now emitted INSIDE `Outer`'s
+    // body (self-qualified), not flat at file scope. So `pub const Inner = struct`
+    // appears AFTER `pub const Outer = struct` opens and BEFORE it closes, and
+    // Inner's own decls self-qualify as `Inner.X` so they aren't shadowed by
+    // Outer's same-named Client/Server/VTable/PipelinedClient/BootstrapContext.
+    {
+        const outer_idx = std.mem.indexOf(u8, output, "pub const Outer = struct").?;
+        const inner_idx = std.mem.indexOf(u8, output, "pub const Inner = struct").?;
+        // Outer's closing `};` is at column 0 (file scope). Find the first
+        // file-scope `};\n` after Outer opens — Inner must come before it.
+        const outer_close = std.mem.indexOfPos(u8, output, outer_idx, "\n};\n").?;
+        try std.testing.expect(outer_idx < inner_idx);
+        try std.testing.expect(inner_idx < outer_close);
+    }
+    // Inner self-qualifies its own decls (would be `Client`/`Server`/… bare under
+    // the old flat emission, which then collided with Outer's).
+    try expectContains(output, "pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Inner.Client {");
+    try expectContains(output, "vtable: Inner.VTable,");
+    try expectContains(output, "const server: *Inner.Server = @ptrCast(@alignCast(ctx));");
+    try expectContains(output, "response: Inner.BootstrapResponse");
+
+    // GAP-5: Typed capability resolution in readers. Outer's resolveInner now
+    // reaches the nested interface by its full parent-qualified path.
     try expectContains(output, "pub fn resolveInner");
-    try expectContains(output, "Inner.Client");
+    try expectContains(output, "Outer.Inner.Client");
     try expectContains(output, "var mutable_caps = caps.*;");
     try expectContains(output, "try mutable_caps.retainCapability(cap);");
 
@@ -106,9 +128,10 @@ test "Codegen emits nested interface definitions" {
         \\                const resolved = try caps.resolveCapability(cap);
     );
 
-    // GAP-3: Typed capability parameter passing in builders
-    try expectContains(output, "pub fn setInnerServer");
-    try expectContains(output, "pub fn setInnerClient");
+    // GAP-3: Typed capability parameter passing in builders. The nested-interface
+    // param types are parent-qualified.
+    try expectContains(output, "pub fn setInnerServer(self: *Builder, peer: *rpc.peer.Peer, server: *Outer.Inner.Server) !void {");
+    try expectContains(output, "pub fn setInnerClient(self: *Builder, client: Outer.Inner.Client) !void {");
 
     // GAP-8: Deferred handler returns
     try expectContains(output, "pub const DeferredHandler");

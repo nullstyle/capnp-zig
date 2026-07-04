@@ -690,3 +690,36 @@ test "Codegen parent-qualified nesting resolves same-name collisions" {
         \\
     );
 }
+
+test "Codegen parent-qualified nesting resolves same-name nested interfaces" {
+    const allocator = std.testing.allocator;
+
+    // Two interfaces (Alpha, Beta) each nesting an interface named `Handle`, each
+    // Handle carrying its own nested struct `Token` and a method. Before
+    // parent-qualified nested-interface codegen the two `Handle`s emitted flat at
+    // file scope and collided (error.DuplicateGeneratedName). Now each Handle
+    // emits inside its parent, self-qualifying its Client/Server/VTable/… so its
+    // decls aren't shadowed by the enclosing interface's. Compiling the harness is
+    // the proof; the assertions document the distinct nested identities.
+    try runGeneratedHarness(allocator, "tests/test_schemas/nested_interface_collisions.capnp",
+        \\const std = @import("std");
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "same-name nested interfaces across parents are distinct" {
+        \\    try std.testing.expect(generated.Alpha.Handle != generated.Beta.Handle);
+        \\    try std.testing.expect(generated.Alpha.Handle.Token != generated.Beta.Handle.Token);
+        \\    // Force analysis of each nested interface's Client/Server, whose
+        \\    // self-references must be disambiguated from the enclosing interface's.
+        \\    _ = generated.Alpha.Handle.Client;
+        \\    _ = generated.Beta.Handle.Server;
+        \\    _ = generated.Alpha.Handle.Server;
+        \\    _ = generated.Beta.Handle.Client;
+        \\    // Alpha.open's result resolves to the nested Alpha.Handle: its
+        \\    // resolveHandle reader returns an Alpha.Handle.Client.
+        \\    const ResolveFn = @TypeOf(generated.Alpha.Open.Results.Reader.resolveHandle);
+        \\    const ret = @typeInfo(ResolveFn).@"fn".return_type.?;
+        \\    try std.testing.expect(@typeInfo(ret).error_union.payload == generated.Alpha.Handle.Client);
+        \\}
+        \\
+    );
+}
