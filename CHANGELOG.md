@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Serde manifest names and C export symbols are parent-qualified**: nested
+  types render as `Parent.Child` in `CAPNP_SCHEMA_MANIFEST_JSON` and export
+  `capnp_<module>_<parent>_<child>_to_json` (method param/result structs
+  qualify under their interface), matching the scope-qualified generated
+  code. Two same-simple-name types under different parents — legal in
+  source — previously collided silently on one C symbol. A residual
+  collision (identifier normalization folding two names together) now fails
+  generation with `error.DuplicateSerdeExportSymbol` naming both types.
+
 - **Generated client call methods take by-value receivers**:
   `Client.callX(self: Client, ...)`, `Client.callXPipelined(self: Client,
   ...)`, and `PipelinedClient.callX(self: PipelinedClient, ...)` (previously

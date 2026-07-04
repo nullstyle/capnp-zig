@@ -410,7 +410,33 @@ pub const Generator = struct {
         }
 
         for (file_node.nested_nodes) |nested| {
-            try self.collectManifestSerdeEntries(nested.id, module_name, &seen, &entries);
+            try self.collectManifestSerdeEntries(nested.id, module_name, &seen, &entries, null);
+        }
+
+        // Backstop: parent-qualification makes export symbols unique by
+        // construction, but identifier normalization (snake-casing) can still
+        // fold two distinct source names onto one C symbol. The second export
+        // would silently shadow the first at link time — fail loudly instead.
+        {
+            var by_export = std.StringHashMap(schema.Id).init(self.allocator);
+            defer by_export.deinit();
+            for (entries.items) |entry| {
+                const slot = try by_export.getOrPut(entry.to_json_export);
+                if (slot.found_existing) {
+                    const first = self.getNode(slot.value_ptr.*);
+                    const second = self.getNode(entry.id);
+                    std.log.warn(
+                        "duplicate serde export symbol '{s}' for schema types '{s}' and '{s}'",
+                        .{
+                            entry.to_json_export,
+                            if (first) |n| n.display_name else "<unknown>",
+                            if (second) |n| n.display_name else "<unknown>",
+                        },
+                    );
+                    return error.DuplicateSerdeExportSymbol;
+                }
+                slot.value_ptr.* = entry.id;
+            }
         }
 
         self.sortManifestSerdeEntries(entries.items);
@@ -449,6 +475,7 @@ pub const Generator = struct {
         module_name: []const u8,
         seen: *std.AutoHashMap(schema.Id, void),
         entries: *std.ArrayList(ManifestSerdeEntry),
+        parent_override: ?[]const u8,
     ) !void {
         if (seen.contains(id)) return;
         const node = self.getNode(id) orelse return;
@@ -456,9 +483,45 @@ pub const Generator = struct {
 
         if (node.kind == .@"struct") {
             const simple_name = self.getSimpleName(node);
-            const type_name = try self.toZigIdentifier(simple_name);
+            // Manifest names mirror the emitted (scope-qualified) type path:
+            // nested types are Parent.Child and their C ABI export symbols
+            // are parent-qualified too, so two same-simple-name types under
+            // different parents — legal in source — cannot collide on the
+            // exported symbol. Auto-generated method param/result structs
+            // (scope_id == 0) qualify under their emitting interface.
+            const parent_path = blk: {
+                if (node.scope_id == 0) {
+                    if (parent_override) |ov| break :blk try self.allocator.dupe(u8, ov);
+                    break :blk try self.allocator.dupe(u8, "");
+                }
+                break :blk try self.parentScopePath(node.id);
+            };
+            defer self.allocator.free(parent_path);
+
+            const type_name = blk: {
+                const simple_ident = try self.toZigIdentifier(simple_name);
+                if (parent_path.len == 0) break :blk simple_ident;
+                defer self.allocator.free(simple_ident);
+                break :blk try std.mem.join(self.allocator, ".", &.{ parent_path, simple_ident });
+            };
             errdefer self.allocator.free(type_name);
-            const type_export = try self.toSnakeCaseLower(simple_name);
+
+            const type_export = blk: {
+                const simple_snake = try self.toSnakeCaseLower(simple_name);
+                if (parent_path.len == 0) break :blk simple_snake;
+                defer self.allocator.free(simple_snake);
+                var parts = std.ArrayList([]const u8).empty;
+                defer {
+                    for (parts.items) |part| self.allocator.free(part);
+                    parts.deinit(self.allocator);
+                }
+                var segs = std.mem.splitScalar(u8, parent_path, '.');
+                while (segs.next()) |seg| {
+                    try parts.append(self.allocator, try self.toSnakeCaseLower(seg));
+                }
+                try parts.append(self.allocator, try self.allocator.dupe(u8, simple_snake));
+                break :blk try std.mem.join(self.allocator, "_", parts.items);
+            };
             defer self.allocator.free(type_export);
 
             const to_json = try std.fmt.allocPrint(
@@ -483,22 +546,27 @@ pub const Generator = struct {
         }
 
         for (node.nested_nodes) |nested| {
-            try self.collectManifestSerdeEntries(nested.id, module_name, seen, entries);
+            try self.collectManifestSerdeEntries(nested.id, module_name, seen, entries, null);
         }
 
         if (node.kind == .interface) {
             const iface = node.interface_node orelse return;
+            const iface_name = try self.toZigIdentifier(self.getSimpleName(node));
+            defer self.allocator.free(iface_name);
             for (iface.methods) |method| {
-                try self.collectManifestSerdeEntries(method.param_struct_type, module_name, seen, entries);
-                try self.collectManifestSerdeEntries(method.result_struct_type, module_name, seen, entries);
+                try self.collectManifestSerdeEntries(method.param_struct_type, module_name, seen, entries, iface_name);
+                try self.collectManifestSerdeEntries(method.result_struct_type, module_name, seen, entries, iface_name);
             }
-            // Also include superclass method param/result types
+            // Also include superclass method param/result types; those structs
+            // are emitted under the superclass interface, so qualify there.
             for (iface.superclasses) |parent_id| {
                 const parent_node = self.getNode(parent_id) orelse continue;
                 const parent_iface = parent_node.interface_node orelse continue;
+                const parent_name = try self.toZigIdentifier(self.getSimpleName(parent_node));
+                defer self.allocator.free(parent_name);
                 for (parent_iface.methods) |method| {
-                    try self.collectManifestSerdeEntries(method.param_struct_type, module_name, seen, entries);
-                    try self.collectManifestSerdeEntries(method.result_struct_type, module_name, seen, entries);
+                    try self.collectManifestSerdeEntries(method.param_struct_type, module_name, seen, entries, parent_name);
+                    try self.collectManifestSerdeEntries(method.result_struct_type, module_name, seen, entries, parent_name);
                 }
             }
         }
@@ -3232,6 +3300,73 @@ test "Generator.generateFile rejects duplicate enum enumerant generated names" {
     };
 
     try std.testing.expectError(error.DuplicateGeneratedName, gen.generateFile(requested));
+}
+
+test "Generator.generateFile qualifies serde export symbols by parent scope" {
+    const alloc = std.testing.allocator;
+
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Outer1", .id = 2 },
+        .{ .name = "Outer2", .id = 4 },
+    };
+    var outer1_nested = [_]schema.Node.NestedNode{.{ .name = "Inner", .id = 3 }};
+    var outer2_nested = [_]schema.Node.NestedNode{.{ .name = "Inner", .id = 5 }};
+    const root_file = testFileNode(1, "root.capnp", root_nested[0..]);
+    const outer1 = testStructNode(2, 1, "Outer1", &[_]schema.Field{}, outer1_nested[0..]);
+    const inner1 = testStructNode(3, 2, "Inner", &[_]schema.Field{}, &[_]schema.Node.NestedNode{});
+    const outer2 = testStructNode(4, 1, "Outer2", &[_]schema.Field{}, outer2_nested[0..]);
+    const inner2 = testStructNode(5, 4, "Inner", &[_]schema.Field{}, &[_]schema.Node.NestedNode{});
+    const nodes = [_]schema.Node{ root_file, outer1, inner1, outer2, inner2 };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    const output = try gen.generateFile(requested);
+    defer alloc.free(output);
+
+    // Same simple name under different parents is source-legal; the export
+    // symbols must be parent-qualified and therefore distinct.
+    try std.testing.expect(std.mem.indexOf(u8, output, "capnp_root_outer1_inner_to_json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "capnp_root_outer2_inner_to_json") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Outer1.Inner") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Outer2.Inner") != null);
+}
+
+test "Generator.generateFile rejects colliding serde export symbols" {
+    const alloc = std.testing.allocator;
+
+    // Distinct emitted Zig paths (FooBar.Baz vs Foo.BarBaz) whose
+    // snake-cased C export symbols fold onto the same string
+    // (capnp_root_foo_bar_baz_to_json) — the backstop must fail loudly.
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "FooBar", .id = 2 },
+        .{ .name = "Foo", .id = 4 },
+    };
+    var foobar_nested = [_]schema.Node.NestedNode{.{ .name = "Baz", .id = 3 }};
+    var foo_nested = [_]schema.Node.NestedNode{.{ .name = "BarBaz", .id = 5 }};
+    const root_file = testFileNode(1, "root.capnp", root_nested[0..]);
+    const foobar = testStructNode(2, 1, "FooBar", &[_]schema.Field{}, foobar_nested[0..]);
+    const baz = testStructNode(3, 2, "Baz", &[_]schema.Field{}, &[_]schema.Node.NestedNode{});
+    const foo = testStructNode(4, 1, "Foo", &[_]schema.Field{}, foo_nested[0..]);
+    const barbaz = testStructNode(5, 4, "BarBaz", &[_]schema.Field{}, &[_]schema.Node.NestedNode{});
+    const nodes = [_]schema.Node{ root_file, foobar, baz, foo, barbaz };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &[_]schema.Import{},
+    };
+
+    try std.testing.expectError(error.DuplicateSerdeExportSymbol, gen.generateFile(requested));
 }
 
 test "Generator.generateFile emits unique escaped import aliases" {

@@ -7,7 +7,7 @@ const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
 
-pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"examples/pingpong.capnp\",\"module\":\"pingpong\",\"serde\":[{\"id\":10408369240078422827,\"type_name\":\"PingParams\",\"to_json_export\":\"capnp_pingpong_ping_params_to_json\",\"from_json_export\":\"capnp_pingpong_ping_params_from_json\"},{\"id\":12204507717862133617,\"type_name\":\"PingResults\",\"to_json_export\":\"capnp_pingpong_ping_results_to_json\",\"from_json_export\":\"capnp_pingpong_ping_results_from_json\"}]}";
+pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"examples/pingpong.capnp\",\"module\":\"pingpong\",\"serde\":[{\"id\":10408369240078422827,\"type_name\":\"PingPong.PingParams\",\"to_json_export\":\"capnp_pingpong_ping_pong_ping_params_to_json\",\"from_json_export\":\"capnp_pingpong_ping_pong_ping_params_from_json\"},{\"id\":12204507717862133617,\"type_name\":\"PingPong.PingResults\",\"to_json_export\":\"capnp_pingpong_ping_pong_ping_results_to_json\",\"from_json_export\":\"capnp_pingpong_ping_pong_ping_results_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
     return CAPNP_SCHEMA_MANIFEST_JSON;
 }

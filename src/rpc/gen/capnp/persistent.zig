@@ -7,7 +7,7 @@ const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
 
-pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"capnp/persistent.capnp\",\"module\":\"persistent\",\"serde\":[{\"id\":17829674341603767205,\"type_name\":\"SaveParams\",\"to_json_export\":\"capnp_persistent_save_params_to_json\",\"from_json_export\":\"capnp_persistent_save_params_from_json\"},{\"id\":13215893102637674431,\"type_name\":\"SaveResults\",\"to_json_export\":\"capnp_persistent_save_results_to_json\",\"from_json_export\":\"capnp_persistent_save_results_from_json\"}]}";
+pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"capnp/persistent.capnp\",\"module\":\"persistent\",\"serde\":[{\"id\":17829674341603767205,\"type_name\":\"Persistent.SaveParams\",\"to_json_export\":\"capnp_persistent_persistent_save_params_to_json\",\"from_json_export\":\"capnp_persistent_persistent_save_params_from_json\"},{\"id\":13215893102637674431,\"type_name\":\"Persistent.SaveResults\",\"to_json_export\":\"capnp_persistent_persistent_save_results_to_json\",\"from_json_export\":\"capnp_persistent_persistent_save_results_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
     return CAPNP_SCHEMA_MANIFEST_JSON;
 }
