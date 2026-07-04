@@ -465,6 +465,7 @@ pub fn build(b: *std.Build) void {
     const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
     const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
     const run_fuzz_smoke_tests = addLibTest(b, "tests/hardening/fuzz_smoke_test.zig", target, optimize, lib_module);
+    const run_toolchain_gate_tests = addLibTest(b, "tests/hardening/toolchain_gate_test.zig", target, optimize, lib_module);
     const run_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, optimize, lib_module);
     const run_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, optimize, lib_module);
     const run_codegen_annotations_tests = addLibTest(b, "tests/serialization/codegen_annotations_test.zig", target, optimize, lib_module);
@@ -566,6 +567,9 @@ pub fn build(b: *std.Build) void {
 
     const test_fuzz_smoke_step = b.step("test-fuzz-smoke", "Run deterministic hardening fuzz/smoke coverage");
     test_fuzz_smoke_step.dependOn(run_fuzz_smoke_tests);
+
+    const test_toolchain_gate_step = b.step("test-toolchain-gate", "Assert required tools/fixtures are present (no silent skips)");
+    test_toolchain_gate_step.dependOn(run_toolchain_gate_tests);
 
     const run_fuzz_target_tests = addLibTest(b, "tests/fuzz/fuzz_targets.zig", target, optimize, lib_module);
     const test_fuzz_step = b.step("test-fuzz", "Run coverage-guided fuzz targets (add --fuzz to actually fuzz)");
@@ -797,6 +801,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_rpc_step);
     test_step.dependOn(test_wasm_host_step);
     test_step.dependOn(test_fuzz_smoke_step);
+    test_step.dependOn(test_toolchain_gate_step);
     test_step.dependOn(test_resource_budgets_step);
     test_step.dependOn(test_oom_step);
 
