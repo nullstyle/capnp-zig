@@ -182,9 +182,19 @@ Contract:
 - The synthetic failure is **never** recorded in `resolved_answers` and is
   **never** replayed to pipelining/`pending_promises` — it is purely an
   outbound-question terminal signal, distinct from an inbound answer.
-- Direct `Peer.deinit` without a prior transport close only frees state (runs
-  each question's `deinit_ctx`); owners that need waiter notification must
-  close/shutdown the transport first, which drives `onConnectionClose`.
+- Direct `Peer.deinit` without a prior transport close delivers the same
+  terminal signal: its first act is `forceCancelAllQuestions("disconnected")`,
+  run while all maps are intact, so every outstanding question's callback
+  fires exactly once (delivery transfers ctx ownership to the callback; if
+  synthesis fails before the callback can run, the question's `deinit_ctx`
+  frees the ctx instead). After a transport close this pass is a no-op —
+  `onConnectionClose` already delivered the terminals. Questions parked in
+  `pending_third_party_awaits` are the documented exclusion: they receive
+  `deinit_ctx`-only cleanup (forward/save contexts, not user return
+  callbacks).
+- Peer lifecycle callbacks carry a user context: `start(cb_ctx, on_error,
+  on_close)` stores `cb_ctx` and passes it as the leading argument of both
+  callbacks, so owners no longer need globals to reach their state.
 
 ## Current Module Layout
 - `src/rpc/transport/tcp/runtime.zig`

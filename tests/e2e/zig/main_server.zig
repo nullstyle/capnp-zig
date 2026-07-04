@@ -1709,12 +1709,12 @@ fn onControllerCancelMatch(
     try results.setStatus(statusOk(game_types.StatusCode));
 }
 
-fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
+fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
     std.log.err("rpc peer error: {s}", .{@errorName(err)});
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
-fn onPeerClose(peer: *rpc.peer.Peer) void {
+fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
     _ = peer;
 }
 
@@ -1733,7 +1733,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
         return err;
     };
 
-    peer.start(onPeerError, onPeerClose);
+    peer.start(null, onPeerError, onPeerClose);
     return .accept;
 }
 

@@ -77,9 +77,12 @@ fn sendBootstrapOomImpl(allocator: std.mem.Allocator) !void {
     peer.setSendFrameOverride(&sink, noopSend);
 
     var ctx: u8 = 0;
-    _ = try peer.sendBootstrap(&ctx, noopReturn);
-    // On OOM sendBootstrap must roll the question back (no leak); on success the
-    // question holds only a stack ctx (no deinit_ctx), freed with the map.
+    const qid = try peer.sendBootstrap(&ctx, noopReturn);
+    // On OOM sendBootstrap must roll the question back (no leak). On success,
+    // remove the question before deinit: the terminal question pass would
+    // otherwise synthesize a Disconnected Return for it with fallible
+    // (swallowed) allocations, which checkAllAllocationFailures flags.
+    peer_test_hooks.removeQuestion(&peer, qid);
 }
 
 // InboundCapTable.init decodes each cap descriptor and notes the import in the

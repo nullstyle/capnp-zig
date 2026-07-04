@@ -107,7 +107,7 @@ fn failAndFinish(app: *ClientApp, peer: *rpc.peer.Peer, desc: []const u8) void {
     finish(app, peer);
 }
 
-fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
+fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
     if (g_client_app) |app| {
         if (!app.done) {
@@ -118,7 +118,7 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
     }
 }
 
-fn onPeerClose(peer: *rpc.peer.Peer) void {
+fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
     const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
     var retained_conn: ?*rpc.transport.tcp.Connection = null;
@@ -398,7 +398,7 @@ pub fn main(init: std.process.Init) !void {
     peer.* = rpc.peer.Peer.init(allocator, conn);
     app.peer = peer;
 
-    peer.start(onPeerError, onPeerClose);
+    peer.start(null, onPeerError, onPeerClose);
 
     const start_result = switch (app.args.schema) {
         .game_world => bootstrapGameWorld(&app, peer),

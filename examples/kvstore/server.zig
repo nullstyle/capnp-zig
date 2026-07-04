@@ -1230,13 +1230,13 @@ fn handleRestoreFromBackup(
 // Peer lifecycle
 // ---------------------------------------------------------------------------
 
-fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
+fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
     const last_tag: []const u8 = if (peer.last_inbound_tag) |tag| @tagName(tag) else "none";
     std.log.err("peer error: {s} (last_inbound_tag={s})", .{ @errorName(err), last_tag });
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
-fn onPeerClose(peer: *rpc.peer.Peer) void {
+fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
     if (g_service) |svc| {
         while (!svc.mu.tryLock()) {}
         defer svc.mu.unlock();
@@ -1264,7 +1264,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.
         return err;
     };
 
-    peer.start(onPeerError, onPeerClose);
+    peer.start(null, onPeerError, onPeerClose);
     std.log.debug("client connected", .{});
     return .accept;
 }

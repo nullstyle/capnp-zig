@@ -20,7 +20,7 @@ test "peer initDetached starts without attached transport" {
     var peer = Peer.initDetached(std.testing.allocator);
     defer peer.deinit();
 
-    peer.start(null, null);
+    peer.start(null, null, null);
     try std.testing.expect(!peer.hasAttachedTransport());
 }
 
@@ -229,10 +229,8 @@ test "peer on_error callback fires and null callback is safe" {
         last_error: ?anyerror = null,
     };
     const Hooks = struct {
-        var ctx_ptr: ?*Ctx = null;
-
-        fn onError(_: *Peer, err: anyerror) void {
-            const ctx = ctx_ptr orelse unreachable;
+        fn onError(ctx_opt: ?*anyopaque, _: *Peer, err: anyerror) void {
+            const ctx: *Ctx = @ptrCast(@alignCast(ctx_opt orelse unreachable));
             ctx.called += 1;
             ctx.last_error = err;
         }
@@ -242,18 +240,16 @@ test "peer on_error callback fires and null callback is safe" {
     defer peer.deinit();
 
     var ctx = Ctx{};
-    Hooks.ctx_ptr = &ctx;
-    defer Hooks.ctx_ptr = null;
     peer.setSendFrameOverride(&ctx, struct {
         fn send(_: *anyopaque, _: []const u8) anyerror!void {}
     }.send);
-    peer.start(Hooks.onError, null);
+    peer.start(&ctx, Hooks.onError, null);
 
     peer_test_hooks.onConnectionError(&peer, error.ConnectionResetByPeer);
     try std.testing.expectEqual(@as(usize, 1), ctx.called);
     try std.testing.expectEqual(error.ConnectionResetByPeer, ctx.last_error.?);
 
-    peer.start(null, null);
+    peer.start(null, null, null);
     peer_test_hooks.onConnectionError(&peer, error.ConnectionResetByPeer);
     try std.testing.expectEqual(@as(usize, 1), ctx.called);
 }
@@ -1321,9 +1317,8 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
         }
     };
 
-    var peer = Peer.initDetached(allocator);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
@@ -1332,15 +1327,25 @@ test "forwarded return forwards awaitFromThirdParty to caller" {
         for (capture.frames.items) |frame| allocator.free(frame);
         capture.frames.deinit(allocator);
     }
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     const upstream_answer_id: u32 = 400;
     const local_forwarded_question_id: u32 = 401;
 
-    // Register the upstream question as non-loopback so the return goes to the wire (capture).
+    // Register the upstream question as non-loopback so the return goes to
+    // the wire (capture). The callback must be real: deinit's terminal pass
+    // delivers a synthetic Disconnected Return to any question still in the
+    // map at teardown.
+    const NoopReturn = struct {
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    var question_ctx: u8 = 0;
     try peer.questions.put(upstream_answer_id, .{
-        .ctx = undefined,
-        .on_return = undefined,
+        .ctx = &question_ctx,
+        .on_return = NoopReturn.onReturn,
         .is_loopback = false,
     });
     try peer.forwarded_questions.put(local_forwarded_question_id, upstream_answer_id);
@@ -1591,9 +1596,8 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
         }
     };
 
-    var peer = Peer.initDetached(allocator);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
@@ -1602,13 +1606,22 @@ test "handleResolvedCall forwards sendResultsTo.thirdParty when forwarding promi
         for (capture.frames.items) |frame| allocator.free(frame);
         capture.frames.deinit(allocator);
     }
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     // Register the upstream question as non-loopback so the forwarded return
-    // goes to the wire (capture) instead of through the third-party adoption path.
+    // goes to the wire (capture) instead of through the third-party adoption
+    // path. The callback must be real: deinit's terminal pass delivers a
+    // synthetic Disconnected Return to any question still in the map.
+    const NoopReturn = struct {
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    var question_ctx: u8 = 0;
     try peer.questions.put(800, .{
-        .ctx = undefined,
-        .on_return = undefined,
+        .ctx = &question_ctx,
+        .on_return = NoopReturn.onReturn,
         .is_loopback = false,
     });
 
@@ -4154,6 +4167,17 @@ fn acceptFromThirdPartyAwaitQueueOomImpl(allocator: std.mem.Allocator) !void {
     try peer.handleFrame(await_frame);
     try std.testing.expectEqual(@as(usize, 1), peer.pending_third_party_awaits.count());
     try std.testing.expect(!peer.questions.contains(original_answer_id));
+
+    // Drain the parked await before deinit: the terminal question pass sweeps
+    // awaits with a (fallible, swallowed) allocation, which
+    // checkAllAllocationFailures would flag as a swallowed OOM.
+    while (true) {
+        var it = peer.pending_third_party_awaits.iterator();
+        const kv = it.next() orelse break;
+        const removed = peer.pending_third_party_awaits.fetchRemove(kv.key_ptr.*) orelse break;
+        if (removed.value.question.deinit_ctx) |dc| dc(peer.allocator, removed.value.question.ctx);
+        peer.allocator.free(removed.key);
+    }
 }
 
 test "peer awaitFromThirdParty queue path propagates OOM without leaks" {

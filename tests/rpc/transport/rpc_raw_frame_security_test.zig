@@ -206,7 +206,7 @@ test "raw host peer invalid top-level tag yields unimplemented not abort" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     const invalid_tag = try buildInvalidMessageTagFrame(allocator);
     defer allocator.free(invalid_tag);
@@ -228,7 +228,7 @@ test "raw host peer malformed complete frame emits sanitized abort" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     try std.testing.expectError(error.TruncatedMessage, host.pushFrame(&[_]u8{}));
 

@@ -356,8 +356,41 @@ test "a queued pipelined call's question id is still detected as duplicate" {
     try std.testing.expectError(error.DuplicateQuestionId, peer.handleFrame(dup));
 }
 
-test "outstanding call context is freed at Peer.deinit via deinit_ctx" {
+// Shared fixture for the deinit terminal-callback tests: a heap call ctx
+// shaped exactly like generated client stubs (callback destroys the ctx
+// unconditionally; deinit_ctx covers the never-delivered case) plus
+// externally-owned counters that outlive the ctx.
+const TerminalCounters = struct {
+    fired: usize = 0,
+    disconnects: usize = 0,
+};
+
+const TerminalCtx = struct {
+    counters: *TerminalCounters,
+    allocator: std.mem.Allocator,
+
+    fn onReturn(ctx_ptr: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+        const self: *TerminalCtx = @ptrCast(@alignCast(ctx_ptr));
+        // Generated callbacks destroy their ctx unconditionally.
+        defer self.allocator.destroy(self);
+        self.counters.fired += 1;
+        if (ret.tag == .exception) {
+            if (ret.exception) |ex| {
+                if (std.mem.eql(u8, ex.reason, peer_impl.disconnected_reason)) {
+                    self.counters.disconnects += 1;
+                }
+            }
+        }
+    }
+
+    fn deinitCtx(a: std.mem.Allocator, ptr: *anyopaque) void {
+        a.destroy(@as(*TerminalCtx, @ptrCast(@alignCast(ptr))));
+    }
+};
+
+test "Peer.deinit fires the terminal Disconnected callback exactly once" {
     const allocator = std.testing.allocator;
+    var counters = TerminalCounters{};
     var peer = Peer.initDetached(allocator);
     peer.disableThreadAffinity();
 
@@ -365,29 +398,87 @@ test "outstanding call context is freed at Peer.deinit via deinit_ctx" {
     defer capture.deinit();
     peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
 
-    // A valid import target for the outbound call.
     try peer.caps.noteImport(7);
+    const ctx = try allocator.create(TerminalCtx);
+    ctx.* = .{ .counters = &counters, .allocator = allocator };
+    const qid = try peer.sendCall(7, 0xABCD, 0, ctx, null, TerminalCtx.onReturn);
+    peer.setQuestionDeinitCtx(qid, TerminalCtx.deinitCtx);
 
-    // Heap context exactly like generated client stubs allocate.
-    const Ctx = struct { value: u32 };
-    const CtxOps = struct {
-        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
-        fn deinitCtx(a: std.mem.Allocator, ptr: *anyopaque) void {
-            a.destroy(@as(*Ctx, @ptrCast(@alignCast(ptr))));
-        }
-    };
-    const ctx = try allocator.create(Ctx);
-    ctx.* = .{ .value = 7 };
-
-    // Mirror the generated stub: sendCall, then register deinit_ctx.
-    const qid = try peer.sendCall(7, 0xABCD, 0, ctx, null, CtxOps.onReturn);
-    peer.setQuestionDeinitCtx(qid, CtxOps.deinitCtx);
-
-    // Deinit with the question still outstanding (connection dropped before a
-    // Return). deinit_ctx must free the heap ctx — before this fix generated
-    // code never registered it, so std.testing.allocator would report a leak.
+    // Deinit with the question still in flight: the caller must observe a
+    // terminal Disconnected Return through the normal callback (previously
+    // the ctx was silently freed and the caller never heard anything).
     peer.deinit();
-    // No explicit destroy(ctx): deinit_ctx now owns it.
+    try std.testing.expectEqual(@as(usize, 1), counters.fired);
+    try std.testing.expectEqual(@as(usize, 1), counters.disconnects);
+    // No explicit destroy(ctx): delivery transferred ownership to the
+    // callback; std.testing.allocator would report a double-free or leak.
+}
+
+test "Peer.deinit does not re-fire the callback for an already-cancelled question" {
+    const allocator = std.testing.allocator;
+    var counters = TerminalCounters{};
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    try peer.caps.noteImport(7);
+    const ctx = try allocator.create(TerminalCtx);
+    ctx.* = .{ .counters = &counters, .allocator = allocator };
+    const qid = try peer.sendCall(7, 0xABCD, 0, ctx, null, TerminalCtx.onReturn);
+    peer.setQuestionDeinitCtx(qid, TerminalCtx.deinitCtx);
+
+    // The question is cancelled first (deadline/cancel path): the callback
+    // fires now, and the entry stays parked to absorb the late Return.
+    try peer.cancelQuestion(qid, peer_impl.deadline_reason);
+    try std.testing.expectEqual(@as(usize, 1), counters.fired);
+
+    // Deinit must NOT deliver a second (terminal) callback for it.
+    peer.deinit();
+    try std.testing.expectEqual(@as(usize, 1), counters.fired);
+}
+
+test "deinit terminal pass never leaks the call ctx under allocation failure" {
+    // Whatever allocation fails while synthesizing the terminal exception
+    // Return, ctx ownership must resolve exactly once: either the callback
+    // runs (and destroys it) or the deinit_ctx fallback frees it.
+    var fail_index: usize = 0;
+    while (fail_index < 32) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        const allocator = failing.allocator();
+        var counters = TerminalCounters{};
+
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        // The capture is test instrumentation, not code under test — keep it
+        // off the failing allocator so injection stays inside the peer.
+        var capture = newCapture(std.testing.allocator);
+        defer capture.deinit();
+        peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+        peer.caps.noteImport(7) catch {
+            peer.deinit();
+            continue;
+        };
+        const ctx = allocator.create(TerminalCtx) catch {
+            peer.deinit();
+            continue;
+        };
+        ctx.* = .{ .counters = &counters, .allocator = allocator };
+        const qid = peer.sendCall(7, 0xABCD, 0, ctx, null, TerminalCtx.onReturn) catch {
+            allocator.destroy(ctx);
+            peer.deinit();
+            continue;
+        };
+        peer.setQuestionDeinitCtx(qid, TerminalCtx.deinitCtx);
+
+        // std.testing.allocator (backing the failing wrapper) reports any
+        // leak or double-free at test end, whichever path the injection hit.
+        peer.deinit();
+        try std.testing.expect(counters.fired <= 1);
+    }
 }
 
 test "cancelling one queued call preserves send order of the survivors (E-order)" {

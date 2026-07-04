@@ -413,7 +413,7 @@ fn onBootstrap(
     }
 }
 
-fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
+fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
     if (!peer.isAttachedTransportClosing()) {
         peer.closeAttachedTransport();
     }
@@ -423,7 +423,7 @@ fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
     }
 }
 
-fn onPeerClose(peer: *rpc.peer.Peer) void {
+fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
     const allocator = peer.allocator;
     const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
 
@@ -476,7 +476,7 @@ fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress, io: s
 
     stressor.conn = conn;
     stressor.peer = peer;
-    peer.start(onPeerError, onPeerClose);
+    peer.start(null, onPeerError, onPeerClose);
 
     _ = KvStore.Client.fromBootstrap(peer, stressor, onBootstrap) catch |err| {
         stressor.peer = peer;

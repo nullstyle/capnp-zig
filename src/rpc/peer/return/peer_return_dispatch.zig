@@ -60,7 +60,7 @@ pub fn restoreAdoptedAnswerOriginalForPeerFn(comptime PeerType: type) *const fn 
 }
 
 pub fn reportNonfatalErrorForPeer(comptime PeerType: type, peer: *PeerType, err: anyerror) void {
-    if (peer.on_error) |cb| cb(peer, err);
+    if (peer.on_error) |cb| cb(peer.callback_ctx, peer, err);
 }
 
 pub fn reportNonfatalErrorForPeerFn(comptime PeerType: type) *const fn (*PeerType, anyerror) void {

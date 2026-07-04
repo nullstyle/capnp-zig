@@ -25,7 +25,7 @@ fn handlePing(
 // Peer lifecycle callbacks
 // ---------------------------------------------------------------------------
 
-fn onPeerError(peer: *rpc.peer.Peer, _: anyerror) void {
+fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, _: anyerror) void {
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
@@ -57,7 +57,7 @@ fn serverThread(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server)
     peer_ptr.* = rpc.peer.Peer.init(allocator, conn);
 
     if (PingPong.setBootstrap(peer_ptr, server)) |_| {
-        peer_ptr.start(onPeerError, null);
+        peer_ptr.start(null, onPeerError, null);
         conn.run();
     } else |_| {}
 
@@ -173,7 +173,7 @@ fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) 
         return;
     };
     peer_ptr.* = rpc.peer.Peer.init(allocator, conn);
-    peer_ptr.start(onPeerError, null);
+    peer_ptr.start(null, onPeerError, null);
 
     if (PingPong.Client.fromBootstrap(peer_ptr, state, onBootstrap)) |_| {
         conn.run();

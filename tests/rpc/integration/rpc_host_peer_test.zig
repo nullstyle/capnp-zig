@@ -25,7 +25,7 @@ test "host peer queues outbound frame from detached sendBootstrap" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     var ctx: u8 = 0;
     _ = try host.peer.sendBootstrap(&ctx, Harness.onReturn);
@@ -72,11 +72,11 @@ test "host peers can pump bootstrap exchange" {
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
 
     var server_ctx = ServerCtx{};
     _ = try server.peer.setBootstrap(.{
@@ -114,7 +114,7 @@ test "host peer rejects oversized outbound frame capture" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     const too_large_len: usize = 16 * 1024 * 1024 + 1024;
     const reason = try allocator.alloc(u8, too_large_len);
@@ -131,7 +131,7 @@ test "host peer propagates OOM from outgoing frame allocator" {
     var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
     var host = HostPeer.initWithOutgoingAllocator(allocator, failing.allocator());
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     try std.testing.expectError(error.OutOfMemory, host.peer.sendReturnException(2, "oom"));
     try std.testing.expectEqual(@as(usize, 0), host.pendingOutgoingCount());
@@ -155,7 +155,7 @@ test "host peer redacts captured exception frames by default" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     try host.peer.sendReturnException(7, "internal detail\nwith control");
 
@@ -176,7 +176,7 @@ test "host peer debug error disclosure caps and sanitizes exception frames" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
     host.setErrorDisclosurePolicy(.{
         .reveal_details = true,
         .max_reason_bytes = 6,
@@ -201,7 +201,7 @@ test "host peer redacts captured abort frames by default" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     try std.testing.expectError(error.TruncatedMessage, host.pushFrame(&[_]u8{}));
 
@@ -222,7 +222,7 @@ test "host peer custom abort disclosure caps and sanitizes generic reason" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
     host.setErrorDisclosurePolicy(.{
         .max_reason_bytes = 12,
         .generic_reason = "src/rpc\nsecret.zig:42",
@@ -246,7 +246,7 @@ test "host peer tracks outbound bytes and enforces queue limits" {
 
     var host = HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
 
     host.setLimits(.{ .outbound_count_limit = 1 });
     const limits_after_set = host.getLimits();
@@ -311,11 +311,11 @@ test "host peer host-call bridge enforces queued call count limit" {
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     server.setLimits(.{ .host_call_count_limit = 1, .host_call_bytes_limit = 0 });
     try server.enableHostCallBridge();
 
@@ -391,11 +391,11 @@ test "host peer host-call bridge enforces queued call byte limit before copy" {
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     server.setLimits(.{ .host_call_count_limit = 0, .host_call_bytes_limit = 1 });
     try server.enableHostCallBridge();
 
@@ -459,11 +459,11 @@ test "host peer host-call bridge queues call and allows exception response" {
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     try server.enableHostCallBridge();
 
     var client_ctx = ClientCtx{};
@@ -541,11 +541,11 @@ test "host peer host-call bridge redacts prebuilt exception returns" {
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     try server.enableHostCallBridge();
 
     var client_ctx = ClientCtx{};
@@ -621,11 +621,11 @@ test "host peer host-call bridge can respond with results payload" {
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     try server.enableHostCallBridge();
 
     var client_ctx = ClientCtx{};
@@ -731,11 +731,11 @@ fn respondWithCraftedPayload(allocator: std.mem.Allocator, crafted_payload: []co
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     try server.enableHostCallBridge();
 
     var client_ctx = ClientCtx{};

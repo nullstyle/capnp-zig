@@ -40,7 +40,7 @@ fn dupBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
 pub fn runCase(allocator: std.mem.Allocator, inbound: []const u8, with_bootstrap_stub: bool) ![]u8 {
     var host = host_peer_mod.HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
     try host.enableHostCallBridge();
 
     if (with_bootstrap_stub) {
@@ -60,7 +60,7 @@ pub fn runCase(allocator: std.mem.Allocator, inbound: []const u8, with_bootstrap
 pub fn makeCallToBootstrapFixture(allocator: std.mem.Allocator) !FramePair {
     var host = host_peer_mod.HostPeer.init(allocator);
     defer host.deinit();
-    host.start(null, null);
+    host.start(null, null, null);
     try host.enableHostCallBridge();
 
     const export_id = try host.peer.setBootstrap(.{

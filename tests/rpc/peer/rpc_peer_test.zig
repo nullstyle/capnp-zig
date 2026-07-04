@@ -1416,15 +1416,17 @@ test "peer duplicate awaitFromThirdParty completion sends abort" {
         ) anyerror!void {}
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var callback_ctx_1: u8 = 0;

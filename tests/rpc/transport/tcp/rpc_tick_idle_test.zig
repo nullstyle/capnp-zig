@@ -95,7 +95,7 @@ test "tick drives peer deadline sweep and idle timeout reaps the connection" {
     peer.setClockIo(io);
     peer.setTimeouts(.{ .default_call_timeout_ms = 50 });
     peer.setObserver(event_recorder.observer());
-    peer.start(null, null);
+    peer.start(null, null, null);
 
     // The remote end (fds[1]) stays silent: the bootstrap question can only
     // complete via deadline cancellation, and the connection only exits the

@@ -241,15 +241,17 @@ test "concurrent outbound calls: returns arrive in order" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var return_ctx = ReturnCtx{};
@@ -301,15 +303,17 @@ test "concurrent outbound calls: returns arrive in reverse order" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var return_ctx = ReturnCtx{};
@@ -359,15 +363,17 @@ test "concurrent outbound calls: mixed results and exceptions" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var return_ctx = ReturnCtx{};
@@ -577,15 +583,17 @@ test "outbound calls: question IDs are unique" {
         fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var ctx: u8 = 0;
@@ -616,15 +624,17 @@ test "outbound calls: question ID reclaimed after return+finish cycle" {
         fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var ctx: u8 = 0;
@@ -719,15 +729,17 @@ test "stress: 64 outbound calls with interleaved returns" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var return_ctx = ReturnCtx{};
@@ -782,15 +794,17 @@ test "shutdown rejects new calls while pending calls remain" {
         }
     };
 
-    var conn: Connection = undefined;
-    var peer = Peer.init(allocator, &conn);
-    defer peer.deinit();
-
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var return_ctx = ReturnCtx{};

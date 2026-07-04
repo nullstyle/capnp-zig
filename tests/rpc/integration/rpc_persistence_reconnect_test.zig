@@ -214,12 +214,12 @@ test "save, drop mid-flight, reconnect, restore, resume calling" {
 
         var server = HostPeer.init(allocator);
         defer server.deinit();
-        server.start(null, null);
+        server.start(null, null, null);
         try directory.serveOn(&server.peer);
 
         var client = HostPeer.init(allocator);
         defer client.deinit();
-        client.start(null, null);
+        client.start(null, null, null);
         client.peer.setClock(clock.clock());
         client.peer.setTimeouts(.{ .default_call_timeout_ms = 100 });
 
@@ -266,12 +266,12 @@ test "save, drop mid-flight, reconnect, restore, resume calling" {
     {
         var server = HostPeer.init(allocator);
         defer server.deinit();
-        server.start(null, null);
+        server.start(null, null, null);
         try directory.serveOn(&server.peer);
 
         var client = HostPeer.init(allocator);
         defer client.deinit();
-        client.start(null, null);
+        client.start(null, null, null);
 
         var bootstrap_recorder = BootstrapRecorder{};
         _ = try client.peer.sendBootstrap(&bootstrap_recorder, BootstrapRecorder.onReturn);
@@ -309,13 +309,13 @@ test "restore against a peer without a restorer yields an exception" {
 
     var server = HostPeer.init(allocator);
     defer server.deinit();
-    server.start(null, null);
+    server.start(null, null, null);
     // Bootstrap only — no restorer installed.
     _ = try server.peer.setBootstrap(.{ .ctx = &directory, .on_call = Directory.onBootstrapCall });
 
     var client = HostPeer.init(allocator);
     defer client.deinit();
-    client.start(null, null);
+    client.start(null, null, null);
 
     var bootstrap_recorder = BootstrapRecorder{};
     _ = try client.peer.sendBootstrap(&bootstrap_recorder, BootstrapRecorder.onReturn);

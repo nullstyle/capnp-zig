@@ -69,6 +69,15 @@ pub const SendFrameOverride = *const fn (ctx: *anyopaque, frame: []const u8) any
 /// nor replayed to pipelining, so callers observe a one-shot failure.
 pub const disconnected_reason = "disconnected";
 
+/// Exception reason for a question cancelled by deadline expiry (see
+/// `checkDeadlines`). Exported so response-unwrapping code can match the
+/// locally synthesized reason without duplicating the literal.
+pub const deadline_reason = "deadline exceeded";
+
+/// Exception reason for questions force-cancelled when the graceful-shutdown
+/// drain bound expires (see `checkDeadlines`).
+pub const shutdown_reason = "peer shutting down";
+
 /// An exported capability: a context pointer and its call handler.
 pub const Export = struct {
     ctx: *anyopaque,
@@ -397,8 +406,9 @@ pub const Peer = struct {
 
     // -- Lifecycle callbacks -------------------------------------------------
 
-    on_error: ?*const fn (peer: *Peer, err: anyerror) void = null,
-    on_close: ?*const fn (peer: *Peer) void = null,
+    callback_ctx: ?*anyopaque = null,
+    on_error: ?*const fn (ctx: ?*anyopaque, peer: *Peer, err: anyerror) void = null,
+    on_close: ?*const fn (ctx: ?*anyopaque, peer: *Peer) void = null,
     observer: ?events.Observer = null,
 
     // -- Time / deadlines -----------------------------------------------------
@@ -439,6 +449,12 @@ pub const Peer = struct {
     /// When true, no new outbound calls are accepted and the peer drains
     /// in-flight questions before invoking `shutdown_callback`.
     is_shutting_down: bool = false,
+    /// True while `deinit` runs. Suppresses `completeShutdown` (which touches
+    /// the transport and fires the shutdown callback) when the terminal
+    /// question pass drains the last question of a mid-shutdown peer —
+    /// deinit itself IS the completion, and the transport may already be
+    /// gone.
+    in_deinit: bool = false,
     /// Optional callback fired once all outstanding questions have been
     /// answered and the shutdown sequence completes.
     shutdown_callback: ?*const fn (peer: *Peer) void = null,
@@ -712,8 +728,17 @@ pub const Peer = struct {
 
     /// Release all owned state: pending calls, resolved answers, export
     /// entries, and the capability table.
+    ///
+    /// Outstanding questions receive a terminal synthetic "disconnected"
+    /// exception Return through their callbacks BEFORE any state is torn
+    /// down — deinit of a live peer must not strand callers awaiting a
+    /// Return (their heap contexts previously leaked through the
+    /// callback-less deinit_ctx sweep). After a transport close this pass
+    /// is a no-op: `onConnectionClose` already delivered the terminals.
     pub fn deinit(self: *Peer) void {
         self.assertThreadAffinity();
+        self.in_deinit = true;
+        _ = self.forceCancelAllQuestions(disconnected_reason);
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
             self.allocator,
@@ -845,13 +870,16 @@ pub const Peer = struct {
     }
 
     /// Start the peer, registering error/close callbacks and initiating the
-    /// transport (if attached).
+    /// transport (if attached). `cb_ctx` is handed back to both callbacks;
+    /// it must outlive the peer.
     pub fn start(
         self: *Peer,
-        on_error: ?*const fn (peer: *Peer, err: anyerror) void,
-        on_close: ?*const fn (peer: *Peer) void,
+        cb_ctx: ?*anyopaque,
+        on_error: ?*const fn (ctx: ?*anyopaque, peer: *Peer, err: anyerror) void,
+        on_close: ?*const fn (ctx: ?*anyopaque, peer: *Peer) void,
     ) void {
         self.assertThreadAffinity();
+        self.callback_ctx = cb_ctx;
         self.on_error = on_error;
         self.on_close = on_close;
         events.emitConnection(self.observer, .peer, .unknown, .started);
@@ -1614,7 +1642,7 @@ pub const Peer = struct {
         var cancelled: usize = 0;
         for (expired.items) |question_id| {
             events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, question_id);
-            self.cancelQuestion(question_id, "deadline exceeded") catch |err| {
+            self.cancelQuestion(question_id, deadline_reason) catch |err| {
                 log.debug("deadline cancel failed for question {}: {}", .{ question_id, err });
                 continue;
             };
@@ -1631,7 +1659,7 @@ pub const Peer = struct {
                 if (now >= drain_deadline and self.questions.count() != 0) {
                     self.shutdown_deadline_ns = null;
                     events.emitTimeout(self.observer, .peer, .unknown, .shutdown_drain, null);
-                    cancelled += self.forceCancelAllQuestions("peer shutting down");
+                    cancelled += self.forceCancelAllQuestions(shutdown_reason);
                 }
             }
         }
@@ -1640,7 +1668,17 @@ pub const Peer = struct {
 
     /// Synthesize an exception Return for `question_id` and deliver it to
     /// the question's callback, exactly as if the remote had answered.
+    ///
+    /// Ctx ownership: once the callback runs it owns `question.ctx`
+    /// (generated callbacks destroy it unconditionally). If synthesis fails
+    /// before the callback could run, the ctx is freed here via
+    /// `question.deinit_ctx` — callers have already removed the entry from
+    /// the questions map (or dropped its cleanup hook), so nothing else can.
     fn deliverLocalException(self: *Peer, question: Question, question_id: u32, reason: []const u8) !void {
+        var callback_ran = false;
+        errdefer if (!callback_ran) {
+            if (question.deinit_ctx) |deinit_ctx| deinit_ctx(self.allocator, question.ctx);
+        };
         const frame = try peer_return_frames.buildReturnExceptionFrame(self.allocator, question_id, reason);
         defer self.allocator.free(frame);
         var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
@@ -1648,6 +1686,7 @@ pub const Peer = struct {
         const ret = try decoded.asReturn();
         var inbound_caps = try cap_table.InboundCapTable.init(self.allocator, null, &self.caps);
         defer inbound_caps.deinit();
+        callback_ran = true;
         question.on_return(question.ctx, self, ret, &inbound_caps) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             log.debug("cancel exception callback error for question {}: {}", .{ question_id, err });
@@ -1687,7 +1726,7 @@ pub const Peer = struct {
             cancelled += 1;
         }
         cancelled += self.sweepThirdPartyAwaits(false);
-        if (self.is_shutting_down and self.questions.count() == 0) {
+        if (self.is_shutting_down and !self.in_deinit and self.questions.count() == 0) {
             self.completeShutdown();
         }
         return cancelled;
@@ -2866,14 +2905,14 @@ pub const Peer = struct {
 
     fn removeQuestion(self: *Peer, question_id: u32) void {
         _ = self.questions.remove(question_id);
-        if (self.is_shutting_down and self.questions.count() == 0) {
+        if (self.is_shutting_down and !self.in_deinit and self.questions.count() == 0) {
             self.completeShutdown();
         }
     }
 
     fn onConnectionError(self: *Peer, err: anyerror) void {
         log.debug("connection error: {}", .{err});
-        if (self.on_error) |cb| cb(self, err);
+        if (self.on_error) |cb| cb(self.callback_ctx, self, err);
     }
 
     fn onConnectionClose(self: *Peer) void {
@@ -2889,7 +2928,7 @@ pub const Peer = struct {
         // safe; the synthetic Return is delivered only to the question's
         // callback and is never cached as an answer or replayed to pipelining.
         _ = self.forceCancelAllQuestions(disconnected_reason);
-        if (self.on_close) |cb| cb(self);
+        if (self.on_close) |cb| cb(self.callback_ctx, self);
     }
 
     /// Process a single inbound Cap'n Proto RPC frame.

@@ -313,15 +313,16 @@ test "detach transport while calls pending: peer survives" {
         fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
     };
 
-    var peer = Peer.initDetached(allocator);
-    defer peer.deinit();
-
-    // Attach a simple transport override.
+    // Declared before the peer: deinit's terminal question pass sends Finish
+    // frames through the override, so the capture must outlive the peer.
     var capture = Capture{
         .allocator = allocator,
         .frames = std.ArrayList([]u8).empty,
     };
     defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
     peer.setSendFrameOverride(&capture, Capture.onFrame);
 
     var ctx: u8 = 0;

@@ -98,7 +98,7 @@ test "host peer observer reports queue rejection without payload material" {
     defer host.deinit();
     host.setObserver(recorder.observer());
     host.setLimits(.{ .outbound_count_limit = 1 });
-    host.start(null, null);
+    host.start(null, null, null);
 
     try host.peer.sendReturnException(1, "first internal reason");
     try std.testing.expectEqual(@as(usize, 1), host.pendingOutgoingCount());

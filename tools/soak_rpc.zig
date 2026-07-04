@@ -78,7 +78,7 @@ const EchoServer = struct {
         _: u32,
     ) anyerror!WorkerPool.AcceptDecision {
         _ = try peer.setBootstrap(.{ .ctx = @ptrCast(&server_io), .on_call = EchoServer.onCall });
-        peer.start(null, null);
+        peer.start(null, null, null);
         return .accept;
     }
 };
@@ -202,9 +202,9 @@ const Session = struct {
 
     // Transport errors are expected during chaos sessions; counted at the
     // session level in runSession teardown instead.
-    fn onPeerError(_: *Peer, _: anyerror) void {}
+    fn onPeerError(_: ?*anyopaque, _: *Peer, _: anyerror) void {}
 
-    fn onPeerClose(_: *Peer) void {}
+    fn onPeerClose(_: ?*anyopaque, _: *Peer) void {}
 };
 
 const Worker = struct {
@@ -271,7 +271,7 @@ const Worker = struct {
                 self.cfg.calls_per_session,
         };
 
-        peer.start(Session.onPeerError, Session.onPeerClose);
+        peer.start(null, Session.onPeerError, Session.onPeerClose);
         _ = try peer.sendBootstrap(&session, Session.onBootstrapReturn);
 
         conn.run();

@@ -95,13 +95,14 @@ pub const HostPeer = struct {
 
     pub fn start(
         self: *HostPeer,
-        on_error: ?*const fn (peer: *peer_mod.Peer, err: anyerror) void,
-        on_close: ?*const fn (peer: *peer_mod.Peer) void,
+        cb_ctx: ?*anyopaque,
+        on_error: ?*const fn (ctx: ?*anyopaque, peer: *peer_mod.Peer, err: anyerror) void,
+        on_close: ?*const fn (ctx: ?*anyopaque, peer: *peer_mod.Peer) void,
     ) void {
         self.peer.assertThreadAffinity();
         self.ensureOverride();
         events.emitConnection(self.observer, .host_peer, .unknown, .started);
-        self.peer.start(on_error, on_close);
+        self.peer.start(cb_ctx, on_error, on_close);
     }
 
     pub fn setObserver(self: *HostPeer, observer: ?events.Observer) void {

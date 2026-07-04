@@ -151,7 +151,7 @@ const PeerState = struct {
         // affinity checking is redundant. Disable it so that peers created
         // on one thread can be used from another without a debug panic.
         self.host.peer.disableThreadAffinity();
-        self.host.start(null, null);
+        self.host.start(null, null, null);
         try self.host.enableHostCallBridge();
         self.last_popped = null;
         self.bootstrap_stub_export_id = null;

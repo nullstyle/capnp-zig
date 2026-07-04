@@ -10,15 +10,15 @@ const net = std.Io.net;
 fn onAcceptNoop(_: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
     // Just start the peer so it wires up; it will close when the client
     // disconnects.
-    peer.start(onPeerError, onPeerClose);
+    peer.start(null, onPeerError, onPeerClose);
     return .accept;
 }
 
-fn onPeerError(peer: *Peer, _: anyerror) void {
+fn onPeerError(_: ?*anyopaque, peer: *Peer, _: anyerror) void {
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
-fn onPeerClose(peer: *Peer) void {
+fn onPeerClose(_: ?*anyopaque, peer: *Peer) void {
     _ = peer;
 }
 
@@ -104,7 +104,7 @@ const AcceptCounter = struct {
     fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
         const self: *AcceptCounter = @ptrCast(@alignCast(ctx));
         _ = self.count.fetchAdd(1, .monotonic);
-        peer.start(onPeerError, onPeerClose);
+        peer.start(null, onPeerError, onPeerClose);
         return .accept;
     }
 };
@@ -135,7 +135,7 @@ const ActiveCounter = struct {
     fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
         const self: *ActiveCounter = @ptrCast(@alignCast(ctx));
         _ = self.count.fetchAdd(1, .monotonic);
-        peer.start(onPeerError, onPeerClose);
+        peer.start(null, onPeerError, onPeerClose);
         return .accept;
     }
 };
