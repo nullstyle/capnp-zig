@@ -3,11 +3,12 @@
 **Status:** experimental example. It is useful for exercising a realistic RPC
 service shape, but it is not a production-ready database service.
 
-Cap'n Proto RPC key/value service backed by RocksDB, with a Go TUI client and Zig stressor.
+Cap'n Proto RPC key/value service backed by a small, self-contained pure-Zig
+persistent store, with a Go TUI client and Zig stressor.
 
 This example is intentionally close to a real service shape:
 
-- Persistent storage (RocksDB)
+- Persistent storage (an in-memory index over an on-disk append-only log; see `store.zig`)
 - Batch writes (`writeBatch`) with per-batch version assignment
 - Prefix listing for browser-style reads
 - Server-driven client notifications
@@ -16,6 +17,7 @@ This example is intentionally close to a real service shape:
 ## What You Get
 
 - `server.zig`: TCP RPC server that hosts `KvStore`
+- `store.zig`: pure-Zig persistent backend (in-memory index + append-only WAL + snapshot backups)
 - `stressor.zig`: RPC load generator for write batches
 - `go-client/`: interactive browser + REPL client
 - `kvstore.capnp`: protocol schema
@@ -45,7 +47,7 @@ Schema: `examples/kvstore/kvstore.capnp`
 
 ### Versioning
 
-- Versions are persisted in RocksDB metadata.
+- Versions are recovered on startup by replaying the on-disk write-ahead log.
 - A `writeBatch` that contains at least one `put` consumes exactly one new version.
 - All `put` operations in that batch share the same assigned version.
 - Delete-only batches do not consume a new version.
@@ -191,6 +193,10 @@ Restore a specific backup and keep log files:
 ```text
 restore 12 keep-logs
 ```
+
+(`keep-logs` maps to the protocol's `keepLogFiles` flag. It was a RocksDB knob;
+the pure-Zig store accepts it for protocol compatibility but has no separate log
+files to keep, so it is a no-op here.)
 
 After restore:
 

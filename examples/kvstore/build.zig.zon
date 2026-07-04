@@ -5,9 +5,6 @@
         .capnpc_zig = .{
             .path = "../..",
         },
-        .rocksdb = .{
-            .path = "vendor/rocksdb-zig",
-        },
     },
     .paths = .{""},
     .fingerprint = 0x2124e4f37c596927,
