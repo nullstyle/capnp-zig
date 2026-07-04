@@ -402,6 +402,38 @@ pub fn build(b: *std.Build) void {
     const install_rpc_pingpong_step = b.step("example-rpc-install", "Build RPC ping-pong example (install only)");
     install_rpc_pingpong_step.dependOn(&b.addInstallArtifact(rpc_pingpong_example, .{}).step);
 
+    // Standalone serialization example (no RPC). Both the generated schema
+    // code and the runtime are wired through capnpc-zig-core — the
+    // serialization-only module, with no TCP/QUIC transport in the graph — to
+    // demonstrate the RPC-free dependency path an adopter would copy.
+    const serialization_demo_schema_module = b.createModule(.{
+        .root_source_file = b.path("examples/addressbook.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnpc-zig", .module = core_module }},
+    });
+    const serialization_demo_example = b.addExecutable(.{
+        .name = "example-serialization-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/serialization_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = core_module },
+                .{ .name = "addressbook", .module = serialization_demo_schema_module },
+            },
+        }),
+    });
+
+    const run_serialization_demo = b.addRunArtifact(serialization_demo_example);
+    run_serialization_demo.addPassthruArgs();
+
+    const example_serialization_step = b.step("example-serialization", "Run standalone serialization example (no RPC)");
+    example_serialization_step.dependOn(&run_serialization_demo.step);
+
+    const install_serialization_demo_step = b.step("example-serialization-install", "Build standalone serialization example (install only)");
+    install_serialization_demo_step.dependOn(&b.addInstallArtifact(serialization_demo_example, .{}).step);
+
     // Zig e2e RPC hooks
     const e2e_zig_client = b.addExecutable(.{
         .name = "e2e-zig-client",
@@ -873,6 +905,7 @@ pub fn build(b: *std.Build) void {
     check_compile_step.dependOn(&lib_tests.step);
     check_compile_step.dependOn(&main_tests.step);
     check_compile_step.dependOn(&rpc_pingpong_example.step);
+    check_compile_step.dependOn(&serialization_demo_example.step);
     check_compile_step.dependOn(&e2e_zig_client.step);
     check_compile_step.dependOn(&e2e_zig_server.step);
     check_compile_step.dependOn(&wasm_host_module.step);

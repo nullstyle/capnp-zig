@@ -2,6 +2,14 @@
 
 This guide walks you through defining a Cap'n Proto schema and using the generated Zig code to serialize and deserialize messages.
 
+> **Prefer to read code?** A complete, runnable version of everything below lives
+> at [`examples/serialization_demo.zig`](../examples/serialization_demo.zig)
+> (schema: [`examples/addressbook.capnp`](../examples/addressbook.capnp)). It
+> builds an address book, writes it in both the plain and packed encodings, and
+> reads each back zero-copy — exercising structs, an enum, lists, a union, and
+> Text/Data fields. Run it with `zig build example-serialization`. Like the
+> snippets here, it wires the runtime through the `capnpc-zig-core` module.
+
 ## Prerequisites
 
 - **Zig 0.17-dev** on `PATH` (`mise.toml` manages helper tools only)

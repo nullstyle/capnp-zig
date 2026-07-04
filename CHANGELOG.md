@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Standalone serialization example** (`examples/serialization_demo.zig`,
+  schema `examples/addressbook.capnp`): the first runnable non-RPC example — a
+  copy-pasteable companion to `docs/getting-started-serialization.md` that
+  builds an address book, writes it in both the plain and packed encodings, and
+  reads each back zero-copy, exercising nested structs, an enum, lists (of
+  struct), an unnamed union, and both Text and Data fields. Both the generated
+  schema code and the runtime are wired through `capnpc-zig-core` (no
+  RPC/transport in the module graph), demonstrating the serialization-only
+  dependency path. `zig build example-serialization` builds and runs it.
 - **`rpc.transport.tcp.ServerSession`** — the server-side mirror of
   `ClientSession`: `ServerSession.accept(gpa, listener, options)` takes one
   connection off a `Listener` and returns a heap-owned session bundling the
