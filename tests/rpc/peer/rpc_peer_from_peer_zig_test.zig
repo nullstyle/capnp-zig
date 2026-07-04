@@ -16,6 +16,19 @@ fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
 }
 
+/// Wrap a finished RPC frame in an Unimplemented message, exactly as a peer
+/// that does not understand the frame's tag would echo it back. Caller frees
+/// the returned frame.
+fn buildUnimplementedEcho(allocator: std.mem.Allocator, inner_bytes: []const u8) ![]const u8 {
+    var inner_msg = try message.Message.init(allocator, inner_bytes, .{});
+    defer inner_msg.deinit();
+    const inner_root = try inner_msg.getRootAnyPointer();
+    var outer_builder = protocol.MessageBuilder.init(allocator);
+    defer outer_builder.deinit();
+    try outer_builder.buildUnimplementedFromAnyPointer(inner_root);
+    return outer_builder.finish();
+}
+
 test "peer initDetached starts without attached transport" {
     var peer = Peer.initDetached(std.testing.allocator);
     defer peer.deinit();
@@ -2901,6 +2914,282 @@ test "resolvePromiseExportToExport rejects unknown target export id" {
     try std.testing.expect(promise_entry.is_promise);
     try std.testing.expect(promise_entry.resolved == null);
     try std.testing.expect(peer.caps.isExportPromise(promise_export_id));
+}
+
+test "Unimplemented(Resolve) echo releases the resolution target's export ref" {
+    const allocator = std.testing.allocator;
+
+    const Handlers = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var handler_state: u8 = 0;
+    const concrete_export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = Handlers.onCall,
+    });
+    const promise_a = try peer.addPromiseExport();
+    const promise_b = try peer.addPromiseExport();
+
+    try peer.resolvePromiseExportToExport(promise_a, concrete_export_id);
+    try peer.resolvePromiseExportToExport(promise_b, concrete_export_id);
+
+    // Each outgoing Resolve descriptor hands the remote one wire ref on the
+    // resolution target.
+    const refs_after_resolves = peer.exports.get(concrete_export_id) orelse return error.UnknownExport;
+    try std.testing.expectEqual(@as(u32, 2), refs_after_resolves.ref_count);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+
+    // Level-0 echo of promise_a's Resolve (hand-built copy, as the remote
+    // would embed it): spends exactly one ref, export survives on the other.
+    {
+        var resolve_builder = protocol.MessageBuilder.init(allocator);
+        defer resolve_builder.deinit();
+        try resolve_builder.buildResolveCap(promise_a, .{
+            .tag = .senderHosted,
+            .id = concrete_export_id,
+        });
+        const resolve_bytes = try resolve_builder.finish();
+        defer allocator.free(resolve_bytes);
+        const echo = try buildUnimplementedEcho(allocator, resolve_bytes);
+        defer allocator.free(echo);
+        try peer.handleFrame(echo);
+    }
+    const surviving = peer.exports.get(concrete_export_id) orelse return error.UnknownExport;
+    try std.testing.expectEqual(@as(u32, 1), surviving.ref_count);
+
+    // Echo of promise_b's Resolve: last ref spent, export destroyed.
+    {
+        var resolve_builder = protocol.MessageBuilder.init(allocator);
+        defer resolve_builder.deinit();
+        try resolve_builder.buildResolveCap(promise_b, .{
+            .tag = .senderHosted,
+            .id = concrete_export_id,
+        });
+        const resolve_bytes = try resolve_builder.finish();
+        defer allocator.free(resolve_bytes);
+        const echo = try buildUnimplementedEcho(allocator, resolve_bytes);
+        defer allocator.free(echo);
+        try peer.handleFrame(echo);
+    }
+    try std.testing.expect(!peer.exports.contains(concrete_export_id));
+
+    // The promise exports themselves are untouched: the remote still holds
+    // them, and releasing the resolution produced no outbound frames.
+    try std.testing.expect(peer.exports.contains(promise_a));
+    try std.testing.expect(peer.exports.contains(promise_b));
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+}
+
+test "level-0 peer echo of our own Resolve frame leaves no leaked export state" {
+    const allocator = std.testing.allocator;
+
+    const Handlers = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var handler_state: u8 = 0;
+    const concrete_export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = Handlers.onCall,
+    });
+    const promise_export_id = try peer.addPromiseExport();
+
+    try peer.resolvePromiseExportToExport(promise_export_id, concrete_export_id);
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+
+    // A level-0 peer echoes back the exact Resolve frame we sent, embedded in
+    // an Unimplemented message.
+    const echo = try buildUnimplementedEcho(allocator, capture.frames.items[0]);
+    defer allocator.free(echo);
+    try peer.handleFrame(echo);
+
+    // The only ref on the resolution target was the one the Resolve carried:
+    // the export is gone, so nothing pins it for the connection lifetime.
+    try std.testing.expect(!peer.exports.contains(concrete_export_id));
+    const promise_entry = peer.exports.get(promise_export_id) orelse return error.UnknownExport;
+    try std.testing.expect(promise_entry.resolved != null);
+    // peer.deinit() under std.testing.allocator verifies no allocation leaks.
+}
+
+test "unimplemented echoes of other tags and malformed resolves are safe no-ops" {
+    const allocator = std.testing.allocator;
+
+    const Handlers = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var handler_state: u8 = 0;
+    const concrete_export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = Handlers.onCall,
+    });
+    const promise_export_id = try peer.addPromiseExport();
+    try peer.resolvePromiseExportToExport(promise_export_id, concrete_export_id);
+    const frames_after_resolve = capture.frames.items.len;
+
+    const expectStateUnchanged = struct {
+        fn check(p: *Peer, concrete: u32) !void {
+            const entry = p.exports.get(concrete) orelse return error.UnknownExport;
+            try std.testing.expectEqual(@as(u32, 1), entry.ref_count);
+        }
+    }.check;
+
+    // Echoed resolve-to-exception: carried no cap descriptor, nothing to
+    // release.
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildResolveException(promise_export_id, "broken");
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+        const echo = try buildUnimplementedEcho(allocator, bytes);
+        defer allocator.free(echo);
+        try peer.handleFrame(echo);
+        try expectStateUnchanged(&peer, concrete_export_id);
+    }
+
+    // Echoed Resolve naming an unknown export id is tolerated (warn only),
+    // matching releaseExport's tolerance for unknown ids in Release frames.
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildResolveCap(promise_export_id, .{
+            .tag = .senderHosted,
+            .id = 999_999,
+        });
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+        const echo = try buildUnimplementedEcho(allocator, bytes);
+        defer allocator.free(echo);
+        try peer.handleFrame(echo);
+        try expectStateUnchanged(&peer, concrete_export_id);
+    }
+
+    // A forged echo naming a live export with no spendable wire refs hits
+    // the same ReleaseCountExceeded guard a bogus Release frame does.
+    {
+        var bare_state: u8 = 0;
+        const bare_export_id = try peer.addExport(.{
+            .ctx = &bare_state,
+            .on_call = Handlers.onCall,
+        });
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildResolveCap(promise_export_id, .{
+            .tag = .senderHosted,
+            .id = bare_export_id,
+        });
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+        const echo = try buildUnimplementedEcho(allocator, bytes);
+        defer allocator.free(echo);
+        try std.testing.expectError(error.ReleaseCountExceeded, peer.handleFrame(echo));
+        try expectStateUnchanged(&peer, concrete_export_id);
+    }
+
+    // Echoed Release and Disembargo remain explicitly deferred no-ops.
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildRelease(5, 1);
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+        const echo = try buildUnimplementedEcho(allocator, bytes);
+        defer allocator.free(echo);
+        try peer.handleFrame(echo);
+        try expectStateUnchanged(&peer, concrete_export_id);
+    }
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildDisembargoSenderLoopback(.{
+            .tag = .importedCap,
+            .imported_cap = 1,
+            .promised_answer = null,
+        }, 9);
+        const bytes = try builder.finish();
+        defer allocator.free(bytes);
+        const echo = try buildUnimplementedEcho(allocator, bytes);
+        defer allocator.free(echo);
+        try peer.handleFrame(echo);
+        try expectStateUnchanged(&peer, concrete_export_id);
+    }
+
+    // None of the echoes provoked an outbound frame.
+    try std.testing.expectEqual(frames_after_resolve, capture.frames.items.len);
 }
 
 test "bootstrap return is recorded for promisedAnswer pipelined calls" {

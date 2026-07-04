@@ -420,11 +420,17 @@ pub const Bootstrap = struct {
 pub const Unimplemented = struct {
     message_tag: ?MessageTag,
     question_id: ?u32,
+    /// Parsed copy of the echoed Resolve when `message_tag == .resolve`. The
+    /// echo means the remote never picked up the resolution's cap descriptor,
+    /// so the sender must release the reference that descriptor carried. Null
+    /// when the echoed copy is absent or malformed.
+    resolve: ?Resolve = null,
 
     fn fromReader(reader: message.StructReader) !Unimplemented {
         const nested_disc = reader.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);
         const message_tag = std.enums.fromInt(MessageTag, nested_disc);
         var question_id: ?u32 = null;
+        var resolve: ?Resolve = null;
 
         if (message_tag == .bootstrap or message_tag == .call) {
             const nested = reader.readStruct(0) catch null;
@@ -435,11 +441,17 @@ pub const Unimplemented = struct {
                     else => null,
                 };
             }
+        } else if (message_tag == .resolve) {
+            const nested = reader.readStruct(0) catch null;
+            if (nested) |nested_struct| {
+                resolve = Resolve.fromReader(nested_struct) catch null;
+            }
         }
 
         return .{
             .message_tag = message_tag,
             .question_id = question_id,
+            .resolve = resolve,
         };
     }
 };

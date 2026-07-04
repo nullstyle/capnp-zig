@@ -1824,6 +1824,19 @@ pub const Peer = struct {
             .promised_answer = null,
             .attached_fd = null,
         };
+
+        // The Resolve's cap descriptor hands the remote a reference to the
+        // target export, exactly like a call/return descriptor would: the
+        // remote spends it with a wire Release once it drops the resolved cap
+        // (see resolveDescriptor's noteImport in caps/inbound.zig), or — if
+        // it does not implement Resolve — echoes the message back inside an
+        // Unimplemented and handleUnimplementedResolve releases it there.
+        // Rolled back only while the send can still fail: past a successful
+        // send the remote holds the descriptor and owns the ref (matching
+        // handleBootstrap's pattern).
+        try self.noteExportRef(export_id);
+        var rollback_ref = true;
+        errdefer if (rollback_ref) self.rollbackExportRef(export_id);
         try peer_outbound_control.sendResolveCapViaSendFrame(
             Peer,
             self,
@@ -1831,6 +1844,7 @@ pub const Peer = struct {
             descriptor,
             Peer.sendFrame,
         );
+        rollback_ref = false;
 
         promise_entry.value_ptr.resolved = .{ .exported = .{ .id = export_id } };
         self.caps.clearExportPromise(promise_id);
@@ -3246,6 +3260,11 @@ pub const Peer = struct {
     }
 
     fn handleUnimplemented(self: *Peer, unimplemented: protocol.Unimplemented) !void {
+        if (unimplemented.message_tag == .resolve) {
+            const echoed = unimplemented.resolve orelse return;
+            try self.handleUnimplementedResolve(echoed);
+            return;
+        }
         try peer_bootstrap.handleUnimplemented(
             Peer,
             self,
@@ -3255,6 +3274,30 @@ pub const Peer = struct {
                 Peer.handleReturn,
             ),
         );
+    }
+
+    /// The remote echoed one of our Resolve messages back inside an
+    /// Unimplemented: it does not implement Resolve (a level-0 peer), so it
+    /// never picked up the resolution's cap descriptor. Release the wire
+    /// reference that descriptor carried (taken in
+    /// resolvePromiseExportToExport) through the same releaseExport path an
+    /// inbound Release frame uses; otherwise the target export's ref would
+    /// leak for the connection lifetime. Outgoing Resolve descriptors are
+    /// only ever senderHosted/senderPromise; other descriptor tags carried no
+    /// local export reference, and an echoed resolve-to-exception carried no
+    /// cap at all, so both are no-ops. A forged echo naming an export with no
+    /// spendable refs fails releaseExport's ReleaseCountExceeded guard, the
+    /// same trust boundary a bogus Release frame hits.
+    fn handleUnimplementedResolve(self: *Peer, echoed: protocol.Resolve) !void {
+        if (echoed.tag != .cap) return;
+        const descriptor = echoed.cap orelse return;
+        switch (descriptor.tag) {
+            .senderHosted, .senderPromise => {
+                const id = descriptor.id orelse return;
+                try self.releaseExport(id, 1);
+            },
+            else => {},
+        }
     }
 
     fn handleAbort(self: *Peer, abort: protocol.Abort) !void {
