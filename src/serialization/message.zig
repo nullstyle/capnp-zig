@@ -83,6 +83,13 @@ fn makeCapabilityPointer(cap_id: u32) !u64 {
     return 3 | (@as(u64, cap_id) << 32);
 }
 
+// Origin-tagged intermediate capability pointer (bit 2 = origin present, bits
+// 3..6 = origin code). Mirrors capability_remap.makeOriginTaggedCapabilityPointer;
+// kept local so the AnyPointerBuilder setter does not depend on declaration order.
+fn makeOriginTaggedCapabilityPointer(origin_code: u4, cap_id: u32) u64 {
+    return 3 | (@as(u64, 1) << 2) | (@as(u64, origin_code) << 3) | (@as(u64, cap_id) << 32);
+}
+
 fn decodeCapabilityPointer(pointer_word: u64) !u32 {
     if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
     if (((pointer_word >> 2) & 0x3FFFFFFF) != 0) return error.InvalidPointer;
@@ -1843,6 +1850,21 @@ pub const AnyPointerBuilder = struct {
             self.pointer_pos,
             cap,
             makeCapabilityPointer,
+        );
+    }
+
+    /// Write an origin-tagged capability pointer carrying the capability's known
+    /// id-space (used by the RPC layer for forwarded/provided caps so the
+    /// outbound encoder emits the correct descriptor variant rather than
+    /// re-deriving it from a possibly-colliding bare id).
+    pub fn setCapabilityOriginTagged(self: AnyPointerBuilder, origin_code: u4, cap_id: u32) !void {
+        return any_pointer_builder_module.setCapabilityOriginTagged(
+            self.builder,
+            self.segment_id,
+            self.pointer_pos,
+            origin_code,
+            cap_id,
+            makeOriginTaggedCapabilityPointer,
         );
     }
 

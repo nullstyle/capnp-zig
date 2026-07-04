@@ -2,7 +2,11 @@ const std = @import("std");
 const cap_table = @import("../caps/table.zig");
 
 pub const ProvideTarget = union(enum) {
-    cap_id: u32,
+    /// A directly-resolved local capability: its cap id plus the 4-bit origin
+    /// code recording whether it is one of our exports or a remote import, so
+    /// the outbound Return encodes the correct descriptor variant instead of
+    /// re-deriving the id space from the (possibly-colliding) bare id.
+    local: LocalProvideTarget,
     promised: cap_table.OwnedPromisedAnswer,
 
     pub fn deinit(self: *ProvideTarget, allocator: std.mem.Allocator) void {
@@ -11,6 +15,11 @@ pub const ProvideTarget = union(enum) {
             else => {},
         }
     }
+};
+
+pub const LocalProvideTarget = struct {
+    origin_code: u4,
+    cap_id: u32,
 };
 
 pub const ProvideEntry = struct {

@@ -8,7 +8,17 @@ const buildMessageView = capability_remap.buildMessageView;
 const writePointerWord = capability_remap.writePointerWord;
 const max_traversal_depth = capability_remap.max_traversal_depth;
 const capabilityPointerWord = capability_remap.makeCapabilityPointer;
+const originTaggedCapabilityPointerWord = capability_remap.makeOriginTaggedCapabilityPointer;
 const decodeCapabilityPointerWord = capability_remap.decodeCapabilityPointer;
+
+/// A remapped forwarded capability: the local cap id to embed in the cloned
+/// payload plus the 4-bit origin code identifying its true id-space, so the
+/// outbound encoder emits the correct descriptor variant instead of re-deriving
+/// the space from the (possibly-colliding) bare id.
+pub const RemappedCap = struct {
+    origin_code: u4,
+    cap_id: u32,
+};
 
 pub fn clonePayloadWithRemappedCaps(
     comptime PeerType: type,
@@ -18,7 +28,7 @@ pub fn clonePayloadWithRemappedCaps(
     payload_builder: protocol.PayloadBuilder,
     source: protocol.Payload,
     inbound_caps: *const cap_table.InboundCapTable,
-    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?u32,
+    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
 ) !void {
     var payload = payload_builder;
     const any_builder = try payload.initContent();
@@ -41,7 +51,7 @@ fn remapPayloadCapabilities(
     builder: *message.MessageBuilder,
     root: message.AnyPointerBuilder,
     inbound_caps: *const cap_table.InboundCapTable,
-    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?u32,
+    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
 ) !void {
     const view = try buildMessageView(allocator, builder);
     defer allocator.free(view.segments);
@@ -73,7 +83,7 @@ fn remapPayloadCapabilityPointer(
     segment_id: u32,
     pointer_pos: usize,
     pointer_word: u64,
-    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?u32,
+    map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
     depth: u32,
 ) !void {
     if (depth == 0) return error.RecursionLimitExceeded;
@@ -177,8 +187,8 @@ fn remapPayloadCapabilityPointer(
         },
         3 => {
             const cap_index = try decodeCapabilityPointerWord(resolved.pointer_word);
-            if (try map_inbound_cap(peer, inbound_caps, cap_index)) |cap_id| {
-                const cap_word = capabilityPointerWord(cap_id);
+            if (try map_inbound_cap(peer, inbound_caps, cap_index)) |remapped| {
+                const cap_word = originTaggedCapabilityPointerWord(remapped.origin_code, remapped.cap_id);
                 try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, cap_word);
             } else {
                 try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, 0);
@@ -209,4 +219,26 @@ test "payload_remap decode capability pointer rejects high bits" {
 test "payload_remap capability pointer supports full u32 range" {
     const word = capabilityPointerWord(std.math.maxInt(u32));
     try std.testing.expectEqual(std.math.maxInt(u32), try decodeCapabilityPointerWord(word));
+}
+
+test "payload_remap origin-tagged pointer carries origin and is not a plain wire pointer" {
+    const decodeWithOrigin = capability_remap.decodeCapabilityWithOrigin;
+
+    // A plain (untagged) pointer decodes with no origin.
+    const plain = try decodeWithOrigin(capabilityPointerWord(99));
+    try std.testing.expectEqual(@as(?u4, null), plain.origin_code);
+    try std.testing.expectEqual(@as(u32, 99), plain.cap_id);
+
+    // An origin-tagged pointer roundtrips both fields...
+    const tagged_word = originTaggedCapabilityPointerWord(3, 42);
+    const tagged = try decodeWithOrigin(tagged_word);
+    try std.testing.expectEqual(@as(?u4, 3), tagged.origin_code);
+    try std.testing.expectEqual(@as(u32, 42), tagged.cap_id);
+
+    // ...and is rejected by the strict wire decoder, so it can never be mistaken
+    // for a serializable capability pointer.
+    try std.testing.expectError(error.InvalidPointer, decodeCapabilityPointerWord(tagged_word));
+
+    // A word with reserved bits set but no origin flag is rejected.
+    try std.testing.expectError(error.InvalidPointer, decodeWithOrigin(3 | (@as(u64, 1) << 3)));
 }

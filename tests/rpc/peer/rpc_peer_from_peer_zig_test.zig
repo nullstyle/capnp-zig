@@ -732,11 +732,20 @@ test "sendCallResolved routes exported target through local loopback" {
     try std.testing.expect(client_ctx.returned);
 }
 
-test "forwarded payload remaps capability index to local id" {
+test "forwarded payload remaps inbound import to receiverHosted preserving its origin" {
     const allocator = std.testing.allocator;
 
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
+
+    // An adversary can force export_id == import_id (noteImport does not
+    // deconflict against exports — a spec-legal collision). If the forwarded
+    // import's origin were re-derived from the bare id, classifyCap's
+    // export-before-import priority would mis-encode it as OUR senderHosted
+    // export 42 (capability substitution). Set up the collision and assert the
+    // forward path honors the import origin instead.
+    try peer.caps.noteExport(42);
+    try peer.caps.noteImport(42);
 
     var inbound = cap_table.InboundCapTable{
         .allocator = allocator,
@@ -780,13 +789,86 @@ test "forwarded payload remaps capability index to local id" {
         &inbound,
     );
 
+    // Encode the forwarded cap table: the origin-tagged intermediate pointer is
+    // rewritten to a real descriptor. It MUST be receiverHosted{42} (the import
+    // forwarded back), NOT our senderHosted export 42.
+    try cap_table.encodeCallPayloadCaps(&peer.caps, &dst_call, null, null, null);
+
     const dst_bytes = try dst_builder.finish();
     defer allocator.free(dst_bytes);
     var dst_decoded = try protocol.DecodedMessage.init(allocator, dst_bytes);
     defer dst_decoded.deinit();
     const parsed_dst_call = try dst_decoded.asCall();
+
+    // The payload pointer now holds the cap-table index (0), not the id.
     const cap = try parsed_dst_call.params.content.getCapability();
-    try std.testing.expectEqual(@as(u32, 42), cap.id);
+    try std.testing.expectEqual(@as(u32, 0), cap.id);
+
+    const cap_list = parsed_dst_call.params.cap_table orelse return error.MissingCapTable;
+    const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.receiverHosted, desc.tag);
+    try std.testing.expectEqual(@as(u32, 42), desc.id.?);
+}
+
+test "forwarded payload preserves an export promise as senderPromise" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    // We host an unresolved export PROMISE at id 5. Forwarding it back must keep
+    // the senderPromise variant so the peer still expects our later Resolve — a
+    // naive .exported → senderHosted mapping would drop it.
+    try peer.caps.markExportPromise(5);
+
+    var inbound = cap_table.InboundCapTable{
+        .allocator = allocator,
+        .entries = try allocator.alloc(cap_table.ResolvedCap, 1),
+        .retained = try allocator.alloc(bool, 1),
+    };
+    defer inbound.deinit();
+    inbound.entries[0] = .{ .exported = .{ .id = 5 } };
+    inbound.retained[0] = false;
+
+    var src_builder = protocol.MessageBuilder.init(allocator);
+    defer src_builder.deinit();
+    var src_call = try src_builder.beginCall(1, 0x01, 0x02);
+    try src_call.setTargetImportedCap(0);
+    const src_payload_typed = try src_call.payloadTyped();
+    var src_payload = src_payload_typed._builder;
+    var src_any = try src_payload.getAnyPointer(protocol.PAYLOAD_CONTENT_PTR);
+    try src_any.setCapability(.{ .id = 0 });
+    const src_bytes = try src_builder.finish();
+    defer allocator.free(src_bytes);
+    var src_decoded = try protocol.DecodedMessage.init(allocator, src_bytes);
+    defer src_decoded.deinit();
+    const parsed_src_call = try src_decoded.asCall();
+
+    var dst_builder = protocol.MessageBuilder.init(allocator);
+    defer dst_builder.deinit();
+    var dst_call = try dst_builder.beginCall(7, 0x03, 0x04);
+    try dst_call.setTargetImportedCap(0);
+    const dst_payload_typed = try dst_call.payloadTyped();
+    const dst_payload = dst_payload_typed._builder;
+
+    try peer_test_hooks.clonePayloadWithRemappedCaps(
+        &peer,
+        dst_call.call.builder,
+        dst_payload,
+        parsed_src_call.params,
+        &inbound,
+    );
+    try cap_table.encodeCallPayloadCaps(&peer.caps, &dst_call, null, null, null);
+
+    const dst_bytes = try dst_builder.finish();
+    defer allocator.free(dst_bytes);
+    var dst_decoded = try protocol.DecodedMessage.init(allocator, dst_bytes);
+    defer dst_decoded.deinit();
+    const parsed_dst_call = try dst_decoded.asCall();
+    const cap_list = parsed_dst_call.params.cap_table orelse return error.MissingCapTable;
+    const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.senderPromise, desc.tag);
+    try std.testing.expectEqual(@as(u32, 5), desc.id.?);
 }
 
 test "forwarded payload converts none capability to null pointer" {

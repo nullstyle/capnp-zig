@@ -40,6 +40,26 @@ pub fn setCapability(
     std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
 }
 
+/// Write an ORIGIN-TAGGED capability pointer (see
+/// `capability_remap.makeOriginTaggedCapabilityPointer`). Used by the RPC layer
+/// when it already knows a capability's id-space so the outbound encoder need
+/// not re-derive it. The tagged word is an in-builder intermediate that the
+/// encode pass rewrites to a real cap-table index before serialization.
+pub fn setCapabilityOriginTagged(
+    builder: anytype,
+    segment_id: u32,
+    pointer_pos: usize,
+    origin_code: u4,
+    cap_id: u32,
+    make_origin_tagged_pointer: *const fn (u4, u32) u64,
+) !void {
+    if (segment_id >= builder.segments.items.len) return error.InvalidSegmentId;
+    const segment = &builder.segments.items[segment_id];
+    try bounds.checkBoundsMut(segment.items, pointer_pos, 8);
+    const pointer_word = make_origin_tagged_pointer(origin_code, cap_id);
+    std.mem.writeInt(u64, segment.items[pointer_pos..][0..8], pointer_word, .little);
+}
+
 pub fn initList(builder: anytype, segment_id: u32, pointer_pos: usize, element_size: u3, element_count: u32) !usize {
     return builder.writeListPointer(segment_id, pointer_pos, element_size, element_count, segment_id);
 }

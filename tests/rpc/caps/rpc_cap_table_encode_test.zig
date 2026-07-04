@@ -40,6 +40,44 @@ test "encode outbound cap table rewrites capability pointers" {
     try std.testing.expectEqual(@as(u32, 42), desc.id.?);
 }
 
+test "encode honors an origin-tagged capability pointer over an id-space collision" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    // The same remote-forced collision as the priority test below: export 42 and
+    // import 42 coexist. Here the cap is written with its KNOWN origin (a remote
+    // import), so the encoder must emit receiverHosted{42} — NOT the export-first
+    // senderHosted{42} that would substitute our own export.
+    try caps.noteImport(42);
+    try caps.noteExport(42);
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var call = try builder.beginCall(11, 0x1234, 0);
+    try call.setTargetImportedCap(1);
+    var payload = try call.payloadTyped();
+    const any = try payload.initContent();
+
+    const origin = cap_table.descriptors.originCodeForTag(.receiverHosted);
+    try any.setCapabilityOriginTagged(origin, 42);
+
+    try cap_table.encodeCallPayloadCaps(&caps, &call, null, null, null);
+
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const decoded_call = try decoded.asCall();
+    const cap_list = decoded_call.params.cap_table orelse return error.MissingCapTable;
+    const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.receiverHosted, desc.tag);
+    try std.testing.expectEqual(@as(u32, 42), desc.id.?);
+}
+
 test "encode outbound cap table prefers local export classification over import id collisions" {
     const allocator = std.testing.allocator;
 

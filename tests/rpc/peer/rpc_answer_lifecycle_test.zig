@@ -219,6 +219,43 @@ test "late Return after Finish (async handler) is not recorded in resolved_answe
     try std.testing.expectEqual(@as(usize, 0), peer.resolved_answers.count());
 }
 
+test "provided target preserves import origin under an export/import id collision" {
+    const allocator = std.testing.allocator;
+    // `capture` must outlive `peer`: peer.deinit sends a Release frame for the
+    // imported cap, which the override captures — so the capture is declared
+    // first (torn down last).
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // Remote-forced, spec-legal collision: export 9 and import 9 coexist.
+    try peer.caps.noteExport(9);
+    try peer.caps.noteImport(9);
+
+    // A Provide whose resolved target is the IMPORT 9 must be returned to the
+    // accepting (third) peer as receiverHosted{9} — never substituted by our
+    // own senderHosted export 9 (which is what an id-space re-derivation would
+    // pick, since classifyCap checks exports before imports).
+    var target = try peer_test_hooks.makeProvideTarget(&peer, .{ .imported = .{ .id = 9 } });
+    defer target.deinit(allocator);
+    try peer_test_hooks.sendReturnProvidedTarget(&peer, 55, &target);
+
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+    var decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+    defer decoded.deinit();
+    const ret = try decoded.asReturn();
+    try std.testing.expectEqual(@as(u32, 55), ret.answer_id);
+    const payload = ret.results orelse return error.MissingResults;
+    const cap_list = payload.cap_table orelse return error.MissingCapTable;
+    const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(0));
+    try std.testing.expectEqual(protocol.CapDescriptorTag.receiverHosted, desc.tag);
+    try std.testing.expectEqual(@as(u32, 9), desc.id.?);
+}
+
 test "validation-work budget aborts a connection that exceeds its rate" {
     const allocator = std.testing.allocator;
     var peer = Peer.initDetached(allocator);

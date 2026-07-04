@@ -32,6 +32,45 @@ pub fn define(comptime message: type) type {
             return @as(u32, @truncate(pointer_word >> 32));
         }
 
+        /// A capability pointer decoded together with an optional origin code.
+        ///
+        /// `origin_code` is null for a plain (app-authored or on-the-wire)
+        /// capability pointer and non-null for an in-builder intermediate pointer
+        /// that carries its id-space origin (see `makeOriginTaggedCapabilityPointer`).
+        pub const CapabilityPointerInfo = struct {
+            origin_code: ?u4,
+            cap_id: u32,
+        };
+
+        /// Encode an ORIGIN-TAGGED capability pointer word.
+        ///
+        /// This is an intermediate, in-builder-only representation: the caller's
+        /// opaque `origin_code` rides in the otherwise-reserved bits (2..6) so a
+        /// later encode pass can recover the capability's true id-space instead of
+        /// re-deriving it from the bare id (which is ambiguous when the local
+        /// export and remote import id spaces collide). It is ALWAYS rewritten to
+        /// a real cap-table index before serialization, so it never reaches the
+        /// wire. Bit 2 is the "origin present" flag; bits 3..6 hold the code.
+        pub fn makeOriginTaggedCapabilityPointer(origin_code: u4, cap_id: u32) u64 {
+            return 3 | (@as(u64, 1) << 2) | (@as(u64, origin_code) << 3) | (@as(u64, cap_id) << 32);
+        }
+
+        /// Decode a capability pointer that may or may not carry an origin tag.
+        ///
+        /// A word with all reserved bits (2..31) clear is a plain capability
+        /// pointer (`origin_code == null`). A word with bit 2 set carries a
+        /// 4-bit origin code in bits 3..6; any other reserved bits must be clear.
+        pub fn decodeCapabilityWithOrigin(pointer_word: u64) !CapabilityPointerInfo {
+            if ((pointer_word & 0x3) != 3) return error.InvalidPointer;
+            const reserved: u30 = @truncate(pointer_word >> 2);
+            const cap_id: u32 = @truncate(pointer_word >> 32);
+            if (reserved == 0) return .{ .origin_code = null, .cap_id = cap_id };
+            if ((reserved & 0x1) == 0) return error.InvalidPointer;
+            if ((reserved >> 5) != 0) return error.InvalidPointer;
+            const origin_code: u4 = @truncate(reserved >> 1);
+            return .{ .origin_code = origin_code, .cap_id = cap_id };
+        }
+
         /// Build a read-only `Message` view over a `MessageBuilder`'s segments.
         ///
         /// The returned `segments` slice must be freed by the caller. The `msg`

@@ -2116,14 +2116,36 @@ pub const Peer = struct {
         self: *Peer,
         inbound_caps: *const cap_table.InboundCapTable,
         cap_index: u32,
-    ) !?u32 {
+    ) !?payload_remap.RemappedCap {
         const entry = try inbound_caps.get(cap_index);
+        // Re-encode each forwarded cap under its KNOWN origin: an inbound import
+        // (a cap the far peer hosts) forwards back as receiverHosted, an inbound
+        // export (one of our own) as senderHosted, and a promised answer as a
+        // freshly-noted receiverAnswer. The origin travels with the id so the
+        // outbound encoder never re-guesses the id space — which is ambiguous
+        // when a remote-forced export/import id collision exists.
+        const descriptors = cap_table.descriptors;
         return switch (entry) {
             .none => null,
-            .imported => |cap| cap.id,
-            .exported => |cap| cap.id,
-            .promised => |promised| try self.caps.noteReceiverAnswer(promised),
+            .imported => |cap| .{ .origin_code = descriptors.originCodeForTag(.receiverHosted), .cap_id = cap.id },
+            // An inbound .exported cap is one of our own exports; it may be an
+            // unresolved export PROMISE (senderPromise), which must be preserved
+            // so the peer still expects the later Resolve. classifyCap made this
+            // distinction (isExportPromise before hasExport); do the same here.
+            .exported => |cap| .{ .origin_code = descriptors.originCodeForTag(self.exportedCapTag(cap.id)), .cap_id = cap.id },
+            .promised => |promised| .{
+                .origin_code = descriptors.originCodeForTag(.receiverAnswer),
+                .cap_id = try self.caps.noteReceiverAnswer(promised),
+            },
         };
+    }
+
+    /// The outbound descriptor variant for one of our own exports: senderPromise
+    /// for an unresolved export promise, senderHosted otherwise. Mirrors
+    /// classifyCap's isExportPromise-before-hasExport ordering so the
+    /// origin-carrying forward/provide paths match the app-authored path.
+    fn exportedCapTag(self: *Peer, cap_id: u32) protocol.CapDescriptorTag {
+        return if (self.caps.isExportPromise(cap_id)) .senderPromise else .senderHosted;
     }
 
     /// Send a return with results for a previously received call.
@@ -2388,14 +2410,21 @@ pub const Peer = struct {
                 var payload = try ret.payloadTyped();
                 var any = try payload.initContent();
 
-                const cap_id = switch (ctx.target.*) {
-                    .cap_id => |id| id,
-                    .promised => |promised| try ctx.peer.caps.noteReceiverAnswerOps(
-                        promised.question_id,
-                        promised.ops,
-                    ),
+                const descriptors = cap_table.descriptors;
+                // Write the provided cap with its known origin so the accepting
+                // (third) peer receives the correct descriptor variant — never a
+                // space re-derived from a colliding bare id.
+                const tagged: struct { origin_code: u4, cap_id: u32 } = switch (ctx.target.*) {
+                    .local => |t| .{ .origin_code = t.origin_code, .cap_id = t.cap_id },
+                    .promised => |promised| .{
+                        .origin_code = descriptors.originCodeForTag(.receiverAnswer),
+                        .cap_id = try ctx.peer.caps.noteReceiverAnswerOps(
+                            promised.question_id,
+                            promised.ops,
+                        ),
+                    },
                 };
-                try any.setCapability(.{ .id = cap_id });
+                try any.setCapabilityOriginTagged(tagged.origin_code, tagged.cap_id);
             }
         };
 
@@ -2432,8 +2461,8 @@ pub const Peer = struct {
 
     fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
         return switch (a.*) {
-            .cap_id => |cap_id| switch (b.*) {
-                .cap_id => |other_cap_id| cap_id == other_cap_id,
+            .local => |local| switch (b.*) {
+                .local => |other_local| local.origin_code == other_local.origin_code and local.cap_id == other_local.cap_id,
                 else => false,
             },
             .promised => |promised| switch (b.*) {
@@ -3225,10 +3254,12 @@ pub const Peer = struct {
     }
 
     fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {
+        const descriptors = cap_table.descriptors;
         return switch (resolved) {
             .none => error.PromisedAnswerMissing,
-            .imported => |cap| .{ .cap_id = cap.id },
-            .exported => |cap| .{ .cap_id = cap.id },
+            .imported => |cap| .{ .local = .{ .origin_code = descriptors.originCodeForTag(.receiverHosted), .cap_id = cap.id } },
+            // Preserve the export-promise sub-classification (see exportedCapTag).
+            .exported => |cap| .{ .local = .{ .origin_code = descriptors.originCodeForTag(self.exportedCapTag(cap.id)), .cap_id = cap.id } },
             .promised => |promised| .{
                 .promised = try cap_table.OwnedPromisedAnswer.fromPromised(self.allocator, promised),
             },
@@ -3860,6 +3891,14 @@ pub const Peer = struct {
                 source,
                 inbound_caps,
             );
+        }
+
+        pub fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !state.ProvideTarget {
+            return Peer.makeProvideTarget(self, resolved);
+        }
+
+        pub fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const state.ProvideTarget) !void {
+            return Peer.sendReturnProvidedTarget(self, answer_id, target);
         }
 
         pub fn onForwardedReturn(

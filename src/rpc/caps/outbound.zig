@@ -7,7 +7,7 @@ const lifecycle = @import("lifecycle.zig");
 
 const capability_remap = message.capability_remap;
 const makeCapabilityPointer = capability_remap.makeCapabilityPointer;
-const decodeCapabilityPointer = capability_remap.decodeCapabilityPointer;
+const decodeCapabilityWithOrigin = capability_remap.decodeCapabilityWithOrigin;
 const buildMessageView = capability_remap.buildMessageView;
 const writePointerWord = capability_remap.writePointerWord;
 const max_traversal_depth = capability_remap.max_traversal_depth;
@@ -120,6 +120,24 @@ fn classifyCap(table: *CapTable, cap_id: u32) error{UnknownCapabilityId}!protoco
     return error.UnknownCapabilityId;
 }
 
+/// Resolve a payload capability pointer to its outbound descriptor variant.
+///
+/// If the pointer carries an origin tag (forwarded or provided caps, whose true
+/// id-space is known at the boundary) that tag is authoritative — we NEVER
+/// re-derive the space from the bare id, which is ambiguous when the local
+/// export and remote import id spaces collide (a remote can force the collision;
+/// see `lifecycle.noteImport`). Only genuinely local, app-authored pointers
+/// (no origin tag) fall back to `classifyCap`, where the id is unambiguously one
+/// of our own tables by construction.
+fn resolveCapEntry(table: *CapTable, pointer_word: u64) !OutboundEntry {
+    const info = try decodeCapabilityWithOrigin(pointer_word);
+    const tag = if (info.origin_code) |code|
+        try descriptors.tagForOriginCode(code)
+    else
+        try classifyCap(table, info.cap_id);
+    return .{ .tag = tag, .id = info.cap_id };
+}
+
 fn anyPointerReaderFromBuilder(
     msg: *const message.Message,
     builder: message.AnyPointerBuilder,
@@ -190,9 +208,8 @@ fn collectCapsFromPointer(
             }
         },
         3 => {
-            const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
-            const tag = try classifyCap(table, cap_id);
-            const index = try outbound.indexFor(tag, cap_id);
+            const entry = try resolveCapEntry(table, resolved.pointer_word);
+            const index = try outbound.indexFor(entry.tag, entry.id);
             const new_word = makeCapabilityPointer(index);
             try writePointerWord(builder, resolved.segment_id, resolved.pointer_pos, new_word);
         },
@@ -226,11 +243,10 @@ fn encodePayloadCaps(
     if (!any_reader.isNull()) {
         const resolved = try view.msg.resolvePointer(any_reader.segment_id, any_reader.pointer_pos, any_reader.pointer_word, 8);
         if (resolved.pointer_word != 0 and (@as(u2, @truncate(resolved.pointer_word & 0x3)) == 3)) {
-            const cap_id = try decodeCapabilityPointer(resolved.pointer_word);
-            const tag = try classifyCap(table, cap_id);
-            root_cap = switch (tag) {
-                .receiverHosted => .{ .imported = .{ .id = cap_id } },
-                .senderHosted => .{ .exported = .{ .id = cap_id } },
+            const entry = try resolveCapEntry(table, resolved.pointer_word);
+            root_cap = switch (entry.tag) {
+                .receiverHosted => .{ .imported = .{ .id = entry.id } },
+                .senderHosted => .{ .exported = .{ .id = entry.id } },
                 else => null,
             };
         }
