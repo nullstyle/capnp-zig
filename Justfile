@@ -167,7 +167,7 @@ ci:
 check-generated:
     zig build
     cd src/rpc && just gen-rpc
-    cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp
+    cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp
     zig build api-snapshot
     just fmt
     git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }

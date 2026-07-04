@@ -23,6 +23,7 @@ const Schema = enum {
     chat,
     inventory,
     matchmaking,
+    resolve_disembargo,
 };
 
 const Direction = enum {
@@ -55,7 +56,11 @@ const Config = struct {
     verbose: bool = false,
     direction: Direction = .both,
     backend_selected: [4]bool = .{ false, false, false, false },
-    schema_selected: [4]bool = .{ false, false, false, false },
+    // Sized for every Schema enumerant (indexed by @intFromEnum). Only the
+    // backend-backed schemas in `all_schemas` are ever exercised by the docker
+    // matrix; resolve_disembargo has no reference backends yet, so it occupies
+    // a slot here (to keep @intFromEnum indexing in bounds) but is not iterated.
+    schema_selected: [5]bool = .{ false, false, false, false, false },
 
     fn isBackendSelected(self: Config, b: Backend) bool {
         return self.backend_selected[@intFromEnum(b)];
@@ -67,6 +72,9 @@ const Config = struct {
 };
 
 const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
+// The docker interop matrix only covers schemas with reference backends.
+// resolve_disembargo is a Zig-only scenario for now (the four reference
+// backends will mirror it later), so it is deliberately absent here.
 const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking };
 
 const Paths = struct {
@@ -154,6 +162,7 @@ fn schemaName(s: Schema) []const u8 {
         .chat => "chat",
         .inventory => "inventory",
         .matchmaking => "matchmaking",
+        .resolve_disembargo => "resolve_disembargo",
     };
 }
 
@@ -168,6 +177,7 @@ fn zigSchemaPort(s: Schema) u16 {
         .chat => 4701,
         .inventory => 4702,
         .matchmaking => 4703,
+        .resolve_disembargo => 4705,
     };
 }
 
@@ -353,6 +363,7 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "chat")) return .chat;
     if (std.mem.eql(u8, text, "inventory")) return .inventory;
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
+    if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
     return error.InvalidSchema;
 }
 

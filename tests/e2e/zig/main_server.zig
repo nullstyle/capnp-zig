@@ -11,6 +11,7 @@ const game_world = @import("generated/game_world.zig");
 const chat = @import("generated/chat.zig");
 const inventory = @import("generated/inventory.zig");
 const matchmaking = @import("generated/matchmaking.zig");
+const resolve_disembargo = @import("generated/resolve_disembargo.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -19,6 +20,7 @@ const Schema = enum {
     chat,
     inventory,
     matchmaking,
+    resolve_disembargo,
 };
 
 const CliArgs = struct {
@@ -34,6 +36,7 @@ const App = struct {
     chat_service: ChatService,
     inventory_service: InventoryService,
     matchmaking_service: MatchmakingService,
+    reflect_service: ReflectorService,
 
     fn init(allocator: Allocator, schema: Schema) !App {
         return .{
@@ -43,6 +46,7 @@ const App = struct {
             .chat_service = ChatService.init(allocator),
             .inventory_service = InventoryService.init(allocator),
             .matchmaking_service = MatchmakingService.init(allocator),
+            .reflect_service = ReflectorService.init(),
         };
     }
 
@@ -51,6 +55,7 @@ const App = struct {
         self.chat_service.bind();
         self.inventory_service.bind();
         self.matchmaking_service.bind();
+        self.reflect_service.bind();
     }
 
     fn deinit(self: *App) void {
@@ -457,11 +462,134 @@ const MatchmakingService = struct {
     }
 };
 
+// ---------------------------------------------------------------------------
+// resolve_disembargo scenario (reference-client -> Zig-server direction).
+//
+// The Reflector bootstrap implements the server side of the reflected-cap
+// resolve/embargo cycle. The reference client hosts its own CallSequence and
+// hands it to `reflect(target)`; we import and RETAIN that target, then export
+// an UNRESOLVED promise and return it. The client pipelines getNumber calls on
+// the promise (they park here), then calls `resolveNow()`, at which point we
+// resolve the promise export to the imported target. The runtime forwards the
+// parked calls back to the client's CallSequence and drives the client's
+// senderLoopback -> receiverLoopback Disembargo handshake.
+//
+// See tests/rpc/peer/rpc_reflected_resolve_disembargo_test.zig for the
+// low-level proof of the exact frame sequence this handler originates.
+//
+// State is per-connection. The e2e harness runs one connection at a time
+// (worker-pool concurrency = 1) and calls reflect() exactly once before
+// resolveNow(), so a single instance on the App is sufficient; the ids are
+// reset in bind() and captured/consumed within one reflect/resolveNow pair.
+// ---------------------------------------------------------------------------
+const ReflectorService = struct {
+    // The import id of the client's CallSequence target, captured (and its
+    // import RETAINED) by reflect() so it outlives that call and can be named
+    // as the promise's resolution target in resolveNow().
+    target_import_id: ?u32 = null,
+    // The export id of the unresolved promise handed back from reflect().
+    promise_export_id: ?u32 = null,
+    server: resolve_disembargo.Reflector.Server,
+
+    fn init() ReflectorService {
+        return .{
+            .server = .{
+                .ctx = undefined,
+                .vtable = .{
+                    // reflect() must set releaseParamCaps=false on its Return to
+                    // keep the retained target import alive past the call, so it
+                    // runs as a DEFERRED handler that owns its ReturnBuilder.
+                    .reflect = undefined,
+                    .reflect_deferred = onReflect,
+                    .resolveNow = onResolveNow,
+                },
+            },
+        };
+    }
+
+    fn bind(self: *ReflectorService) void {
+        self.server.ctx = self;
+        self.target_import_id = null;
+        self.promise_export_id = null;
+    }
+};
+
+// Context carried from onReflect into the Return build closure: the promise
+// export id to hand back to the client.
+const ReflectReturnCtx = struct {
+    promise_id: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const ReflectReturnCtx = @ptrCast(@alignCast(ctx_ptr));
+        // We RETAINED the client's target import in onReflect, so instruct the
+        // client NOT to implicitly release its param caps on this Return. Its
+        // CallSequence export therefore survives past reflect() — it is later
+        // named as the promise's resolution target. When we are finished with
+        // the import (peer teardown) the runtime sends the explicit Release.
+        ret.setReleaseParamCaps(false);
+
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        const results_builder = try any.initStruct(0, 1);
+        var results = resolve_disembargo.Reflector.ReflectResults.Builder.wrap(results_builder);
+        // Place the promise export as the `promise` result capability. A
+        // promise export is encoded as senderPromise, so the client imports it
+        // as a pipelinable promise.
+        try results.setPromiseCapability(.{ .id = self.promise_id });
+    }
+};
+
+fn onReflect(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: resolve_disembargo.Reflector.ReflectParams.Reader,
+    caps: *const rpc.caps.table.InboundCapTable,
+    sender: resolve_disembargo.Reflector.Reflect.ReturnSender,
+) !void {
+    const service: *ReflectorService = @ptrCast(@alignCast(ctx_ptr));
+
+    // Resolve the client's CallSequence from params and RETAIN its import so it
+    // outlives this handler. `resolveTarget` performs the retain and returns a
+    // Client whose `.cap_id` is the import id.
+    const target = try params.resolveTarget(peer, caps);
+    service.target_import_id = target.cap_id;
+
+    // Export an unresolved promise and return it as `promise`.
+    const promise_id = try peer.addPromiseExport();
+    service.promise_export_id = promise_id;
+
+    var ret_ctx = ReflectReturnCtx{ .promise_id = promise_id };
+    try sender.sendResults(&ret_ctx, ReflectReturnCtx.build);
+}
+
+fn onResolveNow(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    _: resolve_disembargo.Reflector.ResolveNowParams.Reader,
+    _: *resolve_disembargo.Reflector.ResolveNowResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const service: *ReflectorService = @ptrCast(@alignCast(ctx_ptr));
+
+    const promise_id = service.promise_export_id orelse return error.NoPromiseToResolve;
+    const target_id = service.target_import_id orelse return error.NoReflectTarget;
+
+    // Resolve the promise export to the retained client target. This sends
+    // Resolve(promise -> receiverHosted{target}) to the client and replays every
+    // parked pipelined getNumber by forwarding it back out to the client's
+    // CallSequence, which triggers the client's Disembargo handshake.
+    try peer.resolvePromiseExportToImport(promise_id, target_id);
+
+    // resolveNow() has empty results (): the ResolveNowResults builder is left
+    // untouched.
+}
+
 fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "game_world")) return .game_world;
     if (std.mem.eql(u8, text, "chat")) return .chat;
     if (std.mem.eql(u8, text, "inventory")) return .inventory;
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
+    if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
     return error.InvalidSchema;
 }
 
@@ -1726,6 +1854,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
         .chat => chat.ChatService.setBootstrap(peer, &app.chat_service.server),
         .inventory => inventory.InventoryService.setBootstrap(peer, &app.inventory_service.server),
         .matchmaking => matchmaking.MatchmakingService.setBootstrap(peer, &app.matchmaking_service.server),
+        .resolve_disembargo => resolve_disembargo.Reflector.setBootstrap(peer, &app.reflect_service.server),
     };
 
     _ = bootstrap_result catch |err| {
@@ -1739,7 +1868,7 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-server [--host 0.0.0.0] [--port 4700] [--schema game_world|chat|inventory|matchmaking]\n
+        \\Usage: e2e-zig-server [--host 0.0.0.0] [--port 4700] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]\n
     , .{});
 }
 

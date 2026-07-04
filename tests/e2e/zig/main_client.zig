@@ -9,6 +9,7 @@ const game_world = @import("generated/game_world.zig");
 const chat = @import("generated/chat.zig");
 const inventory = @import("generated/inventory.zig");
 const matchmaking = @import("generated/matchmaking.zig");
+const resolve_disembargo = @import("generated/resolve_disembargo.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -17,6 +18,7 @@ const Schema = enum {
     chat,
     inventory,
     matchmaking,
+    resolve_disembargo,
 };
 
 const CliArgs = struct {
@@ -68,13 +70,123 @@ const ClientApp = struct {
     mm_signal_ready_done: bool = false,
     mm_get_info_done: bool = false,
     mm_cancel_started: bool = false,
+
+    // resolve_disembargo scenario state
+    rd_reflector: ?resolve_disembargo.Reflector.Client = null,
+    // The client-hosted CallSequence that the reflector reflects back. Its
+    // getNumber() returns a monotonic counter and records the arrival order of
+    // each call, so pipelined-before-direct ordering across the embargo is
+    // observable.
+    rd_call_sequence: CallSequenceServer = .{},
+    // A client handle to our own exported rd_call_sequence, used to name it as
+    // the reflect() target via setTargetClient (which needs only the cap id).
+    rd_target: ?resolve_disembargo.CallSequence.Client = null,
+    // The resolved promise import: the reflector's promise capability, which
+    // resolves back to our own rd_call_sequence.
+    rd_promise: ?resolve_disembargo.CallSequence.Client = null,
+    // getNumber value observed by the PIPELINED call (issued while the promise
+    // was still unresolved).
+    rd_pipelined_n: ?u32 = null,
+    rd_pipelined_done: bool = false,
+    rd_resolve_now_done: bool = false,
+    // getNumber value observed by the DIRECT call (issued after resolution).
+    rd_direct_n: ?u32 = null,
 };
+
+// Client-hosted CallSequence: getNumber() returns a per-connection monotonic
+// counter (0, then 1, ...) and stamps the counter value at which each call
+// arrived, so the test can assert the pipelined call reached us strictly before
+// the direct call.
+//
+// This is implemented as a DEFERRED handler, NOT the plain direct handler, and
+// that choice is load-bearing for THIS scenario. A reflected pipelined call
+// that loops back to the caller's own export is delivered with
+// `sendResultsTo = yourself` (the tail-call / takeFromOtherQuestion relay).
+// On that path the runtime's sendReturnResults short-circuits to
+// `resultsSentElsewhere` and NEVER invokes a direct handler's results-build
+// closure — so a direct handler that recorded its counter inside the build
+// closure would be silently skipped and never observe the call. A deferred
+// handler body, by contrast, runs unconditionally before any return is sent, so
+// the counter increment and arrival stamp are recorded even when the payload
+// itself is relayed elsewhere. We still send the results (harmless: the runtime
+// relays or drops them per the sendResultsTo mode).
+const CallSequenceServer = struct {
+    // Next value getNumber() will return; also the running arrival counter.
+    counter: u32 = 0,
+    // Arrival stamp (pre-increment counter value) of the first and second call,
+    // used to prove ordering. call0_seq must be < call1_seq.
+    call0_seq: ?u32 = null,
+    call1_seq: ?u32 = null,
+    calls_seen: u32 = 0,
+    server: resolve_disembargo.CallSequence.Server = .{
+        .ctx = undefined,
+        .vtable = .{
+            // A deferred handler still needs a non-null direct handler field in
+            // the vtable; it is never called because the deferred variant takes
+            // precedence (see generated handleCallDirect).
+            .getNumber = unusedDirectGetNumber,
+            .getNumber_deferred = onCallSequenceGetNumberDeferred,
+        },
+    },
+
+    fn bind(self: *CallSequenceServer) void {
+        self.server.ctx = self;
+    }
+};
+
+// Never invoked: the deferred handler takes precedence in the generated
+// dispatch. Present only to satisfy the non-optional vtable field.
+fn unusedDirectGetNumber(
+    _: *anyopaque,
+    _: *rpc.peer.Peer,
+    _: resolve_disembargo.CallSequence.GetNumberParams.Reader,
+    _: *resolve_disembargo.CallSequence.GetNumberResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    return error.Unreachable;
+}
+
+// Carries the counter value from the deferred handler body into the results
+// build closure.
+const GetNumberReturnCtx = struct {
+    n: u32,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const GetNumberReturnCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        const results_builder = try any.initStruct(1, 0);
+        var results = resolve_disembargo.CallSequence.GetNumberResults.Builder.wrap(results_builder);
+        try results.setN(self.n);
+    }
+};
+
+fn onCallSequenceGetNumberDeferred(
+    ctx_ptr: *anyopaque,
+    _: *rpc.peer.Peer,
+    _: resolve_disembargo.CallSequence.GetNumberParams.Reader,
+    _: *const rpc.caps.table.InboundCapTable,
+    sender: resolve_disembargo.CallSequence.GetNumber.ReturnSender,
+) !void {
+    const self: *CallSequenceServer = @ptrCast(@alignCast(ctx_ptr));
+    const n = self.counter;
+    // Record the arrival stamp for the first two calls so ordering is provable.
+    // This runs unconditionally, even when the results are relayed elsewhere.
+    if (self.calls_seen == 0) self.call0_seq = n;
+    if (self.calls_seen == 1) self.call1_seq = n;
+    self.calls_seen += 1;
+    self.counter += 1;
+
+    var ret_ctx = GetNumberReturnCtx{ .n = n };
+    try sender.sendResults(&ret_ctx, GetNumberReturnCtx.build);
+}
 
 fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "game_world")) return .game_world;
     if (std.mem.eql(u8, text, "chat")) return .chat;
     if (std.mem.eql(u8, text, "inventory")) return .inventory;
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
+    if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
     return error.InvalidSchema;
 }
 
@@ -142,6 +254,16 @@ fn finish(app: *ClientApp, peer: *rpc.peer.Peer) void {
     if (app.mm_service) |client| {
         client.release();
         app.mm_service = null;
+    }
+    // resolve_disembargo: release the promise import (retained by
+    // resolvePromise) and the reflector bootstrap import.
+    if (app.rd_promise) |client| {
+        client.release();
+        app.rd_promise = null;
+    }
+    if (app.rd_reflector) |client| {
+        client.release();
+        app.rd_reflector = null;
     }
     app.done = true;
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
@@ -760,9 +882,194 @@ fn onCancelMatchReturn(
     finish(app, peer);
 }
 
+// ---------------------------------------------------------------------------
+// resolve_disembargo scenario (Zig-client -> reference-server direction).
+//
+// This is the caller side of the reflected-cap resolve/embargo cycle. We host
+// our own CallSequence, hand it to the reflector's reflect(), pipeline a
+// getNumber on the returned (still-unresolved) promise so it PARKS at the
+// reflector, then call resolveNow() to make the reflector resolve the promise
+// back to our CallSequence. That reflected resolution forwards the parked call
+// home and runs our senderLoopback -> receiverLoopback Disembargo before we
+// issue a DIRECT getNumber on the now-resolved cap.
+//
+// Assertions prove: reflect returned a promise; the pipelined getNumber reached
+// our CallSequence and returned n==0; resolveNow completed; the direct
+// getNumber returned n==1; and the two calls arrived in order (pipelined
+// strictly before direct) — i.e. the embargo held the reflected cap until the
+// Disembargo round-trip cleared, so no reordering occurred.
+//
+// The proof test tests/rpc/peer/rpc_reflected_resolve_disembargo_test.zig drives
+// this same cycle with low-level primitives over a synchronous in-process wire;
+// this e2e proves it holds over real async TCP, where the reentrancy artifacts
+// that test documents (an early nested Finish) do not arise.
+// ---------------------------------------------------------------------------
+
+fn bootstrapResolveDisembargo(app: *ClientApp, peer: *rpc.peer.Peer) !void {
+    app.rd_call_sequence.bind();
+    // Export our CallSequence once here (where we hold the peer) so the reflect
+    // params builder can name it by cap id via setTargetClient.
+    const cap_id = try resolve_disembargo.CallSequence.exportServer(peer, &app.rd_call_sequence.server);
+    app.rd_target = resolve_disembargo.CallSequence.Client.init(peer, cap_id);
+    _ = try resolve_disembargo.Reflector.Client.fromBootstrap(peer, app, onReflectorBootstrap);
+}
+
+fn onReflectorBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: resolve_disembargo.Reflector.BootstrapResponse) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    const client = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap reflector capability");
+        return;
+    };
+    app.rd_reflector = client;
+
+    // reflect(target = our own CallSequence). buildReflect names our
+    // already-exported CallSequence in the params cap table via setTargetClient.
+    _ = try client.callReflect(app, buildReflect, onReflectReturn);
+}
+
+fn buildReflect(ctx_ptr: *anyopaque, params: *resolve_disembargo.Reflector.ReflectParams.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    // Name our already-exported CallSequence as the reflect target; this only
+    // needs the cap id (no peer access from inside the params builder).
+    try params.setTargetClient(app.rd_target.?);
+}
+
+fn onReflectReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: resolve_disembargo.Reflector.Reflect.Response,
+    caps: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "reflect returns results");
+        return;
+    };
+
+    // The `promise` result is an unresolved CallSequence promise import.
+    const promise = results.resolvePromise(peer, caps) catch {
+        failAndFinish(app, peer, "reflect returns imported promise capability");
+        return;
+    };
+    app.tap.ok(true, "reflect returns imported promise capability");
+    app.rd_promise = promise;
+
+    // Pipeline a getNumber on the (still unresolved) promise. It parks at the
+    // reflector because the promise has no target yet. It has NOT returned when
+    // we issue resolveNow immediately after.
+    _ = try promise.callGetNumber(app, null, onPipelinedGetNumberReturn);
+    app.tap.ok(!app.rd_pipelined_done, "pipelined getNumber issued before resolution (parked)");
+
+    // Now tell the reflector to resolve the promise to our CallSequence. This
+    // forwards the parked getNumber home and drives the Disembargo handshake.
+    const reflector = app.rd_reflector orelse {
+        failAndFinish(app, peer, "reflector client available");
+        return;
+    };
+    _ = try reflector.callResolveNow(app, null, onResolveNowReturn);
+}
+
+fn onPipelinedGetNumberReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: resolve_disembargo.CallSequence.GetNumber.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    // Ordering subtlety: this call was parked on the unresolved promise and then
+    // forwarded back to our OWN CallSequence when the reflector resolved the
+    // promise. A pipelined call that reflects back to its own origin completes
+    // via the Level-1 `takeFromOtherQuestion` tail-call relay, NOT a plain
+    // `.results` return — the value does not travel back inline here. Both
+    // `.results` and `.take_from_other_question` mean the call completed; the
+    // relay path carries no inline payload, so the source of truth is the value
+    // our CallSequence deferred handler recorded when the forwarded call arrived
+    // (rd_call_sequence.call0_seq). By the time this Return is dispatched, that
+    // forwarded call has already been processed, so call0_seq is populated.
+    switch (response) {
+        .results => |results| app.rd_pipelined_n = try results.getN(),
+        .take_from_other_question => app.rd_pipelined_n = app.rd_call_sequence.call0_seq,
+        else => {
+            failAndFinish(app, peer, "pipelined getNumber completes");
+            return;
+        },
+    }
+    app.rd_pipelined_done = true;
+    app.tap.ok(app.rd_pipelined_n != null and app.rd_pipelined_n.? == 0, "pipelined getNumber reached CallSequence with n==0");
+
+    try maybeDirectGetNumber(app, peer);
+}
+
+fn onResolveNowReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: resolve_disembargo.Reflector.ResolveNow.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    _ = response.unwrap() catch {
+        failAndFinish(app, peer, "resolveNow returns results");
+        return;
+    };
+    app.tap.ok(true, "resolveNow completed");
+    app.rd_resolve_now_done = true;
+
+    try maybeDirectGetNumber(app, peer);
+}
+
+/// Once the pipelined getNumber has come home AND resolveNow has returned (so
+/// the promise is resolved and the embargo cleared), issue a DIRECT getNumber
+/// on the now-resolved promise import.
+fn maybeDirectGetNumber(app: *ClientApp, peer: *rpc.peer.Peer) !void {
+    if (!(app.rd_pipelined_done and app.rd_resolve_now_done)) return;
+    // Guard against issuing the direct call twice (both callbacks call here).
+    if (app.rd_direct_n != null) return;
+
+    const promise = app.rd_promise orelse {
+        failAndFinish(app, peer, "resolved promise client available");
+        return;
+    };
+    _ = try promise.callGetNumber(app, null, onDirectGetNumberReturn);
+}
+
+fn onDirectGetNumberReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: resolve_disembargo.CallSequence.GetNumber.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    // The resolved promise points at our OWN CallSequence export, so this direct
+    // call also loops home; like the pipelined call it may complete via a
+    // tail-call relay. Read the value the deferred handler recorded for the
+    // second arrival (call1_seq) when the relay carries no inline payload.
+    switch (response) {
+        .results => |results| app.rd_direct_n = try results.getN(),
+        .take_from_other_question => app.rd_direct_n = app.rd_call_sequence.call1_seq,
+        else => {
+            failAndFinish(app, peer, "direct getNumber completes");
+            return;
+        },
+    }
+    app.tap.ok(app.rd_direct_n != null and app.rd_direct_n.? == 1, "direct getNumber returned n==1");
+
+    // Ordering: the pipelined getNumber reached our CallSequence strictly before
+    // the post-embargo direct getNumber. The embargo held the reflected cap
+    // until the Disembargo round-trip cleared, so no reordering occurred.
+    const seq = &app.rd_call_sequence;
+    const ordered = seq.call0_seq != null and seq.call1_seq != null and seq.call0_seq.? < seq.call1_seq.?;
+    app.tap.ok(ordered, "pipelined getNumber reached CallSequence before the direct call");
+
+    finish(app, peer);
+}
+
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-zig-client [--host 127.0.0.1] [--port 4000] [--schema game_world|chat|inventory|matchmaking]\n
+        \\Usage: e2e-zig-client [--host 127.0.0.1] [--port 4000] [--schema game_world|chat|inventory|matchmaking|resolve_disembargo]\n
     , .{});
 }
 
@@ -816,6 +1123,7 @@ pub fn main(init: std.process.Init) !void {
         .chat => bootstrapChat(&app, peer),
         .inventory => bootstrapInventory(&app, peer),
         .matchmaking => bootstrapMatchmaking(&app, peer),
+        .resolve_disembargo => bootstrapResolveDisembargo(&app, peer),
     };
 
     start_result catch |err| {
