@@ -123,6 +123,31 @@ jobs:
         with:
           version: 0.17.0-dev.813+2153f8143
 
+      # Package store cached separately from setup-zig's per-run cache; the
+      # key is shared with nightly.yml's extended-gates job so nightly QUIC
+      # runs inherit a warm cache from per-push CI.
+      - name: Restore Zig package cache
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache/p
+          key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+
+      - name: Prefetch dependency tree
+        # Retries transient upstream failures (googlesource.com 503s) so the
+        # QUIC lane only fails on real regressions.
+        run: |
+          for attempt in 1 2 3; do
+            if zig build --fetch=all; then
+              exit 0
+            fi
+            echo "::warning::dependency fetch attempt ${attempt} failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "dependency fetch failed after 3 attempts"
+          exit 1
+
       - name: Build QUIC-enabled targets
         run: zig build -Dquic=true --summary all
 

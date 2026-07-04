@@ -87,6 +87,34 @@ jobs:
         with:
           version: 0.17.0-dev.813+2153f8143
 
+      # setup-zig's built-in cache saves a fresh per-job entry every run, so
+      # CI churn evicts it from the repo's 10 GB quota long before the next
+      # nightly. Keep the package store in its own small entry keyed on the
+      # dependency manifest — shared with ci.yml's quic-transport lane, so
+      # every push to main re-warms it.
+      - name: Restore Zig package cache
+        uses: actions/cache@v4
+        with:
+          path: .zig-cache/p
+          key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
+
+      - name: Prefetch dependency tree
+        # Retries transient upstream failures (boringssl.googlesource.com
+        # 503s took down the 2026-07-03 nightly) so the QUIC gate below
+        # only ever fails on real regressions.
+        run: |
+          for attempt in 1 2 3; do
+            if zig build --fetch=all; then
+              exit 0
+            fi
+            echo "::warning::dependency fetch attempt ${attempt} failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "dependency fetch failed after 3 attempts"
+          exit 1
+
       - name: Full test suite
         run: zig build test --summary all
 
