@@ -1,11 +1,11 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
-const rdb = @import("rocksdb");
-const rocksdb = @import("rocksdb-zig");
+const store_mod = @import("store.zig");
 const kvstore = @import("gen/kvstore.zig");
 
 const message = capnpc.message;
 const rpc = capnpc.rpc;
+const Store = store_mod.Store;
 const BackupInfo = kvstore.BackupInfo;
 const KvStore = kvstore.KvStore;
 const KvClientNotifier = kvstore.KvClientNotifier;
@@ -27,10 +27,6 @@ fn serverLog(
     std.log.defaultLog(level, scope, format, args);
 }
 
-const user_key_prefix = "u:";
-const next_version_meta_key = "m:next_version";
-const encoded_version_size = @sizeOf(u64);
-
 const Limits = struct {
     const max_key_bytes: usize = 1024;
     const max_value_bytes: usize = 64 * 1024;
@@ -38,20 +34,6 @@ const Limits = struct {
     const max_watch_keys: u32 = 512;
     const max_list_limit: u32 = 1024;
     const max_pending_notifications: usize = 1024;
-};
-
-const StoredRecord = struct {
-    version: u64,
-    value: []const u8,
-};
-
-const BatchOutcome = union(enum) {
-    put: struct {
-        version: u64,
-    },
-    delete: struct {
-        found: bool,
-    },
 };
 
 const NotifyChange = union(enum) {
@@ -66,57 +48,11 @@ const NotifyChange = union(enum) {
     },
 };
 
-const BackupRecord = struct {
-    backup_id: u32,
-    timestamp: i64,
-    size: u64,
-    num_files: u32,
-};
-
 var g_service: ?*KvService = null;
 
 // ---------------------------------------------------------------------------
-// Encoding helpers
+// Validation helpers
 // ---------------------------------------------------------------------------
-
-fn encodeVersion(version: u64) [encoded_version_size]u8 {
-    var out: [encoded_version_size]u8 = undefined;
-    std.mem.writeInt(u64, &out, version, .big);
-    return out;
-}
-
-fn decodeVersion(encoded: []const u8) !u64 {
-    if (encoded.len != encoded_version_size) return error.CorruptVersionEncoding;
-
-    var buf: [encoded_version_size]u8 = undefined;
-    std.mem.copyForwards(u8, buf[0..], encoded);
-    return std.mem.readInt(u64, &buf, .big);
-}
-
-fn encodeRecord(allocator: Allocator, version: u64, value: []const u8) ![]u8 {
-    const out = try allocator.alloc(u8, encoded_version_size + value.len);
-    const version_bytes = encodeVersion(version);
-
-    std.mem.copyForwards(u8, out[0..encoded_version_size], version_bytes[0..]);
-    std.mem.copyForwards(u8, out[encoded_version_size..], value);
-
-    return out;
-}
-
-fn decodeRecord(encoded: []const u8) !StoredRecord {
-    if (encoded.len < encoded_version_size) return error.CorruptValueEncoding;
-    return .{
-        .version = try decodeVersion(encoded[0..encoded_version_size]),
-        .value = encoded[encoded_version_size..],
-    };
-}
-
-fn makeUserKey(allocator: Allocator, key: []const u8) ![]u8 {
-    const out = try allocator.alloc(u8, user_key_prefix.len + key.len);
-    std.mem.copyForwards(u8, out[0..user_key_prefix.len], user_key_prefix);
-    std.mem.copyForwards(u8, out[user_key_prefix.len..], key);
-    return out;
-}
 
 fn validateKey(key: []const u8) !void {
     if (key.len > Limits.max_key_bytes) return error.KeyTooLarge;
@@ -149,26 +85,6 @@ fn notifyChangesIntersectWatched(watched_keys: []const []u8, changes: []const No
         if (watchedKeysContain(watched_keys, notifyChangeKey(change))) return true;
     }
     return false;
-}
-
-fn logRocksError(operation: []const u8, err: anyerror, err_data: ?rocksdb.Data) void {
-    if (err_data) |data| {
-        _ = data;
-        std.log.err("rocksdb {s} failed ({s}); details redacted", .{ operation, @errorName(err) });
-    } else {
-        std.log.err("rocksdb {s} failed ({s})", .{ operation, @errorName(err) });
-    }
-}
-
-fn logRocksCStringError(operation: []const u8, err_ptr: ?[*:0]u8) void {
-    if (err_ptr) |raw| {
-        var data = rocksdb.Data{
-            .data = std.mem.span(raw),
-            .free = rdb.rocksdb_free,
-        };
-        defer data.deinit();
-        std.log.err("rocksdb {s} failed; details redacted", .{operation});
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,66 +122,27 @@ const KvService = struct {
         peer: *rpc.peer.Peer,
         conn: *rpc.transport.tcp.Connection,
         notifier: KvClientNotifier.Client,
-        watched_keys: std.ArrayListUnmanaged([]u8) = .{},
+        watched_keys: std.ArrayListUnmanaged([]u8) = .empty,
         /// Pending notifications queued from other worker threads.
         /// Protected by `pending_mu`.
-        pending: std.ArrayListUnmanaged(PendingNotification) = .{},
+        pending: std.ArrayListUnmanaged(PendingNotification) = .empty,
         pending_mu: std.atomic.Mutex = .unlocked,
     };
 
     allocator: Allocator,
-    db_path: []const u8,
-    backup_dir: []const u8,
-    db: rocksdb.DB,
-    default_cf: rocksdb.ColumnFamilyHandle,
-    db_open: bool,
-    next_version: u64,
+    store: Store,
     server: KvStore.Server,
     subscribers: std.ArrayListUnmanaged(Subscriber),
     /// Protects all mutable state when accessed from multiple worker threads.
     mu: std.atomic.Mutex = .unlocked,
 
-    fn init(allocator: Allocator, db_path: []const u8, backup_dir: []const u8) !KvService {
-        var err_data: ?rocksdb.Data = null;
-        defer if (err_data) |data| data.deinit();
-
-        var db, const column_families = rocksdb.DB.open(
-            allocator,
-            db_path,
-            .{
-                .create_if_missing = true,
-                .create_missing_column_families = true,
-            },
-            null,
-            false,
-            &err_data,
-        ) catch |err| {
-            logRocksError("open", err, err_data);
-            return err;
-        };
-        errdefer db.deinit();
-        defer allocator.free(column_families);
-
-        if (column_families.len == 0) return error.MissingDefaultColumnFamily;
-
-        const default_cf = column_families[0].handle;
-        db = db.withDefaultColumnFamily(default_cf);
-
-        var service = KvService{
+    fn init(allocator: Allocator, io: std.Io, db_path: []const u8, backup_dir: []const u8) !KvService {
+        return .{
             .allocator = allocator,
-            .db_path = db_path,
-            .backup_dir = backup_dir,
-            .db = db,
-            .default_cf = default_cf,
-            .db_open = true,
-            .next_version = 1,
+            .store = try Store.open(allocator, io, db_path, backup_dir),
             .server = undefined,
-            .subscribers = .{},
+            .subscribers = .empty,
         };
-
-        service.next_version = try service.loadNextVersion();
-
-        return service;
     }
 
     /// Must be called after the KvService is at its final memory location.
@@ -293,206 +170,7 @@ const KvService = struct {
             subscriber.pending.deinit(self.allocator);
         }
         self.subscribers.deinit(self.allocator);
-        if (self.db_open) self.db.deinit();
-    }
-
-    fn loadNextVersion(self: *KvService) !u64 {
-        var err_data: ?rocksdb.Data = null;
-        defer if (err_data) |data| data.deinit();
-
-        const maybe_encoded = self.db.get(null, next_version_meta_key, &err_data) catch |err| {
-            logRocksError("get next_version", err, err_data);
-            return err;
-        };
-
-        if (maybe_encoded) |encoded| {
-            defer encoded.deinit();
-            return decodeVersion(encoded.data);
-        }
-
-        return 1;
-    }
-
-    fn closeDatabase(self: *KvService) void {
-        if (!self.db_open) return;
-        self.db.deinit();
-        self.db_open = false;
-    }
-
-    fn reopenDatabase(self: *KvService) !void {
-        var err_data: ?rocksdb.Data = null;
-        defer if (err_data) |data| data.deinit();
-
-        var db, const column_families = rocksdb.DB.open(
-            self.allocator,
-            self.db_path,
-            .{
-                .create_if_missing = true,
-                .create_missing_column_families = true,
-            },
-            null,
-            false,
-            &err_data,
-        ) catch |err| {
-            logRocksError("open (reopen)", err, err_data);
-            return err;
-        };
-        errdefer db.deinit();
-        defer self.allocator.free(column_families);
-
-        if (column_families.len == 0) return error.MissingDefaultColumnFamily;
-
-        const default_cf = column_families[0].handle;
-        db = db.withDefaultColumnFamily(default_cf);
-
-        self.db = db;
-        self.default_cf = default_cf;
-        self.db_open = true;
-        self.next_version = try self.loadNextVersion();
-    }
-
-    fn openBackupEngine(self: *KvService) !*rdb.rocksdb_backup_engine_t {
-        const options = rdb.rocksdb_options_create() orelse return error.RocksDBBackupOptionsCreateFailed;
-        defer rdb.rocksdb_options_destroy(options);
-
-        const backup_dir_z = try self.allocator.dupeZ(u8, self.backup_dir);
-        defer self.allocator.free(backup_dir_z);
-
-        // Create backup directory if it doesn't exist.
-        _ = std.c.mkdir(backup_dir_z.ptr, 0o755);
-
-        var err_ptr: ?[*:0]u8 = null;
-        const engine = rdb.rocksdb_backup_engine_open(options, backup_dir_z.ptr, @ptrCast(&err_ptr));
-        if (err_ptr != null) {
-            logRocksCStringError("backup_engine_open", err_ptr);
-            return error.RocksDBBackupEngineOpen;
-        }
-
-        return engine orelse error.RocksDBBackupEngineOpen;
-    }
-
-    fn readBackupRecords(self: *KvService, engine: *rdb.rocksdb_backup_engine_t) ![]BackupRecord {
-        const info = rdb.rocksdb_backup_engine_get_backup_info(engine) orelse return error.RocksDBBackupInfoUnavailable;
-        defer rdb.rocksdb_backup_engine_info_destroy(info);
-
-        const count_raw = rdb.rocksdb_backup_engine_info_count(info);
-        if (count_raw < 0) return error.RocksDBBackupInfoInvalidCount;
-        if (count_raw == 0) return try self.allocator.alloc(BackupRecord, 0);
-
-        const count: usize = @intCast(count_raw);
-        const records = try self.allocator.alloc(BackupRecord, count);
-        errdefer self.allocator.free(records);
-
-        for (0..count) |idx_usize| {
-            const idx: c_int = @intCast(idx_usize);
-            records[idx_usize] = .{
-                .backup_id = rdb.rocksdb_backup_engine_info_backup_id(info, idx),
-                .timestamp = rdb.rocksdb_backup_engine_info_timestamp(info, idx),
-                .size = rdb.rocksdb_backup_engine_info_size(info, idx),
-                .num_files = rdb.rocksdb_backup_engine_info_number_files(info, idx),
-            };
-        }
-
-        return records;
-    }
-
-    fn createBackup(self: *KvService, flush_before_backup: bool) !struct {
-        backup: BackupRecord,
-        backup_count: u32,
-    } {
-        const engine = try self.openBackupEngine();
-        defer rdb.rocksdb_backup_engine_close(engine);
-
-        var err_ptr: ?[*:0]u8 = null;
-        rdb.rocksdb_backup_engine_create_new_backup_flush(
-            engine,
-            self.db.db,
-            @intFromBool(flush_before_backup),
-            @ptrCast(&err_ptr),
-        );
-        if (err_ptr != null) {
-            logRocksCStringError("backup_engine_create_new_backup", err_ptr);
-            return error.RocksDBCreateBackup;
-        }
-
-        const records = try self.readBackupRecords(engine);
-        defer self.allocator.free(records);
-        if (records.len == 0) return error.NoBackupsAvailable;
-
-        return .{
-            .backup = records[records.len - 1],
-            .backup_count = @intCast(records.len),
-        };
-    }
-
-    fn listBackups(self: *KvService) ![]BackupRecord {
-        const engine = try self.openBackupEngine();
-        defer rdb.rocksdb_backup_engine_close(engine);
-        return self.readBackupRecords(engine);
-    }
-
-    fn restoreFromBackup(self: *KvService, requested_backup_id: u32, keep_log_files: bool) !u32 {
-        const engine = try self.openBackupEngine();
-        defer rdb.rocksdb_backup_engine_close(engine);
-
-        const records = try self.readBackupRecords(engine);
-        defer self.allocator.free(records);
-        if (records.len == 0) return error.NoBackupsAvailable;
-
-        var target_backup_id: u32 = requested_backup_id;
-        if (target_backup_id == 0) {
-            target_backup_id = records[records.len - 1].backup_id;
-        } else {
-            var found = false;
-            for (records) |record| {
-                if (record.backup_id == target_backup_id) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) return error.BackupNotFound;
-        }
-
-        const restore_options = rdb.rocksdb_restore_options_create() orelse return error.RocksDBRestoreOptionsCreateFailed;
-        defer rdb.rocksdb_restore_options_destroy(restore_options);
-        rdb.rocksdb_restore_options_set_keep_log_files(restore_options, @intFromBool(keep_log_files));
-
-        const db_path_z = try self.allocator.dupeZ(u8, self.db_path);
-        defer self.allocator.free(db_path_z);
-
-        self.closeDatabase();
-
-        var err_ptr: ?[*:0]u8 = null;
-        if (requested_backup_id == 0) {
-            rdb.rocksdb_backup_engine_restore_db_from_latest_backup(
-                engine,
-                db_path_z.ptr,
-                db_path_z.ptr,
-                restore_options,
-                @ptrCast(&err_ptr),
-            );
-        } else {
-            rdb.rocksdb_backup_engine_restore_db_from_backup(
-                engine,
-                db_path_z.ptr,
-                db_path_z.ptr,
-                restore_options,
-                target_backup_id,
-                @ptrCast(&err_ptr),
-            );
-        }
-
-        if (err_ptr != null) {
-            logRocksCStringError("backup_engine_restore_db", err_ptr);
-            self.reopenDatabase() catch |reopen_err| {
-                std.log.err("failed to reopen database after restore failure: {s}", .{@errorName(reopen_err)});
-                return reopen_err;
-            };
-            return error.RocksDBRestoreBackup;
-        }
-
-        try self.reopenDatabase();
-        return target_backup_id;
+        self.store.deinit();
     }
 
     fn addOrUpdateSubscriber(self: *KvService, peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection, notifier: KvClientNotifier.Client) !void {
@@ -869,21 +547,7 @@ fn handleGet(
     try validateKey(key);
     std.log.debug("GET key_bytes={d}", .{key.len});
 
-    const db_key = try makeUserKey(svc.allocator, key);
-    defer svc.allocator.free(db_key);
-
-    var err_data: ?rocksdb.Data = null;
-    defer if (err_data) |data| data.deinit();
-
-    const maybe_encoded = svc.db.get(null, db_key, &err_data) catch |err| {
-        logRocksError("get", err, err_data);
-        return err;
-    };
-
-    if (maybe_encoded) |encoded| {
-        defer encoded.deinit();
-
-        const record = try decodeRecord(encoded.data);
+    if (svc.store.get(key)) |record| {
         var out_entry = try results.initEntry();
         try out_entry.setKey(key);
         try out_entry.setValue(record.value);
@@ -912,133 +576,66 @@ fn handleWriteBatch(
     if (op_count == 0) {
         _ = try results.initResults(0);
         try results.setApplied(0);
-        try results.setNextVersion(svc.next_version);
+        try results.setNextVersion(svc.store.nextVersion());
         return;
     }
 
-    var outcomes = try svc.allocator.alloc(BatchOutcome, op_count);
+    // Translate the inbound ops into store batch ops. The key/value slices
+    // borrow the inbound Cap'n Proto message, which outlives this handler.
+    const batch_ops = try svc.allocator.alloc(Store.BatchOp, op_count);
+    defer svc.allocator.free(batch_ops);
+    const outcomes = try svc.allocator.alloc(Store.BatchOutcome, op_count);
     defer svc.allocator.free(outcomes);
-
-    var temp_buffers = std.ArrayListUnmanaged([]u8){};
-    defer {
-        for (temp_buffers.items) |buf| {
-            svc.allocator.free(buf);
-        }
-        temp_buffers.deinit(svc.allocator);
-    }
-
-    var notify_changes = std.ArrayListUnmanaged(NotifyChange){};
-    defer notify_changes.deinit(svc.allocator);
-
-    var batch = rocksdb.WriteBatch.init();
-    defer batch.deinit();
-
-    var next_version = svc.next_version;
-    var batch_put_version: ?u64 = null;
 
     for (0..op_count) |idx| {
         const op = try ops.get(@intCast(idx));
         const key = try op.getKey();
         try validateKey(key);
-        const which = try op.which();
-
-        const db_key = try makeUserKey(svc.allocator, key);
-        try temp_buffers.append(svc.allocator, db_key);
-
-        switch (which) {
+        switch (try op.which()) {
             .put => {
                 const value = try op.getPut();
                 try validateValue(value);
-
-                const assigned_version = if (batch_put_version) |existing|
-                    existing
-                else blk: {
-                    if (next_version == std.math.maxInt(u64)) return error.VersionOverflow;
-                    const new_version = next_version;
-                    next_version += 1;
-                    batch_put_version = new_version;
-                    break :blk new_version;
-                };
-
-                const encoded_record = try encodeRecord(svc.allocator, assigned_version, value);
-                try temp_buffers.append(svc.allocator, encoded_record);
-
-                batch.put(svc.default_cf, db_key, encoded_record);
-                outcomes[idx] = .{ .put = .{ .version = assigned_version } };
-                try notify_changes.append(svc.allocator, .{
-                    .put = .{
-                        .key = key,
-                        .value = value,
-                        .version = assigned_version,
-                    },
-                });
+                batch_ops[idx] = .{ .put = .{ .key = key, .value = value } };
             },
-            .delete => {
-                var err_data: ?rocksdb.Data = null;
-                defer if (err_data) |data| data.deinit();
-
-                var found = false;
-                const maybe_existing = svc.db.get(null, db_key, &err_data) catch |err| {
-                    logRocksError("get (batch delete preflight)", err, err_data);
-                    return err;
-                };
-
-                if (maybe_existing) |existing| {
-                    existing.deinit();
-                    found = true;
-                }
-
-                batch.delete(svc.default_cf, db_key);
-                outcomes[idx] = .{ .delete = .{ .found = found } };
-                try notify_changes.append(svc.allocator, .{
-                    .delete = .{
-                        .key = key,
-                        .found = found,
-                    },
-                });
-            },
+            .delete => batch_ops[idx] = .{ .delete = key },
         }
     }
 
-    if (next_version != svc.next_version) {
-        var next_version_bytes = encodeVersion(next_version);
-        batch.put(svc.default_cf, next_version_meta_key, next_version_bytes[0..]);
-    }
+    try svc.store.applyBatch(batch_ops, outcomes);
 
-    var write_err: ?rocksdb.Data = null;
-    defer if (write_err) |data| data.deinit();
-
-    svc.db.write(batch, &write_err) catch |err| {
-        logRocksError("write batch", err, write_err);
-        return err;
-    };
-
-    svc.next_version = next_version;
+    // Build the response list and the notification set from the applied ops.
+    var notify_changes = std.ArrayListUnmanaged(NotifyChange).empty;
+    defer notify_changes.deinit(svc.allocator);
 
     var out_results = try results.initResults(op_count);
     for (0..op_count) |idx| {
-        const op = try ops.get(@intCast(idx));
-        const key = try op.getKey();
-
         var out = try out_results.get(@intCast(idx));
-        try out.setKey(key);
-
-        switch (outcomes[idx]) {
-            .put => |put| {
-                const value = try op.getPut();
+        switch (batch_ops[idx]) {
+            .put => |p| {
+                try out.setKey(p.key);
                 var out_entry = try out.initPut();
-                try out_entry.setKey(key);
-                try out_entry.setValue(value);
-                try out_entry.setVersion(put.version);
+                try out_entry.setKey(p.key);
+                try out_entry.setValue(p.value);
+                try out_entry.setVersion(outcomes[idx].put.version);
+                try notify_changes.append(svc.allocator, .{ .put = .{
+                    .key = p.key,
+                    .value = p.value,
+                    .version = outcomes[idx].put.version,
+                } });
             },
-            .delete => |del| {
-                try out.setDelete(del.found);
+            .delete => |key| {
+                try out.setKey(key);
+                try out.setDelete(outcomes[idx].delete.found);
+                try notify_changes.append(svc.allocator, .{ .delete = .{
+                    .key = key,
+                    .found = outcomes[idx].delete.found,
+                } });
             },
         }
     }
 
     try results.setApplied(op_count);
-    try results.setNextVersion(svc.next_version);
+    try results.setNextVersion(svc.store.nextVersion());
 
     svc.notifySubscribers(caller_peer, notify_changes.items);
 }
@@ -1064,64 +661,15 @@ fn handleList(
         return;
     }
 
-    const prefixed_prefix = try makeUserKey(svc.allocator, prefix);
-    defer svc.allocator.free(prefixed_prefix);
+    const entries = try svc.store.list(svc.allocator, prefix, limit);
+    defer svc.allocator.free(entries);
 
-    // Pass 1: count matching entries.
-    var count: u32 = 0;
-    {
-        var iter = svc.db.iterator(null, .forward, prefixed_prefix);
-        defer iter.deinit();
-
-        var iter_err: ?rocksdb.Data = null;
-        defer if (iter_err) |data| data.deinit();
-
-        while (count < limit) {
-            const maybe_entry = iter.next(&iter_err) catch |err| {
-                logRocksError("iterator next (count)", err, iter_err);
-                return err;
-            };
-
-            const entry = maybe_entry orelse break;
-            const stored_key = entry[0].data;
-
-            if (!std.mem.startsWith(u8, stored_key, prefixed_prefix)) break;
-
-            _ = try decodeRecord(entry[1].data);
-            count += 1;
-        }
-    }
-
-    var entries = try results.initEntries(count);
-
-    // Pass 2: materialize result list.
-    var idx: u32 = 0;
-    var iter = svc.db.iterator(null, .forward, prefixed_prefix);
-    defer iter.deinit();
-
-    var iter_err: ?rocksdb.Data = null;
-    defer if (iter_err) |data| data.deinit();
-
-    while (idx < count) {
-        const maybe_entry = iter.next(&iter_err) catch |err| {
-            logRocksError("iterator next (fill)", err, iter_err);
-            return err;
-        };
-
-        const entry = maybe_entry orelse break;
-        const stored_key = entry[0].data;
-
-        if (!std.mem.startsWith(u8, stored_key, prefixed_prefix)) break;
-
-        const logical_key = stored_key[user_key_prefix.len..];
-        const record = try decodeRecord(entry[1].data);
-
-        var out = try entries.get(idx);
-        try out.setKey(logical_key);
-        try out.setValue(record.value);
-        try out.setVersion(record.version);
-
-        idx += 1;
+    var out_entries = try results.initEntries(@intCast(entries.len));
+    for (entries, 0..) |entry, idx| {
+        var out = try out_entries.get(@intCast(idx));
+        try out.setKey(entry.key);
+        try out.setValue(entry.value);
+        try out.setVersion(entry.version);
     }
 }
 
@@ -1156,7 +704,7 @@ fn handleSetWatchedKeys(
     std.log.debug("SET WATCHED KEYS count={d}", .{count});
 }
 
-fn writeBackupInfo(builder: *BackupInfo.Builder, record: BackupRecord) !void {
+fn writeBackupInfo(builder: *BackupInfo.Builder, record: Store.BackupRecord) !void {
     try builder.setBackupId(record.backup_id);
     try builder.setTimestamp(record.timestamp);
     try builder.setSize(record.size);
@@ -1173,12 +721,14 @@ fn handleCreateBackup(
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
     defer svc.mu.unlock();
-    const flush_before_backup = try params.getFlushBeforeBackup();
-    const outcome = try svc.createBackup(flush_before_backup);
+    // The store always flushes its log before snapshotting, so the
+    // flushBeforeBackup request flag is accepted but has no additional effect.
+    _ = try params.getFlushBeforeBackup();
+    const outcome = try svc.store.createBackup();
 
     var backup = try results.initBackup();
-    try writeBackupInfo(&backup, outcome.backup);
-    try results.setBackupCount(outcome.backup_count);
+    try writeBackupInfo(&backup, outcome.record);
+    try results.setBackupCount(outcome.count);
 }
 
 fn handleListBackups(
@@ -1191,7 +741,7 @@ fn handleListBackups(
     const svc: *KvService = @ptrCast(@alignCast(ctx_ptr));
     while (!svc.mu.tryLock()) {}
     defer svc.mu.unlock();
-    const records = try svc.listBackups();
+    const records = try svc.store.listBackups(svc.allocator);
     defer svc.allocator.free(records);
 
     var backups = try results.initBackups(@intCast(records.len));
@@ -1214,10 +764,10 @@ fn handleRestoreFromBackup(
     const backup_id = try params.getBackupId();
     const keep_log_files = try params.getKeepLogFiles();
 
-    const restored_backup_id = try svc.restoreFromBackup(backup_id, keep_log_files);
+    const restored_backup_id = try svc.store.restoreFromBackup(backup_id, keep_log_files);
     try results.setRestoredBackupId(restored_backup_id);
-    try results.setNextVersion(svc.next_version);
-    svc.notifyStateResetSubscribers(caller_peer, restored_backup_id, svc.next_version);
+    try results.setNextVersion(svc.store.nextVersion());
+    svc.notifyStateResetSubscribers(caller_peer, restored_backup_id, svc.store.nextVersion());
 }
 
 // ---------------------------------------------------------------------------
@@ -1359,7 +909,7 @@ fn usage() void {
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1382,7 +932,7 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(args.backup_dir);
     server_is_quiet = args.quiet;
 
-    var svc = try KvService.init(allocator, args.db_path, args.backup_dir);
+    var svc = try KvService.init(allocator, io, args.db_path, args.backup_dir);
     defer svc.deinit();
     svc.bind();
     g_service = &svc;

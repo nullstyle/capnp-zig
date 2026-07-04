@@ -24,8 +24,6 @@ const KvStoreStressor = struct {
 
     value: []const u8,
 
-    peer: ?*rpc.peer.Peer = null,
-    conn: ?*rpc.transport.tcp.Connection = null,
     client: ?KvStore.Client = null,
 
     operations_started: u64 = 0,
@@ -51,8 +49,6 @@ const RequestCtx = struct {
     id: u64,
     start_ns: Timestamp,
 };
-
-var g_stressor: ?*KvStoreStressor = null;
 
 const StresserError = error{
     InvalidArguments,
@@ -404,82 +400,27 @@ fn onBootstrap(
     }
 }
 
-fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
-    if (!peer.isAttachedTransportClosing()) {
-        peer.closeAttachedTransport();
-    }
-
-    if (g_stressor) |stressor| {
-        fail(stressor, err, peer);
-    }
+// Session lifecycle callbacks. `ClientSession` owns the Connection and Peer and
+// closes the transport before invoking `on_error`, so these only need to record
+// state; teardown happens in `session.deinit()` after `run()` returns.
+fn onSessionError(ctx: ?*anyopaque, session: *rpc.transport.tcp.ClientSession, err: anyerror) void {
+    const stressor: *KvStoreStressor = @ptrCast(@alignCast(ctx.?));
+    fail(stressor, err, &session.peer);
 }
 
-fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
-    const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
-
-    peer.deinit();
-    allocator.destroy(peer);
-
-    if (conn) |attached| {
-        attached.deinit();
-        allocator.destroy(attached);
+fn onSessionClose(ctx: ?*anyopaque, _: *rpc.transport.tcp.ClientSession) void {
+    const stressor: *KvStoreStressor = @ptrCast(@alignCast(ctx.?));
+    if (stressor.err == null and !stressor.done) {
+        fail(stressor, StresserError.PeerClosed, null);
     }
-
-    if (g_stressor) |stressor| {
-        if (stressor.err == null and !stressor.done) {
-            fail(stressor, StresserError.PeerClosed, null);
-        }
-        stressor.peer = null;
-        stressor.conn = null;
-        if (stressor.start_ns != 0 and stressor.end_ns == 0) {
-            stressor.end_ns = nanoTimestamp();
-        }
+    if (stressor.start_ns != 0 and stressor.end_ns == 0) {
+        stressor.end_ns = nanoTimestamp();
     }
-}
-
-fn connThreadFn(stressor: *KvStoreStressor, address: std.Io.net.IpAddress, io: std.Io) void {
-    const fd = rawTcpConnect(address, io) catch |err| {
-        fail(stressor, err, null);
-        return;
-    };
-
-    const conn = stressor.allocator.create(rpc.transport.tcp.Connection) catch {
-        rpc.transport.tcp.closeFd(io, fd);
-        fail(stressor, error.OutOfMemory, null);
-        return;
-    };
-
-    conn.* = rpc.transport.tcp.Connection.init(stressor.allocator, io, fd, .{}) catch |err| {
-        stressor.allocator.destroy(conn);
-        rpc.transport.tcp.closeFd(io, fd);
-        fail(stressor, err, null);
-        return;
-    };
-
-    const peer = stressor.allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        stressor.allocator.destroy(conn);
-        fail(stressor, error.OutOfMemory, null);
-        return;
-    };
-    peer.* = rpc.peer.Peer.init(stressor.allocator, conn);
-
-    stressor.conn = conn;
-    stressor.peer = peer;
-    peer.start(null, onPeerError, onPeerClose);
-
-    _ = KvStore.Client.fromBootstrap(peer, stressor, onBootstrap) catch |err| {
-        stressor.peer = peer;
-        fail(stressor, err, peer);
-    };
-
-    conn.run();
 }
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -510,13 +451,28 @@ pub fn main(init: std.process.Init) !void {
         .value = value,
     };
 
-    g_stressor = &stressor;
-    defer g_stressor = null;
-
     const address = try std.Io.net.IpAddress.parse(args.host, args.port);
-    const conn_thread = try std.Thread.spawn(.{}, connThreadFn, .{ &stressor, address, io });
 
-    conn_thread.join();
+    // One call replaces the hand-rolled socket connect + Connection/Peer
+    // allocation, wiring, and teardown the stressor used to carry by hand.
+    const session = rpc.transport.tcp.connect(allocator, io, address, .{
+        .ctx = &stressor,
+        .on_error = onSessionError,
+        .on_close = onSessionClose,
+    }) catch |err| {
+        stressor.err = err;
+        printSummary(&stressor);
+        return err;
+    };
+    defer session.deinit();
+
+    if (KvStore.Client.fromBootstrap(&session.peer, &stressor, onBootstrap)) |_| {
+        session.run();
+    } else |err| {
+        stressor.err = err;
+        stressor.done = true;
+        if (stressor.end_ns == 0) stressor.end_ns = nanoTimestamp();
+    }
 
     if (stressor.end_ns == 0 and stressor.start_ns != 0) {
         stressor.end_ns = nanoTimestamp();
@@ -525,11 +481,6 @@ pub fn main(init: std.process.Init) !void {
     printSummary(&stressor);
 
     if (stressor.err) |err| return err;
-}
-
-fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
-    const stream = try std.Io.net.IpAddress.connect(&addr, io, .{ .mode = .stream });
-    return stream.socket.handle;
 }
 
 fn nanoTimestamp() i128 {
