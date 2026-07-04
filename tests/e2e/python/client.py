@@ -50,6 +50,10 @@ matchmaking_capnp = SCHEMA_PARSER.load(
     os.path.join(SCHEMA_DIR, "matchmaking.capnp"),
     imports=[SCHEMA_DIR],
 )
+resolve_disembargo_capnp = SCHEMA_PARSER.load(
+    os.path.join(SCHEMA_DIR, "resolve_disembargo.capnp"),
+    imports=[SCHEMA_DIR],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +848,128 @@ async def test_matchmaking_service(host, port):
 
 
 # ===========================================================================
+# resolve_disembargo scenario (Python-client -> reflecting-server direction).
+#
+# This is the CALLER side of the reflected-cap resolve/embargo cycle. Python
+# hosts its own CallSequence, hands it to the reflector's reflect() as `target`
+# (cap-in-params), pipelines a getNumber on the returned (still-unresolved)
+# promise so it PARKS at the reflector, then calls resolveNow() so the reflector
+# resolves the promise back to our CallSequence. That reflected resolution
+# forwards the parked call home and drives the senderLoopback -> receiverLoopback
+# Disembargo before we issue a DIRECT getNumber on the now-resolved cap.
+#
+# Assertions mirror the Go/Zig clients: reflect returned a promise; the pipelined
+# getNumber reached our CallSequence and returned n==0; resolveNow completed; the
+# direct getNumber returned n==1; and the two calls arrived in order (pipelined
+# strictly before direct) -- i.e. the embargo held the reflected cap until the
+# Disembargo round-trip cleared, so no reordering occurred.
+#
+# NOTE: the Zig server resolves the parked pipelined call back to our own cap via
+# the Level-1 `takeFromOtherQuestion` tail-call relay. pycapnp wraps kj-capnp
+# (C++), which handles that return path; this scenario verifies it end to end.
+# ===========================================================================
+
+class CallSequenceImpl(resolve_disembargo_capnp.CallSequence.Server):
+    """Client-hosted CallSequence handed to the reflector.
+
+    getNumber() returns a per-connection monotonic counter (0, then 1, ...) and
+    stamps the counter value at which each call arrived, so the test can assert
+    the pipelined call reached us strictly before the direct call.
+    """
+
+    def __init__(self):
+        self._counter = 0
+        self._seen = 0
+        self._call0_seq = None  # arrival stamp of the first getNumber
+        self._call1_seq = None  # arrival stamp of the second getNumber
+
+    async def getNumber(self, _context, **kwargs):
+        n = self._counter
+        if self._seen == 0:
+            self._call0_seq = n
+        elif self._seen == 1:
+            self._call1_seq = n
+        self._seen += 1
+        self._counter += 1
+        _context.results.n = n
+
+
+async def test_resolve_disembargo(host, port):
+    reflector, client = await connect(host, port, resolve_disembargo_capnp.Reflector)
+
+    # Host our own CallSequence and hand it to reflect() as `target` (a cap the
+    # caller hosts -- cap-in-params).
+    seq = CallSequenceImpl()
+
+    try:
+        # reflect(target = our own CallSequence). The reflector imports and
+        # retains our CallSequence, exports an unresolved promise, and returns it
+        # as `promise` -- WITHOUT resolving it yet. We do NOT await the reflect()
+        # response before pipelining on it.
+        reflect_promise = reflector.reflect(target=seq)
+
+        # The `promise` result field is a pipelinable, still-unresolved
+        # CallSequence. Accessing it on the un-awaited RemotePromise yields a
+        # pipelined capability.
+        promise_cap = reflect_promise.promise
+        tap.test(
+            "reflect returns imported promise capability",
+            promise_cap is not None,
+            f"promise_cap={promise_cap!r}",
+        )
+
+        # Pipeline a getNumber on the (still unresolved) promise. It PARKS at the
+        # reflector because the promise has no target yet. Issued before
+        # resolveNow so it is in flight (parked) when resolution fires.
+        pipelined_promise = promise_cap.getNumber()
+
+        # Now tell the reflector to resolve the promise to our CallSequence. This
+        # forwards the parked getNumber home and drives the Disembargo handshake.
+        resolve_promise = reflector.resolveNow()
+
+        # The parked pipelined getNumber is forwarded back to our OWN
+        # CallSequence when the reflector resolves the promise (via the
+        # takeFromOtherQuestion relay). Its result (n==0) travels back once the
+        # reflected call completes.
+        pipelined_res = await pipelined_promise
+        tap.test(
+            "pipelined getNumber reached CallSequence with n==0",
+            pipelined_res.n == 0,
+            f"n={pipelined_res.n}",
+        )
+
+        # resolveNow() returns empty results (); awaiting it confirms it completed.
+        await resolve_promise
+        tap.ok("resolveNow completed")
+
+        # Issue a DIRECT getNumber on the now-resolved promise. The embargo held
+        # the reflected cap until the Disembargo round-trip cleared, so this
+        # direct call is delivered to our CallSequence strictly AFTER the
+        # pipelined one.
+        direct_res = await promise_cap.getNumber()
+        tap.test(
+            "direct getNumber returned n==1",
+            direct_res.n == 1,
+            f"n={direct_res.n}",
+        )
+
+        # Ordering: the pipelined getNumber reached our CallSequence strictly
+        # before the post-embargo direct getNumber.
+        ordered = (
+            seq._call0_seq is not None
+            and seq._call1_seq is not None
+            and seq._call0_seq < seq._call1_seq
+        )
+        tap.test(
+            "pipelined getNumber reached CallSequence before the direct call",
+            ordered,
+            f"call0={seq._call0_seq}, call1={seq._call1_seq}",
+        )
+    except Exception:
+        tap.not_ok("resolve_disembargo scenario", traceback.format_exc())
+
+
+# ===========================================================================
 # Main
 # ===========================================================================
 
@@ -883,6 +1009,9 @@ async def main_async(host, port, schema):
     elif schema == "matchmaking":
         print("# MatchmakingService tests")
         await test_matchmaking_service(host, port)
+    elif schema == "resolve_disembargo":
+        print("# resolve_disembargo tests")
+        await test_resolve_disembargo(host, port)
     else:
         print(f"# Unknown schema: {schema}", file=sys.stderr)
         return False
@@ -900,7 +1029,7 @@ def main():
     parser.add_argument(
         "--schema",
         default=None,
-        help="Optional schema: game_world|chat|inventory|matchmaking (or gameworld)",
+        help="Optional schema: game_world|chat|inventory|matchmaking|resolve_disembargo (or gameworld)",
     )
     args = parser.parse_args()
 

@@ -21,6 +21,7 @@
 #include "chat.capnp.h"
 #include "inventory.capnp.h"
 #include "matchmaking.capnp.h"
+#include "resolve_disembargo.capnp.h"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -947,6 +948,73 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Reflector implementation (resolve_disembargo scenario, SERVER / reflector).
+//
+// This is the reflecting server for the reflected-capability resolve/embargo
+// cycle. It mirrors the kj-capnp echo/hold + promise-fulfiller pattern from
+// vendor/ext/capnproto/c++/src/capnp/rpc-test.c++ ("resolve promise" ~L1097,
+// "embargo" ~L1273) and test-util.c++ (TestMoreStuffImpl::hold/echo).
+//
+// reflect(target): imports and RETAINS the caller's CallSequence (a plain copy
+// of the capability client keeps a ref alive past the call, like clientToHold =
+// params.getCap()), then exports an UNRESOLVED promise capability via
+// kj::newPromiseAndFulfiller<CallSequence::Client>() and returns the promise
+// wrapped as a promise client — WITHOUT resolving it. Calls the caller pipelines
+// on the returned promise park at this reflector because the fulfiller has not
+// fired yet.
+//
+// resolveNow(): fulfills the promise with the retained target. That reflected
+// resolution forwards the parked pipelined calls back out to the caller's
+// CallSequence and drives the caller's senderLoopback -> receiverLoopback
+// Disembargo before it issues a direct call.
+//
+// State is per-connection: TwoPartyServer constructs one ReflectorImpl per
+// accepted connection, and the harness runs one connection at a time and calls
+// reflect() exactly once before resolveNow(), so a single instance is enough.
+// ---------------------------------------------------------------------------
+
+class ReflectorImpl final : public Reflector::Server {
+public:
+  kj::Promise<void> reflect(ReflectContext context) override {
+    // Retain the caller's CallSequence import so it outlives this call; it is
+    // later named as the promise's resolution target in resolveNow(). Copying
+    // the capability client takes an owning reference that survives past return.
+    heldTarget = context.getParams().getTarget();
+
+    // Export an unresolved promise. newPromiseAndFulfiller gives a promise that
+    // buffers calls made on the wrapped client until the fulfiller fires, then
+    // forwards them. On the wire the promise export is encoded as senderPromise,
+    // so the caller imports it as a pipelinable promise.
+    auto paf = kj::newPromiseAndFulfiller<CallSequence::Client>();
+    fulfiller = kj::mv(paf.fulfiller);
+
+    // Hand back the promise as the `promise` result capability. The promise
+    // client is constructed from the Promise<CallSequence::Client>; the RPC
+    // system exports it as an unresolved promise.
+    context.getResults().setPromise(CallSequence::Client(kj::mv(paf.promise)));
+    return kj::READY_NOW;
+  }
+
+  kj::Promise<void> resolveNow(ResolveNowContext context) override {
+    KJ_REQUIRE(fulfiller.get() != nullptr, "resolveNow called before reflect()");
+    // Fulfill the promise with the retained target. This resolves the promise
+    // export to the caller's CallSequence and replays every parked pipelined
+    // getNumber by forwarding it back out to that CallSequence, which triggers
+    // the caller's Disembargo handshake. A copy of the retained client keeps our
+    // own reference alive while handing an owning ref to the fulfiller.
+    fulfiller->fulfill(CallSequence::Client(heldTarget));
+    return kj::READY_NOW;
+  }
+
+private:
+  // The retained caller-hosted CallSequence (held past reflect()). A null client
+  // until reflect() runs.
+  CallSequence::Client heldTarget = nullptr;
+  // The resolver for the promise handed back from reflect(); null until then.
+  kj::Own<kj::PromiseFulfiller<CallSequence::Client>> fulfiller;
+};
+
+// ---------------------------------------------------------------------------
 // Multi-service bootstrap: expose all four services through a single bootstrap
 // ---------------------------------------------------------------------------
 
@@ -1001,9 +1069,12 @@ int main(int argc, char* argv[]) {
     } else if (schema == "matchmaking") {
       capnp::TwoPartyServer server(kj::heap<MatchmakingServiceImpl>());
       server.listen(*listener).wait(io.waitScope);
+    } else if (schema == "resolve_disembargo") {
+      capnp::TwoPartyServer server(kj::heap<ReflectorImpl>());
+      server.listen(*listener).wait(io.waitScope);
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
-      std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking" << std::endl;
+      std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking, resolve_disembargo" << std::endl;
       return 1;
     }
   } catch (kj::Exception& e) {

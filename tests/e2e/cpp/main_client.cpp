@@ -17,6 +17,7 @@
 #include "chat.capnp.h"
 #include "inventory.capnp.h"
 #include "matchmaking.capnp.h"
+#include "resolve_disembargo.capnp.h"
 
 // ---------------------------------------------------------------------------
 // TAP helpers
@@ -715,6 +716,108 @@ static void testMatchmaking(kj::WaitScope& waitScope, MatchmakingService::Client
 }
 
 // ---------------------------------------------------------------------------
+// resolve_disembargo scenario (C++-client -> reflecting-server direction).
+//
+// This is the CALLER side of the reflected-cap resolve/embargo cycle. We host
+// our own CallSequence, hand it to the reflector's reflect(), pipeline a
+// getNumber on the returned (still-unresolved) promise so it PARKS at the
+// reflector, then call resolveNow() to make the reflector resolve the promise
+// back to our CallSequence. That reflected resolution forwards the parked call
+// home and runs the senderLoopback -> receiverLoopback Disembargo before we
+// issue a DIRECT getNumber on the now-resolved cap.
+//
+// Assertions mirror the Go/Zig clients: reflect returned a promise; the
+// pipelined getNumber reached our CallSequence and returned n==0; resolveNow
+// completed; the direct getNumber returned n==1; and the two calls arrived in
+// order (pipelined strictly before direct) — i.e. the embargo held the
+// reflected cap until the Disembargo round-trip cleared, so no reordering.
+// ---------------------------------------------------------------------------
+
+// callSequenceImpl is the client-hosted CallSequence: getNumber() returns a
+// per-connection monotonic counter (0, then 1, ...) and stamps the counter
+// value at which each call arrived, so the test can assert the pipelined call
+// reached us strictly before the direct call. The kj event loop is
+// single-threaded, so no locking is needed.
+class CallSequenceImpl final : public CallSequence::Server {
+public:
+  kj::Promise<void> getNumber(GetNumberContext context) override {
+    uint32_t n = counter_;
+    if (seen_ == 0) {
+      call0Seq_ = static_cast<int64_t>(n);
+    } else if (seen_ == 1) {
+      call1Seq_ = static_cast<int64_t>(n);
+    }
+    ++seen_;
+    ++counter_;
+
+    context.getResults().setN(n);
+    return kj::READY_NOW;
+  }
+
+  int64_t call0Seq() const { return call0Seq_; }
+  int64_t call1Seq() const { return call1Seq_; }
+
+private:
+  uint32_t counter_ = 0;
+  uint32_t seen_ = 0;
+  int64_t call0Seq_ = -1;  // arrival stamp of the first getNumber, -1 until seen
+  int64_t call1Seq_ = -1;  // arrival stamp of the second getNumber, -1 until seen
+};
+
+static void testResolveDisembargo(kj::WaitScope& waitScope, Reflector::Client reflector) {
+  // Host our own CallSequence and hand it to reflect() as `target`. We keep a
+  // raw pointer to the impl so we can read the recorded arrival stamps after the
+  // calls have been dispatched; the capability client owns the impl's lifetime.
+  auto seqImpl = kj::heap<CallSequenceImpl>();
+  CallSequenceImpl& seqRef = *seqImpl;
+  CallSequence::Client self = kj::mv(seqImpl);
+
+  // reflect(target = our own CallSequence). The reflector imports and retains
+  // our CallSequence, exports an unresolved promise, and returns it as `promise`
+  // — without resolving it yet.
+  auto reflectReq = reflector.reflectRequest();
+  reflectReq.setTarget(self);
+  auto reflectPromise = reflectReq.send();
+
+  // The `promise` result is a pipelinable, still-unresolved CallSequence. We do
+  // NOT wait for reflect() to return before pipelining on it.
+  auto promise = reflectPromise.getPromise();
+  ok(true, "reflect returns imported promise capability");
+
+  // Pipeline a getNumber on the (still unresolved) promise. It PARKS at the
+  // reflector because the promise has no target yet. We issue it before calling
+  // resolveNow, so it is in flight (parked) when resolution fires.
+  auto pipelinedPromise = promise.getNumberRequest().send();
+
+  // Now tell the reflector to resolve the promise to our CallSequence. This
+  // forwards the parked getNumber home and drives the Disembargo handshake.
+  auto resolvePromise = reflector.resolveNowRequest().send();
+
+  // The parked pipelined getNumber is forwarded back to our OWN CallSequence
+  // when the reflector resolves the promise. Its result (n==0) travels back
+  // once the reflected call completes.
+  auto pipelinedRes = pipelinedPromise.wait(waitScope);
+  ok(pipelinedRes.getN() == 0, "pipelined getNumber reached CallSequence with n==0");
+
+  // resolveNow() returns empty results (); waiting on it confirms it completed.
+  resolvePromise.wait(waitScope);
+  ok(true, "resolveNow completed");
+
+  // Issue a DIRECT getNumber on the now-resolved promise. The embargo held the
+  // reflected cap until the Disembargo round-trip cleared, so this direct call
+  // is delivered to our CallSequence strictly AFTER the pipelined one.
+  auto directRes = promise.getNumberRequest().send().wait(waitScope);
+  ok(directRes.getN() == 1, "direct getNumber returned n==1");
+
+  // Ordering: the pipelined getNumber reached our CallSequence strictly before
+  // the post-embargo direct getNumber.
+  int64_t call0 = seqRef.call0Seq();
+  int64_t call1 = seqRef.call1Seq();
+  bool ordered = call0 >= 0 && call1 >= 0 && call0 < call1;
+  ok(ordered, "pipelined getNumber reached CallSequence before the direct call");
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -760,6 +863,9 @@ int main(int argc, char* argv[]) {
     } else if (schema == "matchmaking") {
       auto client = rpcClient.bootstrap().castAs<MatchmakingService>();
       testMatchmaking(waitScope, client);
+    } else if (schema == "resolve_disembargo") {
+      auto client = rpcClient.bootstrap().castAs<Reflector>();
+      testResolveDisembargo(waitScope, client);
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
       return 1;

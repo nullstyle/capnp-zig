@@ -13,6 +13,9 @@ pub mod inventory_capnp {
 pub mod matchmaking_capnp {
     include!(concat!(env!("OUT_DIR"), "/matchmaking_capnp.rs"));
 }
+pub mod resolve_disembargo_capnp {
+    include!(concat!(env!("OUT_DIR"), "/resolve_disembargo_capnp.rs"));
+}
 
 mod client;
 mod server;

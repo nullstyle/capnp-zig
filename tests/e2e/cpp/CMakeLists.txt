@@ -17,6 +17,7 @@ set(SCHEMA_FILES
   chat.capnp
   inventory.capnp
   matchmaking.capnp
+  resolve_disembargo.capnp
 )
 
 set(CAPNP_SRCS)

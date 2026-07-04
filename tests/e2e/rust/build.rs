@@ -16,6 +16,7 @@ fn main() {
         .file(schema_dir.join("chat.capnp"))
         .file(schema_dir.join("inventory.capnp"))
         .file(schema_dir.join("matchmaking.capnp"))
+        .file(schema_dir.join("resolve_disembargo.capnp"))
         .run()
         .expect("failed to compile Cap'n Proto schemas");
 }

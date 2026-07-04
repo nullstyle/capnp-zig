@@ -649,6 +649,17 @@ def build_services_for_schema(port, schema):
         return [(port, InventoryServiceImpl, "InventoryService")]
     if schema == "matchmaking":
         return [(port, MatchmakingServiceImpl, "MatchmakingService")]
+    if schema == "resolve_disembargo":
+        # pycapnp has no API to export an unresolved promise capability and
+        # resolve it later, so it cannot act as the reflecting server for this
+        # scenario. Python only ever drives resolve_disembargo as the CLIENT
+        # (see client.py); this guard keeps the server from crashing if the
+        # schema arg is seen, but the direction is not exercised as a server.
+        raise ValueError(
+            "resolve_disembargo has no Python server implementation "
+            "(pycapnp cannot host an unresolved+later-resolved promise cap); "
+            "Python only drives this scenario as the client"
+        )
     raise ValueError(f"unknown schema: {schema}")
 
 

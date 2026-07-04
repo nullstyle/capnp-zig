@@ -1,5 +1,9 @@
+use std::cell::Cell;
 use std::net::ToSocketAddrs;
+use std::rc::Rc;
 
+use capnp::capability::Promise;
+use capnp::Error;
 use capnp_rpc::{rpc_twoparty_capnp, twoparty, RpcSystem};
 use futures::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -9,6 +13,7 @@ use crate::game_types_capnp::{Faction, Rarity, StatusCode};
 use crate::game_world_capnp::EntityKind;
 use crate::inventory_capnp::TradeState;
 use crate::matchmaking_capnp::{GameMode, MatchState};
+use crate::resolve_disembargo_capnp::{call_sequence, reflector};
 
 struct TapReporter {
     test_num: u32,
@@ -248,11 +253,197 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                 Err("Some tests failed".into())
             }
         }
+        "resolve_disembargo" => {
+            let reflector: reflector::Client = rpc_system.bootstrap(side);
+            tokio::task::spawn_local(rpc_system);
+            let mut tap = TapReporter::new(6);
+            let result = test_resolve_disembargo(&reflector, &mut tap).await;
+            if let Err(e) = result {
+                // Any early-return error is reported as the failing assertion it
+                // aborted on; still emit remaining plan slots as failures so the
+                // runner sees a non-empty, failing plan rather than a truncated
+                // one.
+                tap.not_ok("resolve_disembargo scenario aborted", &e);
+            }
+            if tap.done() {
+                Ok(())
+            } else {
+                Err("Some tests failed".into())
+            }
+        }
         _ => {
             eprintln!("unknown schema: {}", schema);
             Err("Unknown schema".into())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// resolve_disembargo scenario (Rust-client -> reflecting-server direction).
+//
+// This is the CALLER side of the reflected-cap resolve/embargo cycle. We host
+// our own CallSequence, hand it to the reflector's reflect(), pipeline a
+// getNumber on the returned (still-unresolved) promise so it PARKS at the
+// reflector, then call resolveNow() to make the reflector resolve the promise
+// back to our CallSequence. That reflected resolution forwards the parked call
+// home and runs the senderLoopback -> receiverLoopback Disembargo before we
+// issue a DIRECT getNumber on the now-resolved cap.
+//
+// Assertions prove: reflect returned a promise; the pipelined getNumber issued
+// before resolution; the pipelined getNumber reached our CallSequence and
+// returned n==0; resolveNow completed; the direct getNumber returned n==1; and
+// the two calls arrived in order (pipelined strictly before direct) — i.e. the
+// embargo held the reflected cap until the Disembargo round-trip cleared, so no
+// reordering occurred.
+// ---------------------------------------------------------------------------
+
+// Shared arrival record for the client-hosted CallSequence, so the test can
+// inspect the ordering after the calls have been served. capnp-rpc is
+// single-threaded (!Send), so plain Cells behind an Rc are sufficient — no
+// locks.
+#[derive(Default)]
+struct CallSequenceState {
+    // Next value getNumber() will return; also the running arrival counter.
+    counter: Cell<u32>,
+    seen: Cell<u32>,
+    // Arrival stamp (pre-increment counter value) of the first and second call,
+    // -1 until seen, used to prove ordering: call0 must be < call1.
+    call0_seq: Cell<i64>,
+    call1_seq: Cell<i64>,
+}
+
+impl CallSequenceState {
+    fn new() -> Rc<Self> {
+        Rc::new(Self {
+            counter: Cell::new(0),
+            seen: Cell::new(0),
+            call0_seq: Cell::new(-1),
+            call1_seq: Cell::new(-1),
+        })
+    }
+}
+
+// Client-hosted CallSequence: getNumber() returns a per-connection monotonic
+// counter (0, then 1, ...) and stamps the counter value at which each call
+// arrived, so the test can assert the pipelined call reached us strictly before
+// the direct call.
+struct CallSequenceImpl {
+    state: Rc<CallSequenceState>,
+}
+
+impl call_sequence::Server for CallSequenceImpl {
+    fn get_number(
+        &mut self,
+        _params: call_sequence::GetNumberParams,
+        mut results: call_sequence::GetNumberResults,
+    ) -> Promise<(), Error> {
+        let n = self.state.counter.get();
+        match self.state.seen.get() {
+            0 => self.state.call0_seq.set(n as i64),
+            1 => self.state.call1_seq.set(n as i64),
+            _ => {}
+        }
+        self.state.seen.set(self.state.seen.get() + 1);
+        self.state.counter.set(n + 1);
+        results.get().set_n(n);
+        Promise::ok(())
+    }
+}
+
+async fn test_resolve_disembargo(
+    reflector: &reflector::Client,
+    tap: &mut TapReporter,
+) -> Result<(), String> {
+    // Host our own CallSequence and hand it to reflect() as `target`.
+    let seq_state = CallSequenceState::new();
+    let self_seq: call_sequence::Client = capnp_rpc::new_client(CallSequenceImpl {
+        state: seq_state.clone(),
+    });
+
+    // reflect(target = our own CallSequence). The reflector imports and retains
+    // our CallSequence, exports an unresolved promise, and returns it as
+    // `promise` — without resolving it yet.
+    let mut reflect_req = reflector.reflect_request();
+    reflect_req.get().set_target(self_seq);
+    let reflect_promise = reflect_req.send();
+
+    // The `promise` result is a pipelinable, still-unresolved CallSequence
+    // obtained via promise pipelining on the reflect response — we do NOT wait
+    // for reflect() to return before pipelining on it.
+    let promise: call_sequence::Client = reflect_promise.pipeline.get_promise();
+    tap.ok("reflect returns imported promise capability");
+
+    // Pipeline a getNumber on the (still unresolved) promise. It PARKS at the
+    // reflector because the promise has no target yet. We issue it before
+    // calling resolveNow, so it is in flight (parked) when resolution fires.
+    let pipelined_fut = promise.get_number_request().send();
+    tap.ok("pipelined getNumber issued before resolution (parked)");
+
+    // Now tell the reflector to resolve the promise to our CallSequence. This
+    // forwards the parked getNumber home and drives the Disembargo handshake.
+    let resolve_fut = reflector.resolve_now_request().send();
+
+    // The parked pipelined getNumber is forwarded back to our OWN CallSequence
+    // when the reflector resolves the promise. Its result (n==0) travels back
+    // once the reflected call completes.
+    let pipelined_res = pipelined_fut
+        .promise
+        .await
+        .map_err(|e| format!("pipelined getNumber completes: {}", e))?;
+    let pipelined_n = pipelined_res
+        .get()
+        .map_err(|e| e.to_string())?
+        .get_n();
+    if pipelined_n != 0 {
+        tap.not_ok(
+            "pipelined getNumber reached CallSequence with n==0",
+            &format!("expected n==0, got {}", pipelined_n),
+        );
+        return Ok(());
+    }
+    tap.ok("pipelined getNumber reached CallSequence with n==0");
+
+    // resolveNow() returns empty results (); waiting on it confirms it
+    // completed.
+    resolve_fut
+        .promise
+        .await
+        .map_err(|e| format!("resolveNow completes: {}", e))?;
+    tap.ok("resolveNow completed");
+
+    // Issue a DIRECT getNumber on the now-resolved promise. The embargo held the
+    // reflected cap until the Disembargo round-trip cleared, so this direct call
+    // is delivered to our CallSequence strictly AFTER the pipelined one.
+    let direct_res = promise
+        .get_number_request()
+        .send()
+        .promise
+        .await
+        .map_err(|e| format!("direct getNumber completes: {}", e))?;
+    let direct_n = direct_res.get().map_err(|e| e.to_string())?.get_n();
+    if direct_n != 1 {
+        tap.not_ok(
+            "direct getNumber returned n==1",
+            &format!("expected n==1, got {}", direct_n),
+        );
+        return Ok(());
+    }
+    tap.ok("direct getNumber returned n==1");
+
+    // Ordering: the pipelined getNumber reached our CallSequence strictly before
+    // the post-embargo direct getNumber.
+    let call0 = seq_state.call0_seq.get();
+    let call1 = seq_state.call1_seq.get();
+    let ordered = call0 >= 0 && call1 >= 0 && call0 < call1;
+    if ordered {
+        tap.ok("pipelined getNumber reached CallSequence before the direct call");
+    } else {
+        tap.not_ok(
+            "pipelined getNumber reached CallSequence before the direct call",
+            &format!("call0={}, call1={}", call0, call1),
+        );
+    }
+    Ok(())
 }
 
 // -- GameWorld tests --

@@ -1,9 +1,12 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::sync::{Arc, Mutex};
 
-use capnp::capability::Promise;
+use capnp::capability::{FromClientHook, Promise};
+use capnp::Error;
 use capnp_rpc::{pry, rpc_twoparty_capnp, twoparty, RpcSystem};
+use futures::channel::oneshot;
 use futures::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
@@ -13,6 +16,7 @@ use crate::game_types_capnp::{Faction, Rarity, StatusCode};
 use crate::game_world_capnp::{area_query, game_world, EntityKind};
 use crate::inventory_capnp::{inventory_service, trade_session, TradeState};
 use crate::matchmaking_capnp::{match_controller, matchmaking_service, GameMode, MatchState};
+use crate::resolve_disembargo_capnp::{call_sequence, reflector};
 
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -1236,6 +1240,100 @@ impl match_controller::Server for MatchControllerImpl {
 }
 
 // ---------------------------------------------------------------------------
+// Reflector implementation (resolve_disembargo scenario, SERVER / reflector
+// side).
+//
+// reflect(target): imports the caller's CallSequence and RETAINS it past the
+// call (cloning the Rc-backed Client), exports an UNRESOLVED promise capability
+// via capnp_rpc::new_promise_client backed by a oneshot channel, and returns
+// that promise as `promise` — but does NOT resolve it yet. The caller pipelines
+// getNumber calls on the returned promise; those calls PARK at this reflector
+// (buffered by the promise client) because the promise has no target.
+//
+// resolveNow(): fulfills the promise with the retained target by sending it
+// down the oneshot. That reflected resolution forwards the parked pipelined
+// calls back out to the caller's CallSequence and drives the caller's
+// senderLoopback -> receiverLoopback Disembargo before it issues a direct call.
+//
+// State is per-connection (one ReflectorImpl per accepted connection). capnp-rpc
+// is single-threaded (!Send), so RefCell + a futures::channel::oneshot are the
+// right primitives here — no locks. The e2e harness runs one connection at a
+// time and calls reflect() exactly once before resolveNow().
+struct ReflectorImpl {
+    // The retained caller-hosted CallSequence, held past reflect() by cloning
+    // the Rc-backed Client. Named as the promise's resolution target in
+    // resolveNow().
+    held: RefCell<Option<call_sequence::Client>>,
+    // The sending half of the promise's oneshot fulfiller, created in reflect()
+    // and consumed (taken) in resolveNow(). Sending the retained target's
+    // client hook resolves the promise to it.
+    fulfiller: RefCell<Option<oneshot::Sender<Result<capnp::capability::Client, Error>>>>,
+}
+
+impl ReflectorImpl {
+    fn new() -> Self {
+        Self {
+            held: RefCell::new(None),
+            fulfiller: RefCell::new(None),
+        }
+    }
+}
+
+impl reflector::Server for ReflectorImpl {
+    fn reflect(
+        &mut self,
+        params: reflector::ReflectParams,
+        mut results: reflector::ReflectResults,
+    ) -> Promise<(), Error> {
+        // Import the caller's CallSequence and RETAIN it so it outlives this
+        // call. call_sequence::Client is Rc-backed, so cloning takes an owning
+        // reference that survives past the call return.
+        let target: call_sequence::Client = pry!(pry!(params.get()).get_target());
+        *self.held.borrow_mut() = Some(target);
+
+        // Export an unresolved promise. new_promise_client queues up any calls
+        // that arrive on the returned client until the oneshot future resolves,
+        // then forwards them. On the wire the promise export is encoded as
+        // senderPromise, so the caller imports it as a pipelinable promise.
+        let (tx, rx) = oneshot::channel::<Result<capnp::capability::Client, Error>>();
+        *self.fulfiller.borrow_mut() = Some(tx);
+        let fut = async move {
+            rx.await
+                .unwrap_or_else(|_| Err(Error::failed("promise fulfiller cancelled".into())))
+        };
+        let promise_cap: call_sequence::Client = capnp_rpc::new_promise_client(Box::pin(fut));
+
+        // Hand back the promise as the `promise` result capability.
+        results.get().set_promise(promise_cap);
+        Promise::ok(())
+    }
+
+    fn resolve_now(
+        &mut self,
+        _params: reflector::ResolveNowParams,
+        _results: reflector::ResolveNowResults,
+    ) -> Promise<(), Error> {
+        // Fulfill the promise with the retained target. Resolving the promise
+        // export to the caller's CallSequence replays every parked pipelined
+        // getNumber by forwarding it back out to that CallSequence, which
+        // triggers the caller's Disembargo handshake.
+        let target = match self.held.borrow().clone() {
+            Some(t) => t,
+            None => return Promise::err(Error::failed("resolveNow called before reflect()".into())),
+        };
+        let fulfiller = match self.fulfiller.borrow_mut().take() {
+            Some(f) => f,
+            None => return Promise::err(Error::failed("resolveNow already called".into())),
+        };
+        // into_client_hook() yields the untyped Box<dyn ClientHook>; wrapping it
+        // in capnp::capability::Client::new gives the untyped Client the promise
+        // future resolves to.
+        let _ = fulfiller.send(Ok(capnp::capability::Client::new(target.into_client_hook())));
+        Promise::ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Server entry point
 // ---------------------------------------------------------------------------
 
@@ -1291,6 +1389,10 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                 "matchmaking" => {
                     let client: matchmaking_service::Client =
                         capnp_rpc::new_client(MatchmakingServiceImpl::new());
+                    client.client
+                }
+                "resolve_disembargo" => {
+                    let client: reflector::Client = capnp_rpc::new_client(ReflectorImpl::new());
                     client.client
                 }
                 other => {
