@@ -10,6 +10,33 @@ This is a canonical `build.zig` wiring pattern for:
 - `capnp` installed.
 - `capnpc-zig` installed on `PATH` (for example: `just install-path` in this repo).
 
+## Add `capnpc-zig` as a dependency
+
+Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` computes
+and records the `.hash` for you):
+
+```sh
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.2.0
+```
+
+That adds an entry like this to your `build.zig.zon` (the hash is filled in by
+the command above — do not hand-write it):
+
+```zig
+.dependencies = .{
+    .capnpc_zig = .{
+        .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.2.0",
+        .hash = "capnpc_zig-0.2.0-...",
+    },
+},
+```
+
+The package exposes two library modules — pick one:
+
+- `capnpc-zig` — the full surface (serialization + codegen + RPC runtime).
+- `capnpc-zig-core` — serialization + codegen only, with no RPC/transport in
+  the module graph. Use this when you only read/write messages.
+
 ## Example Layout
 
 ```text

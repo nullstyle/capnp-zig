@@ -17,6 +17,20 @@ A pure Zig implementation of [Cap'n Proto](https://capnproto.org/) -- a serializ
 
 ## Installation
 
+### As a dependency
+
+Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` records the
+`.hash`):
+
+```bash
+zig fetch --save git+https://github.com/nullstyle/capnp-zig.git#v0.2.0
+```
+
+Then import `capnpc-zig` (full: serialization + codegen + RPC) or
+`capnpc-zig-core` (serialization + codegen only) — see
+[docs/build-integration.md](docs/build-integration.md) for the complete
+`build.zig` wiring, including running `capnp compile` during your build.
+
 ### Prerequisites
 
 - Zig 0.17-dev on `PATH` (minimum declared in `build.zig.zon`; helper tools remain in `mise.toml`)

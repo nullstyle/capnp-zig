@@ -9,16 +9,16 @@
             .lazy = true,
         },
     },
+    // Only what a downstream consumer needs to build the library + plugin.
+    // vendor/ (git submodules that would dangle in a published archive),
+    // tests/, bench/, tools/, and examples/ are development-only — the
+    // library and plugin never import them at build time.
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
-        "examples",
-        "tests",
-        "bench",
-        "tools",
-        "vendor",
         "README.md",
+        "LICENSE",
     },
     .fingerprint = 0x9dca32f1156e479d,
 }
