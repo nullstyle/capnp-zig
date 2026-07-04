@@ -34,6 +34,7 @@ pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
             pub const connection = @import("./transport/tcp/connection.zig");
             pub const runtime = @import("./transport/tcp/runtime.zig");
             pub const client = @import("./transport/tcp/client.zig");
+            pub const server = @import("./transport/tcp/server.zig");
 
             pub const Transport = stream.Transport;
             pub const Connection = connection.Connection;
@@ -41,6 +42,8 @@ pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
             pub const ConnectOptions = client.ConnectOptions;
             pub const connect = client.ClientSession.connect;
             pub const connectHost = client.ClientSession.connectHost;
+            pub const ServerSession = server.ServerSession;
+            pub const ServeOptions = server.ServeOptions;
             pub const Runtime = runtime.Runtime;
             pub const Listener = runtime.Listener;
             pub const SockAddrStorage = runtime.SockAddrStorage;

@@ -98,6 +98,24 @@ pub const Listener = struct {
         return self.createConnection(client_fd);
     }
 
+    /// Accept a single connection and return only its socket, with Nagle
+    /// disabled — the caller owns wiring it into a `Connection`. Used by
+    /// `ServerSession`, which embeds the `Connection` by value rather than
+    /// taking the heap `*Connection` `accept()` produces.
+    pub fn acceptFd(self: *Listener) !SocketFd {
+        if (self.close_requested.load(.acquire)) return error.ListenerClosed;
+        const stream = try self.server.accept(self.io);
+        const client_fd = stream.socket.handle;
+        setTcpNoDelay(.{ .handle = client_fd });
+        return .{ .handle = client_fd };
+    }
+
+    /// The `std.Io` this listener accepts on. A `ServerSession` built from
+    /// this listener must use the same backend.
+    pub fn ioBackend(self: *const Listener) std.Io {
+        return self.io;
+    }
+
     /// Close the listening socket. Idempotent.
     /// This also unblocks any thread blocked in `accept()`.
     pub fn close(self: *Listener) void {

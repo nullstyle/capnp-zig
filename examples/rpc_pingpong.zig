@@ -25,43 +25,16 @@ fn handlePing(
 // Peer lifecycle callbacks
 // ---------------------------------------------------------------------------
 
-fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, _: anyerror) void {
-    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-}
-
-/// Tear down a peer and its heap-allocated connection. Only safe to call
-/// after `conn.run()` has returned — freeing the connection from `on_close`
-/// (which fires *inside* `run()`) is a use-after-free. See the `on_close`
-/// / `on_destroy` docs on `Connection`.
-fn teardown(peer: *rpc.peer.Peer, conn: *rpc.transport.tcp.Connection) void {
-    const allocator = peer.allocator;
-    _ = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
-    peer.deinit();
-    allocator.destroy(peer);
-    conn.deinit();
-    allocator.destroy(conn);
-}
-
 // ---------------------------------------------------------------------------
 // Server thread: accept one connection, serve it
 // ---------------------------------------------------------------------------
 
-fn serverThread(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
-    const conn = listener.accept() catch return;
-    const allocator = conn.allocator;
-    const peer_ptr = allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        allocator.destroy(conn);
-        return;
-    };
-    peer_ptr.* = rpc.peer.Peer.init(allocator, conn);
-
-    if (PingPong.setBootstrap(peer_ptr, server)) |_| {
-        peer_ptr.start(null, onPeerError, null);
-        conn.run();
+fn serverThread(allocator: std.mem.Allocator, listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
+    var session = rpc.transport.tcp.ServerSession.accept(allocator, listener, .{}) catch return;
+    defer session.deinit();
+    if (PingPong.setBootstrap(&session.peer, server)) |_| {
+        session.run();
     } else |_| {}
-
-    teardown(peer_ptr, conn);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +149,7 @@ pub fn main(init: std.process.Init) !void {
         .vtable = .{ .ping = handlePing },
     };
 
-    const server_thread = try std.Thread.spawn(.{}, serverThread, .{ &listener, &server });
+    const server_thread = try std.Thread.spawn(.{}, serverThread, .{ allocator, &listener, &server });
 
     var state = ClientState{};
     const client_thread = try std.Thread.spawn(.{}, clientThread, .{ &state, address, io, allocator });

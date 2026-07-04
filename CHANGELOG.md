@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`rpc.transport.tcp.ServerSession`** — the server-side mirror of
+  `ClientSession`: `ServerSession.accept(gpa, listener, options)` takes one
+  connection off a `Listener` and returns a heap-owned session bundling the
+  `Connection` + `Peer`. Set the bootstrap on `session.peer` (via the generated
+  `setBootstrap`), then `run()`; `close()`/`requestStop()`/`deinit()` mirror
+  `ClientSession`. Strictly one connection per session. `examples/rpc_pingpong.zig`
+  and the getting-started guide now use it — the last hand-wired
+  `Listener`/`Connection`/`Peer` server recipe is gone.
+
 ## [0.2.0] - 2026-07-04
 
 The first tagged release. Serialization, codegen, and the `capnpc-zig` plugin

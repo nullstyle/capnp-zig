@@ -1518,6 +1518,8 @@ capnpc-zig.rpc.transport.tcp.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.Connection: struct
 capnpc-zig.rpc.transport.tcp.Listener: struct
 capnpc-zig.rpc.transport.tcp.Runtime: struct
+capnpc-zig.rpc.transport.tcp.ServeOptions: struct
+capnpc-zig.rpc.transport.tcp.ServerSession: struct
 capnpc-zig.rpc.transport.tcp.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.SocketFd: struct
 capnpc-zig.rpc.transport.tcp.Transport: struct
@@ -1555,10 +1557,12 @@ capnpc-zig.rpc.transport.tcp.createListenSocket: fn (Io, Io.net.IpAddress, u31, 
 capnpc-zig.rpc.transport.tcp.createLoopbackSocketPair: fn (Io) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createLoopbackSocketPair)).@"fn".return_type.?).error_union.error_set![2]rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
 capnpc-zig.rpc.transport.tcp.runtime.Listener.accept: fn (*rpc.transport.tcp.runtime.Listener) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.accept)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.runtime.Listener.acceptFd: fn (*rpc.transport.tcp.runtime.Listener) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.acceptFd)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close: fn (*rpc.transport.tcp.runtime.Listener) void
 capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress: fn (*const rpc.transport.tcp.runtime.Listener) Io.net.IpAddress
 capnpc-zig.rpc.transport.tcp.runtime.Listener.init: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.connection.Connection.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.Listener.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.runtime.Listener
 capnpc-zig.rpc.transport.tcp.runtime.Listener.initFd: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) rpc.transport.tcp.runtime.Listener
+capnpc-zig.rpc.transport.tcp.runtime.Listener.ioBackend: fn (*const rpc.transport.tcp.runtime.Listener) Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.listenHandle: fn (*const rpc.transport.tcp.runtime.Listener) rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.Listener: struct
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.deinit: fn (*rpc.transport.tcp.runtime.Runtime) void
@@ -1573,6 +1577,15 @@ capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) 
 capnpc-zig.rpc.transport.tcp.runtime.setTcpNoDelay: fn (rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime.shutdownFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime: struct
+capnpc-zig.rpc.transport.tcp.server.ServeOptions: struct
+capnpc-zig.rpc.transport.tcp.server.ServerSession.accept: fn (mem.Allocator, *rpc.transport.tcp.runtime.Listener, rpc.transport.tcp.server.ServeOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.server.ServerSession.accept)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.server.ServerSession
+capnpc-zig.rpc.transport.tcp.server.ServerSession.close: fn (*rpc.transport.tcp.server.ServerSession) void
+capnpc-zig.rpc.transport.tcp.server.ServerSession.deinit: fn (*rpc.transport.tcp.server.ServerSession) void
+capnpc-zig.rpc.transport.tcp.server.ServerSession.fromPeer: fn (*rpc.peer.mod.Peer) *rpc.transport.tcp.server.ServerSession
+capnpc-zig.rpc.transport.tcp.server.ServerSession.requestStop: fn (*rpc.transport.tcp.server.ServerSession) void
+capnpc-zig.rpc.transport.tcp.server.ServerSession.run: fn (*rpc.transport.tcp.server.ServerSession) void
+capnpc-zig.rpc.transport.tcp.server.ServerSession: struct
+capnpc-zig.rpc.transport.tcp.server: struct
 capnpc-zig.rpc.transport.tcp.stream.SocketFd: struct
 capnpc-zig.rpc.transport.tcp.stream.Transport.EnqueueError: type = error{BrokenPipe,OutOfMemory,WriteQueueBytesExceeded,WriteQueueFull}
 capnpc-zig.rpc.transport.tcp.stream.Transport.Options: struct

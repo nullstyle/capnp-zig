@@ -70,40 +70,26 @@ fn handlePing(
 }
 ```
 
-The server side still wires `Listener`/`Connection`/`Peer` by hand (a server-session bundle analogous to `ClientSession` has not shipped yet). Accept a connection, attach a peer, register the bootstrap capability, and drive the connection until it closes:
+The server side mirrors `ClientSession` with `ServerSession`: accept one
+connection off a `Listener`, set the bootstrap capability, and serve it until
+the client disconnects. `ServerSession` owns the `Connection` + `Peer` and the
+teardown ordering, exactly like `ClientSession`.
 
 ```zig
-fn onServerPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, _: anyerror) void {
-    // A peer error means the transport is done; close it so run() unwinds.
-    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-}
-
 /// Accept one connection and serve it until the client disconnects.
-fn serveOne(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
-    const conn = listener.accept() catch return; // heap-allocated Connection
-    const allocator = conn.allocator;
-
-    const peer = allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        allocator.destroy(conn);
-        return;
-    };
-    peer.* = rpc.peer.Peer.init(allocator, conn);
-
-    if (PingPong.setBootstrap(peer, server)) |_| {
-        peer.start(null, onServerPeerError, null);
-        conn.run(); // blocks until the connection closes
+fn serveOne(allocator: std.mem.Allocator, listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
+    var session = rpc.transport.tcp.ServerSession.accept(allocator, listener, .{}) catch return;
+    defer session.deinit();
+    // Set the bootstrap before run(): the peer is not started until run().
+    if (PingPong.setBootstrap(&session.peer, server)) |_| {
+        session.run(); // starts the peer, blocks until the connection closes
     } else |_| {}
-
-    // Teardown — legal ONLY after run() has returned (or was never called):
-    // detach first, then peer, then connection.
-    _ = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
-    peer.deinit();
-    allocator.destroy(peer);
-    conn.deinit();
-    allocator.destroy(conn);
 }
 ```
+
+`ServerSession` is strictly one connection per session; for a concurrent server,
+spawn one `serveOne` per accepted connection, or keep using `Listener` +
+`WorkerPool` for a managed pool.
 
 Bind the listener and hand it a server value:
 
@@ -118,7 +104,7 @@ fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
         .vtable = .{ .ping = handlePing },
     };
 
-    serveOne(&listener, &server);
+    serveOne(allocator, &listener, &server);
 }
 ```
 
@@ -381,7 +367,9 @@ fn connectWithCallbacks(
 }
 ```
 
-On the server side the same contract applies to the hand-wired pair: `Connection.run()` blocks on the owner thread, `Connection.requestClose()`/`wake()` are the thread-safe entry points, and peer/connection teardown is legal only after `run()` returns.
+The same contract applies to `ServerSession`: `run()` blocks on the owner
+thread, `requestStop()` is the thread-safe entry point, and `deinit()` is legal
+only after `run()` returns.
 
 ## 11. Troubleshooting
 

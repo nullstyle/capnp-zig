@@ -37,35 +37,14 @@ fn handlePing(
     try results.setCount(value + 1);
 }
 
-fn onServerPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, _: anyerror) void {
-    // A peer error means the transport is done; close it so run() unwinds.
-    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-}
-
 /// Accept one connection and serve it until the client disconnects.
-fn serveOne(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
-    const conn = listener.accept() catch return; // heap-allocated Connection
-    const allocator = conn.allocator;
-
-    const peer = allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        allocator.destroy(conn);
-        return;
-    };
-    peer.* = rpc.peer.Peer.init(allocator, conn);
-
-    if (PingPong.setBootstrap(peer, server)) |_| {
-        peer.start(null, onServerPeerError, null);
-        conn.run(); // blocks until the connection closes
+fn serveOne(allocator: std.mem.Allocator, listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
+    var session = rpc.transport.tcp.ServerSession.accept(allocator, listener, .{}) catch return;
+    defer session.deinit();
+    // Set the bootstrap before run(): the peer is not started until run().
+    if (PingPong.setBootstrap(&session.peer, server)) |_| {
+        session.run(); // starts the peer, blocks until the connection closes
     } else |_| {}
-
-    // Teardown — legal ONLY after run() has returned (or was never called):
-    // detach first, then peer, then connection.
-    _ = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
-    peer.deinit();
-    allocator.destroy(peer);
-    conn.deinit();
-    allocator.destroy(conn);
 }
 
 fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
@@ -78,7 +57,7 @@ fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
         .vtable = .{ .ping = handlePing },
     };
 
-    serveOne(&listener, &server);
+    serveOne(allocator, &listener, &server);
 }
 
 fn setupBackend(init: std.process.Init) !capnpc.io_backend.Backend {
@@ -345,7 +324,7 @@ test "quickstart: the guide's server and client halves round-trip over loopback"
         .ctx = undefined,
         .vtable = .{ .ping = handlePing },
     };
-    const server_thread = try std.Thread.spawn(.{}, serveOne, .{ &listener, &server });
+    const server_thread = try std.Thread.spawn(.{}, serveOne, .{ allocator, &listener, &server });
     defer server_thread.join();
 
     var state = ClientState{};

@@ -122,11 +122,11 @@ const required_doc_needles = [_]RequiredNeedle{
     .{ .path = "README.md", .needle = "rpc.transport.quic", .reason = "README should use the current QUIC public API path" },
     .{ .path = "CHANGELOG.md", .needle = "RPC public exports", .reason = "changelog should preserve the public-breaking RPC migration note" },
     .{ .path = "docs/architecture.md", .needle = "rpc.events", .reason = "architecture doc should list the event observer surface" },
-    .{ .path = "docs/getting-started-rpc.md", .needle = "Connection.run()", .reason = "RPC guide should describe the current connection driver" },
+    .{ .path = "docs/getting-started-rpc.md", .needle = "ServerSession", .reason = "RPC guide should describe the current one-call server driver" },
     .{ .path = "docs/getting-started-serialization.md", .needle = "capnpc-zig-core", .reason = "serialization guide should document the core module import" },
     .{ .path = "docs/quic-transport.md", .needle = "rpc.transport.quic.Server", .reason = "QUIC guide should document multi-session fanout" },
     .{ .path = "docs/rpc-migration-guide.md", .needle = "rpc.protocol", .reason = "migration guide should preserve old-name mapping coverage" },
-    .{ .path = "examples/rpc_pingpong.zig", .needle = "rpc.transport.tcp.Connection", .reason = "RPC example should use the current TCP transport path" },
+    .{ .path = "examples/rpc_pingpong.zig", .needle = "rpc.transport.tcp.ServerSession", .reason = "RPC example should use the current one-call session transport path" },
 };
 
 const Context = struct {

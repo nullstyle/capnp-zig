@@ -529,6 +529,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_tick_idle_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_tick_idle_test.zig", target, optimize, lib_module);
     const run_rpc_connection_teardown_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_teardown_test.zig", target, optimize, lib_module);
     const run_rpc_client_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_client_session_test.zig", target, optimize, lib_module);
+    const run_rpc_server_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_server_session_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, optimize, lib_module, qm)
     else
@@ -733,6 +734,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_transport_step.dependOn(run_rpc_tick_idle_tests);
     test_rpc_transport_step.dependOn(run_rpc_connection_teardown_tests);
     test_rpc_transport_step.dependOn(run_rpc_client_session_tests);
+    test_rpc_transport_step.dependOn(run_rpc_server_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
 
     const test_rpc_quic_step = b.step("test-rpc-quic", "Run quic-zig-backed QUIC RPC transport tests (requires -Dquic=true)");
