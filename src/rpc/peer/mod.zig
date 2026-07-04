@@ -256,6 +256,7 @@ fn msToNs(ms: u64) i64 {
 /// |-----|-----|-------|---------|
 /// | `exports` | export ID | `ExportEntry` | Local capabilities offered to the remote peer. Ref-counted (wire refs from Release plus answer-held refs from recorded answers); removed when both counts reach zero. |
 /// | `questions` | question ID | `Question` | Outstanding outbound calls awaiting a Return. Removed when the Return arrives. |
+/// | `question_param_export_refs` | question ID | export IDs (list) | Wire refs the question's Call params took on local exports (one per emitted senderHosted/senderPromise descriptor). Spent when the Return arrives with `releaseParamCaps = true` (the rpc.capnp default), dropped when it is false (the remote sends explicit Releases), freed unspent when the question dies without a wire Return. |
 /// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Holds one answer-held reference per results export so pipeline targets survive an early Release. Removed on Finish, releasing those references. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
@@ -322,6 +323,14 @@ pub const Peer = struct {
 
     /// Outstanding outbound calls (question ID -> callback).
     questions: std.AutoHashMap(u32, Question),
+    /// Wire refs an outstanding outbound Call's params took on local exports
+    /// (question ID -> export ids, one per senderHosted/senderPromise
+    /// descriptor emitted; duplicates meaningful — each occurrence is one
+    /// ref). Consumed by the question's inbound Return: `releaseParamCaps =
+    /// true` (the rpc.capnp default, relied on by conforming peers) spends
+    /// the refs through `releaseExport`; false drops the record and leaves
+    /// the refs for the remote's explicit Release messages.
+    question_param_export_refs: std.AutoHashMap(u32, std.ArrayList(u32)),
     /// Cached Return frames for answered questions, kept until Finish.
     resolved_answers: std.AutoHashMap(u32, ResolvedAnswer),
     /// Inbound call question IDs accepted from the remote peer until Return or Finish.
@@ -538,6 +547,7 @@ pub const Peer = struct {
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),
+            .question_param_export_refs = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator),
             .resolved_answers = std.AutoHashMap(u32, ResolvedAnswer).init(allocator),
             .active_inbound_questions = std.AutoHashMap(u32, void).init(allocator),
             .finished_early_answers = std.AutoHashMap(u32, void).init(allocator),
@@ -792,6 +802,15 @@ pub const Peer = struct {
             }
         }
         self.questions.deinit();
+        // forceCancelAllQuestions above already freed the param-export record
+        // of every question still in the map; sweep any stragglers (there
+        // should be none — records never outlive their question) so a
+        // bookkeeping bug degrades to a counter leak, not a memory leak.
+        {
+            var rec_it = self.question_param_export_refs.valueIterator();
+            while (rec_it.next()) |ids| ids.deinit(self.allocator);
+        }
+        self.question_param_export_refs.deinit();
         self.active_inbound_questions.deinit();
         self.finished_early_answers.deinit();
         {
@@ -1723,6 +1742,10 @@ pub const Peer = struct {
             const removed = self.questions.fetchRemove(question_id) orelse continue;
             const question = removed.value;
             _ = self.loopback_questions.remove(question_id);
+            // No wire Return will consume this question's param-export
+            // record; free it without spending the refs (transport teardown
+            // reconciles export state, as before the record existed).
+            self.freeQuestionParamExports(question_id);
             if (question.cancelled) continue; // exception already delivered
             if (!question.is_loopback) {
                 peer_outbound_control.sendFinishWithFlagsViaSendFrame(
@@ -1887,6 +1910,7 @@ pub const Peer = struct {
             on_return,
             Peer.allocateQuestion,
             Peer.removeQuestion,
+            Peer.recordQuestionParamExports,
             Peer.sendBuilder,
         );
     }
@@ -1923,6 +1947,7 @@ pub const Peer = struct {
                 on_return,
                 Peer.allocateQuestion,
                 Peer.removeQuestion,
+                Peer.recordQuestionParamExports,
                 Peer.sendBuilder,
             ),
             .promised => |promised| self.sendCallPromised(promised, interface_id, method_id, ctx, build, on_return),
@@ -1984,6 +2009,7 @@ pub const Peer = struct {
             on_return,
             Peer.allocateQuestion,
             Peer.removeQuestion,
+            Peer.recordQuestionParamExports,
             Peer.sendBuilder,
         );
     }
@@ -2022,6 +2048,7 @@ pub const Peer = struct {
             on_return,
             Peer.allocateQuestion,
             Peer.removeQuestion,
+            Peer.recordQuestionParamExports,
             Peer.sendBuilder,
         );
     }
@@ -2969,8 +2996,89 @@ pub const Peer = struct {
 
     fn removeQuestion(self: *Peer, question_id: u32) void {
         _ = self.questions.remove(question_id);
+        // The question is being discarded without a wire Return (send
+        // rollback, loopback cancel, test drain): free any param-export
+        // record without spending the refs.
+        self.freeQuestionParamExports(question_id);
         if (self.is_shutting_down and !self.in_deinit and self.questions.count() == 0) {
             self.completeShutdown();
+        }
+    }
+
+    /// Record, under `question_id`, the wire refs an outbound Call's params
+    /// just took on our exports (the senderHosted/senderPromise entries of
+    /// `effects.callback_applied`, one ref per occurrence), so the inbound
+    /// Return can spend them when it carries `releaseParamCaps = true`.
+    ///
+    /// Called by the wire senders BEFORE the frame is sent: OOM propagates
+    /// and the senders' errdefers (question removal — which frees the record
+    /// — plus cap-effects rollback) undo everything, so no partial record
+    /// can survive a failed send.
+    fn recordQuestionParamExports(
+        self: *Peer,
+        question_id: u32,
+        entries: []const cap_table.OutboundEntry,
+    ) !void {
+        var ids: std.ArrayList(u32) = .empty;
+        errdefer ids.deinit(self.allocator);
+        for (entries) |entry| {
+            switch (entry.tag) {
+                .senderHosted, .senderPromise => try ids.append(self.allocator, entry.id),
+                else => {},
+            }
+        }
+        if (ids.items.len == 0) {
+            ids.deinit(self.allocator);
+            return;
+        }
+        const slot = try self.question_param_export_refs.getOrPut(question_id);
+        if (slot.found_existing) {
+            // Question ids are never reused while outstanding, so a stale
+            // record here is a bookkeeping bug; free it rather than leak.
+            log.warn("replacing stale param-export record for question {}", .{question_id});
+            slot.value_ptr.deinit(self.allocator);
+        }
+        slot.value_ptr.* = ids;
+    }
+
+    /// Free (without spending) the param-export record of a question that
+    /// died without a wire Return — sender rollback, loopback cancel, drain,
+    /// or deinit. The still-held refs reconcile at transport teardown,
+    /// exactly as they did before records existed.
+    fn freeQuestionParamExports(self: *Peer, question_id: u32) void {
+        if (self.question_param_export_refs.fetchRemove(question_id)) |removed| {
+            var ids = removed.value;
+            ids.deinit(self.allocator);
+        }
+    }
+
+    /// Consume the param-export record for an inbound Return (rpc.capnp
+    /// `Return.releaseParamCaps`, which DEFAULTS to true): the receiver of
+    /// our call implicitly dropped the refs our param caps took on our
+    /// exports instead of sending explicit Release messages. Spend them
+    /// through the same `releaseExport` path an inbound Release frame uses
+    /// (over-release therefore surfaces as the existing
+    /// `error.ReleaseCountExceeded` protocol error, never an underflow).
+    /// With `releaseParamCaps = false` the record is just dropped — the
+    /// remote will send explicit Releases later. Runs for every inbound
+    /// Return, including ones absorbed for locally cancelled questions, so
+    /// the refs are spent exactly once per question.
+    fn consumeQuestionParamExports(self: *Peer, answer_id: u32, release_param_caps: bool) !void {
+        const removed = self.question_param_export_refs.fetchRemove(answer_id) orelse return;
+        var ids = removed.value;
+        defer ids.deinit(self.allocator);
+        if (!release_param_caps) return;
+        // Aggregate duplicate occurrences into one count per export id,
+        // mirroring how a Release frame would spend them.
+        std.mem.sort(u32, ids.items, {}, std.sort.asc(u32));
+        var idx: usize = 0;
+        while (idx < ids.items.len) {
+            const id = ids.items[idx];
+            var count: u32 = 0;
+            while (idx < ids.items.len and ids.items[idx] == id) : (idx += 1) {
+                count += 1;
+            }
+            try self.releaseExport(id, count);
         }
     }
 
@@ -3897,6 +4005,13 @@ pub const Peer = struct {
     }
 
     fn handleReturn(self: *Peer, frame: []const u8, ret: protocol.Return) anyerror!void {
+        // The wire effect of a Return on our sent param caps is independent
+        // of local dispatch: the moment the remote sent this frame it either
+        // dropped the refs (releaseParamCaps=true, the default) or committed
+        // to explicit Releases (false). Consume the record first so every
+        // Return path — regular, exception, third-party, and the
+        // cancelled-question absorb below — settles the refs exactly once.
+        try self.consumeQuestionParamExports(ret.answer_id, ret.release_param_caps);
         var latency_started_ns: ?i64 = null;
         if (self.questions.get(ret.answer_id)) |question| {
             if (question.cancelled) {

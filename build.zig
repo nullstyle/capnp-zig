@@ -520,6 +520,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_alloc_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_alloc_failure_test.zig", target, optimize, lib_module);
     const run_rpc_peer_semantic_helpers_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_semantic_helpers_test.zig", target, optimize, lib_module);
     const run_rpc_peer_release_and_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_release_and_failure_test.zig", target, optimize, lib_module);
+    const run_rpc_return_release_param_caps_tests = addLibTest(b, "tests/rpc/peer/rpc_return_release_param_caps_test.zig", target, optimize, lib_module);
     const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/peer/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
     const run_rpc_deadline_tests = addLibTest(b, "tests/rpc/peer/rpc_deadline_test.zig", target, optimize, lib_module);
     const run_rpc_persistence_tests = addLibTest(b, "tests/rpc/peer/rpc_persistence_test.zig", target, optimize, lib_module);
@@ -721,6 +722,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_peer_step.dependOn(run_rpc_peer_alloc_failure_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_semantic_helpers_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_release_and_failure_tests);
+    test_rpc_peer_step.dependOn(run_rpc_return_release_param_caps_tests);
     test_rpc_peer_step.dependOn(run_rpc_concurrent_calls_tests);
     test_rpc_peer_step.dependOn(run_rpc_deadline_tests);
     test_rpc_peer_step.dependOn(run_rpc_persistence_tests);

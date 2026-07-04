@@ -20,6 +20,12 @@ pub fn sendCallToImport(
     on_return: QuestionCallbackType,
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
     remove_question: *const fn (*PeerType, u32) void,
+    // Records the cap-table entries the params bumped refs for (see
+    // Peer.recordQuestionParamExports) under `question_id`, so an inbound
+    // Return with releaseParamCaps=true can spend them. Called BEFORE the
+    // frame is sent: on failure the errdefer'd remove_question (which frees
+    // the record) plus the effects rollback undo everything.
+    record_param_exports: *const fn (*PeerType, u32, []const cap_table.OutboundEntry) anyerror!void,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
@@ -40,12 +46,17 @@ pub fn sendCallToImport(
     var effects_committed = false;
     errdefer if (!effects_committed) effects.rollback();
     try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
+    try record_param_exports(peer, question_id, effects.callback_applied.items);
     try send_builder(peer, &builder);
     cap_table.commitOutboundCapEffects(caps, &effects);
     effects_committed = true;
     return question_id;
 }
 
+/// Loopback variant: the frame is dispatched locally via `handle_frame` and
+/// never crosses the wire, so no param-export record is taken — the record
+/// exists to consume a REMOTE Return's releaseParamCaps, and loopback
+/// Returns are produced locally.
 pub fn sendCallToExport(
     comptime PeerType: type,
     comptime QuestionType: type,
@@ -118,6 +129,7 @@ pub fn sendCallPromised(
     on_return: QuestionCallbackType,
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
     remove_question: *const fn (*PeerType, u32) void,
+    record_param_exports: *const fn (*PeerType, u32, []const cap_table.OutboundEntry) anyerror!void,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
@@ -138,6 +150,7 @@ pub fn sendCallPromised(
     var effects_committed = false;
     errdefer if (!effects_committed) effects.rollback();
     try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
+    try record_param_exports(peer, question_id, effects.callback_applied.items);
     try send_builder(peer, &builder);
     cap_table.commitOutboundCapEffects(caps, &effects);
     effects_committed = true;
@@ -166,6 +179,7 @@ pub fn sendCallPromisedWithOps(
     on_return: QuestionCallbackType,
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
     remove_question: *const fn (*PeerType, u32) void,
+    record_param_exports: *const fn (*PeerType, u32, []const cap_table.OutboundEntry) anyerror!void,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !u32 {
     const new_question_id = try allocate_question(peer, ctx, on_return);
@@ -186,6 +200,7 @@ pub fn sendCallPromisedWithOps(
     var effects_committed = false;
     errdefer if (!effects_committed) effects.rollback();
     try cap_table.encodeCallPayloadCapsWithEffects(caps, &call, on_outbound_cap, &effects);
+    try record_param_exports(peer, new_question_id, effects.callback_applied.items);
     try send_builder(peer, &builder);
     cap_table.commitOutboundCapEffects(caps, &effects);
     effects_committed = true;
@@ -240,6 +255,8 @@ test "peer_call_sender sendCallToImport allocates question and encodes imported 
         fn onReturn(_: *anyopaque, _: *State, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
 
         fn removeQuestion(_: *State, _: u32) void {}
+
+        fn recordParamExports(_: *State, _: u32, _: []const cap_table.OutboundEntry) anyerror!void {}
     };
 
     var state = State.init(std.testing.allocator);
@@ -263,6 +280,7 @@ test "peer_call_sender sendCallToImport allocates question and encodes imported 
         Hooks.onReturn,
         Hooks.allocateQuestion,
         Hooks.removeQuestion,
+        Hooks.recordParamExports,
         Hooks.sendBuilder,
     );
 

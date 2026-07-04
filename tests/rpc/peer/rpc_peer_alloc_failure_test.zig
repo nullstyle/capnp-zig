@@ -194,10 +194,50 @@ fn sendReturnResultsSentElsewhereOomImpl(allocator: std.mem.Allocator) !void {
     // answer, so there is nothing to clean up beyond Peer.deinit.
 }
 
+// sendCall with a local export in params exercises the full outbound
+// param-cap chain: question allocation, payload cap encoding (export-ref
+// bump via onOutboundCap), the question_param_export_refs record (taken
+// BEFORE the frame is sent, so OOM propagates), and the send. On OOM every
+// stage must roll back — question removed (which also frees the record),
+// export ref bump reverted — leaving no partial record behind.
+fn sendCallWithParamCapOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, noopSend);
+
+    var handler_ctx: u8 = 0;
+    const export_id = try peer.addExport(.{ .ctx = &handler_ctx, .on_call = noopCall });
+
+    const BuildCtx = struct {
+        export_id: u32,
+        fn build(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            const ctx: *const @This() = @ptrCast(@alignCast(ctx_ptr));
+            var payload = try call.payloadTyped();
+            var any = try payload.initContent();
+            // A bare capability pointer to a local export; the encoder
+            // classifies it as senderHosted, bumps the export ref, and the
+            // peer records it under the question id.
+            try any.setCapability(.{ .id = ctx.export_id });
+        }
+    };
+    var ctx = BuildCtx{ .export_id = export_id };
+    const qid = try peer.sendCall(7, 0xABCD, 0, &ctx, BuildCtx.build, noopReturn);
+    // On success a param-export record exists for qid. Drain the question
+    // before scope end: removeQuestion frees the record, and the terminal
+    // question pass in deinit would otherwise synthesize a Return with
+    // fallible (swallowed) allocations that the harness flags.
+    peer_test_hooks.removeQuestion(&peer, qid);
+}
+
 // Note: sendCall / caps.noteImport tolerate a best-effort (non-fatal)
 // allocation on the outbound path, so they are not all-or-nothing
 // checkAllAllocationFailures targets (the harness would flag the recovered
 // allocation as a "swallowed" OOM even though there is no leak).
+// sendCallWithParamCapOomImpl above is the exception: the import-target
+// param-cap path allocates all-or-nothing, so it IS harness-clean.
 //
 // handleFinish is likewise NOT a clean target: its two allocating branches —
 // the finished_early_answers tombstone (`... catch reportNonfatalError`) and
@@ -218,6 +258,10 @@ test "queuePromisedCall propagates OOM without leak or double-free" {
 
 test "sendBootstrap rolls back cleanly under OOM injection" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendBootstrapOomImpl, .{});
+}
+
+test "sendCall with param caps rolls back the export record under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendCallWithParamCapOomImpl, .{});
 }
 
 test "InboundCapTable.init rolls back noted imports under OOM injection" {
