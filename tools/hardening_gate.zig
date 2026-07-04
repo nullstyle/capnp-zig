@@ -55,6 +55,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
     .{ .path = "src/rpc/transport/stream_state.zig", .kind = .optional_unwrap, .needle = "cb(ctx.?, self.stream_error)", .reason = "callback context is paired with callback registration" },
     .{ .path = "src/rpc/transport/quic/connection.zig", .kind = .panic_call, .needle = "QUIC Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
+    .{ .path = "src/rpc/transport/quic/server.zig", .kind = .panic_call, .needle = "QUIC Server stepped from a thread other than the loop thread", .reason = "debug loop-affinity misuse guard; deferred-close architecture requires all list/close mutation on the loop thread" },
 
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderHosted(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderPromise(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },

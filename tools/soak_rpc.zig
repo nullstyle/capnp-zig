@@ -40,6 +40,7 @@ const Totals = struct {
     calls_cancelled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     chaos_closes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     transport_errors: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    expected_disconnects: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     unexpected_exceptions: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 };
 
@@ -101,6 +102,7 @@ const Session = struct {
     calls_target: u32,
     calls_done: u32 = 0,
     bootstrap_import_id: ?u32 = null,
+    chaos_close_initiated: bool = false,
     failed: bool = false,
 
     fn onBootstrapReturn(
@@ -163,8 +165,12 @@ const Session = struct {
             return;
         }
 
-        // Chaos: leave one call in flight and rip the connection down.
+        // Chaos: leave one call in flight and rip the connection down. The
+        // peer's close contract fails that in-flight question with a
+        // synthetic "disconnected" exception Return, which noteException
+        // must treat as the expected outcome for this session.
         if (self.mode == .chaos and self.calls_done == self.calls_target / 2) {
+            self.chaos_close_initiated = true;
             self.sendNextCall(peer) catch {};
             _ = self.totals.chaos_closes.fetchAdd(1, .monotonic);
             self.conn.close();
@@ -182,6 +188,12 @@ const Session = struct {
         const reason = if (ret.exception) |ex| ex.reason else "";
         if (std.mem.eql(u8, reason, "deadline exceeded")) {
             _ = self.totals.calls_cancelled.fetchAdd(1, .monotonic);
+        } else if (std.mem.eql(u8, reason, rpc.peer.disconnected_reason) and self.chaos_close_initiated) {
+            // Exactly the close contract: this session ripped the connection
+            // down with a call in flight, and the peer failed that question
+            // with the synthetic disconnected Return. Expected only here — a
+            // disconnected reason in any other session still fails the run.
+            _ = self.totals.expected_disconnects.fetchAdd(1, .monotonic);
         } else {
             _ = self.totals.unexpected_exceptions.fetchAdd(1, .monotonic);
             std.debug.print("soak: unexpected exception reason: '{s}'\n", .{reason});
@@ -387,11 +399,12 @@ pub fn main(init: std.process.Init) !void {
     const cancelled = totals.calls_cancelled.load(.acquire);
     const chaos_closes = totals.chaos_closes.load(.acquire);
     const transport_errors = totals.transport_errors.load(.acquire);
+    const expected_disconnects = totals.expected_disconnects.load(.acquire);
     const unexpected = totals.unexpected_exceptions.load(.acquire);
 
     std.debug.print(
-        "soak: sessions={} calls_ok={} cancelled={} chaos_closes={} transport_errors={} unexpected_exceptions={}\n",
-        .{ sessions, ok, cancelled, chaos_closes, transport_errors, unexpected },
+        "soak: sessions={} calls_ok={} cancelled={} chaos_closes={} transport_errors={} expected_disconnects={} unexpected_exceptions={}\n",
+        .{ sessions, ok, cancelled, chaos_closes, transport_errors, expected_disconnects, unexpected },
     );
 
     var failed = false;
@@ -401,6 +414,10 @@ pub fn main(init: std.process.Init) !void {
     }
     if (unexpected != 0) {
         std.debug.print("soak: FAIL — unexpected exception reasons observed\n", .{});
+        failed = true;
+    }
+    if (expected_disconnects > chaos_closes) {
+        std.debug.print("soak: FAIL — more disconnected exceptions than chaos closes\n", .{});
         failed = true;
     }
     if (cfg.deadlines and cancelled == 0 and sessions > 8) {

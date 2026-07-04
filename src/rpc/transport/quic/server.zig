@@ -244,12 +244,12 @@ pub const Server = struct {
     /// stepping (which would race the session list) fails loudly.
     fn claimLoopThread(self: *Server) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
-        if (self.loop_thread_id == null) {
+        const loop_tid = self.loop_thread_id orelse {
             self.loop_thread_id = std.Thread.getCurrentId();
             return;
-        }
+        };
         if (builtin.mode == .Debug) {
-            if (std.Thread.getCurrentId() != self.loop_thread_id.?) {
+            if (std.Thread.getCurrentId() != loop_tid) {
                 @panic("QUIC Server stepped from a thread other than the loop thread");
             }
         }

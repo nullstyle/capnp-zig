@@ -1700,17 +1700,18 @@ pub const Peer = struct {
     /// and never completing the handoff — otherwise those contexts escape both
     /// deadline enforcement and the shutdown drain entirely.
     fn sweepThirdPartyAwaits(self: *Peer, only_expired: bool) usize {
-        const now: ?i64 = if (only_expired) self.clockNow() else null;
-        if (only_expired and now == null) return 0;
+        // Null cutoff means "sweep everything" (shutdown drain); a non-null
+        // cutoff sweeps only entries whose deadline has passed.
+        const cutoff: ?i64 = if (only_expired) (self.clockNow() orelse return 0) else null;
 
         var keys: std.ArrayList([]const u8) = .empty;
         defer keys.deinit(self.allocator);
         {
             var it = self.pending_third_party_awaits.iterator();
             while (it.next()) |kv| {
-                if (only_expired) {
+                if (cutoff) |now| {
                     const deadline = kv.value_ptr.question.deadline_ns orelse continue;
-                    if (now.? < deadline) continue;
+                    if (now < deadline) continue;
                 }
                 keys.append(self.allocator, kv.key_ptr.*) catch break;
             }
