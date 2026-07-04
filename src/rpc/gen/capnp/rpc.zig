@@ -1543,10 +1543,10 @@ pub const PromisedAnswer = struct {
             return self._reader.readU32(0);
         }
 
-        pub fn getTransform(self: Reader) !StructListReader(Op) {
-            if (self._reader.isPointerNull(0)) return StructListReader(Op){ ._list = self._reader.emptyStructList() };
+        pub fn getTransform(self: Reader) !StructListReader(PromisedAnswer.Op) {
+            if (self._reader.isPointerNull(0)) return StructListReader(PromisedAnswer.Op){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(0);
-            return StructListReader(Op){ ._list = raw };
+            return StructListReader(PromisedAnswer.Op){ ._list = raw };
         }
 
     };
@@ -1567,71 +1567,71 @@ pub const PromisedAnswer = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
-        pub fn initTransform(self: *Builder, element_count: u32) !StructListBuilder(Op) {
+        pub fn initTransform(self: *Builder, element_count: u32) !StructListBuilder(PromisedAnswer.Op) {
             const raw = try self._builder.writeStructList(0, element_count, 1, 0);
-            return StructListBuilder(Op){ ._list = raw };
+            return StructListBuilder(PromisedAnswer.Op){ ._list = raw };
         }
 
     };
-};
+    pub const Op = struct {
+        pub const WhichTag = enum(u16) {
+            noop = 0,
+            getPointerField = 1,
+        };
 
-pub const Op = struct {
-    pub const WhichTag = enum(u16) {
-        noop = 0,
-        getPointerField = 1,
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !@This() {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) @This() {
+                return .{ ._reader = reader };
+            }
+
+            pub fn which(self: @This()) error{InvalidEnumValue}!Op.WhichTag {
+                return std.enums.fromInt(Op.WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
+
+            pub fn getNoop(self: @This()) !void {
+                if ((try self.which()) != .noop) return error.WrongUnionMember;
+                return {};
+            }
+
+            pub fn getGetPointerField(self: @This()) !u16 {
+                if ((try self.which()) != .getPointerField) return error.WrongUnionMember;
+                return self._reader.readU16(2);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !@This() {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) @This() {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setNoop(self: *@This(), value: void) !void {
+                self._builder.writeU16(0, 0);
+                _ = value;
+            }
+
+            pub fn setGetPointerField(self: *@This(), value: u16) !void {
+                self._builder.writeU16(0, 1);
+                self._builder.writeU16(2, @bitCast(value));
+            }
+
+        };
     };
 
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
-
-        pub fn getNoop(self: Reader) !void {
-            if ((try self.which()) != .noop) return error.WrongUnionMember;
-            return {};
-        }
-
-        pub fn getGetPointerField(self: Reader) !u16 {
-            if ((try self.which()) != .getPointerField) return error.WrongUnionMember;
-            return self._reader.readU16(2);
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setNoop(self: *Builder, value: void) !void {
-            self._builder.writeU16(0, 0);
-            _ = value;
-        }
-
-        pub fn setGetPointerField(self: *Builder, value: u16) !void {
-            self._builder.writeU16(0, 1);
-            self._builder.writeU16(2, @bitCast(value));
-        }
-
-    };
 };
 
 pub const ThirdPartyCapDescriptor = struct {
@@ -1729,8 +1729,8 @@ pub const Exception = struct {
             return self._reader.readU16(2);
         }
 
-        pub fn getType(self: Reader) !Type {
-            return std.enums.fromInt(Type, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
+        pub fn getType(self: Reader) !Exception.Type {
+            return std.enums.fromInt(Exception.Type, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
         }
 
         pub fn getTrace(self: Reader) ![]const u8 {
@@ -1738,10 +1738,10 @@ pub const Exception = struct {
             return try self._reader.readText(1);
         }
 
-        pub fn getDetails(self: Reader) !StructListReader(Detail) {
-            if (self._reader.isPointerNull(2)) return StructListReader(Detail){ ._list = self._reader.emptyStructList() };
+        pub fn getDetails(self: Reader) !StructListReader(Exception.Detail) {
+            if (self._reader.isPointerNull(2)) return StructListReader(Exception.Detail){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(2);
-            return StructListReader(Detail){ ._list = raw };
+            return StructListReader(Exception.Detail){ ._list = raw };
         }
 
     };
@@ -1770,7 +1770,7 @@ pub const Exception = struct {
             self._builder.writeU16(2, @bitCast(value));
         }
 
-        pub fn setType(self: *Builder, value: Type) !void {
+        pub fn setType(self: *Builder, value: Exception.Type) !void {
             self._builder.writeU16(4, @as(u16, @intFromEnum(value)));
         }
 
@@ -1778,65 +1778,65 @@ pub const Exception = struct {
             try self._builder.writeText(1, value);
         }
 
-        pub fn initDetails(self: *Builder, element_count: u32) !StructListBuilder(Detail) {
+        pub fn initDetails(self: *Builder, element_count: u32) !StructListBuilder(Exception.Detail) {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
-            return StructListBuilder(Detail){ ._list = raw };
+            return StructListBuilder(Exception.Detail){ ._list = raw };
         }
 
     };
-};
-
-pub const Type = enum(u16) {
-    Failed = 0,
-    Overloaded = 1,
-    Disconnected = 2,
-    Unimplemented = 3,
-};
-
-pub const Detail = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getDetailId(self: Reader) !u64 {
-            return self._reader.readU64(0);
-        }
-
-        pub fn getData(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return &[_]u8{};
-            return try self._reader.readData(0);
-        }
-
+    pub const Type = enum(u16) {
+        Failed = 0,
+        Overloaded = 1,
+        Disconnected = 2,
+        Unimplemented = 3,
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const Detail = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !@This() {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) @This() {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setDetailId(self: *Builder, value: u64) !void {
-            self._builder.writeU64(0, @bitCast(value));
-        }
+            pub fn getDetailId(self: @This()) !u64 {
+                return self._reader.readU64(0);
+            }
 
-        pub fn setData(self: *Builder, value: []const u8) !void {
-            try self._builder.writeData(0, value);
-        }
+            pub fn getData(self: @This()) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return &[_]u8{};
+                return try self._reader.readData(0);
+            }
 
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !@This() {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) @This() {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setDetailId(self: *@This(), value: u64) !void {
+                self._builder.writeU64(0, @bitCast(value));
+            }
+
+            pub fn setData(self: *@This(), value: []const u8) !void {
+                try self._builder.writeData(0, value);
+            }
+
+        };
     };
+
 };
 

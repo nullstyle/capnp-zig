@@ -16,7 +16,7 @@ pub const ReturnTag = rpc_capnp.Return.WhichTag;
 
 pub const MessageTargetTag = rpc_capnp.MessageTarget.WhichTag;
 
-pub const PromisedAnswerOpTag = rpc_capnp.Op.WhichTag;
+pub const PromisedAnswerOpTag = rpc_capnp.PromisedAnswer.Op.WhichTag;
 
 /// Discriminant tag identifying the kind of capability being transferred.
 pub const CapDescriptorTag = rpc_capnp.CapDescriptor.WhichTag;

@@ -273,8 +273,8 @@ pub const ChatRoom = struct {
     pub const SendMessage = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = SendMessageParams;
-        pub const Results = SendMessageResults;
+        pub const Params = ChatRoom.SendMessageParams;
+        pub const Results = ChatRoom.SendMessageResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -396,8 +396,8 @@ pub const ChatRoom = struct {
     pub const SendEmote = struct {
         pub const ordinal: u16 = 1;
         pub const is_streaming: bool = false;
-        pub const Params = SendEmoteParams;
-        pub const Results = SendEmoteResults;
+        pub const Params = ChatRoom.SendEmoteParams;
+        pub const Results = ChatRoom.SendEmoteResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -519,8 +519,8 @@ pub const ChatRoom = struct {
     pub const GetHistory = struct {
         pub const ordinal: u16 = 2;
         pub const is_streaming: bool = false;
-        pub const Params = GetHistoryParams;
-        pub const Results = GetHistoryResults;
+        pub const Params = ChatRoom.GetHistoryParams;
+        pub const Results = ChatRoom.GetHistoryResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -642,8 +642,8 @@ pub const ChatRoom = struct {
     pub const GetInfo = struct {
         pub const ordinal: u16 = 3;
         pub const is_streaming: bool = false;
-        pub const Params = GetInfoParams;
-        pub const Results = GetInfoResults;
+        pub const Params = ChatRoom.GetInfoParams;
+        pub const Results = ChatRoom.GetInfoResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -765,8 +765,8 @@ pub const ChatRoom = struct {
     pub const Leave = struct {
         pub const ordinal: u16 = 4;
         pub const is_streaming: bool = false;
-        pub const Params = LeaveParams;
-        pub const Results = LeaveResults;
+        pub const Params = ChatRoom.LeaveParams;
+        pub const Results = ChatRoom.LeaveResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1093,403 +1093,403 @@ pub const ChatRoom = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const SendMessageParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-pub const SendMessageParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn getContent(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return "";
+                return try self._reader.readText(0);
+            }
 
-        pub fn getContent(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
-        }
+        };
 
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setContent(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(0, value);
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const SendMessageResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setContent(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(0, value);
-        }
+            pub fn getMessage(self: Reader) !ChatMessage.Reader {
+                if (self._reader.isPointerNull(0)) return ChatMessage.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return ChatMessage.Reader{ ._reader = value };
+            }
 
-    };
-};
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
-pub const SendMessageResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        };
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn getMessage(self: Reader) !ChatMessage.Reader {
-            if (self._reader.isPointerNull(0)) return ChatMessage.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return ChatMessage.Reader{ ._reader = value };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
+            pub fn initMessage(self: *Builder) !ChatMessage.Builder {
+                const builder = try self._builder.initStruct(0, 1, 4);
+                return ChatMessage.Builder{ ._builder = builder };
+            }
 
-    };
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initMessage(self: *Builder) !ChatMessage.Builder {
-            const builder = try self._builder.initStruct(0, 1, 4);
-            return ChatMessage.Builder{ ._builder = builder };
-        }
-
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
-
-    };
-};
-
-pub const SendEmoteParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getContent(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const SendEmoteParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setContent(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(0, value);
-        }
+            pub fn getContent(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return "";
+                return try self._reader.readText(0);
+            }
 
-    };
-};
+        };
 
-pub const SendEmoteResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getMessage(self: Reader) !ChatMessage.Reader {
-            if (self._reader.isPointerNull(0)) return ChatMessage.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return ChatMessage.Reader{ ._reader = value };
-        }
+            pub fn setContent(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(0, value);
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const SendEmoteResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initMessage(self: *Builder) !ChatMessage.Builder {
-            const builder = try self._builder.initStruct(0, 1, 4);
-            return ChatMessage.Builder{ ._builder = builder };
-        }
+            pub fn getMessage(self: Reader) !ChatMessage.Reader {
+                if (self._reader.isPointerNull(0)) return ChatMessage.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return ChatMessage.Reader{ ._reader = value };
+            }
 
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
-    };
-};
+        };
 
-pub const GetHistoryParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getLimit(self: Reader) !u32 {
-            return self._reader.readU32(0);
-        }
+            pub fn initMessage(self: *Builder) !ChatMessage.Builder {
+                const builder = try self._builder.initStruct(0, 1, 4);
+                return ChatMessage.Builder{ ._builder = builder };
+            }
 
-    };
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setLimit(self: *Builder, value: u32) !void {
-            self._builder.writeU32(0, @bitCast(value));
-        }
-
-    };
-};
-
-pub const GetHistoryResults = struct {
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getMessages(self: Reader) !StructListReader(ChatMessage) {
-            if (self._reader.isPointerNull(0)) return StructListReader(ChatMessage){ ._list = self._reader.emptyStructList() };
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(ChatMessage){ ._list = raw };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GetHistoryParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initMessages(self: *Builder, element_count: u32) !StructListBuilder(ChatMessage) {
-            const raw = try self._builder.writeStructList(0, element_count, 1, 4);
-            return StructListBuilder(ChatMessage){ ._list = raw };
-        }
+            pub fn getLimit(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
 
-    };
-};
+        };
 
-pub const GetInfoParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-    };
+            pub fn setLimit(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const GetInfoResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getInfo(self: Reader) !RoomInfo.Reader {
-            if (self._reader.isPointerNull(0)) return RoomInfo.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return RoomInfo.Reader{ ._reader = value };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GetHistoryResults = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn initInfo(self: *Builder) !RoomInfo.Builder {
-            const builder = try self._builder.initStruct(0, 1, 3);
-            return RoomInfo.Builder{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-    };
-};
+            pub fn getMessages(self: Reader) !StructListReader(ChatMessage) {
+                if (self._reader.isPointerNull(0)) return StructListReader(ChatMessage){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(ChatMessage){ ._list = raw };
+            }
 
-pub const LeaveParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        };
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
 
-    };
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+            pub fn initMessages(self: *Builder, element_count: u32) !StructListBuilder(ChatMessage) {
+                const raw = try self._builder.writeStructList(0, element_count, 1, 4);
+                return StructListBuilder(ChatMessage){ ._list = raw };
+            }
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const LeaveResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GetInfoParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
+        };
 
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
     };
+
+    pub const GetInfoResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getInfo(self: Reader) !RoomInfo.Reader {
+                if (self._reader.isPointerNull(0)) return RoomInfo.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return RoomInfo.Reader{ ._reader = value };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initInfo(self: *Builder) !RoomInfo.Builder {
+                const builder = try self._builder.initStruct(0, 1, 3);
+                return RoomInfo.Builder{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const LeaveParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const LeaveResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
+
+        };
+    };
+
 };
 
 pub const ChatService = struct {
@@ -1504,8 +1504,8 @@ pub const ChatService = struct {
     pub const CreateRoom = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = CreateRoomParams;
-        pub const Results = CreateRoomResults;
+        pub const Params = ChatService.CreateRoomParams;
+        pub const Results = ChatService.CreateRoomResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1627,8 +1627,8 @@ pub const ChatService = struct {
     pub const JoinRoom = struct {
         pub const ordinal: u16 = 1;
         pub const is_streaming: bool = false;
-        pub const Params = JoinRoomParams;
-        pub const Results = JoinRoomResults;
+        pub const Params = ChatService.JoinRoomParams;
+        pub const Results = ChatService.JoinRoomResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1750,8 +1750,8 @@ pub const ChatService = struct {
     pub const ListRooms = struct {
         pub const ordinal: u16 = 2;
         pub const is_streaming: bool = false;
-        pub const Params = ListRoomsParams;
-        pub const Results = ListRoomsResults;
+        pub const Params = ChatService.ListRoomsParams;
+        pub const Results = ChatService.ListRoomsResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1873,8 +1873,8 @@ pub const ChatService = struct {
     pub const Whisper = struct {
         pub const ordinal: u16 = 3;
         pub const is_streaming: bool = false;
-        pub const Params = WhisperParams;
-        pub const Results = WhisperResults;
+        pub const Params = ChatService.WhisperParams;
+        pub const Results = ChatService.WhisperResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -2210,454 +2210,454 @@ pub const ChatService = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const CreateRoomParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-pub const CreateRoomParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getName(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
-        }
-
-        pub fn getTopic(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(1)) return "";
-            return try self._reader.readText(1);
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 2);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setName(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(0, value);
-        }
-
-        pub fn setTopic(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(1, value);
-        }
-
-    };
-};
-
-pub const CreateRoomResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getRoom(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveRoom(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !ChatRoom.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return ChatRoom.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
             }
-        }
 
-        pub fn getInfo(self: Reader) !RoomInfo.Reader {
-            if (self._reader.isPointerNull(1)) return RoomInfo.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(1);
-            return RoomInfo.Reader{ ._reader = value };
-        }
-
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 2);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initRoom(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
-
-        pub fn clearRoom(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
-
-        pub fn setRoomCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
-
-        pub fn setRoomServer(self: *Builder, peer: *rpc.peer.Peer, server: *ChatRoom.Server) !void {
-            const cap_id = try ChatRoom.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
-
-        pub fn setRoomClient(self: *Builder, client: ChatRoom.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
-
-        pub fn initInfo(self: *Builder) !RoomInfo.Builder {
-            const builder = try self._builder.initStruct(1, 1, 3);
-            return RoomInfo.Builder{ ._builder = builder };
-        }
-
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
-
-    };
-};
-
-pub const JoinRoomParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getName(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
-        }
-
-        pub fn getPlayer(self: Reader) !game_types.PlayerInfo.Reader {
-            if (self._reader.isPointerNull(1)) return game_types.PlayerInfo.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(1);
-            return game_types.PlayerInfo.Reader{ ._reader = value };
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 2);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setName(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(0, value);
-        }
-
-        pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
-            const builder = try self._builder.initStruct(1, 1, 2);
-            return game_types.PlayerInfo.Builder{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const JoinRoomResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getRoom(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveRoom(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !ChatRoom.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return ChatRoom.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
             }
-        }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
+            pub fn getName(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return "";
+                return try self._reader.readText(0);
+            }
 
+            pub fn getTopic(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(1)) return "";
+                return try self._reader.readText(1);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 2);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setName(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(0, value);
+            }
+
+            pub fn setTopic(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(1, value);
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const CreateRoomResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initRoom(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
+            pub fn getRoom(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
 
-        pub fn clearRoom(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
+            pub fn resolveRoom(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !ChatRoom.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return ChatRoom.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
 
-        pub fn setRoomCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
+            pub fn getInfo(self: Reader) !RoomInfo.Reader {
+                if (self._reader.isPointerNull(1)) return RoomInfo.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(1);
+                return RoomInfo.Reader{ ._reader = value };
+            }
 
-        pub fn setRoomServer(self: *Builder, peer: *rpc.peer.Peer, server: *ChatRoom.Server) !void {
-            const cap_id = try ChatRoom.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
-        pub fn setRoomClient(self: *Builder, client: ChatRoom.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
+        };
 
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-    };
-};
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 2);
+                return .{ ._builder = builder };
+            }
 
-pub const ListRoomsParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn initRoom(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn clearRoom(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
 
-    };
+            pub fn setRoomCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+            pub fn setRoomServer(self: *Builder, peer: *rpc.peer.Peer, server: *ChatRoom.Server) !void {
+                const cap_id = try ChatRoom.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
+            pub fn setRoomClient(self: *Builder, client: ChatRoom.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn initInfo(self: *Builder) !RoomInfo.Builder {
+                const builder = try self._builder.initStruct(1, 1, 3);
+                return RoomInfo.Builder{ ._builder = builder };
+            }
 
-    };
-};
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
 
-pub const ListRoomsResults = struct {
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getRooms(self: Reader) !StructListReader(RoomInfo) {
-            if (self._reader.isPointerNull(0)) return StructListReader(RoomInfo){ ._list = self._reader.emptyStructList() };
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(RoomInfo){ ._list = raw };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const JoinRoomParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initRooms(self: *Builder, element_count: u32) !StructListBuilder(RoomInfo) {
-            const raw = try self._builder.writeStructList(0, element_count, 1, 3);
-            return StructListBuilder(RoomInfo){ ._list = raw };
-        }
+            pub fn getName(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return "";
+                return try self._reader.readText(0);
+            }
 
-    };
-};
+            pub fn getPlayer(self: Reader) !game_types.PlayerInfo.Reader {
+                if (self._reader.isPointerNull(1)) return game_types.PlayerInfo.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(1);
+                return game_types.PlayerInfo.Reader{ ._reader = value };
+            }
 
-pub const WhisperParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        };
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 2);
+                return .{ ._builder = builder };
+            }
 
-        pub fn getFrom(self: Reader) !game_types.PlayerInfo.Reader {
-            if (self._reader.isPointerNull(0)) return game_types.PlayerInfo.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return game_types.PlayerInfo.Reader{ ._reader = value };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getTo(self: Reader) !game_types.PlayerId.Reader {
-            if (self._reader.isPointerNull(1)) return game_types.PlayerId.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(1);
-            return game_types.PlayerId.Reader{ ._reader = value };
-        }
+            pub fn setName(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(0, value);
+            }
 
-        pub fn getContent(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(2)) return "";
-            return try self._reader.readText(2);
-        }
+            pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
+                const builder = try self._builder.initStruct(1, 1, 2);
+                return game_types.PlayerInfo.Builder{ ._builder = builder };
+            }
 
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const JoinRoomResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 3);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initFrom(self: *Builder) !game_types.PlayerInfo.Builder {
-            const builder = try self._builder.initStruct(0, 1, 2);
-            return game_types.PlayerInfo.Builder{ ._builder = builder };
-        }
+            pub fn getRoom(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
 
-        pub fn initTo(self: *Builder) !game_types.PlayerId.Builder {
-            const builder = try self._builder.initStruct(1, 1, 0);
-            return game_types.PlayerId.Builder{ ._builder = builder };
-        }
+            pub fn resolveRoom(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !ChatRoom.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return ChatRoom.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
 
-        pub fn setContent(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(2, value);
-        }
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initRoom(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearRoom(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setRoomCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setRoomServer(self: *Builder, peer: *rpc.peer.Peer, server: *ChatRoom.Server) !void {
+                const cap_id = try ChatRoom.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setRoomClient(self: *Builder, client: ChatRoom.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
+
+        };
     };
-};
 
-pub const WhisperResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+    pub const ListRoomsParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn getMessage(self: Reader) !ChatMessage.Reader {
-            if (self._reader.isPointerNull(0)) return ChatMessage.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return ChatMessage.Reader{ ._reader = value };
-        }
+        };
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const ListRoomsResults = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn initMessage(self: *Builder) !ChatMessage.Builder {
-            const builder = try self._builder.initStruct(0, 1, 4);
-            return ChatMessage.Builder{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
+            pub fn getRooms(self: Reader) !StructListReader(RoomInfo) {
+                if (self._reader.isPointerNull(0)) return StructListReader(RoomInfo){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(RoomInfo){ ._list = raw };
+            }
 
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initRooms(self: *Builder, element_count: u32) !StructListBuilder(RoomInfo) {
+                const raw = try self._builder.writeStructList(0, element_count, 1, 3);
+                return StructListBuilder(RoomInfo){ ._list = raw };
+            }
+
+        };
     };
+
+    pub const WhisperParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getFrom(self: Reader) !game_types.PlayerInfo.Reader {
+                if (self._reader.isPointerNull(0)) return game_types.PlayerInfo.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return game_types.PlayerInfo.Reader{ ._reader = value };
+            }
+
+            pub fn getTo(self: Reader) !game_types.PlayerId.Reader {
+                if (self._reader.isPointerNull(1)) return game_types.PlayerId.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(1);
+                return game_types.PlayerId.Reader{ ._reader = value };
+            }
+
+            pub fn getContent(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(2)) return "";
+                return try self._reader.readText(2);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 3);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initFrom(self: *Builder) !game_types.PlayerInfo.Builder {
+                const builder = try self._builder.initStruct(0, 1, 2);
+                return game_types.PlayerInfo.Builder{ ._builder = builder };
+            }
+
+            pub fn initTo(self: *Builder) !game_types.PlayerId.Builder {
+                const builder = try self._builder.initStruct(1, 1, 0);
+                return game_types.PlayerId.Builder{ ._builder = builder };
+            }
+
+            pub fn setContent(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(2, value);
+            }
+
+        };
+    };
+
+    pub const WhisperResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getMessage(self: Reader) !ChatMessage.Reader {
+                if (self._reader.isPointerNull(0)) return ChatMessage.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return ChatMessage.Reader{ ._reader = value };
+            }
+
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initMessage(self: *Builder) !ChatMessage.Builder {
+                const builder = try self._builder.initStruct(0, 1, 4);
+                return ChatMessage.Builder{ ._builder = builder };
+            }
+
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
+
+        };
+    };
+
 };
 

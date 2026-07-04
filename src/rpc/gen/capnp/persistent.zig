@@ -21,8 +21,8 @@ pub const Persistent = struct {
     pub const Save = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = SaveParams;
-        pub const Results = SaveResults;
+        pub const Params = Persistent.SaveParams;
+        pub const Results = Persistent.SaveResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -265,122 +265,122 @@ pub const Persistent = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const SaveParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-pub const SaveParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn getSealFor(self: Reader) !message.AnyPointerReader {
+                return try self._reader.readAnyPointer(0);
+            }
 
-        pub fn getSealFor(self: Reader) !message.AnyPointerReader {
-            return try self._reader.readAnyPointer(0);
-        }
+        };
 
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initSealFor(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn setSealForNull(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setSealForText(self: *Builder, value: []const u8) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setText(value);
+            }
+
+            pub fn setSealForData(self: *Builder, value: []const u8) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setData(value);
+            }
+
+            pub fn setSealForCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const SaveResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initSealFor(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
+            pub fn getSturdyRef(self: Reader) !message.AnyPointerReader {
+                return try self._reader.readAnyPointer(0);
+            }
 
-        pub fn setSealForNull(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
+        };
 
-        pub fn setSealForText(self: *Builder, value: []const u8) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setText(value);
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn setSealForData(self: *Builder, value: []const u8) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setData(value);
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn setSealForCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
+            pub fn initSturdyRef(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn setSturdyRefNull(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setSturdyRefText(self: *Builder, value: []const u8) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setText(value);
+            }
+
+            pub fn setSturdyRefData(self: *Builder, value: []const u8) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setData(value);
+            }
+
+            pub fn setSturdyRefCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+        };
     };
-};
 
-pub const SaveResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getSturdyRef(self: Reader) !message.AnyPointerReader {
-            return try self._reader.readAnyPointer(0);
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initSturdyRef(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
-
-        pub fn setSturdyRefNull(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
-
-        pub fn setSturdyRefText(self: *Builder, value: []const u8) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setText(value);
-        }
-
-        pub fn setSturdyRefData(self: *Builder, value: []const u8) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setData(value);
-        }
-
-        pub fn setSturdyRefCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
-
-    };
 };
 
 pub const persistent = struct {

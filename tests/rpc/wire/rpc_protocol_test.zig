@@ -934,8 +934,8 @@ test "RPC protocol tags stay aligned with generated rpc.capnp bindings" {
     try std.testing.expectEqual(@intFromEnum(rpc_capnp.Resolve.WhichTag.cap), @intFromEnum(protocol.ResolveTag.cap));
     try std.testing.expectEqual(@intFromEnum(rpc_capnp.Resolve.WhichTag.exception), @intFromEnum(protocol.ResolveTag.exception));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Op.WhichTag.noop), @intFromEnum(protocol.PromisedAnswerOpTag.noop));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Op.WhichTag.getPointerField), @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.PromisedAnswer.Op.WhichTag.noop), @intFromEnum(protocol.PromisedAnswerOpTag.noop));
+    try std.testing.expectEqual(@intFromEnum(rpc_capnp.PromisedAnswer.Op.WhichTag.getPointerField), @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
 
     try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.caller), @intFromEnum(protocol.SendResultsToTag.caller));
     try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.yourself), @intFromEnum(protocol.SendResultsToTag.yourself));

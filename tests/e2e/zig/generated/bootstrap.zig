@@ -28,8 +28,8 @@ pub const Bootstrap = struct {
     pub const GameWorld = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = GameWorldParams;
-        pub const Results = GameWorldResults;
+        pub const Params = Bootstrap.GameWorldParams;
+        pub const Results = Bootstrap.GameWorldResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -151,8 +151,8 @@ pub const Bootstrap = struct {
     pub const ChatService = struct {
         pub const ordinal: u16 = 1;
         pub const is_streaming: bool = false;
-        pub const Params = ChatServiceParams;
-        pub const Results = ChatServiceResults;
+        pub const Params = Bootstrap.ChatServiceParams;
+        pub const Results = Bootstrap.ChatServiceResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -274,8 +274,8 @@ pub const Bootstrap = struct {
     pub const InventoryService = struct {
         pub const ordinal: u16 = 2;
         pub const is_streaming: bool = false;
-        pub const Params = InventoryServiceParams;
-        pub const Results = InventoryServiceResults;
+        pub const Params = Bootstrap.InventoryServiceParams;
+        pub const Results = Bootstrap.InventoryServiceResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -397,8 +397,8 @@ pub const Bootstrap = struct {
     pub const MatchmakingService = struct {
         pub const ordinal: u16 = 3;
         pub const is_streaming: bool = false;
-        pub const Params = MatchmakingServiceParams;
-        pub const Results = MatchmakingServiceResults;
+        pub const Params = Bootstrap.MatchmakingServiceParams;
+        pub const Results = Bootstrap.MatchmakingServiceResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -764,405 +764,405 @@ pub const Bootstrap = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const GameWorldParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-pub const GameWorldParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const GameWorldResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getService(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !game_world.GameWorld.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return game_world.GameWorld.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
             }
-        }
 
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initService(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
-
-        pub fn clearService(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
-
-        pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
-
-        pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *game_world.GameWorld.Server) !void {
-            const cap_id = try game_world.GameWorld.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
-
-        pub fn setServiceClient(self: *Builder, client: game_world.GameWorld.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
-
-    };
-};
-
-pub const ChatServiceParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const ChatServiceResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getService(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !chat.ChatService.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return chat.ChatService.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
             }
-        }
 
-    };
+        };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initService(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
-
-        pub fn clearService(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
-
-        pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
-
-        pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *chat.ChatService.Server) !void {
-            const cap_id = try chat.ChatService.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
-
-        pub fn setServiceClient(self: *Builder, client: chat.ChatService.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
-
-    };
-};
-
-pub const InventoryServiceParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const InventoryServiceResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getService(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !inventory.InventoryService.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return inventory.InventoryService.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
             }
-        }
 
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initService(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
-
-        pub fn clearService(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
-
-        pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
-
-        pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *inventory.InventoryService.Server) !void {
-            const cap_id = try inventory.InventoryService.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
-
-        pub fn setServiceClient(self: *Builder, client: inventory.InventoryService.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
-
-    };
-};
-
-pub const MatchmakingServiceParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-    };
-};
-
-pub const MatchmakingServiceResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getService(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !matchmaking.MatchmakingService.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return matchmaking.MatchmakingService.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
             }
-        }
 
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GameWorldResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initService(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
+            pub fn getService(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
 
-        pub fn clearService(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
+            pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !game_world.GameWorld.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return game_world.GameWorld.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
 
-        pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
+        };
 
-        pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *matchmaking.MatchmakingService.Server) !void {
-            const cap_id = try matchmaking.MatchmakingService.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn setServiceClient(self: *Builder, client: matchmaking.MatchmakingService.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
 
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearService(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *game_world.GameWorld.Server) !void {
+                const cap_id = try game_world.GameWorld.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setServiceClient(self: *Builder, client: game_world.GameWorld.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+        };
     };
+
+    pub const ChatServiceParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const ChatServiceResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getService(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
+
+            pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !chat.ChatService.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return chat.ChatService.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearService(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *chat.ChatService.Server) !void {
+                const cap_id = try chat.ChatService.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setServiceClient(self: *Builder, client: chat.ChatService.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+        };
+    };
+
+    pub const InventoryServiceParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const InventoryServiceResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getService(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
+
+            pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !inventory.InventoryService.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return inventory.InventoryService.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearService(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *inventory.InventoryService.Server) !void {
+                const cap_id = try inventory.InventoryService.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setServiceClient(self: *Builder, client: inventory.InventoryService.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+        };
+    };
+
+    pub const MatchmakingServiceParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const MatchmakingServiceResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getService(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
+
+            pub fn resolveService(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !matchmaking.MatchmakingService.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return matchmaking.MatchmakingService.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initService(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearService(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setServiceCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setServiceServer(self: *Builder, peer: *rpc.peer.Peer, server: *matchmaking.MatchmakingService.Server) !void {
+                const cap_id = try matchmaking.MatchmakingService.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setServiceClient(self: *Builder, client: matchmaking.MatchmakingService.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+        };
+    };
+
 };
 

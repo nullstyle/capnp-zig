@@ -367,8 +367,8 @@ pub const GameWorld = struct {
     pub const SpawnEntity = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = SpawnEntityParams;
-        pub const Results = SpawnEntityResults;
+        pub const Params = GameWorld.SpawnEntityParams;
+        pub const Results = GameWorld.SpawnEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -490,8 +490,8 @@ pub const GameWorld = struct {
     pub const DespawnEntity = struct {
         pub const ordinal: u16 = 1;
         pub const is_streaming: bool = false;
-        pub const Params = DespawnEntityParams;
-        pub const Results = DespawnEntityResults;
+        pub const Params = GameWorld.DespawnEntityParams;
+        pub const Results = GameWorld.DespawnEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -613,8 +613,8 @@ pub const GameWorld = struct {
     pub const GetEntity = struct {
         pub const ordinal: u16 = 2;
         pub const is_streaming: bool = false;
-        pub const Params = GetEntityParams;
-        pub const Results = GetEntityResults;
+        pub const Params = GameWorld.GetEntityParams;
+        pub const Results = GameWorld.GetEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -736,8 +736,8 @@ pub const GameWorld = struct {
     pub const MoveEntity = struct {
         pub const ordinal: u16 = 3;
         pub const is_streaming: bool = false;
-        pub const Params = MoveEntityParams;
-        pub const Results = MoveEntityResults;
+        pub const Params = GameWorld.MoveEntityParams;
+        pub const Results = GameWorld.MoveEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -859,8 +859,8 @@ pub const GameWorld = struct {
     pub const DamageEntity = struct {
         pub const ordinal: u16 = 4;
         pub const is_streaming: bool = false;
-        pub const Params = DamageEntityParams;
-        pub const Results = DamageEntityResults;
+        pub const Params = GameWorld.DamageEntityParams;
+        pub const Results = GameWorld.DamageEntityResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -982,8 +982,8 @@ pub const GameWorld = struct {
     pub const QueryArea = struct {
         pub const ordinal: u16 = 5;
         pub const is_streaming: bool = false;
-        pub const Params = QueryAreaParams;
-        pub const Results = QueryAreaResults;
+        pub const Params = GameWorld.QueryAreaParams;
+        pub const Results = GameWorld.QueryAreaResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1331,564 +1331,564 @@ pub const GameWorld = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const SpawnEntityParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-pub const SpawnEntityParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn getRequest(self: Reader) !SpawnRequest.Reader {
+                if (self._reader.isPointerNull(0)) return SpawnRequest.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return SpawnRequest.Reader{ ._reader = value };
+            }
 
-        pub fn getRequest(self: Reader) !SpawnRequest.Reader {
-            if (self._reader.isPointerNull(0)) return SpawnRequest.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return SpawnRequest.Reader{ ._reader = value };
-        }
+        };
 
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initRequest(self: *Builder) !SpawnRequest.Builder {
+                const builder = try self._builder.initStruct(0, 1, 2);
+                return SpawnRequest.Builder{ ._builder = builder };
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const SpawnEntityResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initRequest(self: *Builder) !SpawnRequest.Builder {
-            const builder = try self._builder.initStruct(0, 1, 2);
-            return SpawnRequest.Builder{ ._builder = builder };
-        }
+            pub fn getEntity(self: Reader) !Entity.Reader {
+                if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return Entity.Reader{ ._reader = value };
+            }
 
-    };
-};
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
-pub const SpawnEntityResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        };
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn getEntity(self: Reader) !Entity.Reader {
-            if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return Entity.Reader{ ._reader = value };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
+            pub fn initEntity(self: *Builder) !Entity.Builder {
+                const builder = try self._builder.initStruct(0, 2, 3);
+                return Entity.Builder{ ._builder = builder };
+            }
 
-    };
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initEntity(self: *Builder) !Entity.Builder {
-            const builder = try self._builder.initStruct(0, 2, 3);
-            return Entity.Builder{ ._builder = builder };
-        }
-
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
-
-    };
-};
-
-pub const DespawnEntityParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getId(self: Reader) !EntityId.Reader {
-            if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return EntityId.Reader{ ._reader = value };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const DespawnEntityParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initId(self: *Builder) !EntityId.Builder {
-            const builder = try self._builder.initStruct(0, 1, 0);
-            return EntityId.Builder{ ._builder = builder };
-        }
+            pub fn getId(self: Reader) !EntityId.Reader {
+                if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return EntityId.Reader{ ._reader = value };
+            }
 
-    };
-};
+        };
 
-pub const DespawnEntityResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
+            pub fn initId(self: *Builder) !EntityId.Builder {
+                const builder = try self._builder.initStruct(0, 1, 0);
+                return EntityId.Builder{ ._builder = builder };
+            }
 
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
-
-    };
-};
-
-pub const GetEntityParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getId(self: Reader) !EntityId.Reader {
-            if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return EntityId.Reader{ ._reader = value };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const DespawnEntityResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initId(self: *Builder) !EntityId.Builder {
-            const builder = try self._builder.initStruct(0, 1, 0);
-            return EntityId.Builder{ ._builder = builder };
-        }
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
-    };
-};
+        };
 
-pub const GetEntityResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getEntity(self: Reader) !Entity.Reader {
-            if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return Entity.Reader{ ._reader = value };
-        }
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GetEntityParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initEntity(self: *Builder) !Entity.Builder {
-            const builder = try self._builder.initStruct(0, 2, 3);
-            return Entity.Builder{ ._builder = builder };
-        }
+            pub fn getId(self: Reader) !EntityId.Reader {
+                if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return EntityId.Reader{ ._reader = value };
+            }
 
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
+        };
 
-    };
-};
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-pub const MoveEntityParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn initId(self: *Builder) !EntityId.Builder {
+                const builder = try self._builder.initStruct(0, 1, 0);
+                return EntityId.Builder{ ._builder = builder };
+            }
 
-        pub fn getId(self: Reader) !EntityId.Reader {
-            if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return EntityId.Reader{ ._reader = value };
-        }
-
-        pub fn getNewPosition(self: Reader) !game_types.Position.Reader {
-            if (self._reader.isPointerNull(1)) return game_types.Position.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(1);
-            return game_types.Position.Reader{ ._reader = value };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GetEntityResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 2);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initId(self: *Builder) !EntityId.Builder {
-            const builder = try self._builder.initStruct(0, 1, 0);
-            return EntityId.Builder{ ._builder = builder };
-        }
+            pub fn getEntity(self: Reader) !Entity.Reader {
+                if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return Entity.Reader{ ._reader = value };
+            }
 
-        pub fn initNewPosition(self: *Builder) !game_types.Position.Builder {
-            const builder = try self._builder.initStruct(1, 2, 0);
-            return game_types.Position.Builder{ ._builder = builder };
-        }
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
 
-    };
-};
+        };
 
-pub const MoveEntityResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getEntity(self: Reader) !Entity.Reader {
-            if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return Entity.Reader{ ._reader = value };
-        }
+            pub fn initEntity(self: *Builder) !Entity.Builder {
+                const builder = try self._builder.initStruct(0, 2, 3);
+                return Entity.Builder{ ._builder = builder };
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
-        }
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
 
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initEntity(self: *Builder) !Entity.Builder {
-            const builder = try self._builder.initStruct(0, 2, 3);
-            return Entity.Builder{ ._builder = builder };
-        }
-
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
-        }
-
-    };
-};
-
-pub const DamageEntityParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getId(self: Reader) !EntityId.Reader {
-            if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return EntityId.Reader{ ._reader = value };
-        }
-
-        pub fn getAmount(self: Reader) !i32 {
-            return @bitCast(self._reader.readU32(0));
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const MoveEntityParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initId(self: *Builder) !EntityId.Builder {
-            const builder = try self._builder.initStruct(0, 1, 0);
-            return EntityId.Builder{ ._builder = builder };
-        }
+            pub fn getId(self: Reader) !EntityId.Reader {
+                if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return EntityId.Reader{ ._reader = value };
+            }
 
-        pub fn setAmount(self: *Builder, value: i32) !void {
-            self._builder.writeU32(0, @bitCast(value));
-        }
+            pub fn getNewPosition(self: Reader) !game_types.Position.Reader {
+                if (self._reader.isPointerNull(1)) return game_types.Position.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(1);
+                return game_types.Position.Reader{ ._reader = value };
+            }
 
-    };
-};
+        };
 
-pub const DamageEntityResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 2);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getEntity(self: Reader) !Entity.Reader {
-            if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return Entity.Reader{ ._reader = value };
-        }
+            pub fn initId(self: *Builder) !EntityId.Builder {
+                const builder = try self._builder.initStruct(0, 1, 0);
+                return EntityId.Builder{ ._builder = builder };
+            }
 
-        pub fn getKilled(self: Reader) !bool {
-            return self._reader.readBool(0, 0) != false;
-        }
+            pub fn initNewPosition(self: *Builder) !game_types.Position.Builder {
+                const builder = try self._builder.initStruct(1, 2, 0);
+                return game_types.Position.Builder{ ._builder = builder };
+            }
 
-        pub fn getStatus(self: Reader) !game_types.StatusCode {
-            return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
-        }
-
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initEntity(self: *Builder) !Entity.Builder {
-            const builder = try self._builder.initStruct(0, 2, 3);
-            return Entity.Builder{ ._builder = builder };
-        }
-
-        pub fn setKilled(self: *Builder, value: bool) !void {
-            self._builder.writeBool(0, 0, value != false);
-        }
-
-        pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-            self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
-        }
-
-    };
-};
-
-pub const QueryAreaParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getQuery(self: Reader) !AreaQuery.Reader {
-            if (self._reader.isPointerNull(0)) return AreaQuery.Reader{ ._reader = self._reader.emptyStruct() };
-            const value = try self._reader.readStruct(0);
-            return AreaQuery.Reader{ ._reader = value };
-        }
-
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const MoveEntityResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initQuery(self: *Builder) !AreaQuery.Builder {
-            const builder = try self._builder.initStruct(0, 1, 1);
-            return AreaQuery.Builder{ ._builder = builder };
-        }
+            pub fn getEntity(self: Reader) !Entity.Reader {
+                if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return Entity.Reader{ ._reader = value };
+            }
 
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initEntity(self: *Builder) !Entity.Builder {
+                const builder = try self._builder.initStruct(0, 2, 3);
+                return Entity.Builder{ ._builder = builder };
+            }
+
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            }
+
+        };
     };
-};
 
-pub const QueryAreaResults = struct {
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
+    pub const DamageEntityParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn getId(self: Reader) !EntityId.Reader {
+                if (self._reader.isPointerNull(0)) return EntityId.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return EntityId.Reader{ ._reader = value };
+            }
 
-        pub fn getEntities(self: Reader) !StructListReader(Entity) {
-            if (self._reader.isPointerNull(0)) return StructListReader(Entity){ ._list = self._reader.emptyStructList() };
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(Entity){ ._list = raw };
-        }
+            pub fn getAmount(self: Reader) !i32 {
+                return @bitCast(self._reader.readU32(0));
+            }
 
-        pub fn getCount(self: Reader) !u32 {
-            return self._reader.readU32(0);
-        }
+        };
 
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initId(self: *Builder) !EntityId.Builder {
+                const builder = try self._builder.initStruct(0, 1, 0);
+                return EntityId.Builder{ ._builder = builder };
+            }
+
+            pub fn setAmount(self: *Builder, value: i32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const DamageEntityResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initEntities(self: *Builder, element_count: u32) !StructListBuilder(Entity) {
-            const raw = try self._builder.writeStructList(0, element_count, 2, 3);
-            return StructListBuilder(Entity){ ._list = raw };
-        }
+            pub fn getEntity(self: Reader) !Entity.Reader {
+                if (self._reader.isPointerNull(0)) return Entity.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return Entity.Reader{ ._reader = value };
+            }
 
-        pub fn setCount(self: *Builder, value: u32) !void {
-            self._builder.writeU32(0, @bitCast(value));
-        }
+            pub fn getKilled(self: Reader) !bool {
+                return self._reader.readBool(0, 0) != false;
+            }
 
+            pub fn getStatus(self: Reader) !game_types.StatusCode {
+                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initEntity(self: *Builder) !Entity.Builder {
+                const builder = try self._builder.initStruct(0, 2, 3);
+                return Entity.Builder{ ._builder = builder };
+            }
+
+            pub fn setKilled(self: *Builder, value: bool) !void {
+                self._builder.writeBool(0, 0, value != false);
+            }
+
+            pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
+                self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
+            }
+
+        };
     };
+
+    pub const QueryAreaParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getQuery(self: Reader) !AreaQuery.Reader {
+                if (self._reader.isPointerNull(0)) return AreaQuery.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return AreaQuery.Reader{ ._reader = value };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initQuery(self: *Builder) !AreaQuery.Builder {
+                const builder = try self._builder.initStruct(0, 1, 1);
+                return AreaQuery.Builder{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const QueryAreaResults = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
+
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getEntities(self: Reader) !StructListReader(Entity) {
+                if (self._reader.isPointerNull(0)) return StructListReader(Entity){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(Entity){ ._list = raw };
+            }
+
+            pub fn getCount(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initEntities(self: *Builder, element_count: u32) !StructListBuilder(Entity) {
+                const raw = try self._builder.writeStructList(0, element_count, 2, 3);
+                return StructListBuilder(Entity){ ._list = raw };
+            }
+
+            pub fn setCount(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+        };
+    };
+
 };
 

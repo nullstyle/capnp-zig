@@ -239,7 +239,7 @@ pub const Generator = struct {
 
         // Generate code for all nested nodes (including nested definitions).
         for (file_node.nested_nodes) |nested| {
-            try self.generateNodeRecursive(nested.id, &generated, body_writer);
+            try self.generateNodeRecursive(nested.id, &generated, body_writer, false);
         }
 
         var output = std.ArrayList(u8).empty;
@@ -519,20 +519,23 @@ pub const Generator = struct {
         return a.id < b.id;
     }
 
-    /// Generate code for a single node
-    fn generateNode(self: *Generator, node: *const schema.Node, writer: anytype) !void {
+    /// Generate code for a single node. `children` is the pre-rendered text of
+    /// the node's nested named types (null if none), spliced inside the body of
+    /// container kinds (struct / interface); ignored by leaf kinds. `self_qualify`
+    /// is set for a struct nested inside another struct (see StructGenerator).
+    fn generateNode(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8, self_qualify: bool) !void {
         self.verboseLog("capnpc-zig: generating node id=0x{x} kind={s}\n", .{ node.id, @tagName(node.kind) });
 
         switch (node.kind) {
             .@"struct" => {
                 if (self.shape_sharing) {
-                    try self.generateStructWithShapeSharing(node, writer);
+                    try self.generateStructWithShapeSharing(node, writer, children, self_qualify);
                 } else {
-                    try self.generateStruct(node, writer);
+                    try self.generateStruct(node, writer, children, self_qualify);
                 }
             },
             .@"enum" => try self.generateEnum(node, writer),
-            .interface => try self.generateInterface(node, writer),
+            .interface => try self.generateInterface(node, writer, children),
             .@"const" => try self.generateConst(node, writer),
             .file => {}, // File nodes are handled separately
             .annotation => try self.generateAnnotation(node, writer),
@@ -551,6 +554,7 @@ pub const Generator = struct {
         id: schema.Id,
         generated: *std.AutoHashMap(schema.Id, void),
         writer: anytype,
+        self_qualify: bool,
     ) !void {
         if (generated.contains(id)) return;
         const node = self.getNode(id) orelse return;
@@ -568,25 +572,52 @@ pub const Generator = struct {
             }
         }
 
-        try self.generateNode(node, writer);
-        for (node.nested_nodes) |nested| {
-            try self.generateNodeRecursive(nested.id, generated, writer);
-        }
-        if (node.kind == .interface) {
-            const iface = node.interface_node orelse return;
-            for (iface.methods) |method| {
-                try self.generateNodeRecursive(method.param_struct_type, generated, writer);
-                try self.generateNodeRecursive(method.result_struct_type, generated, writer);
+        // Render this node's nested children (nested named types, and for an
+        // interface its OWN method param/result structs) into a canonical-indent
+        // blob, which the container emitter splices inside the node's body. This
+        // is what puts `Outer1.Inner` under `Outer1` instead of at file scope,
+        // and `Svc1.DoItParams` / `Svc2.DoItParams` under their own interfaces.
+        // Superclass method params belong to the superclass and are emitted when
+        // it is generated — not re-emitted here.
+        var child_blob = std.ArrayList(u8).empty;
+        defer child_blob.deinit(self.allocator);
+        {
+            const child_writer = ArrayListWriter{
+                .list = &child_blob,
+                .allocator = self.allocator,
+                .max_bytes = self.codegen_budget.max_output_bytes,
+            };
+            // A struct's nested type declarations are shadowed by the parent
+            // struct's Reader/Builder/WhichTag → they must self-qualify. An
+            // interface declares no Reader/Builder, so its method param/result
+            // structs (and nested types) do not. Nested INTERFACES are not
+            // nested here — they are emitted flat below.
+            const child_self_qualify = node.kind == .@"struct";
+            for (node.nested_nodes) |nested| {
+                const child = self.getNode(nested.id) orelse continue;
+                if (child.kind == .interface) continue;
+                try self.generateNodeRecursive(nested.id, generated, child_writer, child_self_qualify);
             }
-            // Also ensure superclass method param/result types are generated
-            for (iface.superclasses) |parent_id| {
-                const parent_node = self.getNode(parent_id) orelse continue;
-                const parent_iface = parent_node.interface_node orelse continue;
-                for (parent_iface.methods) |method| {
-                    try self.generateNodeRecursive(method.param_struct_type, generated, writer);
-                    try self.generateNodeRecursive(method.result_struct_type, generated, writer);
+            if (node.kind == .interface) {
+                const iface = node.interface_node orelse return error.InvalidInterfaceNode;
+                for (iface.methods) |method| {
+                    if (self.isAutoGeneratedMethodStruct(method.param_struct_type))
+                        try self.generateNodeRecursive(method.param_struct_type, generated, child_writer, false);
+                    if (self.isAutoGeneratedMethodStruct(method.result_struct_type))
+                        try self.generateNodeRecursive(method.result_struct_type, generated, child_writer, false);
                 }
             }
+        }
+
+        const children: ?[]const u8 = if (child_blob.items.len > 0) child_blob.items else null;
+        try self.generateNode(node, writer, children, self_qualify);
+
+        // Nested interfaces are emitted flat at this scope (after the node), so
+        // their Server/Client/VTable declarations are not shadowed by a parent's.
+        for (node.nested_nodes) |nested| {
+            const child = self.getNode(nested.id) orelse continue;
+            if (child.kind != .interface) continue;
+            try self.generateNodeRecursive(nested.id, generated, writer, false);
         }
     }
 
@@ -615,7 +646,7 @@ pub const Generator = struct {
         self: *Generator,
         id: schema.Id,
         generated: *std.AutoHashMap(schema.Id, void),
-        file_scope: *GeneratedNameScope,
+        scope: *GeneratedNameScope,
     ) !void {
         if (generated.contains(id)) return;
         const node = self.getNode(id) orelse return;
@@ -631,25 +662,35 @@ pub const Generator = struct {
             }
         }
 
-        try self.validateNodeGeneratedNames(node, file_scope);
+        // The node's own decl name competes only with its SIBLINGS (the passed
+        // parent scope). Nested types now emit inside this node's body, so they
+        // live in a fresh per-node scope — a nested `Inner` under `Outer1` no
+        // longer collides with a nested `Inner` under `Outer2`.
+        try self.validateNodeGeneratedNames(node, scope);
+
+        var child_scope = GeneratedNameScope.init(self.allocator);
+        defer child_scope.deinit();
 
         for (node.nested_nodes) |nested| {
-            try self.validateGeneratedNodeRecursive(nested.id, generated, file_scope);
+            const child = self.getNode(nested.id) orelse continue;
+            // Nested interfaces are emitted flat at the enclosing scope, so they
+            // compete for names there; nested structs/enums live in this node's
+            // own scope.
+            const target = if (child.kind == .interface) scope else &child_scope;
+            try self.validateGeneratedNodeRecursive(nested.id, generated, target);
         }
 
         if (node.kind == .interface) {
             const iface = node.interface_node orelse return;
+            // Own method param/result structs nest inside THIS interface, so two
+            // interfaces each with a same-named method (both `DoItParams`) land in
+            // distinct interface scopes. Superclass params are owned and validated
+            // by the superclass's own walk — do not re-validate them here.
             for (iface.methods) |method| {
-                try self.validateGeneratedNodeRecursive(method.param_struct_type, generated, file_scope);
-                try self.validateGeneratedNodeRecursive(method.result_struct_type, generated, file_scope);
-            }
-            for (iface.superclasses) |parent_id| {
-                const parent_node = self.getNode(parent_id) orelse continue;
-                const parent_iface = parent_node.interface_node orelse continue;
-                for (parent_iface.methods) |method| {
-                    try self.validateGeneratedNodeRecursive(method.param_struct_type, generated, file_scope);
-                    try self.validateGeneratedNodeRecursive(method.result_struct_type, generated, file_scope);
-                }
+                if (self.isAutoGeneratedMethodStruct(method.param_struct_type))
+                    try self.validateGeneratedNodeRecursive(method.param_struct_type, generated, &child_scope);
+                if (self.isAutoGeneratedMethodStruct(method.result_struct_type))
+                    try self.validateGeneratedNodeRecursive(method.result_struct_type, generated, &child_scope);
             }
         }
     }
@@ -1154,19 +1195,22 @@ pub const Generator = struct {
         };
     }
 
-    /// Generate a struct definition
-    fn generateStruct(self: *Generator, node: *const schema.Node, writer: anytype) !void {
+    /// Generate a struct definition. `children` is the pre-rendered text of the
+    /// struct's nested named types (null if none), spliced inside the body.
+    /// `self_qualify` is set when the struct is nested inside another struct.
+    fn generateStruct(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8, self_qualify: bool) !void {
         var struct_gen = StructGenerator.initWithLookup(self.allocator, lookupNode, self);
         struct_gen.type_prefix_fn = lookupTypePrefix;
+        struct_gen.parent_path_fn = lookupParentPath;
         struct_gen.setApiProfile(self.api_profile);
-        try struct_gen.generate(node, writer);
+        try struct_gen.generate(node, writer, children, self_qualify);
     }
 
     /// Generate a struct definition with optional shape sharing.
     ///
     /// Reuses the first declaration for identical struct bodies by emitting a
     /// type alias for later occurrences.
-    fn generateStructWithShapeSharing(self: *Generator, node: *const schema.Node, writer: anytype) !void {
+    fn generateStructWithShapeSharing(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8, self_qualify: bool) !void {
         var struct_buf = std.ArrayList(u8).empty;
         defer struct_buf.deinit(self.allocator);
 
@@ -1176,7 +1220,7 @@ pub const Generator = struct {
                 .allocator = self.allocator,
                 .max_bytes = self.codegen_budget.max_output_bytes,
             };
-            try self.generateStruct(node, struct_writer);
+            try self.generateStruct(node, struct_writer, children, self_qualify);
         }
 
         if (struct_buf.items.len == 0) return;
@@ -1192,7 +1236,9 @@ pub const Generator = struct {
 
         const owned_key = try self.allocator.dupe(u8, shape_key_slice);
         errdefer self.allocator.free(owned_key);
-        const owned_decl_name = try self.allocator.dupe(u8, decl_name);
+        // Store the canonical struct's FULL path so a later alias to it resolves
+        // even when the canonical struct is nested (`pub const X = Outer.Inner;`).
+        const owned_decl_name = try self.qualifiedTypeName(node.id);
         errdefer self.allocator.free(owned_decl_name);
 
         try self.shape_share_map.put(owned_key, owned_decl_name);
@@ -1287,7 +1333,23 @@ pub const Generator = struct {
     }
 
     /// Generate an interface definition
-    fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype) !void {
+    /// Reindent every non-empty line of `block` by `spaces` and write it. Used
+    /// to splice a canonical-indent nested-type blob inside a parent's body.
+    /// Mirrors struct_gen's private `writeReindented`.
+    fn writeReindented(writer: anytype, block: []const u8, spaces: usize) !void {
+        var it = std.mem.splitScalar(u8, block, '\n');
+        var first = true;
+        while (it.next()) |line| {
+            if (!first) try writer.writeByte('\n');
+            first = false;
+            if (line.len == 0) continue;
+            var i: usize = 0;
+            while (i < spaces) : (i += 1) try writer.writeByte(' ');
+            try writer.writeAll(line);
+        }
+    }
+
+    fn generateInterface(self: *Generator, node: *const schema.Node, writer: anytype, children: ?[]const u8) !void {
         const interface_info = node.interface_node orelse return error.InvalidInterfaceNode;
         const decl_name = try self.allocTypeDeclName(node);
         defer self.allocator.free(decl_name);
@@ -1312,7 +1374,7 @@ pub const Generator = struct {
         try writer.writeAll("    };\n\n");
 
         for (interface_info.methods, 0..) |method, ordinal| {
-            try self.generateMethodStruct(method, ordinal, writer);
+            try self.generateMethodStruct(node, method, ordinal, writer);
         }
 
         // --- Client ---
@@ -1542,13 +1604,19 @@ pub const Generator = struct {
 
         try writer.writeAll("    }\n");
 
+        // Splice the interface's nested types + method param/result struct
+        // definitions inside the interface body, before the closing brace.
+        if (children) |c| {
+            try writeReindented(writer, c, 4);
+        }
+
         try writer.writeAll("};\n\n");
     }
 
     /// Generate a single method struct inside an interface.
     /// `ordinal` is the method's index in the interface's methods list, which capnp
     /// guarantees equals its wire ordinal (methods are ordered by ordinal).
-    fn generateMethodStruct(self: *Generator, method: schema.Method, ordinal: usize, writer: anytype) !void {
+    fn generateMethodStruct(self: *Generator, iface_node: *const schema.Node, method: schema.Method, ordinal: usize, writer: anytype) !void {
         const zig_name = try self.toZigIdentifier(method.name);
         defer self.allocator.free(zig_name);
         const escaped_zig_name = try types.escapeZigKeyword(self.allocator, zig_name);
@@ -1557,9 +1625,9 @@ pub const Generator = struct {
         defer self.allocator.free(method_field);
         const escaped_method_field = try types.escapeZigKeyword(self.allocator, method_field);
         defer self.allocator.free(escaped_method_field);
-        const param_name = try self.resolveNodeName(method.param_struct_type);
+        const param_name = try self.resolveMethodStructName(iface_node, method.param_struct_type);
         defer self.allocator.free(param_name);
-        const result_name = try self.resolveNodeName(method.result_struct_type);
+        const result_name = try self.resolveMethodStructName(iface_node, method.result_struct_type);
         defer self.allocator.free(result_name);
 
         const param_layout = self.structLayout(method.param_struct_type) orelse return error.InvalidStructNode;
@@ -2074,6 +2142,39 @@ pub const Generator = struct {
         return try self.allocator.dupe(u8, "void");
     }
 
+    /// Resolve the Zig path of an interface method's param/result struct.
+    ///
+    /// These structs carry `scope_id == 0` (no walkable parent), so
+    /// `qualifiedTypeName` cannot reach the interface; they are emitted nested
+    /// inside the interface body, so their reference is the interface's own
+    /// qualified path plus the member simple name — e.g. `Persistent.SaveParams`,
+    /// or `Svc1.DoItParams` vs `Svc2.DoItParams` for same-named methods across
+    /// interfaces. Caller owns the returned slice.
+    fn resolveMethodStructName(self: *Generator, iface_node: *const schema.Node, member_id: schema.Id) ![]const u8 {
+        const member = self.getNode(member_id) orelse return self.allocator.dupe(u8, "void");
+        // A method whose params/results are an EXISTING named struct (e.g.
+        // `foo @0 () -> StreamResult`) has scope_id != 0 and is emitted at its
+        // own location — reference it normally. Only the auto-generated
+        // `<method>$Params` / `$Results` structs (scope_id == 0) are emitted
+        // nested inside the interface and take the interface-qualified path.
+        if (member.scope_id != 0) return self.qualifiedTypeName(member_id);
+        const iface_path = try self.qualifiedTypeName(iface_node.id);
+        defer self.allocator.free(iface_path);
+        const member_simple = self.getSimpleName(member);
+        const member_zig = try types.normalizeAndEscapeTypeIdentifier(self.allocator, member_simple);
+        defer self.allocator.free(member_zig);
+        return std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ iface_path, member_zig });
+    }
+
+    /// True when a method's param/result struct is the auto-generated
+    /// `<method>$Params`/`$Results` node (scope_id == 0), which is emitted nested
+    /// inside the interface. Named param/result structs are emitted at their own
+    /// scope and must not be re-emitted (or validated) under the interface.
+    fn isAutoGeneratedMethodStruct(self: *Generator, member_id: schema.Id) bool {
+        const member = self.getNode(member_id) orelse return false;
+        return member.scope_id == 0;
+    }
+
     /// Describes an interface-typed pointer field in a struct.
     const InterfaceFieldInfo = struct {
         name: []const u8,
@@ -2231,6 +2332,52 @@ pub const Generator = struct {
         return null;
     }
 
+    /// The parent-scope path for a node as a Zig-normalized, dot-joined string
+    /// from the file root down to (but not including) the node itself — e.g.
+    /// `"Outer1"` for `Outer1.Inner`, `"Wrapper.Svc"` for a nested interface's
+    /// child, and `""` for a file-scoped type. Walks `scope_id` up to the file
+    /// node, mirroring `findOwningFileId`. Returns `""` for interface method
+    /// param/result structs (their `scope_id` is 0, so they have no walkable
+    /// parent) — those are qualified via `resolveMethodStructName` instead.
+    /// Caller owns the returned slice.
+    fn parentScopePath(self: *Generator, id: schema.Id) ![]const u8 {
+        var segments = std.ArrayList([]const u8).empty;
+        defer {
+            for (segments.items) |seg| self.allocator.free(seg);
+            segments.deinit(self.allocator);
+        }
+
+        const start = self.getNode(id) orelse return self.allocator.dupe(u8, "");
+        // Interfaces are emitted flat at file scope (not nested under their
+        // parent), because a nested interface's Server/Client/VTable/… would be
+        // shadowed by the parent's. They are therefore referenced by bare name.
+        if (start.kind == .interface) return self.allocator.dupe(u8, "");
+        var current_id = start.scope_id;
+        var depth: u32 = 0;
+        while (depth < 64) : (depth += 1) {
+            const node = self.getNode(current_id) orelse break;
+            if (node.kind == .file) break;
+            const simple = self.getSimpleName(node);
+            const zig_name = try types.normalizeAndEscapeTypeIdentifier(self.allocator, simple);
+            try segments.append(self.allocator, zig_name);
+            if (node.scope_id == current_id) break; // self-referential guard
+            current_id = node.scope_id;
+        }
+
+        if (segments.items.len == 0) return self.allocator.dupe(u8, "");
+
+        // `segments` is child-to-root; emit root-to-child joined with '.'.
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(self.allocator);
+        var i: usize = segments.items.len;
+        while (i > 0) {
+            i -= 1;
+            try out.appendSlice(self.allocator, segments.items[i]);
+            if (i > 0) try out.append(self.allocator, '.');
+        }
+        return out.toOwnedSlice(self.allocator);
+    }
+
     /// Return the import module name for a type if it belongs to a different file,
     /// or null if it belongs to the current file.
     fn typeModulePrefix(self: *Generator, type_id: schema.Id) !?[]const u8 {
@@ -2242,17 +2389,30 @@ pub const Generator = struct {
         return prefix;
     }
 
-    /// Resolve a type name, qualifying with module prefix if it's from another file.
+    /// Resolve a type name to its full Zig path: `[module.][Parent.….]Simple`.
+    /// A same-file, file-scoped type yields just `Simple` (byte-identical to the
+    /// pre-nesting behavior); a nested type yields the dotted scope path from the
+    /// file root (`Outer1.Inner`), cross-file prefixed with the import module.
     fn qualifiedTypeName(self: *Generator, id: schema.Id) ![]const u8 {
         const node = self.getNode(id) orelse return try self.allocator.dupe(u8, "void");
         const simple_name = self.getSimpleName(node);
         const zig_name = try types.normalizeAndEscapeTypeIdentifier(self.allocator, simple_name);
+        defer self.allocator.free(zig_name);
 
-        if (try self.typeModulePrefix(id)) |prefix| {
-            defer self.allocator.free(zig_name);
-            return std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, zig_name });
+        const parent = try self.parentScopePath(id);
+        defer self.allocator.free(parent);
+        const module = try self.typeModulePrefix(id); // borrowed; do not free
+
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(self.allocator);
+        if (module) |m| try out.appendSlice(self.allocator, m);
+        if (parent.len > 0) {
+            if (out.items.len > 0) try out.append(self.allocator, '.');
+            try out.appendSlice(self.allocator, parent);
         }
-        return zig_name;
+        if (out.items.len > 0) try out.append(self.allocator, '.');
+        try out.appendSlice(self.allocator, zig_name);
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn toSnakeCaseLower(self: *Generator, name: []const u8) ![]u8 {
@@ -2303,6 +2463,19 @@ pub const Generator = struct {
         return generator.typeModulePrefix(id);
     }
 
+    /// Adapter for struct_gen's `parent_path_fn`: returns the owned parent-scope
+    /// path for a nested type, or null (never an empty string) for a file-scoped
+    /// type, so the caller frees exactly when a path is present.
+    fn lookupParentPath(ctx: ?*anyopaque, id: schema.Id) std.mem.Allocator.Error!?[]const u8 {
+        const generator: *Generator = @ptrCast(@alignCast(ctx.?));
+        const path = try generator.parentScopePath(id);
+        if (path.len == 0) {
+            generator.allocator.free(path);
+            return null;
+        }
+        return path;
+    }
+
     fn typeNameForConst(self: *Generator, typ: schema.Type) ![]const u8 {
         if (types.primitiveTypeToZig(typ)) |prim| return try self.allocator.dupe(u8, prim);
         return switch (typ) {
@@ -2310,7 +2483,7 @@ pub const Generator = struct {
             .@"enum" => |enum_info| blk: {
                 if (self.getNode(enum_info.type_id)) |node| {
                     if (node.kind == .@"enum") {
-                        break :blk try self.allocTypeDeclName(node);
+                        break :blk try self.qualifiedTypeName(enum_info.type_id);
                     }
                 }
                 break :blk try self.allocator.dupe(u8, "u16");
@@ -2612,7 +2785,7 @@ pub const Generator = struct {
     fn structTypeName(self: *Generator, id: schema.Id) !?[]const u8 {
         const node = self.getNode(id) orelse return null;
         if (node.kind != .@"struct") return null;
-        return try self.allocTypeDeclName(node);
+        return try self.qualifiedTypeName(id);
     }
 
     fn writeByteArray(self: *Generator, writer: anytype, prefix: []const u8, data: []const u8, suffix: []const u8) !void {

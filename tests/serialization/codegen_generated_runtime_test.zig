@@ -664,3 +664,29 @@ test "Codegen union member getters check the discriminant" {
         \\
     );
 }
+
+test "Codegen parent-qualified nesting resolves same-name collisions" {
+    const allocator = std.testing.allocator;
+
+    // Two structs each with a nested `Inner`/`Color`, and two interfaces each
+    // with a `doIt` method: before parent-qualified codegen this aborted with
+    // error.DuplicateGeneratedName. Compiling the harness is itself the proof;
+    // the assertions document the distinct nested identities.
+    try runGeneratedHarness(allocator, "tests/test_schemas/nested_collisions.capnp",
+        \\const std = @import("std");
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "same-name nested types across parents are distinct" {
+        \\    try std.testing.expect(generated.Outer1.Inner != generated.Outer2.Inner);
+        \\    try std.testing.expect(generated.Outer1.Color != generated.Outer2.Color);
+        \\    try std.testing.expect(generated.Svc1.DoItParams != generated.Svc2.DoItParams);
+        \\    // The method alias resolves to the nested definition.
+        \\    try std.testing.expect(generated.Svc1.DoIt.Params == generated.Svc1.DoItParams);
+        \\    // Force analysis of a nested-in-struct type's Reader/Builder, whose
+        \\    // self-references must be disambiguated from the parent's.
+        \\    _ = generated.Outer1.Inner.Reader;
+        \\    _ = generated.Outer2.Inner.Builder;
+        \\}
+        \\
+    );
+}
