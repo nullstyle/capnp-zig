@@ -18,7 +18,7 @@ import (
 func main() {
 	host := flag.String("host", "0.0.0.0", "listen host")
 	port := flag.Int("port", 4001, "listen port")
-	schema := flag.String("schema", "gameworld", "schema to serve: gameworld, chat, inventory, matchmaking")
+	schema := flag.String("schema", "gameworld", "schema to serve: gameworld, chat, inventory, matchmaking, resolve_disembargo")
 	flag.Parse()
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
@@ -67,6 +67,8 @@ func handleConn(c net.Conn, schema string) {
 		bootstrap = capnp.Client(servers.NewInventoryServiceClient())
 	case "matchmaking":
 		bootstrap = capnp.Client(servers.NewMatchmakingServiceClient())
+	case "resolve_disembargo":
+		bootstrap = capnp.Client(servers.NewReflectorClient())
 	default:
 		log.Printf("unknown schema: %s", schema)
 		return

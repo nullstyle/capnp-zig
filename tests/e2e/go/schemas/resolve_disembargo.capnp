@@ -1,5 +1,9 @@
 @0xa1b2c3d4e5f60007;
 
+using Go = import "/go.capnp";
+$Go.package("resolve_disembargo");
+$Go.import("e2e-rpc-test/internal/resolve_disembargo");
+
 # Reflected-capability resolve/disembargo scenario.
 #
 # Exercises the Cap'n Proto embargo handshake end to end across implementations:

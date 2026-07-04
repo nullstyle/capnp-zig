@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	capnp "capnproto.org/go/capnp/v3"
@@ -17,6 +18,7 @@ import (
 	"e2e-rpc-test/internal/gameworld"
 	"e2e-rpc-test/internal/inventory"
 	"e2e-rpc-test/internal/matchmaking"
+	"e2e-rpc-test/internal/resolve_disembargo"
 )
 
 // Suppress unused import warning for capnp.
@@ -40,7 +42,7 @@ func tap(ok bool, desc string) {
 func main() {
 	host := flag.String("host", "127.0.0.1", "server host")
 	port := flag.Int("port", 4001, "server port")
-	schema := flag.String("schema", "gameworld", "schema to test: gameworld, chat, inventory, matchmaking")
+	schema := flag.String("schema", "gameworld", "schema to test: gameworld, chat, inventory, matchmaking, resolve_disembargo")
 	flag.Parse()
 
 	addr := fmt.Sprintf("%s:%d", *host, *port)
@@ -65,6 +67,8 @@ func main() {
 		testInventory(ctx, rpcConn)
 	case "matchmaking":
 		testMatchmaking(ctx, rpcConn)
+	case "resolve_disembargo":
+		testResolveDisembargo(ctx, rpcConn)
 	default:
 		log.Fatalf("unknown schema: %s", *schema)
 	}
@@ -813,4 +817,137 @@ func testMatchmaking(ctx context.Context, rpcConn *rpc.Conn) {
 		return
 	}
 	tap(resultRes.Status() == gametypes.StatusCode_notFound, "getMatchResult returns notFound for unknown match")
+}
+
+// ---------------------------------------------------------------------------
+// resolve_disembargo scenario (Go-client -> reflecting-server direction).
+//
+// This is the CALLER side of the reflected-cap resolve/embargo cycle. We host
+// our own CallSequence, hand it to the reflector's reflect(), pipeline a
+// getNumber on the returned (still-unresolved) promise so it PARKS at the
+// reflector, then call resolveNow() to make the reflector resolve the promise
+// back to our CallSequence. That reflected resolution forwards the parked call
+// home and runs the senderLoopback -> receiverLoopback Disembargo before we
+// issue a DIRECT getNumber on the now-resolved cap.
+//
+// Assertions prove: reflect returned a promise; the pipelined getNumber reached
+// our CallSequence and returned n==0; resolveNow completed; the direct
+// getNumber returned n==1; and the two calls arrived in order (pipelined
+// strictly before direct) — i.e. the embargo held the reflected cap until the
+// Disembargo round-trip cleared, so no reordering occurred.
+// ---------------------------------------------------------------------------
+
+// callSequenceServer is the client-hosted CallSequence: getNumber() returns a
+// per-connection monotonic counter (0, then 1, ...) and stamps the counter
+// value at which each call arrived, so the test can assert the pipelined call
+// reached us strictly before the direct call.
+type callSequenceServer struct {
+	mu       sync.Mutex
+	counter  uint32
+	seen     uint32
+	call0Seq int64 // arrival stamp of the first getNumber, -1 until seen
+	call1Seq int64 // arrival stamp of the second getNumber, -1 until seen
+}
+
+func newCallSequenceServer() *callSequenceServer {
+	return &callSequenceServer{call0Seq: -1, call1Seq: -1}
+}
+
+func (s *callSequenceServer) GetNumber(ctx context.Context, call resolve_disembargo.CallSequence_getNumber) error {
+	res, err := call.AllocResults()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	n := s.counter
+	switch s.seen {
+	case 0:
+		s.call0Seq = int64(n)
+	case 1:
+		s.call1Seq = int64(n)
+	}
+	s.seen++
+	s.counter++
+	s.mu.Unlock()
+
+	res.SetN(n)
+	return nil
+}
+
+func (s *callSequenceServer) snapshot() (call0, call1 int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.call0Seq, s.call1Seq
+}
+
+var _ resolve_disembargo.CallSequence_Server = (*callSequenceServer)(nil)
+
+func testResolveDisembargo(ctx context.Context, rpcConn *rpc.Conn) {
+	reflector := resolve_disembargo.Reflector(rpcConn.Bootstrap(ctx))
+	defer reflector.Release()
+
+	// Host our own CallSequence and hand it to reflect() as `target`.
+	seq := newCallSequenceServer()
+	self := resolve_disembargo.CallSequence_ServerToClient(seq)
+	defer self.Release()
+
+	// reflect(target = our own CallSequence). The reflector imports and retains
+	// our CallSequence, exports an unresolved promise, and returns it as
+	// `promise` — without resolving it yet.
+	reflectFut, releaseReflect := reflector.Reflect(ctx, func(p resolve_disembargo.Reflector_reflect_Params) error {
+		return p.SetTarget(self.AddRef())
+	})
+	defer releaseReflect()
+
+	// The `promise` result is a pipelinable, still-unresolved CallSequence. We do
+	// NOT wait for reflect() to return before pipelining on it.
+	promise := reflectFut.Promise()
+	tap(promise.IsValid(), "reflect returns imported promise capability")
+
+	// Pipeline a getNumber on the (still unresolved) promise. It PARKS at the
+	// reflector because the promise has no target yet. We issue it before calling
+	// resolveNow, so it is in flight (parked) when resolution fires.
+	pipelinedFut, releasePipelined := promise.GetNumber(ctx, nil)
+	defer releasePipelined()
+
+	// Now tell the reflector to resolve the promise to our CallSequence. This
+	// forwards the parked getNumber home and drives the Disembargo handshake.
+	resolveFut, releaseResolve := reflector.ResolveNow(ctx, nil)
+	defer releaseResolve()
+
+	// The parked pipelined getNumber is forwarded back to our OWN CallSequence
+	// when the reflector resolves the promise. Its result (n==0) travels back
+	// once the reflected call completes.
+	pipelinedRes, err := pipelinedFut.Struct()
+	if err != nil {
+		tap(false, fmt.Sprintf("pipelined getNumber completes: %v", err))
+		return
+	}
+	tap(pipelinedRes.N() == 0, "pipelined getNumber reached CallSequence with n==0")
+
+	// resolveNow() returns empty results (); waiting on it confirms it completed.
+	if _, err := resolveFut.Struct(); err != nil {
+		tap(false, fmt.Sprintf("resolveNow completes: %v", err))
+		return
+	}
+	tap(true, "resolveNow completed")
+
+	// Issue a DIRECT getNumber on the now-resolved promise. The embargo held the
+	// reflected cap until the Disembargo round-trip cleared, so this direct call
+	// is delivered to our CallSequence strictly AFTER the pipelined one.
+	directFut, releaseDirect := promise.GetNumber(ctx, nil)
+	defer releaseDirect()
+
+	directRes, err := directFut.Struct()
+	if err != nil {
+		tap(false, fmt.Sprintf("direct getNumber completes: %v", err))
+		return
+	}
+	tap(directRes.N() == 1, "direct getNumber returned n==1")
+
+	// Ordering: the pipelined getNumber reached our CallSequence strictly before
+	// the post-embargo direct getNumber.
+	call0, call1 := seq.snapshot()
+	ordered := call0 >= 0 && call1 >= 0 && call0 < call1
+	tap(ordered, "pipelined getNumber reached CallSequence before the direct call")
 }
