@@ -2,7 +2,9 @@
 
 This guide walks you through defining a Cap'n Proto RPC interface and building a working client-server application in Zig. It assumes you've read the [serialization guide](getting-started-serialization.md).
 
-> **Status:** The RPC runtime is experimental. The API may change.
+Every Zig snippet in this guide is compile-gated: `tests/docs/rpc_getting_started_snippets_test.zig` compiles them against the real library and the real generated modules (`zig build test-docs-snippets`), and the quickstart halves are additionally run against each other over a loopback socket. If a snippet here drifts from the shipped API, that build step fails.
+
+> **Status:** The RPC runtime is in production hardening (phase 7). The API documented here is the current supported surface; breaking changes are recorded in the [migration guide](rpc-migration-guide.md).
 
 ## Prerequisites
 
@@ -12,415 +14,393 @@ This guide walks you through defining a Cap'n Proto RPC interface and building a
 
 ## 1. Define Your Interface
 
-Create `calculator.capnp`:
+The repo's ping-pong example (`examples/pingpong.capnp`) is the minimal shape:
 
 ```capnp
-@0xb6a52c8e4b3d7f01;
+@0xa2f1c9c38d1c7b14;
 
-interface Calculator {
-  add @0 (a :Int32, b :Int32) -> (result :Int32);
-  multiply @1 (a :Int32, b :Int32) -> (result :Int32);
+interface PingPong {
+  ping @0 (count :UInt32) -> (count :UInt32);
 }
 ```
 
 Each method has:
-- An **ordinal** (`@0`, `@1`) — the method ID on the wire
+- An **ordinal** (`@0`) — the method ID on the wire
 - **Parameters** — compiled into a `Params` struct
 - **Results** — compiled into a `Results` struct
 
 ## 2. Generate Zig Code
 
 ```bash
-capnp compile -o ./zig-out/bin/capnpc-zig calculator.capnp
+capnp compile -o ./zig-out/bin/capnpc-zig pingpong.capnp
 ```
 
-This generates `calculator.zig` containing:
+To run codegen from your own `build.zig` and import the generated module, follow [build-integration.md](build-integration.md) — this guide assumes the generated file is importable as `@import("pingpong")`.
 
-```zig
-pub const Calculator = struct {
-    pub const interface_id: u64 = 0x...;
+The generated `pingpong.zig` (checked in at `examples/pingpong.zig`) contains, per interface:
 
-    // Method enum
-    pub const Method = enum(u16) { Add = 0, Multiply = 1 };
+- **`PingPong.Client`** — a small by-value handle (`peer` + capability id) with one `callX` method per interface method, plus `fromBootstrap` to obtain the remote's root capability and `release()` to drop the import ref this client owns.
+- **`PingPong.Server` + `PingPong.VTable`** — implement methods locally; one handler function pointer per method.
+- **`PingPong.Ping.Response`** — a union over every possible `Return`, with an `unwrap()` method that collapses it to `rpc.peer.CallError!Results.Reader`.
+- **`PingPong.BootstrapResponse`** — the same shape for bootstrap, unwrapping to a `Client`.
+- **`PingPong.PipelinedClient`** — call methods on a *promised* capability before its `Return` arrives (see [Typed pipelining](#typed-pipelining)).
+- **`PingPong.setBootstrap(peer, server)` / `PingPong.exportServer(peer, server)`** — register a server as the connection's root capability, or export it as an additional capability.
 
-    // Per-method types (for each method: Add, Multiply)
-    pub const Add = struct {
-        pub const Params = AddParams;
-        pub const Results = AddResults;
-        pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
-        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
-        pub const Response = union(enum) {
-            results: Results.Reader,
-            exception: rpc.wire.protocol.Exception,
-            canceled,
-            // ...
-        };
-        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
-    };
+## 3. The Server Half
 
-    // Client — for making outbound calls
-    pub const Client = struct {
-        pub fn callAdd(self: *Client, ctx: *anyopaque, build: ?Add.BuildFn, on_return: Add.Callback) !u32 { ... }
-        pub fn callMultiply(self: *Client, ctx: *anyopaque, build: ?Multiply.BuildFn, on_return: Multiply.Callback) !u32 { ... }
-        pub fn fromBootstrap(peer: *rpc.peer.Peer, ctx: *anyopaque, callback: BootstrapCallback) !u32 { ... }
-    };
-
-    // Server — for handling inbound calls
-    pub const Server = struct {
-        ctx: *anyopaque,
-        vtable: VTable,
-    };
-
-    pub const VTable = struct {
-        add: Add.Handler,
-        multiply: Multiply.Handler,
-    };
-
-    pub fn setBootstrap(peer: *rpc.peer.Peer, server: *Server) !u32 { ... }
-    pub fn exportServer(peer: *rpc.peer.Peer, server: *Server) !u32 { ... }
-};
-
-// Auto-generated param/result structs
-pub const AddParams = struct {
-    pub const Reader = struct { pub fn getA(self: Reader) !i32 { ... } ... };
-    pub const Builder = struct { pub fn setA(self: *Builder, value: i32) !void { ... } ... };
-};
-pub const AddResults = struct { ... };
-// ...
-```
-
-The key generated pieces are:
-- **`Client`** — call remote methods; each method gets a `callMethodName()` function
-- **`Server` + `VTable`** — implement methods locally; fill in one handler per method
-- **`BootstrapResponse`** — union returned when you first connect and request the remote's root capability
-
-## 3. Implement the Server
-
-A server implements the VTable — one function per interface method:
-
-```zig
-const calculator = @import("calculator");
-const Calculator = calculator.Calculator;
-
-fn handleAdd(
-    ctx_ptr: *anyopaque,
-    _: *rpc.peer.Peer,
-    params: Calculator.Add.Params.Reader,
-    results: *Calculator.Add.Results.Builder,
-    _: *const rpc.caps.table.InboundCapTable,
-) anyerror!void {
-    _ = ctx_ptr;
-    const a = try params.getA();
-    const b = try params.getB();
-    try results.setResult(a + b);
-}
-
-fn handleMultiply(
-    ctx_ptr: *anyopaque,
-    _: *rpc.peer.Peer,
-    params: Calculator.Multiply.Params.Reader,
-    results: *Calculator.Multiply.Results.Builder,
-    _: *const rpc.caps.table.InboundCapTable,
-) anyerror!void {
-    _ = ctx_ptr;
-    const a = try params.getA();
-    const b = try params.getB();
-    try results.setResult(a * b);
-}
-```
-
-Each handler:
-- Reads parameters from `params` (a `Reader`)
-- Writes results into `results` (a `*Builder`)
-- Is called synchronously by the RPC runtime when a matching inbound call arrives
-- Can return an error, which the runtime converts to an RPC exception sent back to the caller
-
-## 4. Set Up the RPC Runtime
-
-The RPC runtime uses `std.Io` with a concurrent read/write transport. Each
-connection is driven by calling `Connection.run()` on its owning thread; outbound
-writes are drained by the transport writer.
+A server implements the vtable — one function per interface method. Handlers read `params`, write `results`, and run synchronously on the connection's thread when an inbound call arrives; returning an error sends an RPC exception back to the caller:
 
 ```zig
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
+const pingpong = @import("pingpong");
 
 const rpc = capnpc.rpc;
-const calculator = @import("calculator");
-const Calculator = calculator.Calculator;
+const PingPong = pingpong.PingPong;
 
-var g_state: ?*State = null;
-
-const State = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    done: bool = false,
-    err: ?anyerror = null,
-    server_peer: ?*rpc.peer.Peer = null,
-    client_peer: ?*rpc.peer.Peer = null,
-};
-
-fn onPeerError(peer: *rpc.peer.Peer, err: anyerror) void {
-    _ = peer;
-    if (g_state) |state| {
-        state.err = err;
-        state.done = true;
-    }
-}
-
-fn onPeerClose(peer: *rpc.peer.Peer) void {
-    _ = peer;
-    if (g_state) |state| state.done = true;
+fn handlePing(
+    _: *anyopaque,
+    _: *rpc.peer.Peer,
+    params: PingPong.Ping.Params.Reader,
+    results: *PingPong.Ping.Results.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) anyerror!void {
+    const value = try params.getCount();
+    try results.setCount(value + 1);
 }
 ```
 
-### Start a listener (server side)
+The server side still wires `Listener`/`Connection`/`Peer` by hand (a server-session bundle analogous to `ClientSession` has not shipped yet). Accept a connection, attach a peer, register the bootstrap capability, and drive the connection until it closes:
 
 ```zig
-const ServerCtx = struct {
-    listener: rpc.transport.tcp.Listener,
-    server: Calculator.Server,
-};
-
-fn serverThread(server_ctx: *ServerCtx, state: *State) void {
-    const conn = server_ctx.listener.accept() catch |err| {
-        state.err = err;
-        state.done = true;
-        return;
-    };
-
-    const peer = state.allocator.create(rpc.peer.Peer) catch {
-        state.err = error.OutOfMemory;
-        state.done = true;
-        return;
-    };
-    peer.* = rpc.peer.Peer.init(state.allocator, conn);
-    state.server_peer = peer;
-
-    // Register the Calculator as the bootstrap capability
-    _ = Calculator.setBootstrap(peer, &server_ctx.server) catch |err| {
-        state.err = err;
-        state.done = true;
-        return;
-    };
-
-    peer.start(onPeerError, onPeerClose);
-    conn.run();
+fn onServerPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, _: anyerror) void {
+    // A peer error means the transport is done; close it so run() unwinds.
+    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
-pub fn main(init: std.process.Init) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer std.debug.assert(gpa.deinit() == .ok);
-    const allocator = gpa.allocator();
+/// Accept one connection and serve it until the client disconnects.
+fn serveOne(listener: *rpc.transport.tcp.Listener, server: *PingPong.Server) void {
+    const conn = listener.accept() catch return; // heap-allocated Connection
+    const allocator = conn.allocator;
 
-    var backend = try capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
-    defer backend.deinit();
-    const io = backend.io();
-
-    var state = State{ .allocator = allocator, .io = io };
-    g_state = &state;
-
-    const addr: std.Io.net.IpAddress = .{ .ip4 = .{
-        .bytes = .{ 127, 0, 0, 1 },
-        .port = 7001,
-    } };
-
-    var server_ctx = ServerCtx{
-        .server = Calculator.Server{
-            .ctx = &state,
-            .vtable = .{
-                .add = handleAdd,
-                .multiply = handleMultiply,
-            },
-        },
-        .listener = try rpc.transport.tcp.Listener.init(allocator, io, addr, .{}),
+    const peer = allocator.create(rpc.peer.Peer) catch {
+        conn.deinit();
+        allocator.destroy(conn);
+        return;
     };
-    defer server_ctx.listener.close();
+    peer.* = rpc.peer.Peer.init(allocator, conn);
 
-    const server_thread = try std.Thread.spawn(.{}, serverThread, .{ &server_ctx, &state });
-    defer server_thread.join();
+    if (PingPong.setBootstrap(peer, server)) |_| {
+        peer.start(null, onServerPeerError, null);
+        conn.run(); // blocks until the connection closes
+    } else |_| {}
 
-    // ... connect a client, bootstrap, then drive that connection with run() ...
+    // Teardown — legal ONLY after run() has returned (or was never called):
+    // detach first, then peer, then connection.
+    _ = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
+    peer.deinit();
+    allocator.destroy(peer);
+    conn.deinit();
+    allocator.destroy(conn);
 }
 ```
 
-## 5. Connect a Client
+Bind the listener and hand it a server value:
 
-The client connects via TCP, then requests the **bootstrap capability** — the root interface the server offers:
+```zig
+fn startServer(allocator: std.mem.Allocator, io: std.Io) !void {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 7001);
+    var listener = try rpc.transport.tcp.Listener.init(allocator, io, address, .{});
+    defer listener.close();
+
+    var server = PingPong.Server{
+        .ctx = undefined, // passed as the first argument to every handler
+        .vtable = .{ .ping = handlePing },
+    };
+
+    serveOne(&listener, &server);
+}
+```
+
+`io` is a `std.Io` instance. In a `main(init: std.process.Init)` entry point the simplest source is the process-provided one, via this repo's backend selector:
+
+```zig
+fn setupBackend(init: std.process.Init) !capnpc.io_backend.Backend {
+    // .process_init reuses init.io; .threaded / .evented construct their own.
+    return capnpc.io_backend.Backend.init(.process_init, init.gpa, init.io);
+}
+```
+
+then `const io = backend.io();` (and `defer backend.deinit();`). See `examples/rpc_pingpong.zig` for the complete program.
+
+## 4. The Client Half
+
+The client side is one call: `rpc.transport.tcp.connect` returns a heap-owned `*ClientSession` that bundles the `Connection` and `Peer` and encapsulates the whole teardown ordering.
+
+```zig
+const ClientState = struct {
+    result: ?u32 = null,
+    err: ?anyerror = null,
+};
+
+fn runClient(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+    state: *ClientState,
+) !void {
+    const session = try rpc.transport.tcp.connect(allocator, io, address, .{});
+    defer session.deinit(); // legal here: runs after session.run() returns
+
+    // Request the remote's root capability. Calls are legal immediately —
+    // outbound frames enqueue; nothing reads the socket until run().
+    _ = try PingPong.Client.fromBootstrap(&session.peer, state, onBootstrap);
+
+    session.run(); // blocks; every callback fires on this thread
+
+    if (state.err) |err| return err;
+}
+```
+
+The bootstrap callback unwraps the response into a typed `Client` and issues the first call. Inside generated callbacks you get a `*rpc.peer.Peer`; `ClientSession.fromPeer` recovers the owning session:
 
 ```zig
 fn onBootstrap(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
-    response: Calculator.BootstrapResponse,
+    response: PingPong.BootstrapResponse,
 ) anyerror!void {
-    const state: *State = @ptrCast(@alignCast(ctx_ptr));
-    switch (response) {
-        .client => |client| {
-            // We now have a Calculator.Client — make a call
-            var c = client;
-            const call_ctx = try peer.allocator.create(CallCtx);
-            call_ctx.* = .{ .state = state };
-            _ = try c.callAdd(call_ctx, buildAdd, onAddReturn);
-        },
-        .exception => return error.BootstrapFailed,
-        else => return error.UnexpectedResponse,
-    }
+    const state: *ClientState = @ptrCast(@alignCast(ctx_ptr));
+    const client = response.unwrap() catch |err| {
+        state.err = err;
+        rpc.transport.tcp.ClientSession.fromPeer(peer).close();
+        return;
+    };
+    _ = try client.callPing(state, buildPing, onPingReturn);
 }
 ```
 
-Initiate the connection after opening a TCP socket:
+## 5. Making Calls
+
+Each call takes a context pointer and two callbacks: a **build function** that populates the parameters before the message is sent, and a **return callback** that fires when the `Return` arrives. `callX` returns the question id (useful for [per-call deadlines](#timeouts) and [cancellation](#cancellation)); the context must stay alive until the return callback has fired.
 
 ```zig
-const conn = try allocator.create(rpc.transport.tcp.Connection);
-conn.* = try rpc.transport.tcp.Connection.init(allocator, io, socket_fd, .{});
-
-const peer = try allocator.create(rpc.peer.Peer);
-peer.* = rpc.peer.Peer.init(allocator, conn);
-
-peer.start(onPeerError, onPeerClose);
-
-// Request the bootstrap capability
-_ = try Calculator.Client.fromBootstrap(peer, &state, onBootstrap);
-
-// Drive inbound frames until the connection closes.
-conn.run();
-```
-
-## 6. Make RPC Calls
-
-Each call has two callbacks:
-
-1. **Build function** — populates the parameters before the message is sent
-2. **Return callback** — handles the response when it arrives
-
-```zig
-const CallCtx = struct { state: *State };
-
-// Called by the runtime to build the outgoing parameters
-fn buildAdd(ctx_ptr: *anyopaque, params: *Calculator.Add.Params.Builder) anyerror!void {
-    _ = ctx_ptr;
-    try params.setA(40);
-    try params.setB(2);
+fn buildPing(_: *anyopaque, params: *PingPong.Ping.Params.Builder) anyerror!void {
+    try params.setCount(41);
 }
 
-// Called when the server's response arrives
-fn onAddReturn(
+fn onPingReturn(
     ctx_ptr: *anyopaque,
     peer: *rpc.peer.Peer,
-    response: Calculator.Add.Response,
+    response: PingPong.Ping.Response,
     _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
-    const ctx: *CallCtx = @ptrCast(@alignCast(ctx_ptr));
-    defer peer.allocator.destroy(ctx);
+    const state: *ClientState = @ptrCast(@alignCast(ctx_ptr));
+    const session = rpc.transport.tcp.ClientSession.fromPeer(peer);
+    defer session.close(); // graceful close; idempotent; legal from callbacks
 
-    switch (response) {
-        .results => |results| {
-            const result = try results.getResult();
-            std.debug.print("40 + 2 = {d}\n", .{result});  // "40 + 2 = 42"
-        },
-        .exception => |ex| {
-            std.debug.print("RPC error: {s}\n", .{ex.reason});
-        },
-        else => return error.UnexpectedResponse,
-    }
-
-    // Done — close the connection
-    ctx.state.done = true;
-    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
+    const results = response.unwrap() catch |err| {
+        state.err = err;
+        return;
+    };
+    state.result = try results.getCount();
 }
 ```
 
-Then trigger the call from the bootstrap handler:
+### `unwrap()` and `rpc.peer.CallError`
+
+`Response.unwrap()` collapses the six-arm `Response` union into `rpc.peer.CallError!Results.Reader` (`BootstrapResponse.unwrap()` does the same, yielding a `Client`). The mapping:
+
+| `Return` received | `unwrap()` yields | Notes |
+|---|---|---|
+| results | `Results.Reader` | Success. |
+| exception, reason == `rpc.peer.disconnected_reason` (`"disconnected"`) | `error.Disconnected` | Locally synthesized: transport closed / peer shut down / peer deinit. |
+| exception, reason == `rpc.peer.shutdown_reason` (`"peer shutting down"`) | `error.Disconnected` | Locally synthesized when the graceful-shutdown drain bound expires. |
+| exception, reason == `rpc.peer.deadline_reason` (`"deadline exceeded"`) | `error.CallTimedOut` | Locally synthesized by deadline expiry. |
+| exception, any other reason | `error.RemoteException` | The reason string stays available on the union arm. |
+| canceled | `error.Canceled` | The remote confirmed a cancellation we initiated. |
+| resultsSentElsewhere / takeFromOtherQuestion / acceptFromThirdParty | `error.UnexpectedReturn` | Return arms the plain-call path never initiates. |
+
+When you need the remote's exception reason, it is still on the union arm after `unwrap()` fails:
 
 ```zig
-var client = calculator_client;  // from bootstrap response
-_ = try client.callAdd(call_ctx, buildAdd, onAddReturn);
-```
-
-## 7. Complete Flow
-
-Here's the sequence of events:
-
-```
-Server                          Client
-  |                               |
-  |  <-- TCP connect ------------ |
-  |                               |
-  |  <-- Bootstrap request ------ |
-  |  --- Bootstrap response ---->  |  (contains Calculator capability)
-  |                               |
-  |  <-- Call: add(40, 2) ------- |
-  |  --- Return: result=42 ----> |
-  |                               |
-  |  <-- connection close ------  |
-```
-
-## 8. Cleanup
-
-Always clean up peers and connections when done:
-
-```zig
-if (state.client_peer) |peer| {
-    peer.deinit();
-    allocator.destroy(peer);
+fn describeFailure(response: PingPong.Ping.Response) ?u32 {
+    const results = response.unwrap() catch |err| {
+        if (err == error.RemoteException) {
+            std.log.warn("remote exception: {s}", .{response.exception.reason});
+        }
+        return null;
+    };
+    return results.getCount() catch null;
 }
-if (state.client_conn) |conn| {
-    conn.deinit();
-    allocator.destroy(conn);
-}
-// Same for server peer and conn
 ```
 
-## Key Concepts
+## 6. Capability Lifecycle
 
-### Bootstrap Capability
-
-When a client connects, it requests the server's **bootstrap capability** — a single root interface that the server exports. This is the entry point for all subsequent RPC calls. Set it with `MyInterface.setBootstrap(peer, &server)`.
-
-### Callback Architecture
-
-The RPC runtime is fully async and callback-driven:
-- No async/await or coroutines
-- Build functions populate parameters synchronously before send
-- Return callbacks fire on the connection owner thread when responses arrive
-- Context pointers (`*anyopaque`) carry state between callbacks
-
-### Single-Threaded
-
-All operations on a `Peer` must happen on the connection owner thread. The
-runtime asserts this in debug builds. Do not share peers across threads.
-
-### VTable Pattern
-
-Server implementations use a vtable — a struct of function pointers, one per method:
+A successful `BootstrapResponse.unwrap()` (and every generated `resolveX` helper on results that carry an interface) **retains** an import ref that the returned `Client` owns. Release it when you are done with the capability:
 
 ```zig
-const server = Calculator.Server{
-    .ctx = &my_app_state,          // passed as first arg to handlers
-    .vtable = .{
-        .add = handleAdd,
-        .multiply = handleMultiply,
-    },
+const App = struct {
+    service: ?PingPong.Client = null,
 };
+
+fn dropService(app: *App) void {
+    if (app.service) |client| {
+        client.release(); // balances the bootstrap/resolve retain; at most once
+        app.service = null;
+    }
+}
 ```
 
-### Error Handling
+- `release()` is best-effort and must be called **at most once** per owned `Client`.
+- Forgetting it is not a local memory leak: peer teardown releases all imports as a backstop. What it does cost you is server-side resources — the remote keeps the export (and whatever it pins) alive until you release it or the connection closes.
+- Releasing one capability does not disturb others on the same connection; `tests/e2e/zig/main_client.zig` releases a sub-capability mid-session and keeps calling the service it came from.
 
-- If a handler returns an error, the runtime sends an RPC exception to the caller
-- Clients see the exception as the `.exception` variant in the `Response` union
-- Transport errors are reported via the `onPeerError` callback
+Interfaces can also be passed as method parameters or returned from methods; the runtime exports/imports them automatically. This is the foundation of Cap'n Proto's object-capability model.
 
-### Passing Capabilities
+## 7. Typed Pipelining
 
-Interfaces can be passed as method parameters or return values. When you return an interface from a method, the runtime automatically exports it and the remote peer gets a `Client` for it. This is the foundation of Cap'n Proto's object-capability security model.
+When a method returns a capability, the generated client offers `callXPipelined`, which returns a pipeline handle whose getters produce `PipelinedClient`s — typed clients that target the *promised* result of a question whose `Return` has not arrived yet. Dependent calls hit the wire back-to-back and the server answers them in E-order, saving a round trip per hop.
 
-## Running the Example
+From the e2e matchmaking schema (`tests/e2e/schemas/matchmaking.capnp`):
 
-The repo includes a complete ping-pong RPC example:
+```capnp
+findMatch @2 (player :PlayerInfo, mode :GameMode) -> (controller :MatchController, matchId :MatchId);
+```
+
+```zig
+fn findAndReady(app: *MatchApp, service: matchmaking.MatchmakingService.Client) !void {
+    // Send findMatch, then immediately call methods on the promised
+    // controller — before findMatch's Return has resolved.
+    const pipeline = try service.callFindMatchPipelined(app, buildFindMatch, onFindMatchReturn);
+    const promised = pipeline.getController();
+    _ = try promised.callSignalReady(app, buildSignalReady, onSignalReadyReturn);
+    _ = try promised.callGetInfo(app, null, onMatchInfoReturn);
+}
+```
+
+Each pipelined call has its own return callback and question id, exactly like a direct call. Once `findMatch`'s own `Return` arrives, resolve the now-concrete capability with the generated `resolveController(peer, caps)` helper and call it directly from then on — see the matchmaking scenario in `tests/e2e/zig/main_client.zig` for the full flow.
+
+## 8. Timeouts
+
+`ConnectOptions.default_call_timeout_ms` stamps a deadline on every outbound question at send time. It is **on by default: 30 seconds**. When it is enabled and you did not configure your own connection tick, `connect()` wires a 100ms tick automatically so deadlines actually fire. Pass `null` to disable both.
+
+```zig
+fn connectWithTimeouts(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+) !*rpc.transport.tcp.ClientSession {
+    return rpc.transport.tcp.connect(allocator, io, address, .{
+        // Deadline stamped on every call (default 30_000; null disables).
+        .default_call_timeout_ms = 10_000,
+        // Graceful close(): force-cancel still-outstanding questions after
+        // this drain bound (default 5_000).
+        .shutdown_drain_timeout_ms = 2_000,
+    });
+}
+```
+
+A timed-out question is cancelled with `rpc.peer.deadline_reason`, so its callback fires with an exception `Return` and `unwrap()` yields `error.CallTimedOut`.
+
+### Per-call override
+
+`callX` returns the question id; override (or set) the deadline for that one call with `Peer.setQuestionDeadline`:
+
+```zig
+fn pingWithShortDeadline(session: *rpc.transport.tcp.ClientSession, state: *ClientState, client: PingPong.Client) !void {
+    const qid = try client.callPing(state, buildPing, onPingReturn);
+    try session.peer.setQuestionDeadline(qid, 250); // this call only: 250ms
+}
+```
+
+`Peer.clearQuestionDeadline(qid)` removes a deadline. Both are session-thread-only, like every peer entry point.
+
+## 9. Cancellation
+
+Cancel an outstanding call with `Peer.cancelQuestion`. The local callback is delivered an exception `Return` carrying your reason immediately, and a `Finish` is sent so the remote can stop working; a late `Return` from the remote is absorbed silently.
+
+```zig
+fn abandonPing(session: *rpc.transport.tcp.ClientSession, qid: u32) !void {
+    try session.peer.cancelQuestion(qid, "user clicked cancel");
+}
+```
+
+Note the `unwrap()` mapping: your custom reason string arrives as `error.RemoteException` (with the reason on the union arm). `error.Canceled` is reserved for the case where the *remote* answers an earlier cancellation with `Return.canceled`.
+
+### Terminal callbacks are guaranteed
+
+You never have to time out on your own callback. Every outstanding question's `on_return` is guaranteed to fire **exactly once**, even when the answer can no longer arrive: transport close (EOF, error, or explicit close) and direct `Peer.deinit` both deliver a synthetic exception `Return` with `rpc.peer.disconnected_reason` (so `unwrap()` yields `error.Disconnected`) before `on_close` runs, while the peer is still intact. See "Terminal question failure on disconnect" in [rpc_runtime_design.md](rpc_runtime_design.md) for the precise contract.
+
+## 10. Shutdown and the Threading Contract
+
+The session is **thread-affine**: `connect`, calls, `run()`, `close()`, and `deinit()` all belong to one thread, and every callback fires inside `run()` on that thread (debug builds assert this). The two supported patterns are running the whole lifecycle on your own thread, or `connect` on thread A then `run()` on thread B — `run()` re-adopts affinity on entry, which is safe because nothing else may touch the session in between.
+
+```zig
+/// Graceful stop, from the session thread (e.g. inside any callback):
+fn stopGracefully(session: *rpc.transport.tcp.ClientSession) void {
+    session.close(); // idempotent; drains, then run() unwinds
+}
+
+/// Abort from ANY other thread — the single thread-safe entry point.
+/// No graceful drain; in-flight questions resolve as Disconnected.
+fn stopFromElsewhere(session: *rpc.transport.tcp.ClientSession) void {
+    session.requestStop();
+}
+```
+
+Lifecycle rules:
+
+- **`run()`** blocks until the transport has closed and `on_close` has fired.
+- **`close()`** — graceful, idempotent, session-thread only (callbacks run on the session thread, so calling it from a callback is legal).
+- **`requestStop()`** — the only cross-thread call on the whole session.
+- **`deinit()`** — legal **only after `run()` has returned** (or if it was never called). It encapsulates the one blessed teardown ordering.
+- **`on_error` / `on_close`** (from `ConnectOptions`) fire on the `run()` thread. `on_close` must **not** call `deinit()` — it runs *inside* `run()`. Their `ctx` must outlive the session:
+
+```zig
+fn onSessionError(ctx: ?*anyopaque, _: *rpc.transport.tcp.ClientSession, err: anyerror) void {
+    const state: *ClientState = @ptrCast(@alignCast(ctx.?));
+    if (state.err == null) state.err = err;
+}
+
+fn onSessionClose(_: ?*anyopaque, _: *rpc.transport.tcp.ClientSession) void {
+    // Last callback before run() returns. Observe, don't deinit.
+}
+
+fn connectWithCallbacks(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    address: std.Io.net.IpAddress,
+    state: *ClientState,
+) !*rpc.transport.tcp.ClientSession {
+    return rpc.transport.tcp.connect(allocator, io, address, .{
+        .ctx = state,
+        .on_error = onSessionError,
+        .on_close = onSessionClose,
+    });
+}
+```
+
+On the server side the same contract applies to the hand-wired pair: `Connection.run()` blocks on the owner thread, `Connection.requestClose()`/`wake()` are the thread-safe entry points, and peer/connection teardown is legal only after `run()` returns.
+
+## 11. Troubleshooting
+
+| Mistake | What actually happens |
+|---|---|
+| `session.deinit()` before `run()` has returned (e.g. from `on_close`, or from another thread while `run()` blocks) | Use-after-free: `run()` is still reading the connection you just freed. Typically a crash inside the read loop, or a DebugAllocator panic. `deinit()` only after `run()` returns; from callbacks use `close()`. |
+| Calling session/peer methods (calls, `close()`, `setQuestionDeadline`, ...) from another thread | Debug builds panic on the thread-affinity assertion; release builds are a data race. `requestStop()` is the only thread-safe call. |
+| Forgetting `client.release()` | No local leak — peer teardown releases all imports as a backstop — but the server keeps the export and everything it pins alive until the connection closes. |
+| Calling `release()` twice on the same owned `Client` | Over-releases the import ref; the remote may drop the export while other holders still use it. Release at most once, then null out your handle. |
+| Passing a stack `ctx` that dies before the return callback fires | Use-after-free when the callback dereferences it. The ctx must outlive the call (and `ConnectOptions.ctx` must outlive the session). |
+| Expecting timeouts after `default_call_timeout_ms = null` with no explicit `conn.tick_interval_ms` | Nothing sweeps deadlines — `setQuestionDeadline` stamps a deadline no tick ever checks, so calls never time out. Keep the default, or configure a tick. |
+| Waiting for a `Return` after the connection dropped | Does not hang: every outstanding question gets the synthetic Disconnected terminal exactly once ([see above](#terminal-callbacks-are-guaranteed)). If you observe a hang, the callback ordering bug is in application state, not a missing `Return`. |
+
+## Running the Examples
+
+The repo includes a complete ping-pong RPC example (both halves of this guide in one file):
 
 ```bash
 zig build example-rpc
 ```
 
-See `examples/rpc_pingpong.zig` for the full source and `examples/pingpong.capnp` for the schema.
+See `examples/rpc_pingpong.zig` for the source and `examples/pingpong.capnp` for the schema. For richer scenarios — sub-capabilities, mid-session release, and typed pipelining against reference peers — read `tests/e2e/zig/main_client.zig`.

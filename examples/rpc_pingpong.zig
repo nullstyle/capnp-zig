@@ -124,8 +124,12 @@ fn onBootstrap(
 // Client thread: connect, bootstrap, run
 // ---------------------------------------------------------------------------
 
-fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) void {
-    const session = rpc.transport.tcp.connect(std.heap.page_allocator, io, address, .{}) catch |err| {
+// Takes main's gpa: std.heap.DebugAllocator is thread-safe by default
+// (`config.thread_safe = !builtin.single_threaded`), so sharing one
+// allocator across the server/client threads is fine — and it keeps the
+// whole example under the leak assert in main.
+fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io, allocator: std.mem.Allocator) void {
+    const session = rpc.transport.tcp.connect(allocator, io, address, .{}) catch |err| {
         state.err = err;
         state.done = true;
         return;
@@ -175,7 +179,7 @@ pub fn main(init: std.process.Init) !void {
     const server_thread = try std.Thread.spawn(.{}, serverThread, .{ &listener, &server });
 
     var state = ClientState{};
-    const client_thread = try std.Thread.spawn(.{}, clientThread, .{ &state, address, io });
+    const client_thread = try std.Thread.spawn(.{}, clientThread, .{ &state, address, io, allocator });
     client_thread.join();
     server_thread.join();
 
