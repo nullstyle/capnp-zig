@@ -116,8 +116,10 @@ facade for narrow white-box coverage.
 
 capnpc-zig follows [Semantic Versioning 2.0.0](https://semver.org/).
 
-- The current version is **0.1.0**, indicating early development. All public
-  APIs may change between 0.x releases.
+- The current version is **0.2.0** — the first tagged release, still early
+  development. See [`supported-surface.md`](supported-surface.md) for the
+  authoritative consumer contract. All public APIs may change between 0.x
+  releases per the tiers above.
 - Within the 0.x series, **minor** bumps may include breaking changes to
   experimental modules. Stable modules will remain compatible within a minor
   version where possible, with breaking changes clearly documented in the

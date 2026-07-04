@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-04
+
+The first tagged release. Serialization, codegen, and the `capnpc-zig` plugin
+are Stable; the RPC runtime and transport are Experimental (may change at 0.x
+minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
+
 ### Added
 
+- **`docs/supported-surface.md`** — the authoritative v0.2.0 consumer contract:
+  module choice (`capnpc-zig` vs `capnpc-zig-core`), stability tiers, the frozen
+  `MessageValidationError` / `rpc.peer.CallError` error contract, declared RPC
+  conformance (Level 1; Level-3 receive-only), and the documented known
+  limitations.
+- **Remote-dependency onboarding**: `zig fetch --save git+…#v0.2.0` documented in
+  the README and `docs/build-integration.md`; `.paths` slimmed to the consumable
+  package (`build.zig`, `build.zig.zon`, `src`, `README.md`, `LICENSE`) — no
+  vendored submodules or dev trees in the published archive.
 - **`rpc.transport.tcp.ClientSession`** — one-call TCP client lifecycle:
   `connect(gpa, io, address, options)` / `connectHost(gpa, io, host, port,
   options)` return a heap-owned session bundling the `Connection` and `Peer`
@@ -24,6 +39,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Nested interfaces are parent-qualified in generated code**: a nested
+  interface now emits as `Parent.Inner` (with `Parent.Inner.Client` /
+  `.Server` / `.VTable`) instead of flat at file scope by bare name. Two
+  same-named nested interfaces under different parents — legal Cap'n Proto —
+  previously collided (`error.DuplicateGeneratedName`) and failed to compile;
+  they now generate distinct qualified types. File-scope interfaces are
+  unaffected (byte-identical generated output). This is the last generated
+  symbol-layout change before the v0.2.0 freeze.
+- **`Message.validate` / `validateCounted` return a declared error set**:
+  `message.Message.MessageValidationError` replaces the previous `anyerror`.
+  The set is compiler-enforced complete and pinned by a test.
 - **Serde manifest names and C export symbols are parent-qualified**: nested
   types render as `Parent.Child` in `CAPNP_SCHEMA_MANIFEST_JSON` and export
   `capnp_<module>_<parent>_<child>_to_json` (method param/result structs
@@ -367,3 +393,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
+
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nullstyle/capnp-zig/releases/tag/v0.2.0

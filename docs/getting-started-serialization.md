@@ -80,6 +80,11 @@ const capnpc_dep = b.dependency("capnpc_zig", .{
 exe.root_module.addImport("capnpc-zig", capnpc_dep.module("capnpc-zig-core"));
 ```
 
+> Serialization-only code uses `capnpc-zig-core`; code that also uses RPC uses
+> the full `capnpc-zig` module. See
+> [supported-surface.md](supported-surface.md#modules--which-to-import) for the
+> canonical module-choice rule.
+
 ## 4. Build a Message
 
 Every generated struct has a `Builder` type for writing and a `Reader` type for reading. Here's how to build a `Person` message:
