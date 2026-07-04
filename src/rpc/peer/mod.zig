@@ -254,9 +254,9 @@ fn msToNs(ms: u64) i64 {
 ///
 /// | Map | Key | Value | Purpose |
 /// |-----|-----|-------|---------|
-/// | `exports` | export ID | `ExportEntry` | Local capabilities offered to the remote peer. Ref-counted; removed on Release. |
+/// | `exports` | export ID | `ExportEntry` | Local capabilities offered to the remote peer. Ref-counted (wire refs from Release plus answer-held refs from recorded answers); removed when both counts reach zero. |
 /// | `questions` | question ID | `Question` | Outstanding outbound calls awaiting a Return. Removed when the Return arrives. |
-/// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Removed on Finish. |
+/// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Holds one answer-held reference per results export so pipeline targets survive an early Release. Removed on Finish, releasing those references. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
 /// | `forwarded_questions` | original answer ID | forwarded question ID | Maps an inbound call's answer ID to the question ID of the forwarded outbound call. |
@@ -284,7 +284,10 @@ fn msToNs(ms: u64) i64 {
 ///   within a single peer lifetime.
 /// * Each export ID has at most one entry in `exports`. The entry's
 ///   `ref_count` tracks how many times the remote peer has received the
-///   capability in a message payload.
+///   capability in a message payload; its `answer_ref_count` tracks how many
+///   recorded resolved answers carry it in their results. An inbound Release
+///   spends only wire refs, so a still-unfinished answer keeps its pipeline
+///   targets dispatchable regardless of how eagerly the remote releases.
 /// * A question is removed from `questions` when its Return is fully
 ///   handled, but its `resolved_answers` entry persists until Finish so
 ///   that PromisedAnswer references can be resolved.
@@ -2243,15 +2246,15 @@ pub const Peer = struct {
         // after the frame is on the wire, the error would drive the dispatch
         // catch to send a second exception Return for this answer (audit item 7).
         var reservation: ?ResolvedAnswerReservation = null;
-        errdefer if (reservation) |r| r.deinit(self.allocator);
-        if (should_record) reservation = try self.reserveResolvedAnswer(answer_id, bytes.len);
+        errdefer if (reservation) |r| r.deinit(self);
+        if (should_record) reservation = try self.reserveResolvedAnswer(answer_id, bytes);
 
         try self.sendReturnFrameWithLoopback(answer_id, bytes);
         cap_table.commitOutboundCapEffects(&self.caps, &effects);
         effects_committed = true;
 
         if (reservation) |r| {
-            self.commitReservedResolvedAnswer(answer_id, r, bytes);
+            self.commitReservedResolvedAnswer(answer_id, r);
             reservation = null;
         }
     }
@@ -2282,14 +2285,14 @@ pub const Peer = struct {
         // answer (audit item 7). A reserve failure here rolls the outbound cap
         // refs back (via rollback_outbound_refs) since nothing was sent yet.
         var reservation: ?ResolvedAnswerReservation = null;
-        errdefer if (reservation) |r| r.deinit(self.allocator);
-        if (should_record) reservation = try self.reserveResolvedAnswer(ret.answer_id, frame.len);
+        errdefer if (reservation) |r| r.deinit(self);
+        if (should_record) reservation = try self.reserveResolvedAnswer(ret.answer_id, frame);
 
         try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
         rollback_outbound_refs = false;
 
         if (reservation) |r| {
-            self.commitReservedResolvedAnswer(ret.answer_id, r, frame);
+            self.commitReservedResolvedAnswer(ret.answer_id, r);
             reservation = null;
         }
     }
@@ -2725,6 +2728,40 @@ pub const Peer = struct {
         entry.value_ptr.ref_count -= 1;
     }
 
+    fn noteAnswerExportRef(self: *Peer, id: u32) !void {
+        try peer_cap_lifecycle.noteAnswerExportRef(
+            ExportEntry,
+            &self.exports,
+            id,
+        );
+    }
+
+    fn rollbackAnswerExportRef(self: *Peer, id: u32) void {
+        var entry = self.exports.getEntry(id) orelse return;
+        if (entry.value_ptr.answer_ref_count == 0) return;
+        entry.value_ptr.answer_ref_count -= 1;
+    }
+
+    /// Release one answer-held reference on export `id` (the `count` from the
+    /// releaseResultCaps-style frame walk is always 1 per descriptor).
+    fn releaseAnswerHeldCap(self: *Peer, id: u32, count: u32) !void {
+        _ = count;
+        try peer_cap_lifecycle.releaseAnswerHeldExport(
+            Peer,
+            ExportEntry,
+            PendingCall,
+            self,
+            self.allocator,
+            &self.exports,
+            &self.pending_export_promises,
+            self.bootstrap_export_id,
+            id,
+            peer_cap_lifecycle.clearExportForPeerFn(Peer),
+            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+        );
+        if (!self.exports.contains(id)) self.dropPersistenceStateForRemovedExport(id);
+    }
+
     fn releaseExport(self: *Peer, id: u32, count: u32) !void {
         try peer_cap_lifecycle.releaseExport(
             Peer,
@@ -2870,6 +2907,20 @@ pub const Peer = struct {
             self.allocator,
             frame,
             Peer.releaseExport,
+        );
+    }
+
+    /// Release the answer-held references a recorded resolved answer took on
+    /// the exports in its results (see reserveResolvedAnswer). Same frame
+    /// walk as releaseResultCaps, but spending answer references, which an
+    /// inbound Release message can never touch.
+    fn releaseAnswerHeldResultCaps(self: *Peer, frame: []const u8) !void {
+        try peer_cap_lifecycle.releaseResultCaps(
+            Peer,
+            self,
+            self.allocator,
+            frame,
+            Peer.releaseAnswerHeldCap,
         );
     }
 
@@ -3116,6 +3167,8 @@ pub const Peer = struct {
             inboundQuestionIdInUse,
             noteExportRef,
             rollbackExportRef,
+            noteAnswerExportRef,
+            rollbackAnswerExportRef,
             sendReturnException,
             sendFrame,
             recordResolvedAnswer,
@@ -3167,6 +3220,7 @@ pub const Peer = struct {
             .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
             .send_finish = peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             .take_resolved_answer_frame = peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
+            .release_answer_caps_for_frame = releaseAnswerHeldResultCaps,
             .release_caps_for_frame = releaseResultCaps,
             .free_frame = peer_finish.freeOwnedFrameForPeerFn(Peer),
         };
@@ -3616,16 +3670,29 @@ pub const Peer = struct {
     /// cannot fail. See `reserveResolvedAnswer`.
     const ResolvedAnswerReservation = struct {
         frame_copy: []u8,
+        /// Exports on which the reservation took the answer-held reference
+        /// (one entry per results cap descriptor). deinit rolls the
+        /// references back; commit transfers them to the recorded answer,
+        /// which releases them at Finish via the stored frame's cap table.
+        held_export_ids: []u32,
 
-        fn deinit(self: ResolvedAnswerReservation, allocator: std.mem.Allocator) void {
-            allocator.free(self.frame_copy);
+        fn deinit(self: ResolvedAnswerReservation, peer: *Peer) void {
+            var idx = self.held_export_ids.len;
+            while (idx > 0) {
+                idx -= 1;
+                peer.rollbackAnswerExportRef(self.held_export_ids[idx]);
+            }
+            peer.allocator.free(self.held_export_ids);
+            peer.allocator.free(self.frame_copy);
         }
     };
 
     /// Reserve everything needed to record a resolved answer BEFORE the Return
     /// frame is sent: the resolved-answers count budget, one unused map slot,
-    /// and the frame copy. This must precede the send so that recording — which
-    /// happens only once the frame is already on the wire — is infallible.
+    /// the frame copy, and the answer-held references on every export in the
+    /// frame's results cap table. This must precede the send so that recording
+    /// — which happens only once the frame is already on the wire — is
+    /// infallible.
     ///
     /// If the record step could fail after the send, the propagating error would
     /// drive the call-dispatch catch to emit a SECOND (exception) Return for the
@@ -3633,7 +3700,12 @@ pub const Peer = struct {
     /// violation (a peer fills resolved_answers to max_resolved_answers with
     /// Finish-less calls, then any later successful call double-Returns). Audit
     /// 2026-07-03 item 7.
-    fn reserveResolvedAnswer(self: *Peer, question_id: u32, frame_len: usize) !ResolvedAnswerReservation {
+    ///
+    /// The answer-held references keep the answer's pipeline targets alive
+    /// until its Finish: without them the export dies as soon as the remote
+    /// Releases the caps it imported from this Return — legal even before
+    /// Finish — and a pipelined call on the answer can no longer dispatch.
+    fn reserveResolvedAnswer(self: *Peer, question_id: u32, frame: []const u8) !ResolvedAnswerReservation {
         try ensureCountLimit(
             self.resolved_answers.contains(question_id),
             self.resolved_answers.count(),
@@ -3641,22 +3713,32 @@ pub const Peer = struct {
         );
         // Reserve a map slot so the post-send getOrPutAssumeCapacity cannot OOM.
         try self.resolved_answers.ensureUnusedCapacity(1);
-        const frame_copy = try self.allocator.alloc(u8, frame_len);
-        return .{ .frame_copy = frame_copy };
+        const frame_copy = try self.allocator.dupe(u8, frame);
+        errdefer self.allocator.free(frame_copy);
+        const held_export_ids = try peer_cap_lifecycle.noteAnswerHeldResultCaps(
+            Peer,
+            self,
+            self.allocator,
+            frame,
+            Peer.noteAnswerExportRef,
+            rollbackAnswerExportRef,
+        );
+        return .{ .frame_copy = frame_copy, .held_export_ids = held_export_ids };
     }
 
     /// Record a resolved answer using a reservation obtained (before the send)
-    /// from `reserveResolvedAnswer`. Infallible: the map slot and frame copy are
-    /// already reserved, so this only copies bytes and stores into the map.
-    /// Takes ownership of the reservation's `frame_copy` (moved into the map).
+    /// from `reserveResolvedAnswer`. Infallible: the map slot, frame copy, and
+    /// answer-held export references are already reserved, so this only stores
+    /// into the map. Takes ownership of the reservation: `frame_copy` moves
+    /// into the map and the answer-held references now belong to the recorded
+    /// answer (released at Finish by re-walking the stored frame, so the id
+    /// list is no longer needed).
     fn commitReservedResolvedAnswer(
         self: *Peer,
         question_id: u32,
         reservation: ResolvedAnswerReservation,
-        source: []const u8,
     ) void {
-        std.debug.assert(reservation.frame_copy.len == source.len);
-        std.mem.copyForwards(u8, reservation.frame_copy, source);
+        self.allocator.free(reservation.held_export_ids);
         pending_calls.recordResolvedAnswerAssumeCapacity(
             Peer,
             ResolvedAnswer,

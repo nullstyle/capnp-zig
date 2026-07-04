@@ -95,6 +95,8 @@ pub fn handleBootstrap(
     question_id_in_use: *const fn (*PeerType, u32) anyerror!bool,
     note_export_ref: *const fn (*PeerType, u32) anyerror!void,
     rollback_export_ref: *const fn (*PeerType, u32) void,
+    note_answer_export_ref: *const fn (*PeerType, u32) anyerror!void,
+    rollback_answer_export_ref: *const fn (*PeerType, u32) void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
     send_frame: *const fn (*PeerType, []const u8) anyerror!void,
     record_resolved_answer: *const fn (*PeerType, u32, []u8) anyerror!void,
@@ -129,8 +131,18 @@ pub fn handleBootstrap(
     try send_frame(peer, bytes);
     rollback_ref = false;
 
+    // The recorded answer holds its own reference on the export until its
+    // Finish (released there via the stored frame's cap table), matching the
+    // reserve step of sendReturnResults / sendPrebuiltReturnFrame. Rolled
+    // back if recording fails: an unrecorded answer releases nothing at
+    // Finish, so keeping the ref would pin the count forever.
+    try note_answer_export_ref(peer, export_id);
+    var rollback_answer_ref = true;
+    errdefer if (rollback_answer_ref) rollback_answer_export_ref(peer, export_id);
+
     const copy = try allocator.alloc(u8, bytes.len);
     errdefer allocator.free(copy);
     std.mem.copyForwards(u8, copy, bytes);
     try record_resolved_answer(peer, bootstrap_msg.question_id, copy);
+    rollback_answer_ref = false;
 }

@@ -83,6 +83,42 @@ pub fn noteExportRef(
     entry.value_ptr.ref_count = std.math.add(u32, entry.value_ptr.ref_count, 1) catch return error.RefCountOverflow;
 }
 
+/// Take one answer-held reference on an export: the resolved answer that
+/// carries the export in its results owns this reference until its Finish.
+/// Tracked separately from the wire `ref_count` so an inbound Release can
+/// never free a reference the answer still needs for pipelined dispatch.
+pub fn noteAnswerExportRef(
+    comptime ExportEntryType: type,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    id: u32,
+) !void {
+    var entry = exports.getEntry(id) orelse return error.UnknownExport;
+    entry.value_ptr.answer_ref_count = std.math.add(u32, entry.value_ptr.answer_ref_count, 1) catch return error.RefCountOverflow;
+}
+
+fn destroyExportEntry(
+    comptime PeerType: type,
+    comptime ExportEntryType: type,
+    comptime PendingCallType: type,
+    peer: *PeerType,
+    allocator: std.mem.Allocator,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    pending_export_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
+    id: u32,
+    clear_export: *const fn (*PeerType, u32) void,
+    deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
+) void {
+    _ = exports.remove(id);
+    clear_export(peer, id);
+    if (pending_export_promises.fetchRemove(id)) |removed| {
+        var pending = removed.value;
+        for (pending.items) |*pending_call| {
+            deinit_pending_call(peer, pending_call, allocator);
+        }
+        pending.deinit(allocator);
+    }
+}
+
 pub fn releaseExport(
     comptime PeerType: type,
     comptime ExportEntryType: type,
@@ -115,18 +151,71 @@ pub fn releaseExport(
 
     if (count > entry.value_ptr.ref_count) return error.ReleaseCountExceeded;
 
-    if (entry.value_ptr.ref_count == count) {
-        _ = exports.remove(id);
-        clear_export(peer, id);
-        if (pending_export_promises.fetchRemove(id)) |removed| {
-            var pending = removed.value;
-            for (pending.items) |*pending_call| {
-                deinit_pending_call(peer, pending_call, allocator);
-            }
-            pending.deinit(allocator);
-        }
-    } else {
-        entry.value_ptr.ref_count -= count;
+    entry.value_ptr.ref_count -= count;
+    // Destruction requires BOTH counts at zero: a Release only spends wire
+    // references, so an export pinned by a still-unfinished resolved answer
+    // (answer_ref_count > 0) survives for pipelined dispatch until Finish.
+    if (entry.value_ptr.ref_count == 0 and entry.value_ptr.answer_ref_count == 0) {
+        destroyExportEntry(
+            PeerType,
+            ExportEntryType,
+            PendingCallType,
+            peer,
+            allocator,
+            exports,
+            pending_export_promises,
+            id,
+            clear_export,
+            deinit_pending_call,
+        );
+    }
+}
+
+/// Release one answer-held reference on an export, destroying the entry when
+/// no wire or answer references remain. Invoked (via the recorded Return
+/// frame's cap table) when the answer's Finish arrives.
+pub fn releaseAnswerHeldExport(
+    comptime PeerType: type,
+    comptime ExportEntryType: type,
+    comptime PendingCallType: type,
+    peer: *PeerType,
+    allocator: std.mem.Allocator,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    pending_export_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
+    bootstrap_export_id: ?u32,
+    id: u32,
+    clear_export: *const fn (*PeerType, u32) void,
+    deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
+) !void {
+    var entry = exports.getEntry(id) orelse {
+        log.warn("answer-held release for unknown export id={}", .{id});
+        return;
+    };
+    if (entry.value_ptr.answer_ref_count == 0) {
+        log.warn("answer-held release underflow for export id={}", .{id});
+        return;
+    }
+    entry.value_ptr.answer_ref_count -= 1;
+
+    // Bootstrap export entry persists for the connection lifetime (see
+    // releaseExport); only its counters move.
+    if (bootstrap_export_id) |bootstrap_id| {
+        if (bootstrap_id == id) return;
+    }
+
+    if (entry.value_ptr.ref_count == 0 and entry.value_ptr.answer_ref_count == 0) {
+        destroyExportEntry(
+            PeerType,
+            ExportEntryType,
+            PendingCallType,
+            peer,
+            allocator,
+            exports,
+            pending_export_promises,
+            id,
+            clear_export,
+            deinit_pending_call,
+        );
     }
 }
 
@@ -173,6 +262,59 @@ pub fn releaseResolvedImport(
             try release_resolved_cap(peer, resolved);
         }
     }
+}
+
+/// Take one answer-held reference on every senderHosted/senderPromise export
+/// named by a results Return frame's cap table. Runs when the resolved answer
+/// is recorded (before its frame is sent), so the answer keeps its pipeline
+/// targets alive until Finish even if the remote Releases the caps it
+/// imported from this Return right away — a legal interleaving.
+///
+/// Returns the noted export ids (caller owns the slice) so a caller that
+/// fails between reservation and commit can roll the references back without
+/// re-decoding the frame. On error every reference already taken is rolled
+/// back before returning.
+pub fn noteAnswerHeldResultCaps(
+    comptime PeerType: type,
+    peer: *PeerType,
+    allocator: std.mem.Allocator,
+    frame: []const u8,
+    note_answer_export_ref: *const fn (*PeerType, u32) anyerror!void,
+    rollback_answer_export_ref: *const fn (*PeerType, u32) void,
+) ![]u32 {
+    var noted = std.ArrayList(u32).empty;
+    errdefer {
+        var undo = noted.items.len;
+        while (undo > 0) {
+            undo -= 1;
+            rollback_answer_export_ref(peer, noted.items[undo]);
+        }
+        noted.deinit(allocator);
+    }
+
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    walk: {
+        if (decoded.tag != .@"return") break :walk;
+        const ret = try decoded.asReturn();
+        if (ret.tag != .results or ret.results == null) break :walk;
+        const cap_list = ret.results.?.cap_table orelse break :walk;
+        var idx: u32 = 0;
+        while (idx < cap_list.len()) : (idx += 1) {
+            const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(idx));
+            switch (desc.tag) {
+                .senderHosted, .senderPromise => {
+                    if (desc.id) |id| {
+                        try noted.ensureUnusedCapacity(allocator, 1);
+                        try note_answer_export_ref(peer, id);
+                        noted.appendAssumeCapacity(id);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+    return noted.toOwnedSlice(allocator);
 }
 
 pub fn releaseResultCaps(
@@ -435,4 +577,231 @@ test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-pro
     try std.testing.expectEqual(@as(usize, 2), state.releases.items.len);
     try std.testing.expectEqual(@as(u32, 10), state.releases.items[0]);
     try std.testing.expectEqual(@as(u32, 11), state.releases.items[1]);
+}
+
+const TestExportEntry = struct {
+    ref_count: u32,
+    answer_ref_count: u32 = 0,
+};
+
+const TestPendingCall = struct {
+    frame: []u8,
+};
+
+const TestReleasePeer = struct {
+    clear_export_calls: usize = 0,
+    last_cleared_export: ?u32 = null,
+    deinit_pending_calls: usize = 0,
+
+    fn clearExport(peer: *@This(), export_id: u32) void {
+        peer.clear_export_calls += 1;
+        peer.last_cleared_export = export_id;
+    }
+
+    fn deinitPendingCall(peer: *@This(), pending_call: *TestPendingCall, allocator: std.mem.Allocator) void {
+        peer.deinit_pending_calls += 1;
+        allocator.free(pending_call.frame);
+    }
+};
+
+test "peer_cap_lifecycle releaseExport keeps an export pinned by answer refs" {
+    var exports = std.AutoHashMap(u32, TestExportEntry).init(std.testing.allocator);
+    defer exports.deinit();
+    var pending = std.AutoHashMap(u32, std.ArrayList(TestPendingCall)).init(std.testing.allocator);
+    defer pending.deinit();
+
+    // One wire ref (from the Return descriptor) and one answer-held ref
+    // (from the recorded resolved answer).
+    try exports.put(4, .{ .ref_count = 1, .answer_ref_count = 1 });
+
+    var peer = TestReleasePeer{};
+    // The remote legally Releases its wire ref before Finish. The export must
+    // survive: the unfinished answer still needs it for pipelined dispatch.
+    try releaseExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        4,
+        1,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    const pinned = exports.get(4) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 0), pinned.ref_count);
+    try std.testing.expectEqual(@as(u32, 1), pinned.answer_ref_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+
+    // Finish releases the answer-held ref: now both counts are zero and the
+    // export is destroyed.
+    try releaseAnswerHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        4,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    try std.testing.expect(!exports.contains(4));
+    try std.testing.expectEqual(@as(usize, 1), peer.clear_export_calls);
+    try std.testing.expectEqual(@as(?u32, 4), peer.last_cleared_export);
+}
+
+test "peer_cap_lifecycle releaseAnswerHeldExport keeps an export with live wire refs" {
+    var exports = std.AutoHashMap(u32, TestExportEntry).init(std.testing.allocator);
+    defer exports.deinit();
+    var pending = std.AutoHashMap(u32, std.ArrayList(TestPendingCall)).init(std.testing.allocator);
+    defer pending.deinit();
+
+    try exports.put(9, .{ .ref_count = 1, .answer_ref_count = 1 });
+
+    var peer = TestReleasePeer{};
+    // Finish first (remote keeps its import): only the answer ref dies.
+    try releaseAnswerHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        9,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    const kept = exports.get(9) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 1), kept.ref_count);
+    try std.testing.expectEqual(@as(u32, 0), kept.answer_ref_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+
+    // Unknown export and underflow are tolerated (warn only), matching
+    // releaseExport's tolerance for unknown ids.
+    try releaseAnswerHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        9,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    try std.testing.expect(exports.contains(9));
+    try releaseAnswerHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        1000,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+}
+
+test "peer_cap_lifecycle releaseAnswerHeldExport never destroys the bootstrap export" {
+    var exports = std.AutoHashMap(u32, TestExportEntry).init(std.testing.allocator);
+    defer exports.deinit();
+    var pending = std.AutoHashMap(u32, std.ArrayList(TestPendingCall)).init(std.testing.allocator);
+    defer pending.deinit();
+
+    try exports.put(0, .{ .ref_count = 0, .answer_ref_count = 1 });
+
+    var peer = TestReleasePeer{};
+    try releaseAnswerHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        0,
+        0,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    const entry = exports.get(0) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 0), entry.answer_ref_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+}
+
+test "peer_cap_lifecycle noteAnswerHeldResultCaps notes exports and rolls back on failure" {
+    const State = struct {
+        noted: std.ArrayList(u32),
+        rolled_back: std.ArrayList(u32),
+        fail_on_id: ?u32 = null,
+
+        fn noteRef(state: *@This(), id: u32) !void {
+            if (state.fail_on_id) |fail_id| {
+                if (id == fail_id) return error.UnknownExport;
+            }
+            state.noted.append(std.testing.allocator, id) catch unreachable;
+        }
+
+        fn rollbackRef(state: *@This(), id: u32) void {
+            state.rolled_back.append(std.testing.allocator, id) catch unreachable;
+        }
+    };
+
+    var builder = protocol.MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(3, .results);
+    var cap_list = try ret.initCapTableTyped(3);
+    protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), 21);
+    protocol.CapDescriptor.writeNone(try cap_list.get(1));
+    protocol.CapDescriptor.writeSenderPromise(try cap_list.get(2), 22);
+    const frame = try builder.finish();
+    defer std.testing.allocator.free(frame);
+
+    var state = State{
+        .noted = std.ArrayList(u32).empty,
+        .rolled_back = std.ArrayList(u32).empty,
+    };
+    defer state.noted.deinit(std.testing.allocator);
+    defer state.rolled_back.deinit(std.testing.allocator);
+
+    const held = try noteAnswerHeldResultCaps(
+        State,
+        &state,
+        std.testing.allocator,
+        frame,
+        State.noteRef,
+        State.rollbackRef,
+    );
+    defer std.testing.allocator.free(held);
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 21, 22 }, held);
+    try std.testing.expectEqualSlices(u32, &[_]u32{ 21, 22 }, state.noted.items);
+    try std.testing.expectEqual(@as(usize, 0), state.rolled_back.items.len);
+
+    // A mid-walk failure rolls back every reference already taken.
+    state.noted.clearRetainingCapacity();
+    state.fail_on_id = 22;
+    try std.testing.expectError(error.UnknownExport, noteAnswerHeldResultCaps(
+        State,
+        &state,
+        std.testing.allocator,
+        frame,
+        State.noteRef,
+        State.rollbackRef,
+    ));
+    try std.testing.expectEqualSlices(u32, &[_]u32{21}, state.noted.items);
+    try std.testing.expectEqualSlices(u32, &[_]u32{21}, state.rolled_back.items);
 }

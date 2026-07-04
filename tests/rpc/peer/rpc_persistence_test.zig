@@ -727,6 +727,19 @@ test "released persistent export drops its persistence state" {
     defer allocator.free(release_frame);
     try peer.handleFrame(release_frame);
 
+    // The Release spends the wire ref, but the still-unfinished restore
+    // answer (question 50) pins the export as a pipeline target, so the
+    // entry (and its persistence state) survives until the Finish.
+    try std.testing.expect(peer.exports.contains(shared_id));
+    try std.testing.expectEqual(@as(u32, 2), peer.stats().persistent_exports);
+
+    var finish_builder = protocol.MessageBuilder.init(allocator);
+    defer finish_builder.deinit();
+    try finish_builder.buildFinish(50, false, false);
+    const finish_frame = try finish_builder.finish();
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+
     try std.testing.expect(!peer.exports.contains(shared_id));
     try std.testing.expectEqual(@as(u32, 1), peer.stats().persistent_exports);
 }

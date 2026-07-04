@@ -1,5 +1,5 @@
-/// Bundles the 11 callback parameters of handleFinish into a single operations struct.
-/// Groups: question-state cleanup (5), tail-finish forwarding (2), answer-frame cleanup (3).
+/// Bundles the 12 callback parameters of handleFinish into a single operations struct.
+/// Groups: question-state cleanup (5), tail-finish forwarding (2), answer-frame cleanup (4).
 pub fn FinishOps(comptime PeerType: type) type {
     return struct {
         // Question-state cleanup
@@ -13,6 +13,12 @@ pub fn FinishOps(comptime PeerType: type) type {
         send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
         // Answer-frame cleanup
         take_resolved_answer_frame: *const fn (*PeerType, u32) ?[]u8,
+        /// Releases the answer-held export references taken when the answer
+        /// was recorded (one per results cap descriptor). Runs on EVERY
+        /// Finish of a recorded answer, independent of releaseResultCaps.
+        release_answer_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
+        /// Releases the remote's wire references for the Return's cap
+        /// descriptors; runs only when the Finish sets releaseResultCaps.
         release_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
         free_frame: *const fn (*PeerType, []u8) void,
     };
@@ -53,11 +59,16 @@ pub fn handleResolvedAnswerCleanup(
     question_id: u32,
     release_result_caps: bool,
     take_resolved_answer_frame: *const fn (*PeerType, u32) ?[]u8,
+    release_answer_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
     release_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
     free_frame: *const fn (*PeerType, []u8) void,
 ) !void {
     if (take_resolved_answer_frame(peer, question_id)) |frame| {
         defer free_frame(peer, frame);
+        // The recorded answer holds its own reference on every export in its
+        // results (taken at record time) so pipeline targets stayed alive
+        // until this Finish. Those references die with the answer, always.
+        try release_answer_caps_for_frame(peer, frame);
         if (release_result_caps) {
             try release_caps_for_frame(peer, frame);
         }
@@ -77,6 +88,7 @@ pub fn handleFinish(
     take_forwarded_tail_question: *const fn (*PeerType, u32) ?u32,
     send_finish: *const fn (*PeerType, u32, bool) anyerror!void,
     take_resolved_answer_frame: *const fn (*PeerType, u32) ?[]u8,
+    release_answer_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
     release_caps_for_frame: *const fn (*PeerType, []const u8) anyerror!void,
     free_frame: *const fn (*PeerType, []u8) void,
 ) !void {
@@ -89,13 +101,14 @@ pub fn handleFinish(
         .take_forwarded_tail_question = take_forwarded_tail_question,
         .send_finish = send_finish,
         .take_resolved_answer_frame = take_resolved_answer_frame,
+        .release_answer_caps_for_frame = release_answer_caps_for_frame,
         .release_caps_for_frame = release_caps_for_frame,
         .free_frame = free_frame,
     };
     try handleFinishWithOps(PeerType, peer, question_id, release_result_caps, ops);
 }
 
-/// handleFinish variant that accepts a bundled FinishOps instead of 11 individual callbacks.
+/// handleFinish variant that accepts a bundled FinishOps instead of 12 individual callbacks.
 pub fn handleFinishWithOps(
     comptime PeerType: type,
     peer: *PeerType,
@@ -126,6 +139,7 @@ pub fn handleFinishWithOps(
         question_id,
         release_result_caps,
         ops.take_resolved_answer_frame,
+        ops.release_answer_caps_for_frame,
         ops.release_caps_for_frame,
         ops.free_frame,
     );

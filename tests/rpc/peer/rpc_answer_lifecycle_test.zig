@@ -518,6 +518,194 @@ test "cancelling one queued call preserves send order of the survivors (E-order)
     try std.testing.expectEqual(@as(u32, 3), (try second.asCall()).question_id);
 }
 
+/// Shared state for the answer-held reference regression tests: a "service"
+/// export whose calls are counted, exported inside another answer's results.
+const AnswerHeldState = struct {
+    service_calls: u32 = 0,
+    service_export_id: u32 = 0,
+};
+
+fn onAnswerHeldServiceCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+    const state: *AnswerHeldState = @ptrCast(@alignCast(ctx_ptr));
+    state.service_calls += 1;
+    try p.sendReturnEmptyStruct(call.question_id);
+}
+
+/// Results struct with one pointer slot; slot 0 carries the service cap.
+fn buildAnswerHeldServiceResults(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+    const state: *AnswerHeldState = @ptrCast(@alignCast(ctx_ptr));
+    var payload = try ret.payloadTyped();
+    var any = try payload.initContent();
+    const results = try any.initStruct(0, 1);
+    var slot = try results.getAnyPointer(0);
+    try slot.setCapability(.{ .id = state.service_export_id });
+}
+
+fn buildReleaseFrame(allocator: std.mem.Allocator, id: u32, count: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildRelease(id, count);
+    return builder.finish();
+}
+
+/// A Call pipelined on answer `target_question_id`'s results pointer field 0.
+fn buildPipelinedCallFrame(allocator: std.mem.Allocator, question_id: u32, target_question_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xABCD, 0);
+    try call.setTargetPromisedAnswerWithOps(target_question_id, &[_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    });
+    _ = try call.initCapTableTyped(0);
+    return builder.finish();
+}
+
+fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32, release_result_caps: bool) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildFinish(question_id, release_result_caps, false);
+    return builder.finish();
+}
+
+test "resolved answer keeps its pipeline target alive across an early Release" {
+    // Per the answer-lifecycle contract, a resolved answer keeps its pipeline
+    // targets alive until Finish, independent of the client's Release of the
+    // caps it imported from the Return. Before the answer-held reference fix,
+    // the target's aliveness was coupled solely to the export-table wire
+    // refcount: Return (ref 1) -> Release (ref 0, export destroyed) -> the
+    // pipelined call failed to dispatch ("unknown promised capability").
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const Handlers = struct {
+        fn onFactoryCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            try p.sendReturnResults(call.question_id, ctx_ptr, buildAnswerHeldServiceResults);
+        }
+    };
+
+    var state = AnswerHeldState{};
+    state.service_export_id = try peer.addExport(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+    const factory_export_id = try peer.addExport(.{ .ctx = &state, .on_call = Handlers.onFactoryCall });
+
+    // Q1: the factory answers synchronously with results exporting the
+    // service cap. The recorded answer takes its answer-held reference.
+    const q1_frame = try buildExportCallFrame(allocator, 10, factory_export_id);
+    defer allocator.free(q1_frame);
+    try peer.handleFrame(q1_frame);
+    try std.testing.expect(peer.resolved_answers.contains(10));
+    {
+        const entry = peer.exports.get(state.service_export_id) orelse return error.MissingExport;
+        try std.testing.expectEqual(@as(u32, 1), entry.ref_count); // wire ref from the Return descriptor
+        try std.testing.expectEqual(@as(u32, 1), entry.answer_ref_count); // answer-held until Finish
+    }
+
+    // The remote drops the imported cap right away — legal before Finish.
+    // Only the wire ref may die; the export must survive for pipelining.
+    const release_frame = try buildReleaseFrame(allocator, state.service_export_id, 1);
+    defer allocator.free(release_frame);
+    try peer.handleFrame(release_frame);
+    {
+        const entry = peer.exports.get(state.service_export_id) orelse return error.ExportDestroyedByEarlyRelease;
+        try std.testing.expectEqual(@as(u32, 0), entry.ref_count);
+        try std.testing.expectEqual(@as(u32, 1), entry.answer_ref_count);
+    }
+
+    // Q2 pipelines on Q1's results pointer field 0: it must still reach the
+    // service handler and answer with results, not an exception.
+    const q2_frame = try buildPipelinedCallFrame(allocator, 11, 10);
+    defer allocator.free(q2_frame);
+    try peer.handleFrame(q2_frame);
+    try std.testing.expectEqual(@as(u32, 1), state.service_calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(11, .results));
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(11, .exception));
+
+    // Finish for Q1 (releaseResultCaps=false: the wire ref is already gone)
+    // releases the answer-held reference; both counts at zero destroy the
+    // export.
+    const finish_frame = try buildFinishFrame(allocator, 10, false);
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+    try std.testing.expect(!peer.resolved_answers.contains(10));
+    try std.testing.expect(!peer.exports.contains(state.service_export_id));
+}
+
+test "queued pipelined call dispatches when Release lands before the answer commit" {
+    // The exact interleaving surfaced by the typed-pipelining runtime probe
+    // with a synchronous in-process wire: the remote processes Q1's Return —
+    // including sending Release for the imported cap — while our
+    // sendReturnResults is still on the stack, BEFORE
+    // commitReservedResolvedAnswer drains the parked pipelined call. The
+    // answer-held reference is taken at reserve time (pre-send), so the
+    // export survives the mid-resolution Release and the drain dispatches.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const Injector = struct {
+        capture: ReturnCapture,
+        peer: *Peer,
+        release_frame: []const u8,
+        injected: bool = false,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try ReturnCapture.onFrame(&self.capture, frame);
+            if (self.injected) return;
+            var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch return;
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = decoded.asReturn() catch return;
+            if (ret.answer_id != 10 or ret.tag != .results) return;
+            // The synchronous remote releases the cap it just imported from
+            // Q1's Return before our sender returns to its commit step.
+            self.injected = true;
+            try self.peer.handleFrame(self.release_frame);
+        }
+    };
+
+    var state = AnswerHeldState{};
+    state.service_export_id = try peer.addExport(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+
+    const release_frame = try buildReleaseFrame(allocator, state.service_export_id, 1);
+    defer allocator.free(release_frame);
+
+    var injector = Injector{
+        .capture = newCapture(allocator),
+        .peer = &peer,
+        .release_frame = release_frame,
+    };
+    defer injector.capture.deinit();
+    peer.setSendFrameOverride(&injector, Injector.onFrame);
+
+    // Park a pipelined call (question 42) against unresolved answer 10.
+    const q2_frame = try buildPipelinedCallFrame(allocator, 42, 10);
+    defer allocator.free(q2_frame);
+    const inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 10, q2_frame, inbound);
+
+    // Resolve answer 10 with results exporting the service cap. The send
+    // override injects the Release mid-flight; the commit then drains the
+    // parked call, which must still reach the service handler.
+    try peer.sendReturnResults(10, &state, buildAnswerHeldServiceResults);
+
+    try std.testing.expect(injector.injected);
+    try std.testing.expectEqual(@as(u32, 1), state.service_calls);
+    try std.testing.expectEqual(@as(usize, 1), injector.capture.countReturns(42, .results));
+    try std.testing.expectEqual(@as(usize, 0), injector.capture.countReturns(42, .exception));
+
+    // The export survived the mid-resolution Release on the answer-held ref.
+    const entry = peer.exports.get(state.service_export_id) orelse return error.ExportDestroyedByEarlyRelease;
+    try std.testing.expectEqual(@as(u32, 0), entry.ref_count);
+    try std.testing.expectEqual(@as(u32, 1), entry.answer_ref_count);
+}
+
 test "successful call at the resolved_answers cap sends exactly one Return" {
     const allocator = std.testing.allocator;
     // A small resolved-answers budget we can fill deterministically. A hostile

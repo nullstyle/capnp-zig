@@ -70,7 +70,15 @@ pub const PeerTimeouts = struct {
 pub fn ExportEntry(comptime ExportType: type) type {
     return struct {
         handler: ?ExportType = null,
+        /// Wire references: one per cap descriptor sent to the remote peer,
+        /// released by inbound Release messages (or Finish.releaseResultCaps).
         ref_count: u32,
+        /// Answer-held references: one per results cap descriptor of each
+        /// recorded resolved answer, held from Return until that answer's
+        /// Finish so pipeline targets stay dispatchable even after the remote
+        /// Releases its own wire references. Only Finish releases these; a
+        /// Release message cannot touch them.
+        answer_ref_count: u32 = 0,
         is_promise: bool = false,
         resolved: ?cap_table.ResolvedCap = null,
     };
