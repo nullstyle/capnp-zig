@@ -167,9 +167,14 @@ fn sendReturnResultsWithCapOomImpl(allocator: std.mem.Allocator) !void {
     // and the reservation is released, leaving the export at its prior count.
 }
 
-// sendReturnResults routes a `send_results_to_yourself` marker to a
-// resultsSentElsewhere tag Return (a distinct, cap-free frame build) rather
-// than the normal results payload. Exercises the sendReturnTag build+send path.
+// sendReturnResults for a `send_results_to_yourself` marker (the reflected
+// loopback / Level-1 tail-call path) still RUNS the build closure — a generated
+// direct handler's body lives inside it — then tells the forwarder
+// `resultsSentElsewhere` and stashes the cap-free results for the matching
+// `takeFromOtherQuestion` to deliver inline. Exercises that whole path's
+// all-or-nothing OOM behavior: the results build, the cap-detect decode, the
+// stash put, and the tag send. Any straggler stash frame is freed by
+// Peer.deinit, so no injected failure leaks.
 fn sendReturnResultsSentElsewhereOomImpl(allocator: std.mem.Allocator) !void {
     var peer = Peer.initDetached(allocator);
     peer.disableThreadAffinity();
@@ -179,19 +184,22 @@ fn sendReturnResultsSentElsewhereOomImpl(allocator: std.mem.Allocator) !void {
     peer.setSendFrameOverride(&sink, noopSend);
 
     // Pre-mark the answer as results-sent-to-self so sendReturnResults takes the
-    // resultsSentElsewhere branch. put may itself OOM (part of the injected op),
-    // which is fine: nothing else is allocated yet.
+    // self-loopback branch. put may itself OOM (part of the injected op), which
+    // is fine: nothing else is allocated yet.
     try peer.send_results_to_yourself.put(44, {});
 
     const BuildCtx = struct {
-        fn build(_: *anyopaque, _: *protocol.ReturnBuilder) anyerror!void {
-            unreachable; // resultsSentElsewhere path never invokes the builder.
+        // A minimal cap-free results struct, mirroring a generated direct
+        // handler that runs its body here and writes one data word.
+        fn build(_: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            const results = try any.initStruct(1, 0);
+            results.writeU32(0, 7);
         }
     };
     var ctx: u8 = 0;
     try peer.sendReturnResults(44, &ctx, BuildCtx.build);
-    // resultsSentElsewhere is a terminal tag Return that records no resolved
-    // answer, so there is nothing to clean up beyond Peer.deinit.
 }
 
 // sendCall with a local export in params exercises the full outbound

@@ -23,6 +23,10 @@ pub const PeerLimits = struct {
     max_pending_embargoes: usize = 4096,
     max_loopback_questions: usize = 4096,
     max_send_results_to_yourself: usize = 4096,
+    /// Bound on stashed self-loopback results frames awaiting their
+    /// `takeFromOtherQuestion` redirect. Overflow degrades gracefully (the call
+    /// falls back to the `takeFromOtherQuestion` relay) rather than failing.
+    max_loopback_result_stash: usize = 4096,
     max_send_results_to_third_party: usize = 4096,
     max_send_results_to_third_party_bytes: usize = 1024 * 1024,
     max_pending_third_party_returns: usize = 4096,

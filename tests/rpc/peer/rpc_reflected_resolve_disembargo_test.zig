@@ -257,10 +257,14 @@ const PingCall = struct {
     result_n: ?u32 = null,
     returned: bool = false,
     /// The Return tag observed for this call. A pipelined call forwarded back to
-    /// its own origin (loopback reflection) is relayed via the Level-1
-    /// `takeFromOtherQuestion` tail-call optimization; a direct post-resolution
-    /// call returns plain `.results`. Both mean "the call completed"; only the
-    /// latter carries an inline results payload we can read here.
+    /// its own origin (loopback reflection) uses the Level-1 `sendResultsTo =
+    /// yourself` tail-call optimization; the runtime runs the handler locally and
+    /// delivers the computed results INLINE when the `takeFromOtherQuestion`
+    /// redirect resolves, so the caller sees plain `.results` (with the value)
+    /// rather than the bare relay tag. A direct post-resolution call likewise
+    /// returns `.results`. The `.takeFromOtherQuestion` arm remains as a
+    /// tolerated fallback for cases the runtime cannot deliver inline (e.g.
+    /// results carrying capabilities).
     return_tag: ?protocol.ReturnTag = null,
 
     fn build(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
@@ -285,8 +289,9 @@ const PingCall = struct {
                 const payload = ret.results orelse return error.MissingPingPayload;
                 self.result_n = try readPingN(payload);
             },
-            // Loopback tail-call relay: results live in the referenced question;
-            // the round-trip value is asserted at the echoer instead.
+            // Tolerated fallback: results the runtime could not deliver inline
+            // (e.g. cap-carrying) surface the relay tag; the round-trip value is
+            // then asserted at the echoer instead.
             .takeFromOtherQuestion => {},
             else => return error.UnexpectedPingReturn,
         }
@@ -455,9 +460,12 @@ test "resolvePromiseExportToImport drives the reflected-cap resolve/disembargo c
 
     // The whole cycle completed synchronously through the wire:
     //   - the parked ping(1) was forwarded to the echoer, which saw n==1 and
-    //     echoed it back; the client's pipelined question completed (relayed via
-    //     the loopback tail-call optimization).
+    //     echoed it back; the client's pipelined question completed and — via the
+    //     self-loopback inline delivery — received the real result value (n==1)
+    //     rather than a bare takeFromOtherQuestion relay tag.
     try std.testing.expect(ping1_call.returned);
+    try std.testing.expectEqual(protocol.ReturnTag.results, ping1_call.return_tag.?);
+    try std.testing.expectEqual(@as(u32, 1), ping1_call.result_n.?);
     try std.testing.expectEqual(@as(u32, 1), echoer.ping_calls);
     try std.testing.expect(echoer.ping1_seq != null);
 

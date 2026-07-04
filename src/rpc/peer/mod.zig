@@ -394,6 +394,17 @@ pub const Peer = struct {
     send_results_to_yourself: std.AutoHashMap(u32, void),
     /// Inbound calls with sendResultsTo=thirdParty.
     send_results_to_third_party: std.AutoHashMap(u32, ?[]u8),
+    /// Results frames for answered `sendResultsTo=yourself` calls, awaiting the
+    /// `takeFromOtherQuestion` redirect that names the local question they feed
+    /// (the reflected-loopback / Level-1 tail-call optimization). Keyed by the
+    /// answered call's answer id (the forwarder's forwarded-question id); the
+    /// value is an owned Return-results frame. Consumed inline when the matching
+    /// `takeFromOtherQuestion` arrives (see `handleReturn`); freed at deinit if
+    /// that redirect never comes. NOT freed on the answered call's Finish — the
+    /// forwarder's `Finish` for the forwarded question can arrive BEFORE the
+    /// `takeFromOtherQuestion`, so freeing there would drop the results early.
+    /// Only cap-free results are stashed.
+    loopback_result_stash: std.AutoHashMap(u32, []u8),
 
     // -- Persistence (sturdy refs) -------------------------------------------
 
@@ -570,6 +581,7 @@ pub const Peer = struct {
             .loopback_questions = std.AutoHashMap(u32, void).init(allocator),
             .send_results_to_yourself = std.AutoHashMap(u32, void).init(allocator),
             .send_results_to_third_party = std.AutoHashMap(u32, ?[]u8).init(allocator),
+            .loopback_result_stash = std.AutoHashMap(u32, []u8).init(allocator),
             .persistent_exports = std.AutoHashMap(u32, *PersistenceState).init(allocator),
         };
     }
@@ -864,6 +876,11 @@ pub const Peer = struct {
         self.pending_embargoes.deinit();
         self.loopback_questions.deinit();
         self.send_results_to_yourself.deinit();
+        {
+            var stash_it = self.loopback_result_stash.valueIterator();
+            while (stash_it.next()) |frame| self.allocator.free(frame.*);
+        }
+        self.loopback_result_stash.deinit();
         peer_cleanup.deinitOptionalOwnedBytesMap(
             @TypeOf(self.send_results_to_third_party),
             self.allocator,
@@ -2343,7 +2360,7 @@ pub const Peer = struct {
         }
 
         if (self.send_results_to_yourself.remove(answer_id)) {
-            try self.sendReturnTag(answer_id, .resultsSentElsewhere);
+            try self.completeSelfLoopbackReturn(answer_id, ctx, build);
             return;
         }
 
@@ -2391,6 +2408,88 @@ pub const Peer = struct {
             self.commitReservedResolvedAnswer(answer_id, r);
             reservation = null;
         }
+    }
+
+    /// Complete a return for an inbound call that carried `sendResultsTo =
+    /// yourself` (the reflected-loopback / Level-1 tail-call optimization).
+    ///
+    /// The forwarder (the peer that parked this call on a promise and later
+    /// resolved that promise to a capability we host) does NOT want the results
+    /// on the wire — it will name the local question that consumes them via a
+    /// `takeFromOtherQuestion` Return. Two things must still happen here:
+    ///
+    ///   1. The user handler MUST run. For generated DIRECT handlers the handler
+    ///      body lives inside `build`, so we run `build` unconditionally to
+    ///      produce the results — otherwise the handler would silently never
+    ///      execute on this path (a real Level-1 self-loopback correctness gap).
+    ///   2. The forwarder is told `resultsSentElsewhere`.
+    ///
+    /// The computed results are stashed keyed by this answer id so the matching
+    /// inbound `takeFromOtherQuestion` (see `handleReturn`) can deliver them
+    /// inline to the caller's own question — completing the value round-trip
+    /// locally without a wire round-trip through the forwarder. Results carrying
+    /// capabilities cannot be re-delivered locally (their descriptors are
+    /// wire-encoded for the forwarder), so those are not stashed; the caller
+    /// falls back to receiving the `takeFromOtherQuestion` relay tag.
+    fn completeSelfLoopbackReturn(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
+        // Build the results (runs the user handler) into a standalone frame.
+        // Encode caps with rollback: these results never traverse the wire to
+        // the forwarder, so any outbound wire refs the encode takes must be
+        // undone. The encode still classifies descriptors so we can detect
+        // whether the results carry capabilities.
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        var effects = cap_table.OutboundCapEffects.init(self.allocator, self, rollbackOutboundCap);
+        defer effects.deinit();
+
+        var ret = try builder.beginReturn(answer_id, .results);
+        try build(ctx, &ret);
+        _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, onOutboundCap, &effects);
+        effects.rollback();
+
+        const frame = try builder.finish();
+        var owns_frame = true;
+        defer if (owns_frame) self.allocator.free(frame);
+
+        const has_result_caps = try selfLoopbackResultsHaveCaps(self.allocator, frame);
+
+        // Stash BEFORE telling the forwarder: in a synchronous in-process
+        // transport, the `resultsSentElsewhere` we send can re-enter us with the
+        // matching `takeFromOtherQuestion` before this call returns, and that
+        // handler consumes the stash.
+        if (!has_result_caps and
+            self.loopback_result_stash.count() < self.limits.max_loopback_result_stash)
+        {
+            // toBytes returned an owned copy; hand ownership to the stash.
+            try self.loopback_result_stash.put(answer_id, @constCast(frame));
+            owns_frame = false;
+        }
+
+        try self.sendReturnTag(answer_id, .resultsSentElsewhere);
+    }
+
+    /// True when a built Return-results frame carries any capability
+    /// descriptors in its payload cap table.
+    fn selfLoopbackResultsHaveCaps(allocator: std.mem.Allocator, frame: []const u8) !bool {
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        const built = try decoded.asReturn();
+        const payload = built.results orelse return false;
+        const table = payload.cap_table orelse return false;
+        return table.len() > 0;
+    }
+
+    /// Deliver a stashed self-loopback results frame to the local question named
+    /// by a `takeFromOtherQuestion` redirect. Re-enters `handleReturn` with the
+    /// stashed results re-keyed to the target question so the normal dispatch,
+    /// cap-release, and auto-finish paths run unchanged.
+    fn deliverStashedLoopbackResults(self: *Peer, target_question_id: u32, frame: []const u8) !void {
+        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") return error.UnexpectedMessage;
+        var results_ret = try decoded.asReturn();
+        results_ret.answer_id = target_question_id;
+        try self.handleReturn(frame, results_ret);
     }
 
     /// Send a pre-built return frame, tracking outbound cap refs and recording
@@ -4239,6 +4338,28 @@ pub const Peer = struct {
         // Return path — regular, exception, third-party, and the
         // cancelled-question absorb below — settles the refs exactly once.
         try self.consumeQuestionParamExports(ret.answer_id, ret.release_param_caps);
+
+        // `takeFromOtherQuestion` names a call WE answered with
+        // `sendResultsTo=yourself` whose results should become this question's
+        // results (reflected-loopback / Level-1 tail-call). If we stashed those
+        // results (cap-free; see completeSelfLoopbackReturn), deliver them inline
+        // to this question instead of surfacing the bare relay tag, so the caller
+        // receives the real value without a wire round-trip through the
+        // forwarder. Falls through to the normal path when nothing was stashed
+        // (results carried caps, the answer is still pending, or the stash
+        // overflowed) — the caller then sees `takeFromOtherQuestion` as before.
+        if (ret.tag == .takeFromOtherQuestion) {
+            if (ret.take_from_other_question) |source_answer_id| {
+                if (self.questions.contains(ret.answer_id)) {
+                    if (self.loopback_result_stash.fetchRemove(source_answer_id)) |entry| {
+                        defer self.allocator.free(entry.value);
+                        try self.deliverStashedLoopbackResults(ret.answer_id, entry.value);
+                        return;
+                    }
+                }
+            }
+        }
+
         var latency_started_ns: ?i64 = null;
         if (self.questions.get(ret.answer_id)) |question| {
             if (question.cancelled) {

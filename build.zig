@@ -578,6 +578,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, optimize, lib_module);
     const run_rpc_peer_from_peer_zig_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_from_peer_zig_test.zig", target, optimize, lib_module);
     const run_rpc_reflected_resolve_disembargo_tests = addLibTest(b, "tests/rpc/peer/rpc_reflected_resolve_disembargo_test.zig", target, optimize, lib_module);
+    const run_rpc_reflected_direct_handler_tests = addLibTest(b, "tests/rpc/peer/rpc_reflected_direct_handler_test.zig", target, optimize, lib_module);
     const run_rpc_answer_lifecycle_tests = addLibTest(b, "tests/rpc/peer/rpc_answer_lifecycle_test.zig", target, optimize, lib_module);
     const run_rpc_peer_alloc_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_alloc_failure_test.zig", target, optimize, lib_module);
     const run_rpc_peer_semantic_helpers_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_semantic_helpers_test.zig", target, optimize, lib_module);
@@ -782,6 +783,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_peer_step.dependOn(run_rpc_peer_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_from_peer_zig_tests);
     test_rpc_peer_step.dependOn(run_rpc_reflected_resolve_disembargo_tests);
+    test_rpc_peer_step.dependOn(run_rpc_reflected_direct_handler_tests);
     test_rpc_peer_step.dependOn(run_rpc_answer_lifecycle_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_alloc_failure_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_semantic_helpers_tests);

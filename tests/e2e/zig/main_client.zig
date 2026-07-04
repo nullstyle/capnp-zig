@@ -98,18 +98,17 @@ const ClientApp = struct {
 // arrived, so the test can assert the pipelined call reached us strictly before
 // the direct call.
 //
-// This is implemented as a DEFERRED handler, NOT the plain direct handler, and
-// that choice is load-bearing for THIS scenario. A reflected pipelined call
-// that loops back to the caller's own export is delivered with
-// `sendResultsTo = yourself` (the tail-call / takeFromOtherQuestion relay).
-// On that path the runtime's sendReturnResults short-circuits to
-// `resultsSentElsewhere` and NEVER invokes a direct handler's results-build
-// closure — so a direct handler that recorded its counter inside the build
-// closure would be silently skipped and never observe the call. A deferred
-// handler body, by contrast, runs unconditionally before any return is sent, so
-// the counter increment and arrival stamp are recorded even when the payload
-// itself is relayed elsewhere. We still send the results (harmless: the runtime
-// relays or drops them per the sendResultsTo mode).
+// This is a plain DIRECT (non-deferred) handler. A reflected pipelined call that
+// loops back to the caller's own export is delivered with `sendResultsTo =
+// yourself` (the Level-1 tail-call / takeFromOtherQuestion relay). The runtime
+// runs the direct handler body on that path — it lives inside the generated
+// results-build closure — and delivers the computed results INLINE to the
+// caller's own pipelined question, so a direct handler both observes the call
+// AND returns its value with no wire round-trip through the reflector. (Before
+// that fix the yourself path short-circuited to `resultsSentElsewhere` without
+// invoking the build closure, so a direct handler's body was silently skipped
+// and this cap had to use a deferred handler; the reflected-loopback proof tests
+// in tests/rpc/peer lock in the fixed behavior.)
 const CallSequenceServer = struct {
     // Next value getNumber() will return; also the running arrival counter.
     counter: u32 = 0,
@@ -121,11 +120,7 @@ const CallSequenceServer = struct {
     server: resolve_disembargo.CallSequence.Server = .{
         .ctx = undefined,
         .vtable = .{
-            // A deferred handler still needs a non-null direct handler field in
-            // the vtable; it is never called because the deferred variant takes
-            // precedence (see generated handleCallDirect).
-            .getNumber = unusedDirectGetNumber,
-            .getNumber_deferred = onCallSequenceGetNumberDeferred,
+            .getNumber = onCallSequenceGetNumber,
         },
     },
 
@@ -134,51 +129,23 @@ const CallSequenceServer = struct {
     }
 };
 
-// Never invoked: the deferred handler takes precedence in the generated
-// dispatch. Present only to satisfy the non-optional vtable field.
-fn unusedDirectGetNumber(
-    _: *anyopaque,
-    _: *rpc.peer.Peer,
-    _: resolve_disembargo.CallSequence.GetNumberParams.Reader,
-    _: *resolve_disembargo.CallSequence.GetNumberResults.Builder,
-    _: *const rpc.caps.table.InboundCapTable,
-) !void {
-    return error.Unreachable;
-}
-
-// Carries the counter value from the deferred handler body into the results
-// build closure.
-const GetNumberReturnCtx = struct {
-    n: u32,
-
-    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
-        const self: *const GetNumberReturnCtx = @ptrCast(@alignCast(ctx_ptr));
-        var payload = try ret.payloadTyped();
-        var any = try payload.initContent();
-        const results_builder = try any.initStruct(1, 0);
-        var results = resolve_disembargo.CallSequence.GetNumberResults.Builder.wrap(results_builder);
-        try results.setN(self.n);
-    }
-};
-
-fn onCallSequenceGetNumberDeferred(
+fn onCallSequenceGetNumber(
     ctx_ptr: *anyopaque,
     _: *rpc.peer.Peer,
     _: resolve_disembargo.CallSequence.GetNumberParams.Reader,
+    results: *resolve_disembargo.CallSequence.GetNumberResults.Builder,
     _: *const rpc.caps.table.InboundCapTable,
-    sender: resolve_disembargo.CallSequence.GetNumber.ReturnSender,
 ) !void {
     const self: *CallSequenceServer = @ptrCast(@alignCast(ctx_ptr));
     const n = self.counter;
     // Record the arrival stamp for the first two calls so ordering is provable.
-    // This runs unconditionally, even when the results are relayed elsewhere.
+    // On the reflected-loopback path this body runs inside the results-build
+    // closure the runtime invokes even when the results are routed elsewhere.
     if (self.calls_seen == 0) self.call0_seq = n;
     if (self.calls_seen == 1) self.call1_seq = n;
     self.calls_seen += 1;
     self.counter += 1;
-
-    var ret_ctx = GetNumberReturnCtx{ .n = n };
-    try sender.sendResults(&ret_ctx, GetNumberReturnCtx.build);
+    try results.setN(n);
 }
 
 fn parseSchema(text: []const u8) !Schema {
@@ -980,14 +947,12 @@ fn onPipelinedGetNumberReturn(
 
     // Ordering subtlety: this call was parked on the unresolved promise and then
     // forwarded back to our OWN CallSequence when the reflector resolved the
-    // promise. A pipelined call that reflects back to its own origin completes
-    // via the Level-1 `takeFromOtherQuestion` tail-call relay, NOT a plain
-    // `.results` return — the value does not travel back inline here. Both
-    // `.results` and `.take_from_other_question` mean the call completed; the
-    // relay path carries no inline payload, so the source of truth is the value
-    // our CallSequence deferred handler recorded when the forwarded call arrived
-    // (rd_call_sequence.call0_seq). By the time this Return is dispatched, that
-    // forwarded call has already been processed, so call0_seq is populated.
+    // promise. A pipelined call that reflects back to its own origin is answered
+    // locally (Level-1 `sendResultsTo=yourself`); the runtime runs our direct
+    // handler and delivers its results INLINE, so this Return arrives as plain
+    // `.results` carrying n==0. The `.take_from_other_question` arm remains a
+    // tolerated fallback (e.g. cap-carrying results the runtime cannot deliver
+    // inline), reading the value our handler recorded on arrival (call0_seq).
     switch (response) {
         .results => |results| app.rd_pipelined_n = try results.getN(),
         .take_from_other_question => app.rd_pipelined_n = app.rd_call_sequence.call0_seq,
