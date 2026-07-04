@@ -46,6 +46,28 @@ const ClientApp = struct {
     tap: Tap = .{},
     done: bool = false,
     err: ?anyerror = null,
+
+    // game_world scenario state
+    gw_service: ?game_world.GameWorld.Client = null,
+    gw_entity_id: u64 = 0,
+
+    // chat scenario state
+    chat_service: ?chat.ChatService.Client = null,
+    chat_room: ?chat.ChatRoom.Client = null,
+
+    // inventory scenario state
+    inv_service: ?inventory.InventoryService.Client = null,
+    trade_session: ?inventory.TradeSession.Client = null,
+
+    // matchmaking scenario state
+    mm_service: ?matchmaking.MatchmakingService.Client = null,
+    mm_controller: ?matchmaking.MatchController.Client = null,
+    mm_match_id: u64 = 0,
+    mm_pipelined_info_match_id: u64 = 0,
+    mm_find_match_done: bool = false,
+    mm_signal_ready_done: bool = false,
+    mm_get_info_done: bool = false,
+    mm_cancel_started: bool = false,
 };
 
 fn parseSchema(text: []const u8) !Schema {
@@ -89,11 +111,38 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !CliArgs {
     return out;
 }
 
-fn statusOk(comptime T: type) T {
-    return @field(T, "Ok");
-}
-
 fn finish(app: *ClientApp, peer: *rpc.peer.Peer) void {
+    // Explicitly release every imported capability this scenario still owns
+    // (balances the retains from bootstrap-unwrap and resolveXxx) before
+    // closing the transport.
+    if (app.gw_service) |client| {
+        client.release();
+        app.gw_service = null;
+    }
+    if (app.chat_room) |client| {
+        client.release();
+        app.chat_room = null;
+    }
+    if (app.chat_service) |client| {
+        client.release();
+        app.chat_service = null;
+    }
+    if (app.trade_session) |client| {
+        client.release();
+        app.trade_session = null;
+    }
+    if (app.inv_service) |client| {
+        client.release();
+        app.inv_service = null;
+    }
+    if (app.mm_controller) |client| {
+        client.release();
+        app.mm_controller = null;
+    }
+    if (app.mm_service) |client| {
+        client.release();
+        app.mm_service = null;
+    }
     app.done = true;
     if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
@@ -117,6 +166,12 @@ fn onSessionClose(ctx: ?*anyopaque, _: *rpc.transport.tcp.ClientSession) void {
     app.done = true;
 }
 
+// ---------------------------------------------------------------------------
+// game_world scenario: spawn -> getEntity -> damageEntity (multi-call state),
+// then explicit release + clean shutdown. The schema has no sub-capability,
+// so this exercises repeated calls against one imported capability.
+// ---------------------------------------------------------------------------
+
 fn bootstrapGameWorld(app: *ClientApp, peer: *rpc.peer.Peer) !void {
     _ = try game_world.GameWorld.Client.fromBootstrap(peer, app, onGameWorldBootstrap);
 }
@@ -127,6 +182,7 @@ fn onGameWorldBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: gam
         failAndFinish(app, peer, "bootstrap game_world capability");
         return;
     };
+    app.gw_service = client;
     _ = try client.callSpawnEntity(app, buildSpawnEntity, onSpawnEntityReturn);
 }
 
@@ -152,16 +208,84 @@ fn onSpawnEntityReturn(
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
     const results = response.unwrap() catch {
-        app.tap.ok(false, "spawnEntity returns results");
-        finish(app, peer);
+        failAndFinish(app, peer, "spawnEntity returns results");
         return;
     };
-    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "spawnEntity returns ok status");
+    app.tap.ok((try results.getStatus()) == .Ok, "spawnEntity returns ok status");
     const entity = try results.getEntity();
     app.tap.ok(std.mem.eql(u8, try entity.getName(), "ZigClientHero"), "spawnEntity returns expected name");
+    app.gw_entity_id = try (try entity.getId()).getId();
+    app.tap.ok(app.gw_entity_id != 0, "spawnEntity returns non-zero entity id");
+
+    const client = app.gw_service orelse {
+        failAndFinish(app, peer, "game_world service client available");
+        return;
+    };
+    _ = try client.callGetEntity(app, buildGetEntity, onGetEntityReturn);
+}
+
+fn buildGetEntity(ctx_ptr: *anyopaque, params: *game_world.GameWorld.GetEntity.Params.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    var id = try params.initId();
+    try id.setId(app.gw_entity_id);
+}
+
+fn onGetEntityReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: game_world.GameWorld.GetEntity.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "getEntity returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "getEntity finds the spawned entity");
+    const entity = try results.getEntity();
+    app.tap.ok(std.mem.eql(u8, try entity.getName(), "ZigClientHero"), "getEntity returns the spawned entity name");
+    app.tap.ok(try entity.getAlive(), "getEntity reports the entity alive");
+
+    const client = app.gw_service orelse {
+        failAndFinish(app, peer, "game_world service client available");
+        return;
+    };
+    _ = try client.callDamageEntity(app, buildDamageEntity, onDamageEntityReturn);
+}
+
+fn buildDamageEntity(ctx_ptr: *anyopaque, params: *game_world.GameWorld.DamageEntity.Params.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    var id = try params.initId();
+    try id.setId(app.gw_entity_id);
+    try params.setAmount(150); // Exceeds maxHealth=100, so the entity dies.
+}
+
+fn onDamageEntityReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: game_world.GameWorld.DamageEntity.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "damageEntity returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "damageEntity returns ok status");
+    app.tap.ok(try results.getKilled(), "damageEntity reports the entity killed");
+    const entity = try results.getEntity();
+    app.tap.ok(!(try entity.getAlive()) and (try entity.getHealth()) == 0, "damageEntity leaves the entity dead at zero health");
 
     finish(app, peer);
 }
+
+// ---------------------------------------------------------------------------
+// chat scenario: createRoom returns a ChatRoom capability which the client
+// then INVOKES (sendMessage, getInfo, leave), releases explicitly, and
+// finally proves the session is still healthy with a listRooms call.
+// ---------------------------------------------------------------------------
 
 fn bootstrapChat(app: *ClientApp, peer: *rpc.peer.Peer) !void {
     _ = try chat.ChatService.Client.fromBootstrap(peer, app, onChatBootstrap);
@@ -173,6 +297,7 @@ fn onChatBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: chat.Cha
         failAndFinish(app, peer, "bootstrap chat capability");
         return;
     };
+    app.chat_service = client;
     _ = try client.callCreateRoom(app, buildCreateRoom, onCreateRoomReturn);
 }
 
@@ -191,20 +316,133 @@ fn onCreateRoomReturn(
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
     const results = response.unwrap() catch {
-        app.tap.ok(false, "createRoom returns results");
-        finish(app, peer);
+        failAndFinish(app, peer, "createRoom returns results");
         return;
     };
-    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "createRoom returns ok status");
-    const room_cap = try results.getRoom();
-    const resolved = try caps.resolveCapability(room_cap);
-    app.tap.ok(switch (resolved) {
-        .imported => true,
-        else => false,
-    }, "createRoom returns imported ChatRoom capability");
+    app.tap.ok((try results.getStatus()) == .Ok, "createRoom returns ok status");
+    const info = try results.getInfo();
+    app.tap.ok(std.mem.eql(u8, try info.getName(), "general"), "createRoom returns expected room info name");
+
+    const room = results.resolveRoom(peer, caps) catch {
+        failAndFinish(app, peer, "createRoom returns imported ChatRoom capability");
+        return;
+    };
+    app.tap.ok(true, "createRoom returns imported ChatRoom capability");
+    app.chat_room = room;
+
+    _ = try room.callSendMessage(app, buildRoomSendMessage, onRoomSendMessageReturn);
+}
+
+fn buildRoomSendMessage(ctx_ptr: *anyopaque, params: *chat.ChatRoom.SendMessage.Params.Builder) !void {
+    _ = ctx_ptr;
+    try params.setContent("Hello from the Zig e2e client");
+}
+
+fn onRoomSendMessageReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: chat.ChatRoom.SendMessage.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "room sendMessage returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "room sendMessage returns ok status");
+    const message = try results.getMessage();
+    app.tap.ok(
+        std.mem.eql(u8, try message.getContent(), "Hello from the Zig e2e client"),
+        "room sendMessage echoes the message content",
+    );
+
+    const room = app.chat_room orelse {
+        failAndFinish(app, peer, "chat room client available");
+        return;
+    };
+    _ = try room.callGetInfo(app, null, onRoomGetInfoReturn);
+}
+
+fn onRoomGetInfoReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: chat.ChatRoom.GetInfo.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "room getInfo returns results");
+        return;
+    };
+    const info = try results.getInfo();
+    app.tap.ok(std.mem.eql(u8, try info.getName(), "general"), "room getInfo returns expected room name");
+
+    const room = app.chat_room orelse {
+        failAndFinish(app, peer, "chat room client available");
+        return;
+    };
+    _ = try room.callLeave(app, null, onRoomLeaveReturn);
+}
+
+fn onRoomLeaveReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: chat.ChatRoom.Leave.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "room leave returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "room leave returns ok status");
+
+    // Explicitly release the room import mid-session, then keep using the
+    // service capability: a well-formed Release must only drop the room.
+    if (app.chat_room) |room| {
+        room.release();
+        app.chat_room = null;
+    }
+
+    const service = app.chat_service orelse {
+        failAndFinish(app, peer, "chat service client available");
+        return;
+    };
+    _ = try service.callListRooms(app, null, onListRoomsReturn);
+}
+
+fn onListRoomsReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: chat.ChatService.ListRooms.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "listRooms returns results");
+        return;
+    };
+    const rooms = try results.getRooms();
+    var found = false;
+    var i: u32 = 0;
+    while (i < rooms.len()) : (i += 1) {
+        const info = try rooms.get(i);
+        if (std.mem.eql(u8, try info.getName(), "general")) found = true;
+    }
+    app.tap.ok(found, "listRooms still lists the room after room release");
 
     finish(app, peer);
 }
+
+// ---------------------------------------------------------------------------
+// inventory scenario: getInventory, then startTrade returns a TradeSession
+// capability which the client INVOKES (getState, accept, cancel) before
+// releasing it.
+// ---------------------------------------------------------------------------
 
 fn bootstrapInventory(app: *ClientApp, peer: *rpc.peer.Peer) !void {
     _ = try inventory.InventoryService.Client.fromBootstrap(peer, app, onInventoryBootstrap);
@@ -216,6 +454,7 @@ fn onInventoryBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: inv
         failAndFinish(app, peer, "bootstrap inventory capability");
         return;
     };
+    app.inv_service = client;
     _ = try client.callGetInventory(app, buildGetInventory, onGetInventoryReturn);
 }
 
@@ -234,16 +473,117 @@ fn onGetInventoryReturn(
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
     const results = response.unwrap() catch {
-        app.tap.ok(false, "getInventory returns results");
-        finish(app, peer);
+        failAndFinish(app, peer, "getInventory returns results");
         return;
     };
-    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "getInventory returns ok status");
+    app.tap.ok((try results.getStatus()) == .Ok, "getInventory returns ok status");
     const inv = try results.getInventory();
     app.tap.ok((try inv.getUsedSlots()) == 0, "new inventory has zero used slots");
 
+    const client = app.inv_service orelse {
+        failAndFinish(app, peer, "inventory service client available");
+        return;
+    };
+    _ = try client.callStartTrade(app, buildStartTrade, onStartTradeReturn);
+}
+
+fn buildStartTrade(ctx_ptr: *anyopaque, params: *inventory.InventoryService.StartTrade.Params.Builder) !void {
+    _ = ctx_ptr;
+    var initiator = try params.initInitiator();
+    try initiator.setId(42);
+    var target = try params.initTarget();
+    try target.setId(99);
+}
+
+fn onStartTradeReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: inventory.InventoryService.StartTrade.Response,
+    caps: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "startTrade returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "startTrade returns ok status");
+
+    const session = results.resolveSession(peer, caps) catch {
+        failAndFinish(app, peer, "startTrade returns imported TradeSession capability");
+        return;
+    };
+    app.tap.ok(true, "startTrade returns imported TradeSession capability");
+    app.trade_session = session;
+
+    _ = try session.callGetState(app, null, onTradeGetStateReturn);
+}
+
+fn onTradeGetStateReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: inventory.TradeSession.GetState.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "trade getState returns results");
+        return;
+    };
+    app.tap.ok((try results.getState()) == .Proposing, "trade session starts in proposing state");
+
+    const session = app.trade_session orelse {
+        failAndFinish(app, peer, "trade session client available");
+        return;
+    };
+    _ = try session.callAccept(app, null, onTradeAcceptReturn);
+}
+
+fn onTradeAcceptReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: inventory.TradeSession.Accept.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "trade accept returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "trade accept returns ok status");
+
+    const session = app.trade_session orelse {
+        failAndFinish(app, peer, "trade session client available");
+        return;
+    };
+    _ = try session.callCancel(app, null, onTradeCancelReturn);
+}
+
+fn onTradeCancelReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: inventory.TradeSession.Cancel.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "trade cancel returns results");
+        return;
+    };
+    app.tap.ok((try results.getState()) == .Cancelled, "trade cancel reports cancelled state");
+
     finish(app, peer);
 }
+
+// ---------------------------------------------------------------------------
+// matchmaking scenario: enqueue, then the schema's designed pipelining
+// exercise -- callFindMatchPipelined plus signalReady/getInfo on the
+// promised MatchController BEFORE findMatch's Return resolves (E-order),
+// then a direct call on the resolved controller import.
+// ---------------------------------------------------------------------------
 
 fn bootstrapMatchmaking(app: *ClientApp, peer: *rpc.peer.Peer) !void {
     _ = try matchmaking.MatchmakingService.Client.fromBootstrap(peer, app, onMatchmakingBootstrap);
@@ -255,6 +595,7 @@ fn onMatchmakingBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: m
         failAndFinish(app, peer, "bootstrap matchmaking capability");
         return;
     };
+    app.mm_service = client;
     _ = try client.callEnqueue(app, buildEnqueue, onEnqueueReturn);
 }
 
@@ -278,13 +619,143 @@ fn onEnqueueReturn(
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
     const results = response.unwrap() catch {
-        app.tap.ok(false, "enqueue returns results");
-        finish(app, peer);
+        failAndFinish(app, peer, "enqueue returns results");
         return;
     };
-    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "enqueue returns ok status");
+    app.tap.ok((try results.getStatus()) == .Ok, "enqueue returns ok status");
     const ticket = try results.getTicket();
     app.tap.ok((try ticket.getTicketId()) > 0, "enqueue returns a non-zero ticket id");
+
+    const service = app.mm_service orelse {
+        failAndFinish(app, peer, "matchmaking service client available");
+        return;
+    };
+
+    // Typed pipelining: issue signalReady and getInfo against the promised
+    // MatchController before findMatch's Return has been received. All three
+    // Calls hit the wire back to back; the server answers them in E-order.
+    const pipeline = try service.callFindMatchPipelined(app, buildFindMatch, onFindMatchReturn);
+    const promised_controller = pipeline.getController();
+    _ = try promised_controller.callSignalReady(app, buildSignalReady, onSignalReadyReturn);
+    _ = try promised_controller.callGetInfo(app, null, onPipelinedGetInfoReturn);
+    app.tap.ok(!app.mm_find_match_done, "pipelined calls issued before findMatch resolved");
+}
+
+fn buildFindMatch(ctx_ptr: *anyopaque, params: *matchmaking.MatchmakingService.FindMatch.Params.Builder) !void {
+    _ = ctx_ptr;
+    var player = try params.initPlayer();
+    var id = try player.initId();
+    try id.setId(1);
+    try player.setName("ZigQueuePlayer");
+    try player.setFaction(.Alliance);
+    try player.setLevel(60);
+    try params.setMode(.Duel);
+}
+
+fn buildSignalReady(ctx_ptr: *anyopaque, params: *matchmaking.MatchController.SignalReady.Params.Builder) !void {
+    _ = ctx_ptr;
+    var player = try params.initPlayer();
+    try player.setId(1);
+}
+
+fn onFindMatchReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: matchmaking.MatchmakingService.FindMatch.Response,
+    caps: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "findMatch returns results");
+        return;
+    };
+    app.mm_match_id = try (try results.getMatchId()).getId();
+    app.tap.ok(app.mm_match_id != 0, "findMatch returns a non-zero match id");
+
+    const controller = results.resolveController(peer, caps) catch {
+        failAndFinish(app, peer, "findMatch returns imported MatchController capability");
+        return;
+    };
+    app.tap.ok(true, "findMatch returns imported MatchController capability");
+    app.mm_controller = controller;
+
+    app.mm_find_match_done = true;
+    try maybeCancelMatch(app, peer);
+}
+
+fn onSignalReadyReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: matchmaking.MatchController.SignalReady.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "pipelined signalReady returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "pipelined signalReady returns ok status");
+
+    app.mm_signal_ready_done = true;
+    try maybeCancelMatch(app, peer);
+}
+
+fn onPipelinedGetInfoReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: matchmaking.MatchController.GetInfo.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "pipelined getInfo returns results");
+        return;
+    };
+    const info = try results.getInfo();
+    app.mm_pipelined_info_match_id = try (try info.getId()).getId();
+    const team_a = try info.getTeamA();
+    app.tap.ok(team_a.len() >= 1, "pipelined getInfo returns populated match info");
+
+    app.mm_get_info_done = true;
+    try maybeCancelMatch(app, peer);
+}
+
+/// Once findMatch and both pipelined calls have resolved, verify pipelined
+/// results were served by the same match, then make a DIRECT call on the
+/// now-resolved controller import.
+fn maybeCancelMatch(app: *ClientApp, peer: *rpc.peer.Peer) !void {
+    if (app.mm_cancel_started) return;
+    if (!(app.mm_find_match_done and app.mm_signal_ready_done and app.mm_get_info_done)) return;
+    app.mm_cancel_started = true;
+
+    app.tap.ok(
+        app.mm_pipelined_info_match_id == app.mm_match_id,
+        "pipelined getInfo observed the same match as findMatch",
+    );
+
+    const controller = app.mm_controller orelse {
+        failAndFinish(app, peer, "match controller client available");
+        return;
+    };
+    _ = try controller.callCancelMatch(app, null, onCancelMatchReturn);
+}
+
+fn onCancelMatchReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: matchmaking.MatchController.CancelMatch.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "cancelMatch returns results");
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == .Ok, "cancelMatch on resolved controller returns ok status");
 
     finish(app, peer);
 }
