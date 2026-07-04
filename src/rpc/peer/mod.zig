@@ -1835,8 +1835,25 @@ pub const Peer = struct {
         // send the remote holds the descriptor and owns the ref (matching
         // handleBootstrap's pattern).
         try self.noteExportRef(export_id);
-        var rollback_ref = true;
-        errdefer if (rollback_ref) self.rollbackExportRef(export_id);
+        var rollback_wire_ref = true;
+        errdefer if (rollback_wire_ref) self.rollbackExportRef(export_id);
+
+        // Pin the resolution target for the promise export's own lifetime. Once
+        // the promise routes inbound calls at `export_id` (via
+        // replayResolvedPromiseExport / handleResolvedExportedCall below), an
+        // inbound Release that zeroes the target's wire ref_count — or the
+        // echoed-Unimplemented cleanup above, which also spends a wire ref —
+        // must not destroy the target out from under the still-live promise
+        // export. This promise-held reference is separate from the wire ref
+        // taken above (which the remote owns and spends): it is released only
+        // when the promise export is itself destroyed (see
+        // finalizeExportRelease / releasePromiseHeldCap). Rolled back only
+        // while the send can still fail; past a committed resolution the
+        // promise owns it and its destruction releases it.
+        try self.notePromiseExportRef(export_id);
+        var rollback_promise_ref = true;
+        errdefer if (rollback_promise_ref) self.rollbackPromiseExportRef(export_id);
+
         try peer_outbound_control.sendResolveCapViaSendFrame(
             Peer,
             self,
@@ -1844,9 +1861,13 @@ pub const Peer = struct {
             descriptor,
             Peer.sendFrame,
         );
-        rollback_ref = false;
+        rollback_wire_ref = false;
 
         promise_entry.value_ptr.resolved = .{ .exported = .{ .id = export_id } };
+        // The resolution is committed: the promise export now routes to
+        // `export_id` and its eventual destruction releases this promise-held
+        // ref, so keep it even if replay below fails.
+        rollback_promise_ref = false;
         self.caps.clearExportPromise(promise_id);
         try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
     }
@@ -2791,10 +2812,78 @@ pub const Peer = struct {
         entry.value_ptr.answer_ref_count -= 1;
     }
 
+    fn notePromiseExportRef(self: *Peer, id: u32) !void {
+        try peer_cap_lifecycle.notePromiseExportRef(
+            ExportEntry,
+            &self.exports,
+            id,
+        );
+    }
+
+    fn rollbackPromiseExportRef(self: *Peer, id: u32) void {
+        var entry = self.exports.getEntry(id) orelse return;
+        if (entry.value_ptr.promise_ref_count == 0) return;
+        entry.value_ptr.promise_ref_count -= 1;
+    }
+
+    /// The resolution-target export id of a promise export that has resolved to
+    /// a concrete export, or null for any other export (unresolved, resolved to
+    /// an exception, or a plain hosted cap). Only such a resolution takes a
+    /// promise-held ref on its target (see `resolvePromiseExportToExport`), so
+    /// this is exactly the set of exports that must release one when destroyed.
+    fn promiseTargetOf(self: *Peer, id: u32) ?u32 {
+        const entry = self.exports.getEntry(id) orelse return null;
+        const resolved = entry.value_ptr.resolved orelse return null;
+        return switch (resolved) {
+            .exported => |cap| cap.id,
+            else => null,
+        };
+    }
+
+    /// Called after a release lowered one of export `id`'s ref classes. If that
+    /// dropped `id` out of the export table, free its persistence state and —
+    /// when `id` was a promise that had resolved to `promise_target` — release
+    /// the promise-held ref it pinned on that target, cascading destruction
+    /// down a resolution chain. `promise_target` must be captured *before* the
+    /// release (the entry, and its `resolved` field, is gone by the time we get
+    /// here).
+    fn finalizeExportRelease(self: *Peer, id: u32, promise_target: ?u32) void {
+        if (self.exports.contains(id)) return;
+        self.dropPersistenceStateForRemovedExport(id);
+        const target_id = promise_target orelse return;
+        if (target_id == id) return;
+        self.releasePromiseHeldCap(target_id) catch |err| {
+            log.warn("cascade promise-held release for export {} failed: {}", .{ target_id, err });
+        };
+    }
+
+    /// Release one promise-held reference on export `id`, taken by
+    /// `resolvePromiseExportToExport` when a promise export resolved to `id` as
+    /// its target. Destroys the export once no wire, answer, or promise
+    /// references remain, cascading if `id` was itself a resolved promise.
+    fn releasePromiseHeldCap(self: *Peer, id: u32) !void {
+        const promise_target = self.promiseTargetOf(id);
+        try peer_cap_lifecycle.releasePromiseHeldExport(
+            Peer,
+            ExportEntry,
+            PendingCall,
+            self,
+            self.allocator,
+            &self.exports,
+            &self.pending_export_promises,
+            self.bootstrap_export_id,
+            id,
+            peer_cap_lifecycle.clearExportForPeerFn(Peer),
+            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+        );
+        self.finalizeExportRelease(id, promise_target);
+    }
+
     /// Release one answer-held reference on export `id` (the `count` from the
     /// releaseResultCaps-style frame walk is always 1 per descriptor).
     fn releaseAnswerHeldCap(self: *Peer, id: u32, count: u32) !void {
         _ = count;
+        const promise_target = self.promiseTargetOf(id);
         try peer_cap_lifecycle.releaseAnswerHeldExport(
             Peer,
             ExportEntry,
@@ -2808,10 +2897,11 @@ pub const Peer = struct {
             peer_cap_lifecycle.clearExportForPeerFn(Peer),
             pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
-        if (!self.exports.contains(id)) self.dropPersistenceStateForRemovedExport(id);
+        self.finalizeExportRelease(id, promise_target);
     }
 
     fn releaseExport(self: *Peer, id: u32, count: u32) !void {
+        const promise_target = self.promiseTargetOf(id);
         try peer_cap_lifecycle.releaseExport(
             Peer,
             ExportEntry,
@@ -2826,7 +2916,7 @@ pub const Peer = struct {
             peer_cap_lifecycle.clearExportForPeerFn(Peer),
             pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
-        if (!self.exports.contains(id)) self.dropPersistenceStateForRemovedExport(id);
+        self.finalizeExportRelease(id, promise_target);
     }
 
     fn releaseInboundCaps(self: *Peer, inbound: *cap_table.InboundCapTable) !void {

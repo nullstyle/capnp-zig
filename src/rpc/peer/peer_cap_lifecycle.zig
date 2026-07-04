@@ -96,6 +96,20 @@ pub fn noteAnswerExportRef(
     entry.value_ptr.answer_ref_count = std.math.add(u32, entry.value_ptr.answer_ref_count, 1) catch return error.RefCountOverflow;
 }
 
+/// Take one promise-held reference on an export: a promise export that has
+/// resolved to this export as its target owns this reference for its own
+/// lifetime, so an inbound Release that zeroes the target's wire `ref_count`
+/// cannot destroy it while the promise export still routes calls at it.
+/// Tracked separately from both the wire `ref_count` and `answer_ref_count`.
+pub fn notePromiseExportRef(
+    comptime ExportEntryType: type,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    id: u32,
+) !void {
+    var entry = exports.getEntry(id) orelse return error.UnknownExport;
+    entry.value_ptr.promise_ref_count = std.math.add(u32, entry.value_ptr.promise_ref_count, 1) catch return error.RefCountOverflow;
+}
+
 fn destroyExportEntry(
     comptime PeerType: type,
     comptime ExportEntryType: type,
@@ -152,10 +166,14 @@ pub fn releaseExport(
     if (count > entry.value_ptr.ref_count) return error.ReleaseCountExceeded;
 
     entry.value_ptr.ref_count -= count;
-    // Destruction requires BOTH counts at zero: a Release only spends wire
+    // Destruction requires ALL ref classes at zero: a Release only spends wire
     // references, so an export pinned by a still-unfinished resolved answer
-    // (answer_ref_count > 0) survives for pipelined dispatch until Finish.
-    if (entry.value_ptr.ref_count == 0 and entry.value_ptr.answer_ref_count == 0) {
+    // (answer_ref_count > 0) or by a live promise export that resolved to it
+    // (promise_ref_count > 0) survives for dispatch until that holder releases.
+    if (entry.value_ptr.ref_count == 0 and
+        entry.value_ptr.answer_ref_count == 0 and
+        entry.value_ptr.promise_ref_count == 0)
+    {
         destroyExportEntry(
             PeerType,
             ExportEntryType,
@@ -203,7 +221,62 @@ pub fn releaseAnswerHeldExport(
         if (bootstrap_id == id) return;
     }
 
-    if (entry.value_ptr.ref_count == 0 and entry.value_ptr.answer_ref_count == 0) {
+    if (entry.value_ptr.ref_count == 0 and
+        entry.value_ptr.answer_ref_count == 0 and
+        entry.value_ptr.promise_ref_count == 0)
+    {
+        destroyExportEntry(
+            PeerType,
+            ExportEntryType,
+            PendingCallType,
+            peer,
+            allocator,
+            exports,
+            pending_export_promises,
+            id,
+            clear_export,
+            deinit_pending_call,
+        );
+    }
+}
+
+/// Release one promise-held reference on an export, destroying the entry when
+/// no wire, answer, or promise references remain. Invoked when the promise
+/// export that took the reference (via resolvePromiseExportToExport) is itself
+/// destroyed — releasing its pin on the resolution target it routed calls to.
+pub fn releasePromiseHeldExport(
+    comptime PeerType: type,
+    comptime ExportEntryType: type,
+    comptime PendingCallType: type,
+    peer: *PeerType,
+    allocator: std.mem.Allocator,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    pending_export_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
+    bootstrap_export_id: ?u32,
+    id: u32,
+    clear_export: *const fn (*PeerType, u32) void,
+    deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
+) !void {
+    var entry = exports.getEntry(id) orelse {
+        log.warn("promise-held release for unknown export id={}", .{id});
+        return;
+    };
+    if (entry.value_ptr.promise_ref_count == 0) {
+        log.warn("promise-held release underflow for export id={}", .{id});
+        return;
+    }
+    entry.value_ptr.promise_ref_count -= 1;
+
+    // Bootstrap export entry persists for the connection lifetime (see
+    // releaseExport); only its counters move.
+    if (bootstrap_export_id) |bootstrap_id| {
+        if (bootstrap_id == id) return;
+    }
+
+    if (entry.value_ptr.ref_count == 0 and
+        entry.value_ptr.answer_ref_count == 0 and
+        entry.value_ptr.promise_ref_count == 0)
+    {
         destroyExportEntry(
             PeerType,
             ExportEntryType,
@@ -583,6 +656,7 @@ test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-pro
 const TestExportEntry = struct {
     ref_count: u32,
     answer_ref_count: u32 = 0,
+    promise_ref_count: u32 = 0,
 };
 
 const TestPendingCall = struct {
@@ -741,6 +815,146 @@ test "peer_cap_lifecycle releaseAnswerHeldExport never destroys the bootstrap ex
     );
     const entry = exports.get(0) orelse return error.MissingExport;
     try std.testing.expectEqual(@as(u32, 0), entry.answer_ref_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+}
+
+test "peer_cap_lifecycle releaseExport keeps an export pinned by promise refs" {
+    var exports = std.AutoHashMap(u32, TestExportEntry).init(std.testing.allocator);
+    defer exports.deinit();
+    var pending = std.AutoHashMap(u32, std.ArrayList(TestPendingCall)).init(std.testing.allocator);
+    defer pending.deinit();
+
+    // One wire ref (from the Resolve descriptor handed to the remote) and one
+    // promise-held ref (the resolved promise pinning this target).
+    try exports.put(7, .{ .ref_count = 1, .promise_ref_count = 1 });
+
+    var peer = TestReleasePeer{};
+    // The remote Releases its wire ref to the resolved cap. The export must
+    // survive: the live promise export still routes calls at it.
+    try releaseExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        7,
+        1,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    const pinned = exports.get(7) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 0), pinned.ref_count);
+    try std.testing.expectEqual(@as(u32, 1), pinned.promise_ref_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+
+    // Destroying the promise export releases the promise-held ref: now all
+    // three counts are zero and the target is destroyed.
+    try releasePromiseHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        7,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    try std.testing.expect(!exports.contains(7));
+    try std.testing.expectEqual(@as(usize, 1), peer.clear_export_calls);
+    try std.testing.expectEqual(@as(?u32, 7), peer.last_cleared_export);
+}
+
+test "peer_cap_lifecycle releasePromiseHeldExport tolerates unknown and underflow" {
+    var exports = std.AutoHashMap(u32, TestExportEntry).init(std.testing.allocator);
+    defer exports.deinit();
+    var pending = std.AutoHashMap(u32, std.ArrayList(TestPendingCall)).init(std.testing.allocator);
+    defer pending.deinit();
+
+    // A wire ref outlives the promise-held ref: the export survives the
+    // promise release, and a second (underflowing) release is a warn-only
+    // no-op that never touches the surviving wire ref.
+    try exports.put(8, .{ .ref_count = 1, .promise_ref_count = 1 });
+
+    var peer = TestReleasePeer{};
+    try releasePromiseHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        8,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    const kept = exports.get(8) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 1), kept.ref_count);
+    try std.testing.expectEqual(@as(u32, 0), kept.promise_ref_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+
+    // Underflow (promise_ref_count already 0) and unknown id are tolerated.
+    try releasePromiseHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        8,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    try std.testing.expect(exports.contains(8));
+    try releasePromiseHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        null,
+        1000,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
+}
+
+test "peer_cap_lifecycle releasePromiseHeldExport never destroys the bootstrap export" {
+    var exports = std.AutoHashMap(u32, TestExportEntry).init(std.testing.allocator);
+    defer exports.deinit();
+    var pending = std.AutoHashMap(u32, std.ArrayList(TestPendingCall)).init(std.testing.allocator);
+    defer pending.deinit();
+
+    try exports.put(0, .{ .ref_count = 0, .promise_ref_count = 1 });
+
+    var peer = TestReleasePeer{};
+    try releasePromiseHeldExport(
+        TestReleasePeer,
+        TestExportEntry,
+        TestPendingCall,
+        &peer,
+        std.testing.allocator,
+        &exports,
+        &pending,
+        0,
+        0,
+        TestReleasePeer.clearExport,
+        TestReleasePeer.deinitPendingCall,
+    );
+    const entry = exports.get(0) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 0), entry.promise_ref_count);
     try std.testing.expectEqual(@as(usize, 0), peer.clear_export_calls);
 }
 

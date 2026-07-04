@@ -79,6 +79,13 @@ pub fn ExportEntry(comptime ExportType: type) type {
         /// Releases its own wire references. Only Finish releases these; a
         /// Release message cannot touch them.
         answer_ref_count: u32 = 0,
+        /// Promise-held references: taken on a resolution-target export when a
+        /// promise export resolves to it (`resolvePromiseExportToExport`). The
+        /// promise export routes inbound calls at this target id, so it must
+        /// stay dispatchable even after the remote Releases its own wire
+        /// references to it. Released only when the promise export that took it
+        /// is itself destroyed; a Release message cannot touch these.
+        promise_ref_count: u32 = 0,
         is_promise: bool = false,
         resolved: ?cap_table.ResolvedCap = null,
     };

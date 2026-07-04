@@ -2982,7 +2982,10 @@ test "Unimplemented(Resolve) echo releases the resolution target's export ref" {
     const surviving = peer.exports.get(concrete_export_id) orelse return error.UnknownExport;
     try std.testing.expectEqual(@as(u32, 1), surviving.ref_count);
 
-    // Echo of promise_b's Resolve: last ref spent, export destroyed.
+    // Echo of promise_b's Resolve: the last WIRE ref is spent, but the two
+    // resolved promise exports still pin the target with promise-held refs, so
+    // it survives at wire ref_count 0. (A call through either promise must
+    // still dispatch to it — see the dedicated pinning regression test below.)
     {
         var resolve_builder = protocol.MessageBuilder.init(allocator);
         defer resolve_builder.deinit();
@@ -2996,7 +2999,9 @@ test "Unimplemented(Resolve) echo releases the resolution target's export ref" {
         defer allocator.free(echo);
         try peer.handleFrame(echo);
     }
-    try std.testing.expect(!peer.exports.contains(concrete_export_id));
+    const pinned = peer.exports.get(concrete_export_id) orelse return error.TargetDestroyedByRelease;
+    try std.testing.expectEqual(@as(u32, 0), pinned.ref_count);
+    try std.testing.expectEqual(@as(u32, 2), pinned.promise_ref_count);
 
     // The promise exports themselves are untouched: the remote still holds
     // them, and releasing the resolution produced no outbound frames.
@@ -3052,9 +3057,14 @@ test "level-0 peer echo of our own Resolve frame leaves no leaked export state" 
     defer allocator.free(echo);
     try peer.handleFrame(echo);
 
-    // The only ref on the resolution target was the one the Resolve carried:
-    // the export is gone, so nothing pins it for the connection lifetime.
-    try std.testing.expect(!peer.exports.contains(concrete_export_id));
+    // The echoed Resolve releases the WIRE ref its descriptor carried, but the
+    // promise export still pins its resolution target with a promise-held ref,
+    // so the target survives at wire ref_count 0. The promise stays resolved
+    // locally: a level-0 peer never picked up the resolution, so it may still
+    // call the promise export and we must still dispatch to the target.
+    const target = peer.exports.get(concrete_export_id) orelse return error.TargetDestroyedByRelease;
+    try std.testing.expectEqual(@as(u32, 0), target.ref_count);
+    try std.testing.expectEqual(@as(u32, 1), target.promise_ref_count);
     const promise_entry = peer.exports.get(promise_export_id) orelse return error.UnknownExport;
     try std.testing.expect(promise_entry.resolved != null);
     // peer.deinit() under std.testing.allocator verifies no allocation leaks.
@@ -3190,6 +3200,126 @@ test "unimplemented echoes of other tags and malformed resolves are safe no-ops"
 
     // None of the echoes provoked an outbound frame.
     try std.testing.expectEqual(frames_after_resolve, capture.frames.items.len);
+}
+
+test "resolved promise pins its target export against remote Release until the promise is dropped" {
+    const allocator = std.testing.allocator;
+
+    const ServerCtx = struct {
+        calls: usize = 0,
+        last_question_id: u32 = 0,
+    };
+    const Handlers = struct {
+        fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const ctx: *ServerCtx = castCtx(*ServerCtx, ctx_ptr);
+            ctx.calls += 1;
+            ctx.last_question_id = call.question_id;
+            try peer.sendReturnException(call.question_id, "dispatched");
+        }
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var server_ctx = ServerCtx{};
+    const concrete_export_id = try peer.addExport(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+    const promise_export_id = try peer.addPromiseExport();
+
+    // Model the remote holding one wire ref on the promise export (it imported
+    // the promise from a prior Return/Resolve). Bumping ref_count directly is
+    // the established idiom for "the remote received this capability".
+    {
+        var pe = peer.exports.getEntry(promise_export_id) orelse return error.MissingExport;
+        pe.value_ptr.ref_count = 1;
+    }
+
+    // Resolve the promise to the concrete export: this hands the remote one
+    // wire ref on the target AND pins the target with one promise-held ref.
+    try peer.resolvePromiseExportToExport(promise_export_id, concrete_export_id);
+    {
+        const c = peer.exports.get(concrete_export_id) orelse return error.MissingExport;
+        try std.testing.expectEqual(@as(u32, 1), c.ref_count);
+        try std.testing.expectEqual(@as(u32, 1), c.promise_ref_count);
+    }
+
+    // The remote Releases its wire ref to the target the moment it drops the
+    // resolved cap — a legal interleaving. Before the fix this zeroed the
+    // target's only refcount and destroyed the export while the promise still
+    // routed calls at it.
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildRelease(concrete_export_id, 1);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+
+    // The promise-held ref keeps the target alive at wire ref_count 0.
+    {
+        const c = peer.exports.get(concrete_export_id) orelse return error.TargetDestroyedByRelease;
+        try std.testing.expectEqual(@as(u32, 0), c.ref_count);
+        try std.testing.expectEqual(@as(u32, 1), c.promise_ref_count);
+    }
+
+    // A call THROUGH the promise export must still dispatch to the concrete
+    // handler (pre-fix: "unknown promised capability" because the target was
+    // gone).
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(4242, 0xFEED, 3);
+        try call.setTargetImportedCap(promise_export_id);
+        _ = try call.initCapTableTyped(0);
+        const frame = try call_builder.finish();
+        defer allocator.free(frame);
+
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        const parsed = try decoded.asCall();
+        try peer_test_hooks.handleCall(&peer, frame, parsed);
+    }
+    try std.testing.expectEqual(@as(usize, 1), server_ctx.calls);
+    try std.testing.expectEqual(@as(u32, 4242), server_ctx.last_question_id);
+
+    // Releasing the promise export itself finally releases the promise-held
+    // ref, and with no references of any class left the target is destroyed.
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildRelease(promise_export_id, 1);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+    try std.testing.expect(!peer.exports.contains(promise_export_id));
+    try std.testing.expect(!peer.exports.contains(concrete_export_id));
+    // peer.deinit() under std.testing.allocator verifies no allocation leaks.
 }
 
 test "bootstrap return is recorded for promisedAnswer pipelined calls" {
