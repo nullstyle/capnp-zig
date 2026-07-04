@@ -13,6 +13,8 @@ const capnpc = @import("capnpc-zig");
 
 const message = capnpc.message;
 const framing = capnpc.rpc.wire.framing;
+const protocol = capnpc.rpc.wire.protocol;
+const cap_table = capnpc.rpc.caps.table;
 const Peer = capnpc.rpc.peer.Peer;
 const request_reader = capnpc.request;
 const Generator = capnpc.codegen.Generator;
@@ -92,6 +94,132 @@ fn fuzzPeerHandleFrame(_: void, smith: *std.testing.Smith) anyerror!void {
     }
 }
 
+/// Fill a Payload cap table with `count` fuzzed CapDescriptors spanning every
+/// variant (none / senderHosted / senderPromise / receiverHosted /
+/// receiverAnswer), with ids chosen from a small range so they overlap the
+/// peer's seeded export/import/answer state — the exact conditions under which
+/// an id-space confusion (e.g. the export/import collision class) would surface.
+fn fuzzCapTable(cap_list: anytype, count: u32, smith: *std.testing.Smith) !void {
+    var list = cap_list;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        var desc = try list.get(i);
+        switch (smith.valueRangeAtMost(u8, 0, 4)) {
+            0 => try desc.setNone({}),
+            1 => try desc.setSenderHosted(smith.valueRangeAtMost(u32, 0, 8)),
+            2 => try desc.setSenderPromise(smith.valueRangeAtMost(u32, 0, 8)),
+            3 => try desc.setReceiverHosted(smith.valueRangeAtMost(u32, 0, 8)),
+            else => {
+                var ops: [4]protocol.PromisedAnswerOp = undefined;
+                const n: usize = smith.valueRangeAtMost(u8, 0, ops.len);
+                for (ops[0..n]) |*op| op.* = .{
+                    .tag = if (smith.boolWeighted(1, 1)) .getPointerField else .noop,
+                    .pointer_index = smith.value(u16),
+                };
+                try protocol.CapDescriptor.writeReceiverAnswer(desc._builder, smith.valueRangeAtMost(u32, 0, 8), ops[0..n]);
+            },
+        }
+    }
+}
+
+/// Build a well-formed but adversarial Call: a hostile target (importedCap or
+/// a PromisedAnswer with a fuzzed transform-op path), fuzzed send-results-to
+/// routing, a fuzzed cap table, and — for cap-bearing payloads — a params
+/// content capability pointer at a (possibly out-of-range) cap-table index, so
+/// forward/pipeline cap remapping is exercised.
+fn buildHostileCall(builder: *protocol.MessageBuilder, smith: *std.testing.Smith) !void {
+    var call = try builder.beginCall(
+        smith.valueRangeAtMost(u32, 0, 8),
+        smith.value(u64),
+        smith.value(u16),
+    );
+
+    if (smith.boolWeighted(1, 1)) {
+        try call.setTargetImportedCap(smith.valueRangeAtMost(u32, 0, 8));
+    } else {
+        var ops: [8]protocol.PromisedAnswerOp = undefined;
+        const n: usize = smith.valueRangeAtMost(u8, 0, ops.len);
+        for (ops[0..n]) |*op| op.* = .{
+            .tag = if (smith.boolWeighted(1, 1)) .getPointerField else .noop,
+            .pointer_index = smith.value(u16),
+        };
+        try call.setTargetPromisedAnswerWithOps(smith.valueRangeAtMost(u32, 0, 8), ops[0..n]);
+    }
+
+    switch (smith.valueRangeAtMost(u8, 0, 2)) {
+        0 => call.setSendResultsToCaller(),
+        1 => call.setSendResultsToYourself(),
+        else => try call.setSendResultsToThirdPartyNull(),
+    }
+
+    const cap_count = smith.valueRangeAtMost(u32, 0, 6);
+    var payload = try call.payloadTyped();
+    if (cap_count > 0 and smith.boolWeighted(1, 1)) {
+        var content = try payload.initContent();
+        // May index one past the end to fuzz the bounds check.
+        try content.setCapability(.{ .id = smith.valueRangeAtMost(u32, 0, cap_count) });
+    }
+    try fuzzCapTable(try payload.initCapTable(cap_count), cap_count, smith);
+}
+
+/// Build an adversarial Return: any discriminant, and for `.results` a fuzzed
+/// cap table (drives cap decoding on the answer path plus PromisedAnswer
+/// resolution against whatever the peer has cached).
+fn buildHostileReturn(builder: *protocol.MessageBuilder, smith: *std.testing.Smith) !void {
+    const tags = [_]protocol.ReturnTag{
+        .results, .exception, .canceled, .resultsSentElsewhere, .takeFromOtherQuestion, .awaitFromThirdParty,
+    };
+    const tag = tags[smith.index(tags.len)];
+    var ret = try builder.beginReturn(smith.valueRangeAtMost(u32, 0, 8), tag);
+    if (tag == .results) {
+        const cap_count = smith.valueRangeAtMost(u32, 0, 6);
+        try fuzzCapTable(try ret.initCapTableTyped(cap_count), cap_count, smith);
+    }
+}
+
+/// STRUCTURE-AWARE peer dispatch fuzzing. Unlike `fuzzPeerHandleFrame` (random
+/// bytes, which almost always fail at decode), this feeds a sequence of
+/// well-formed Call/Return frames with hostile cap tables and transform paths,
+/// so the fuzzer reaches the actual dispatch: cap-descriptor resolution, call
+/// target routing, PromisedAnswer transform walking, forward/pipeline cap
+/// remapping, and answer/return lifecycle. A real export handler resolves
+/// answers so pipelined targets have a payload to walk. Property: no crash,
+/// hang, or leak across the sequence, whatever the peer accepts or rejects.
+fn fuzzPeerStructuredFrame(_: void, smith: *std.testing.Smith) anyerror!void {
+    const H = struct {
+        fn onCall(_: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+            // Resolve the answer so a later pipelined Call targeting this
+            // question walks its transform against a real results payload.
+            peer.sendReturnEmptyStruct(call.question_id) catch {};
+        }
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(std.testing.allocator);
+    defer peer.deinit();
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, H.onFrame);
+
+    // A live export (so importedCap targets dispatch to a real handler) plus a
+    // couple of imports (so receiverHosted/import ids hit live entries).
+    _ = peer.addExport(.{ .ctx = &sink, .on_call = H.onCall }) catch {};
+    peer.caps.noteImport(2) catch {};
+    peer.caps.noteImport(3) catch {};
+
+    var frames: u8 = 0;
+    while (frames < 32 and !smith.eosWeightedSimple(3, 1)) : (frames += 1) {
+        var builder = protocol.MessageBuilder.init(std.testing.allocator);
+        defer builder.deinit();
+        if (smith.boolWeighted(1, 1))
+            buildHostileCall(&builder, smith) catch continue
+        else
+            buildHostileReturn(&builder, smith) catch continue;
+        const frame = builder.finish() catch continue;
+        defer std.testing.allocator.free(frame);
+        peer.handleFrame(frame) catch {};
+    }
+}
+
 /// The compiler plugin's untrusted-input surface: a hostile capnp toolchain
 /// (or a crafted CodeGeneratorRequest piped to stdin) must never crash, hang,
 /// leak, or blow the codegen budget. Parse random bytes as a request and run
@@ -142,4 +270,8 @@ test "fuzz: stream framer chunking" {
 
 test "fuzz: peer frame dispatch" {
     try std.testing.fuzz({}, fuzzPeerHandleFrame, .{});
+}
+
+test "fuzz: peer structured frame dispatch" {
+    try std.testing.fuzz({}, fuzzPeerStructuredFrame, .{});
 }
