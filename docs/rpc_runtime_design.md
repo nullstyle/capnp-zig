@@ -152,10 +152,15 @@ Outbound call:
 3. `Return` resolves the promise and releases temporary capabilities.
 
 ## Concurrency and Scheduling
-- User handlers run on a lightweight executor to avoid blocking IO. The initial implementation uses:
-  - a single-threaded queue processed between loop ticks, or
-  - optional worker threads that post results back to the loop.
-- All connection state mutations occur on the loop thread.
+- `Connection.run()` is a blocking read loop on the owner thread; a writer
+  thread drains the outbound queue, and on Windows a reader-thread bridge
+  (`WinReadBridge`) stands in for `poll(2)` because std's sockets are AFD
+  handles.
+- `Peer` and `Connection` are single-thread-affine by contract (debug-checked
+  panics; `adoptOwnerThread` re-captures affinity at quiescent handoffs). All
+  user handlers and callbacks run inside `run()` on that thread.
+- The only thread-safe entry points are `Connection.wake`/`requestClose` (and
+  `ClientSession.requestStop`, which wraps them).
 
 ## Error Handling
 - Protocol errors close the connection and fail all in-flight questions.
@@ -232,7 +237,12 @@ Contract:
 - Documentation/API smoke checks through `zig build docs-smoke` and snippet
   fixture compilation through `zig build test-docs-snippets`.
 
-## Open Questions
-- Exact mapping of Cap’n Proto RPC protocol types to generated Zig types.
-- How to expose higher-level pipelined call ergonomics in generated client stubs.
-- Whether to support packed RPC streams in the first iteration.
+## Resolved Design Questions
+- Cap'n Proto RPC protocol types map to generated Zig types via the checked-in
+  `src/rpc/gen/capnp/rpc.zig` (generated from the canonical
+  `src/rpc/capnp/rpc.capnp` by our own plugin).
+- Pipelined call ergonomics ship as generated `callXPipelined` /
+  `XPipeline.getService()` / `PipelinedClient.callY` stubs (runtime-verified
+  by `tests/rpc/integration/rpc_typed_pipelining_test.zig`).
+- Packed RPC streams remain unsupported; the wire format's packing is
+  serialization-only for now.

@@ -103,7 +103,7 @@ Use `just check-evented` (or `zig build -Dio-backend=evented check`) as the supp
 
 ## Current Status
 
-Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC runtime + codegen). Phase 7 (production hardening) is in progress — see `docs/rpc_runtime_design.md`.
+Phases 1–6 complete (wire format, builder, codegen, interop, benchmarks, RPC runtime + codegen). Production hardening is ongoing — `docs/stability.md` has the per-module stability matrix; `CHANGELOG.md` tracks current work.
 
 ## Tooling & Configuration
 

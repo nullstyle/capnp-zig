@@ -99,7 +99,14 @@ Already true, enforced per push since commit `d47cf30`:
   persistence, promises, three-party state) — is platform-neutral and
   natively tested on Windows.
 
-Known divergences (the gap this plan closes):
+Known divergences as captured when this plan was written (2026-06-12) — the
+gap the plan set out to close. This table is the historical baseline, not
+current status: `docs/stability.md` is the live per-platform matrix
+(ticks/idle/wake, plugin CLI options, socket suites, and the soak lane have
+since landed on Windows; `check-api` platform-stability is enforced — pub
+entry points take the `SocketFd`/`OwnerThreadId` wrappers precisely so the
+snapshot renders identically everywhere; `TCP_NODELAY` remains blocked
+upstream):
 
 | Area | Divergence |
 |---|---|
@@ -217,8 +224,12 @@ skips, and soak passes on a Windows runner.
 3. **CONTRIBUTING Windows quickstart**: zig master install, `just`,
    `capnp.exe`, optional Docker Desktop for cross-impl e2e, a Defender
    exclusion for `.zig-cache` (build speed), long-path note.
-4. **Branch protection**: mark the Windows Test/ReleaseSafe/Hardening jobs
-   and the self-interop e2e as required checks.
+4. ~~**Branch protection**: mark the Windows Test/ReleaseSafe/Hardening jobs
+   and the self-interop e2e as required checks.~~ **Dropped** — see the
+   Phase-1 resolution above: the direct-push-to-`main` workflow deliberately
+   has no required branch-protection checks; parity is satisfied by the
+   Windows jobs running on every push with the same standing as their
+   macOS/Linux peers.
 
 ## Phase 4 — tracked upstream dependencies (no local work)
 

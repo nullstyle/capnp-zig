@@ -265,7 +265,9 @@ The RPC runtime implements the Cap'n Proto RPC protocol over domain-shaped TCP
 and optional QUIC transport modules, using `std.Io` with a concurrent read/write
 transport layer.
 
-**Status**: Phase 6 (RPC runtime + codegen) is complete. Phase 7 (production hardening) is in progress. See `docs/rpc_runtime_design.md` for details.
+**Status**: Wire format, codegen, interop, and the RPC runtime are complete;
+production hardening is ongoing. See `docs/stability.md` for the per-module
+stability matrix and `CHANGELOG.md` for what is changing now.
 Canonical RPC schema source-of-truth copy: `src/rpc/capnp/rpc.capnp`.
 For the public-surface alias cleanup, see
 [`docs/rpc-migration-guide.md`](docs/rpc-migration-guide.md).
