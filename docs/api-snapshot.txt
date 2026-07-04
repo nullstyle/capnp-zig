@@ -956,6 +956,7 @@ capnpc-zig.rpc.peer.Export: struct
 capnpc-zig.rpc.peer.Peer.PeerStats: struct
 capnpc-zig.rpc.peer.Peer.addExport: fn (*rpc.peer.mod.Peer, rpc.peer.mod.Export) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.addExport)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.peer.Peer.addPromiseExport: fn (*rpc.peer.mod.Peer) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.addPromiseExport)).@"fn".return_type.?).error_union.error_set!u32
+capnpc-zig.rpc.peer.Peer.adoptOwnerThread: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.assertThreadAffinity: fn (*const rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.attachConnection: fn (*rpc.peer.mod.Peer, anytype) void
 capnpc-zig.rpc.peer.Peer.attachTransport: fn (*rpc.peer.mod.Peer, *anyopaque, ?*const fn (*anyopaque, *rpc.peer.mod.Peer) void, ?*const fn (*anyopaque, []const u8) anyerror!void, ?*const fn (*anyopaque) void, ?*const fn (*anyopaque) bool) void
@@ -1509,14 +1510,29 @@ capnpc-zig.rpc.transport.stream_state.StreamState.noteCallSent: fn (*rpc.transpo
 capnpc-zig.rpc.transport.stream_state.StreamState.waitStreaming: fn (*rpc.transport.stream_state.StreamState, *anyopaque, *const fn (*anyopaque, ?anyerror) void) void
 capnpc-zig.rpc.transport.stream_state.StreamState: struct
 capnpc-zig.rpc.transport.stream_state: struct
+capnpc-zig.rpc.transport.tcp.ClientSession: struct
+capnpc-zig.rpc.transport.tcp.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.Connection: struct
 capnpc-zig.rpc.transport.tcp.Listener: struct
 capnpc-zig.rpc.transport.tcp.Runtime: struct
 capnpc-zig.rpc.transport.tcp.SockAddrStorage: union
 capnpc-zig.rpc.transport.tcp.SocketFd: struct
 capnpc-zig.rpc.transport.tcp.Transport: struct
+capnpc-zig.rpc.transport.tcp.client.ClientSession.close: fn (*rpc.transport.tcp.client.ClientSession) void
+capnpc-zig.rpc.transport.tcp.client.ClientSession.connect: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.client.ConnectOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.client.ClientSession.connect)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.client.ClientSession
+capnpc-zig.rpc.transport.tcp.client.ClientSession.connectHost: fn (mem.Allocator, Io, []const u8, u16, rpc.transport.tcp.client.ConnectOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.client.ClientSession.connectHost)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.client.ClientSession
+capnpc-zig.rpc.transport.tcp.client.ClientSession.deinit: fn (*rpc.transport.tcp.client.ClientSession) void
+capnpc-zig.rpc.transport.tcp.client.ClientSession.fromPeer: fn (*rpc.peer.mod.Peer) *rpc.transport.tcp.client.ClientSession
+capnpc-zig.rpc.transport.tcp.client.ClientSession.requestStop: fn (*rpc.transport.tcp.client.ClientSession) void
+capnpc-zig.rpc.transport.tcp.client.ClientSession.run: fn (*rpc.transport.tcp.client.ClientSession) void
+capnpc-zig.rpc.transport.tcp.client.ClientSession: struct
+capnpc-zig.rpc.transport.tcp.client.ConnectOptions: struct
+capnpc-zig.rpc.transport.tcp.client: struct
 capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
+capnpc-zig.rpc.transport.tcp.connect: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.client.ConnectOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.client.ClientSession.connect)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.client.ClientSession
+capnpc-zig.rpc.transport.tcp.connectHost: fn (mem.Allocator, Io, []const u8, u16, rpc.transport.tcp.client.ConnectOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.client.ClientSession.connectHost)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.client.ClientSession
 capnpc-zig.rpc.transport.tcp.connection.Connection.Options: struct
+capnpc-zig.rpc.transport.tcp.connection.Connection.adoptOwnerThread: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.close: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.transport.tcp.connection.Connection) ?*anyopaque
@@ -1551,6 +1567,7 @@ capnpc-zig.rpc.transport.tcp.runtime.closeFd: fn (Io, rpc.transport.tcp.stream_t
 capnpc-zig.rpc.transport.tcp.runtime.createListenSocket: fn (Io, Io.net.IpAddress, u31, bool) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createListenSocket)).@"fn".return_type.?).error_union.error_set!Io.net.Server
 capnpc-zig.rpc.transport.tcp.runtime.createLoopbackSocketPair: fn (Io) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.runtime.createLoopbackSocketPair)).@"fn".return_type.?).error_union.error_set![2]rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.transport.tcp.runtime.ipAddressToSockaddr__struct_*
+capnpc-zig.rpc.transport.tcp.runtime.setTcpNoDelay: fn (i32) void
 capnpc-zig.rpc.transport.tcp.runtime.shutdownFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime: struct
 capnpc-zig.rpc.transport.tcp.stream.SocketFd: struct

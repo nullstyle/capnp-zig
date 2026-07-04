@@ -1737,19 +1737,6 @@ fn onAccept(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, _: *rpc.transport.tcp.Con
     return .accept;
 }
 
-fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
-    var bytes: [4]u8 = undefined;
-    var byte_idx: usize = 0;
-    var iter = std.mem.splitScalar(u8, host, '.');
-    while (iter.next()) |octet| {
-        if (byte_idx >= 4) return error.InvalidAddress;
-        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
-        byte_idx += 1;
-    }
-    if (byte_idx != 4) return error.InvalidAddress;
-    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
-}
-
 fn usage() void {
     std.debug.print(
         \\Usage: e2e-zig-server [--host 0.0.0.0] [--port 4700] [--schema game_world|chat|inventory|matchmaking]\n
@@ -1790,7 +1777,7 @@ pub fn main(init: std.process.Init) !void {
     defer app.deinit();
     app.bind();
 
-    const address = try parseIp4Address(args.host, args.port);
+    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
 
     var pool = try rpc.integration.worker_pool.WorkerPool.init(
         allocator,

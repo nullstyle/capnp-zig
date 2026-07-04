@@ -125,47 +125,19 @@ fn onBootstrap(
 // ---------------------------------------------------------------------------
 
 fn clientThread(state: *ClientState, address: std.Io.net.IpAddress, io: std.Io) void {
-    const allocator = std.heap.page_allocator;
-
-    const fd = rawTcpConnect(address, io) catch |err| {
+    const session = rpc.transport.tcp.connect(std.heap.page_allocator, io, address, .{}) catch |err| {
         state.err = err;
         state.done = true;
         return;
     };
+    defer session.deinit();
 
-    const conn = allocator.create(rpc.transport.tcp.Connection) catch {
-        rpc.transport.tcp.closeFd(io, .{ .handle = fd });
-        state.err = error.OutOfMemory;
-        state.done = true;
-        return;
-    };
-    conn.* = rpc.transport.tcp.Connection.init(allocator, io, .{ .handle = fd }, .{}) catch |err| {
-        allocator.destroy(conn);
-        rpc.transport.tcp.closeFd(io, .{ .handle = fd });
-        state.err = err;
-        state.done = true;
-        return;
-    };
-
-    const peer_ptr = allocator.create(rpc.peer.Peer) catch {
-        conn.deinit();
-        allocator.destroy(conn);
-        state.err = error.OutOfMemory;
-        state.done = true;
-        return;
-    };
-    peer_ptr.* = rpc.peer.Peer.init(allocator, conn);
-    peer_ptr.start(null, onPeerError, null);
-
-    if (PingPong.Client.fromBootstrap(peer_ptr, state, onBootstrap)) |_| {
-        conn.run();
+    if (PingPong.Client.fromBootstrap(&session.peer, state, onBootstrap)) |_| {
+        session.run();
     } else |err| {
         state.err = err;
         state.done = true;
     }
-
-    // Safe only after run() has returned; see teardown()'s doc comment.
-    teardown(peer_ptr, conn);
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +157,7 @@ pub fn main(init: std.process.Init) !void {
     defer backend.deinit();
     const io = backend.io();
 
-    const address = parseIp4Address("127.0.0.1", 7001);
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 7001);
 
     var listener = rpc.transport.tcp.Listener.initFd(
         allocator,
@@ -212,25 +184,4 @@ pub fn main(init: std.process.Init) !void {
     if (state.result) |value| {
         std.debug.print("Ping result: {d}\n", .{value});
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers (matching stressor.zig pattern)
-// ---------------------------------------------------------------------------
-
-fn parseIp4Address(host: []const u8, port: u16) std.Io.net.IpAddress {
-    var bytes: [4]u8 = undefined;
-    var byte_idx: usize = 0;
-    var iter = std.mem.splitScalar(u8, host, '.');
-    while (iter.next()) |octet| {
-        if (byte_idx >= 4) unreachable;
-        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch unreachable;
-        byte_idx += 1;
-    }
-    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
-}
-
-fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
-    const stream = try std.Io.net.IpAddress.connect(&addr, io, .{ .mode = .stream });
-    return stream.socket.handle;
 }

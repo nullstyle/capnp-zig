@@ -46,11 +46,7 @@ const ClientApp = struct {
     tap: Tap = .{},
     done: bool = false,
     err: ?anyerror = null,
-    peer: ?*rpc.peer.Peer = null,
-    conn: ?*rpc.transport.tcp.Connection = null,
 };
-
-var g_client_app: ?*ClientApp = null;
 
 fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "game_world")) return .game_world;
@@ -107,39 +103,18 @@ fn failAndFinish(app: *ClientApp, peer: *rpc.peer.Peer, desc: []const u8) void {
     finish(app, peer);
 }
 
-fn onPeerError(_: ?*anyopaque, peer: *rpc.peer.Peer, err: anyerror) void {
-    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-    if (g_client_app) |app| {
-        if (!app.done) {
-            std.log.err("rpc peer error: {s}", .{@errorName(err)});
-            app.err = err;
-            app.done = true;
-        }
+fn onSessionError(ctx: ?*anyopaque, _: *rpc.transport.tcp.ClientSession, err: anyerror) void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx.?));
+    if (!app.done) {
+        std.log.err("rpc peer error: {s}", .{@errorName(err)});
+        app.err = err;
+        app.done = true;
     }
 }
 
-fn onPeerClose(_: ?*anyopaque, peer: *rpc.peer.Peer) void {
-    const allocator = peer.allocator;
-    const conn = peer.takeAttachedConnection(*rpc.transport.tcp.Connection);
-    var retained_conn: ?*rpc.transport.tcp.Connection = null;
-
-    peer.deinit();
-    allocator.destroy(peer);
-
-    if (conn) |attached| {
-        attached.deinit();
-        if (attached.deinitialized) {
-            allocator.destroy(attached);
-        } else {
-            retained_conn = attached;
-        }
-    }
-
-    if (g_client_app) |app| {
-        app.peer = null;
-        app.conn = retained_conn;
-        app.done = true;
-    }
+fn onSessionClose(ctx: ?*anyopaque, _: *rpc.transport.tcp.ClientSession) void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx.?));
+    app.done = true;
 }
 
 fn bootstrapGameWorld(app: *ClientApp, peer: *rpc.peer.Peer) !void {
@@ -314,24 +289,6 @@ fn onEnqueueReturn(
     finish(app, peer);
 }
 
-fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
-    var bytes: [4]u8 = undefined;
-    var byte_idx: usize = 0;
-    var iter = std.mem.splitScalar(u8, host, '.');
-    while (iter.next()) |octet| {
-        if (byte_idx >= 4) return error.InvalidAddress;
-        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
-        byte_idx += 1;
-    }
-    if (byte_idx != 4) return error.InvalidAddress;
-    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
-}
-
-fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
-    const stream = try std.Io.net.IpAddress.connect(&addr, io, .{ .mode = .stream });
-    return stream.socket.handle;
-}
-
 fn usage() void {
     std.debug.print(
         \\Usage: e2e-zig-client [--host 127.0.0.1] [--port 4000] [--schema game_world|chat|inventory|matchmaking]\n
@@ -372,25 +329,16 @@ pub fn main(init: std.process.Init) !void {
         .allocator = allocator,
         .args = args,
     };
-    g_client_app = &app;
-    defer g_client_app = null;
 
-    const address = try parseIp4Address(args.host, args.port);
-    const fd = try rawTcpConnect(address, io);
+    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
 
-    const conn = try allocator.create(rpc.transport.tcp.Connection);
-    conn.* = rpc.transport.tcp.Connection.init(allocator, io, .{ .handle = fd }, .{}) catch |err| {
-        allocator.destroy(conn);
-        rpc.transport.tcp.closeFd(io, .{ .handle = fd });
-        return err;
-    };
-    app.conn = conn;
-
-    const peer = try allocator.create(rpc.peer.Peer);
-    peer.* = rpc.peer.Peer.init(allocator, conn);
-    app.peer = peer;
-
-    peer.start(null, onPeerError, onPeerClose);
+    const session = try rpc.transport.tcp.connect(allocator, io, address, .{
+        .ctx = &app,
+        .on_error = onSessionError,
+        .on_close = onSessionClose,
+    });
+    defer session.deinit();
+    const peer = &session.peer;
 
     const start_result = switch (app.args.schema) {
         .game_world => bootstrapGameWorld(&app, peer),
@@ -401,19 +349,10 @@ pub fn main(init: std.process.Init) !void {
 
     start_result catch |err| {
         app.err = err;
-        if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
+        session.close();
     };
 
-    conn.run();
-
-    // peer is cleaned up by onPeerClose. If onPeerClose runs on the
-    // connection callback stack, Connection.deinit() is deferred until run()
-    // can unwind, so destroy the connection storage here.
-    if (app.conn) |attached| {
-        if (!attached.deinitialized) attached.deinit();
-        allocator.destroy(attached);
-        app.conn = null;
-    }
+    session.run();
 
     if (app.err) |err| return err;
 

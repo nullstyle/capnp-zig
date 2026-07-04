@@ -139,7 +139,7 @@ pub const Listener = struct {
 /// Disable Nagle on a connected TCP socket. Loopback control channels and
 /// RPC frames are latency-sensitive; with Nagle on, delayed ACKs can hold
 /// small writes for ~40-200ms, which breaks tick/idle timing.
-fn setTcpNoDelay(fd: net.Socket.Handle) void {
+pub fn setTcpNoDelay(fd: net.Socket.Handle) void {
     if (comptime builtin.target.os.tag == .windows) {
         // std's Windows sockets are raw AFD handles: ws2_32.setsockopt
         // rejects them, and std does not yet expose its internal AFD

@@ -1357,19 +1357,6 @@ fn usage() void {
 // main
 // ---------------------------------------------------------------------------
 
-fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
-    var bytes: [4]u8 = undefined;
-    var byte_idx: usize = 0;
-    var iter = std.mem.splitScalar(u8, host, '.');
-    while (iter.next()) |octet| {
-        if (byte_idx >= 4) return error.InvalidAddress;
-        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
-        byte_idx += 1;
-    }
-    if (byte_idx != 4) return error.InvalidAddress;
-    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
-}
-
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -1401,7 +1388,7 @@ pub fn main(init: std.process.Init) !void {
     g_service = &svc;
     defer g_service = null;
 
-    const address = try parseIp4Address(args.host, args.port);
+    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
 
     var pool = try rpc.integration.worker_pool.WorkerPool.init(
         allocator,
@@ -1427,7 +1414,7 @@ test "kvstore server defaults bind localhost" {
     const args = CliArgs{};
     try std.testing.expectEqualStrings("127.0.0.1", args.host);
 
-    const address = try parseIp4Address(args.host, args.port);
+    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
     try std.testing.expectEqual(@as(u16, 9000), address.ip4.port);
     try std.testing.expectEqualSlices(u8, &.{ 127, 0, 0, 1 }, address.ip4.bytes[0..]);
 }

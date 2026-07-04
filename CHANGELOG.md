@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`rpc.transport.tcp.ClientSession`** — one-call TCP client lifecycle:
+  `connect(gpa, io, address, options)` / `connectHost(gpa, io, host, port,
+  options)` return a heap-owned session bundling the `Connection` and `Peer`
+  (single allocation; `ClientSession.fromPeer` recovers the session inside
+  generated callbacks). `run()` blocks on the read loop, `close()` is the
+  idempotent graceful stop, `requestStop()` is the sole thread-safe abort,
+  and `deinit()` encapsulates the one safe teardown ordering. Call deadlines
+  are on by default (30s, 100ms tick) via `ConnectOptions
+  .default_call_timeout_ms`; `Peer.adoptOwnerThread` /
+  `Connection.adoptOwnerThread` legalize connect-on-A/run-on-B handoffs.
+  `examples/rpc_pingpong.zig` and the e2e client now ride it — the two
+  divergent hand-rolled teardown recipes are gone.
+
 ### Breaking
 
 - **Generated client call methods take by-value receivers**:

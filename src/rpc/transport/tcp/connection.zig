@@ -150,6 +150,15 @@ pub const Connection = struct {
         }
     }
 
+    /// Re-capture thread affinity on the current thread. Legal only at a
+    /// quiescent handoff point — no other thread may touch this connection
+    /// concurrently (e.g. `ClientSession.run()` adopting a session that
+    /// was connected on another thread before its run loop started).
+    pub fn adoptOwnerThread(self: *Connection) void {
+        if (comptime builtin.target.os.tag == .freestanding) return;
+        self.owner_thread_id = std.Thread.getCurrentId();
+    }
+
     pub const Options = struct {
         read_buffer_size: usize = 64 * 1024,
         write_queue_max_items: usize = transport_mod.Transport.default_max_queued_items,

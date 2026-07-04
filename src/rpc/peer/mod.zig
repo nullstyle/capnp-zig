@@ -486,6 +486,14 @@ pub const Peer = struct {
         self.owner_thread_id = null;
     }
 
+    /// Re-capture thread affinity on the current thread. Legal only at a
+    /// quiescent handoff point — no other thread may touch this peer
+    /// concurrently (e.g. `ClientSession.run()` adopting a session that
+    /// was connected on another thread before its run loop started).
+    pub fn adoptOwnerThread(self: *Peer) void {
+        self.owner_thread_id = state.initialOwnerThreadId();
+    }
+
     /// Opt in to thread-affinity checking in release builds.
     ///
     /// `Peer` is single-threaded by contract: every method must be called

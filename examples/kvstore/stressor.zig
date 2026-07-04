@@ -513,7 +513,7 @@ pub fn main(init: std.process.Init) !void {
     g_stressor = &stressor;
     defer g_stressor = null;
 
-    const address = try parseIp4Address(args.host, args.port);
+    const address = try std.Io.net.IpAddress.parse(args.host, args.port);
     const conn_thread = try std.Thread.spawn(.{}, connThreadFn, .{ &stressor, address, io });
 
     conn_thread.join();
@@ -525,19 +525,6 @@ pub fn main(init: std.process.Init) !void {
     printSummary(&stressor);
 
     if (stressor.err) |err| return err;
-}
-
-fn parseIp4Address(host: []const u8, port: u16) !std.Io.net.IpAddress {
-    var bytes: [4]u8 = undefined;
-    var byte_idx: usize = 0;
-    var iter = std.mem.splitScalar(u8, host, '.');
-    while (iter.next()) |octet| {
-        if (byte_idx >= 4) return error.InvalidAddress;
-        bytes[byte_idx] = std.fmt.parseInt(u8, octet, 10) catch return error.InvalidAddress;
-        byte_idx += 1;
-    }
-    if (byte_idx != 4) return error.InvalidAddress;
-    return .{ .ip4 = .{ .bytes = bytes, .port = port } };
 }
 
 fn rawTcpConnect(addr: std.Io.net.IpAddress, io: std.Io) !std.posix.fd_t {
