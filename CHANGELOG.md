@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Peer.resolvePromiseExportToImport`** — resolve a previously exported
+  promise capability to a cap the *remote* peer hosts (one we hold as an
+  import). This is the "reflected capability" resolution: because the promise
+  resolves to a target reached by a different path than the promise itself, a
+  conformant remote runs the embargo/Disembargo (`senderLoopback` →
+  `receiverLoopback`) handshake against it. The server-side counterpart to the
+  already-present client-side embargo handling. Parked pipelined calls on the
+  promise are forwarded to the import's owner via the existing resolved-call
+  forwarding path. Proven end-to-end (resolve → forwarded pipelined call →
+  disembargo round-trip → post-embargo direct call, leak-checked) by
+  `tests/rpc/peer/rpc_reflected_resolve_disembargo_test.zig`.
 - **Standalone serialization example** (`examples/serialization_demo.zig`,
   schema `examples/addressbook.capnp`): the first runnable non-RPC example — a
   copy-pasteable companion to `docs/getting-started-serialization.md` that

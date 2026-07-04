@@ -133,16 +133,57 @@ pub const CapTable = struct {
         return self.imports.contains(remote_id);
     }
 
-    /// Decrement the reference count for an imported capability.
-    /// Returns true if the import was fully released (count reached zero).
+    /// Decrement the wire reference count for an imported capability.
+    ///
+    /// Returns true if the import's wire reference count reached zero AND the
+    /// caller should treat the import as fully released for wire purposes (send
+    /// its Release, clear resolved-import state). The import table entry itself
+    /// is retained while a promise-held pin (`promise_ref_count`) survives, so a
+    /// promise export that resolved to this import keeps a live entry to route
+    /// through even after the remote's own wire references are gone. The pin is
+    /// a purely local lifetime lease — it never corresponds to an outbound wire
+    /// reference, so it does not affect the return value here.
     pub fn releaseImport(self: *CapTable, remote_id: u32) bool {
         var entry = self.imports.getEntry(remote_id) orelse return false;
         if (entry.value_ptr.ref_count > 1) {
             entry.value_ptr.ref_count -= 1;
             return false;
         }
-        _ = self.imports.remove(remote_id);
+        if (entry.value_ptr.ref_count == 0) return false;
+        entry.value_ptr.ref_count = 0;
+        // Wire references are exhausted. Keep the entry alive if a promise-held
+        // pin still leases it; otherwise remove it. Either way the wire side is
+        // fully released (return true) so the Release frame is still sent once.
+        if (entry.value_ptr.promise_ref_count == 0) {
+            _ = self.imports.remove(remote_id);
+        }
         return true;
+    }
+
+    /// Take a promise-held pin on an import: a promise export that resolved to
+    /// this import (`Peer.resolvePromiseExportToImport`) leases the import for
+    /// its own lifetime so an inbound Release that zeroes the wire `ref_count`
+    /// cannot drop the entry while the promise still routes calls to it. The pin
+    /// is local — it corresponds to NO wire reference, so it must never trigger
+    /// an outbound Release. The import must already exist.
+    pub fn notePromiseImportRef(self: *CapTable, remote_id: u32) !void {
+        var entry = self.imports.getEntry(remote_id) orelse return error.UnknownImport;
+        entry.value_ptr.promise_ref_count = std.math.add(u32, entry.value_ptr.promise_ref_count, 1) catch return error.RefCountOverflow;
+    }
+
+    /// Release one promise-held pin taken by `notePromiseImportRef`. Removes the
+    /// import entry once no wire references and no other pins remain. Never sends
+    /// a wire Release (the pin was never a wire reference); returns true iff the
+    /// entry was removed here.
+    pub fn releasePromiseImportRef(self: *CapTable, remote_id: u32) bool {
+        var entry = self.imports.getEntry(remote_id) orelse return false;
+        if (entry.value_ptr.promise_ref_count == 0) return false;
+        entry.value_ptr.promise_ref_count -= 1;
+        if (entry.value_ptr.promise_ref_count == 0 and entry.value_ptr.ref_count == 0) {
+            _ = self.imports.remove(remote_id);
+            return true;
+        }
+        return false;
     }
 
     fn allocLocalCapId(self: *CapTable) error{CapTableFull}!u32 {
@@ -173,5 +214,12 @@ pub const CapTable = struct {
 };
 
 const ImportEntry = struct {
+    /// Wire references: one per cap descriptor the remote handed us for this
+    /// import, released by outbound Release messages when we drop them.
     ref_count: u32,
+    /// Promise-held pins: local lifetime leases taken when one of our promise
+    /// exports resolves to this import (see `notePromiseImportRef`). NOT wire
+    /// references — releasing a pin never sends a Release. The entry survives
+    /// while either count is non-zero.
+    promise_ref_count: u32 = 0,
 };

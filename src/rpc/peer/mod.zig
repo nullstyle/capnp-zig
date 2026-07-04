@@ -1872,6 +1872,70 @@ pub const Peer = struct {
         try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
     }
 
+    /// Resolve a previously exported promise to a capability the *remote* peer
+    /// hosts (one we hold as an import). This is the "reflected capability"
+    /// case: the promise resolves to a cap reached by a different path than the
+    /// promise itself, so a conformant remote will run the embargo/Disembargo
+    /// handshake against it. Mirror of `resolvePromiseExportToExport`, but the
+    /// resolution target lives in the import table, not the export table.
+    pub fn resolvePromiseExportToImport(self: *Peer, promise_id: u32, import_id: u32) !void {
+        self.assertThreadAffinity();
+        var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
+        if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
+        if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
+        if (!self.caps.hasImport(import_id)) return error.UnknownImport;
+
+        // `receiverHosted` names the REMOTE's own export (our import), so — unlike
+        // resolvePromiseExportToExport's senderHosted/senderPromise descriptor —
+        // this does NOT hand the remote a fresh wire reference on one of OUR
+        // exports. The remote already owns `import_id`; it will not spend a
+        // Release against us on account of receiving it in the Resolve. So we
+        // take NO outbound wire ref here.
+        const descriptor = protocol.CapDescriptor{
+            .tag = .receiverHosted,
+            .id = import_id,
+            .promised_answer = null,
+            .attached_fd = null,
+        };
+
+        // Pin the resolution target (our import) for the promise export's own
+        // lifetime. Once the promise routes inbound calls back out to
+        // `import_id` (via replayResolvedPromiseExport / forwardResolvedCall
+        // below), the host handler that originally received this import as a
+        // call/return cap may drop its own wire reference before the promise
+        // export is gone — an inbound path that zeroes the import's wire
+        // `ref_count` must not remove the import entry out from under the
+        // still-live promise export. This is a purely LOCAL pin
+        // (`promise_ref_count`), NOT a `noteImport`: a `receiverHosted`
+        // descriptor creates no new wire reference, so dropping this pin must
+        // never send a wire Release. It is released when the promise export is
+        // destroyed (see finalizeExportRelease's import-target cascade, which
+        // calls releasePromiseImportRef — local, no frame). Rolled back only
+        // while the send can still fail; past a committed resolution the promise
+        // owns it.
+        try self.caps.notePromiseImportRef(import_id);
+        var rollback_import_ref = true;
+        errdefer if (rollback_import_ref) {
+            _ = self.caps.releasePromiseImportRef(import_id);
+        };
+
+        try peer_outbound_control.sendResolveCapViaSendFrame(
+            Peer,
+            self,
+            promise_id,
+            descriptor,
+            Peer.sendFrame,
+        );
+
+        promise_entry.value_ptr.resolved = .{ .imported = .{ .id = import_id } };
+        // The resolution is committed: the promise export now routes to
+        // `import_id` and its eventual destruction drops this promise-held pin
+        // (no wire Release), so keep it even if replay below fails.
+        rollback_import_ref = false;
+        self.caps.clearExportPromise(promise_id);
+        try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
+    }
+
     /// Resolve a previously exported promise to an exception.
     pub fn resolvePromiseExportToException(self: *Peer, promise_id: u32, reason: []const u8) !void {
         self.assertThreadAffinity();
@@ -2840,21 +2904,48 @@ pub const Peer = struct {
         };
     }
 
+    /// The resolution-target IMPORT id of a promise export that has resolved to
+    /// an imported cap (the remote's own export), or null otherwise. Only
+    /// `resolvePromiseExportToImport` produces such a resolution, and it takes a
+    /// promise-held ref on that import; this is exactly the set of exports that
+    /// must release one when destroyed. Parallel to `promiseTargetOf`, but for
+    /// the import table rather than the export table.
+    fn promiseImportTargetOf(self: *Peer, id: u32) ?u32 {
+        const entry = self.exports.getEntry(id) orelse return null;
+        const resolved = entry.value_ptr.resolved orelse return null;
+        return switch (resolved) {
+            .imported => |cap| cap.id,
+            else => null,
+        };
+    }
+
     /// Called after a release lowered one of export `id`'s ref classes. If that
     /// dropped `id` out of the export table, free its persistence state and —
-    /// when `id` was a promise that had resolved to `promise_target` — release
-    /// the promise-held ref it pinned on that target, cascading destruction
-    /// down a resolution chain. `promise_target` must be captured *before* the
-    /// release (the entry, and its `resolved` field, is gone by the time we get
-    /// here).
-    fn finalizeExportRelease(self: *Peer, id: u32, promise_target: ?u32) void {
+    /// when `id` was a promise that had resolved — release the promise-held ref
+    /// it pinned on its resolution target: `promise_target` for an exported
+    /// target (cascading destruction down a resolution chain), or `import_target`
+    /// for an imported target (dropping the promise-held import pin). At most one
+    /// is set, since a resolution is either exported or imported. Both must be
+    /// captured *before* the release (the entry, and its `resolved` field, is
+    /// gone by the time we get here).
+    fn finalizeExportRelease(self: *Peer, id: u32, promise_target: ?u32, import_target: ?u32) void {
         if (self.exports.contains(id)) return;
         self.dropPersistenceStateForRemovedExport(id);
-        const target_id = promise_target orelse return;
-        if (target_id == id) return;
-        self.releasePromiseHeldCap(target_id) catch |err| {
-            log.warn("cascade promise-held release for export {} failed: {}", .{ target_id, err });
-        };
+        if (promise_target) |target_id| {
+            if (target_id != id) {
+                self.releasePromiseHeldCap(target_id) catch |err| {
+                    log.warn("cascade promise-held release for export {} failed: {}", .{ target_id, err });
+                };
+            }
+        }
+        if (import_target) |import_id| {
+            // Drop the promise-held import pin this destroyed promise export
+            // took in resolvePromiseExportToImport. This is a LOCAL lease, not a
+            // wire reference: releasing it never sends a Release. The import's
+            // own wire references are owned and released separately by whoever
+            // received it as a call/return cap.
+            _ = self.caps.releasePromiseImportRef(import_id);
+        }
     }
 
     /// Release one promise-held reference on export `id`, taken by
@@ -2863,6 +2954,7 @@ pub const Peer = struct {
     /// references remain, cascading if `id` was itself a resolved promise.
     fn releasePromiseHeldCap(self: *Peer, id: u32) !void {
         const promise_target = self.promiseTargetOf(id);
+        const import_target = self.promiseImportTargetOf(id);
         try peer_cap_lifecycle.releasePromiseHeldExport(
             Peer,
             ExportEntry,
@@ -2876,7 +2968,7 @@ pub const Peer = struct {
             peer_cap_lifecycle.clearExportForPeerFn(Peer),
             pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
-        self.finalizeExportRelease(id, promise_target);
+        self.finalizeExportRelease(id, promise_target, import_target);
     }
 
     /// Release one answer-held reference on export `id` (the `count` from the
@@ -2884,6 +2976,7 @@ pub const Peer = struct {
     fn releaseAnswerHeldCap(self: *Peer, id: u32, count: u32) !void {
         _ = count;
         const promise_target = self.promiseTargetOf(id);
+        const import_target = self.promiseImportTargetOf(id);
         try peer_cap_lifecycle.releaseAnswerHeldExport(
             Peer,
             ExportEntry,
@@ -2897,11 +2990,12 @@ pub const Peer = struct {
             peer_cap_lifecycle.clearExportForPeerFn(Peer),
             pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
-        self.finalizeExportRelease(id, promise_target);
+        self.finalizeExportRelease(id, promise_target, import_target);
     }
 
     fn releaseExport(self: *Peer, id: u32, count: u32) !void {
         const promise_target = self.promiseTargetOf(id);
+        const import_target = self.promiseImportTargetOf(id);
         try peer_cap_lifecycle.releaseExport(
             Peer,
             ExportEntry,
@@ -2916,7 +3010,7 @@ pub const Peer = struct {
             peer_cap_lifecycle.clearExportForPeerFn(Peer),
             pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
         );
-        self.finalizeExportRelease(id, promise_target);
+        self.finalizeExportRelease(id, promise_target, import_target);
     }
 
     fn releaseInboundCaps(self: *Peer, inbound: *cap_table.InboundCapTable) !void {
