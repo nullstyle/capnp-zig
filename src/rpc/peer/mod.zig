@@ -51,6 +51,11 @@ const peer_return_frames = @import("./return/peer_return_frames.zig");
 pub const errors = @import("./errors.zig");
 pub const state = @import("./state.zig");
 
+/// Typed failure surface of generated Response.unwrap() (see errors.zig).
+/// Re-exported here so generated code and consumers can spell it
+/// `rpc.peer.CallError`.
+pub const CallError = errors.CallError;
+
 /// Callback invoked to populate a `CallBuilder` before sending an outbound call.
 pub const CallBuildFn = *const fn (ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void;
 /// Callback invoked to populate a `ReturnBuilder` before sending a return.

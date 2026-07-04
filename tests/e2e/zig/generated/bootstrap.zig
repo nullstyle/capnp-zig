@@ -6,10 +6,10 @@ const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
-const chat = @import("chat.zig");
-const game_world = @import("game_world.zig");
-const inventory = @import("inventory.zig");
-const matchmaking = @import("matchmaking.zig");
+pub const chat = @import("chat.zig");
+pub const game_world = @import("game_world.zig");
+pub const inventory = @import("inventory.zig");
+pub const matchmaking = @import("matchmaking.zig");
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"bootstrap.capnp\",\"module\":\"bootstrap\",\"serde\":[{\"id\":16689148430055035567,\"type_name\":\"ChatServiceParams\",\"to_json_export\":\"capnp_bootstrap_chat_service_params_to_json\",\"from_json_export\":\"capnp_bootstrap_chat_service_params_from_json\"},{\"id\":13411845670410679212,\"type_name\":\"ChatServiceResults\",\"to_json_export\":\"capnp_bootstrap_chat_service_results_to_json\",\"from_json_export\":\"capnp_bootstrap_chat_service_results_from_json\"},{\"id\":9487031202937795800,\"type_name\":\"GameWorldParams\",\"to_json_export\":\"capnp_bootstrap_game_world_params_to_json\",\"from_json_export\":\"capnp_bootstrap_game_world_params_from_json\"},{\"id\":15096692862013519677,\"type_name\":\"GameWorldResults\",\"to_json_export\":\"capnp_bootstrap_game_world_results_to_json\",\"from_json_export\":\"capnp_bootstrap_game_world_results_from_json\"},{\"id\":9255339196571816825,\"type_name\":\"InventoryServiceParams\",\"to_json_export\":\"capnp_bootstrap_inventory_service_params_to_json\",\"from_json_export\":\"capnp_bootstrap_inventory_service_params_from_json\"},{\"id\":15015339426390081680,\"type_name\":\"InventoryServiceResults\",\"to_json_export\":\"capnp_bootstrap_inventory_service_results_to_json\",\"from_json_export\":\"capnp_bootstrap_inventory_service_results_from_json\"},{\"id\":16303379970653832134,\"type_name\":\"MatchmakingServiceParams\",\"to_json_export\":\"capnp_bootstrap_matchmaking_service_params_to_json\",\"from_json_export\":\"capnp_bootstrap_matchmaking_service_params_from_json\"},{\"id\":10909951435099420304,\"type_name\":\"MatchmakingServiceResults\",\"to_json_export\":\"capnp_bootstrap_matchmaking_service_results_to_json\",\"from_json_export\":\"capnp_bootstrap_matchmaking_service_results_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
@@ -40,6 +40,26 @@ pub const Bootstrap = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -144,7 +164,6 @@ pub const Bootstrap = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -163,6 +182,26 @@ pub const Bootstrap = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -267,7 +306,6 @@ pub const Bootstrap = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -286,6 +324,26 @@ pub const Bootstrap = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -390,7 +448,6 @@ pub const Bootstrap = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -409,6 +466,26 @@ pub const Bootstrap = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -513,7 +590,6 @@ pub const Bootstrap = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -525,7 +601,14 @@ pub const Bootstrap = struct {
             return .{ .peer = peer, .cap_id = cap_id };
         }
 
-        pub fn callGameWorld(self: *Client, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !u32 {
+        /// Release the import ref this Client owns (balances the bootstrap-return
+        /// retainCapability). Call at most once per owned Client; best-effort —
+        /// peer teardown's import release is the backstop.
+        pub fn release(self: Client) void {
+            self.peer.releaseImport(self.cap_id, 1) catch {};
+        }
+
+        pub fn callGameWorld(self: Client, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GameWorld.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -534,7 +617,7 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callChatService(self: *Client, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback) !u32 {
+        pub fn callChatService(self: Client, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ChatService.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -543,7 +626,7 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callInventoryService(self: *Client, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback) !u32 {
+        pub fn callInventoryService(self: Client, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback) !u32 {
             const ctx = try self.peer.allocator.create(InventoryService.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -552,7 +635,7 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callMatchmakingService(self: *Client, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback) !u32 {
+        pub fn callMatchmakingService(self: Client, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback) !u32 {
             const ctx = try self.peer.allocator.create(MatchmakingService.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -561,22 +644,22 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callGameWorldPipelined(self: *Client, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !GameWorldPipeline {
+        pub fn callGameWorldPipelined(self: Client, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !GameWorldPipeline {
             const qid = try self.callGameWorld(user_ctx, build, on_return);
             return .{ .peer = self.peer, .question_id = qid };
         }
 
-        pub fn callChatServicePipelined(self: *Client, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback) !ChatServicePipeline {
+        pub fn callChatServicePipelined(self: Client, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback) !ChatServicePipeline {
             const qid = try self.callChatService(user_ctx, build, on_return);
             return .{ .peer = self.peer, .question_id = qid };
         }
 
-        pub fn callInventoryServicePipelined(self: *Client, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback) !InventoryServicePipeline {
+        pub fn callInventoryServicePipelined(self: Client, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback) !InventoryServicePipeline {
             const qid = try self.callInventoryService(user_ctx, build, on_return);
             return .{ .peer = self.peer, .question_id = qid };
         }
 
-        pub fn callMatchmakingServicePipelined(self: *Client, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback) !MatchmakingServicePipeline {
+        pub fn callMatchmakingServicePipelined(self: Client, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback) !MatchmakingServicePipeline {
             const qid = try self.callMatchmakingService(user_ctx, build, on_return);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -632,7 +715,7 @@ pub const Bootstrap = struct {
         question_id: u32,
         pointer_index: u16,
 
-        pub fn callGameWorld(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !u32 {
+        pub fn callGameWorld(self: PipelinedClient, user_ctx: *anyopaque, build: ?GameWorld.BuildFn, on_return: GameWorld.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GameWorld.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -641,7 +724,7 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callChatService(self: *PipelinedClient, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback) !u32 {
+        pub fn callChatService(self: PipelinedClient, user_ctx: *anyopaque, build: ?ChatService.BuildFn, on_return: ChatService.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ChatService.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -650,7 +733,7 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callInventoryService(self: *PipelinedClient, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback) !u32 {
+        pub fn callInventoryService(self: PipelinedClient, user_ctx: *anyopaque, build: ?InventoryService.BuildFn, on_return: InventoryService.Callback) !u32 {
             const ctx = try self.peer.allocator.create(InventoryService.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -659,7 +742,7 @@ pub const Bootstrap = struct {
             return question_id;
         }
 
-        pub fn callMatchmakingService(self: *PipelinedClient, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback) !u32 {
+        pub fn callMatchmakingService(self: PipelinedClient, user_ctx: *anyopaque, build: ?MatchmakingService.BuildFn, on_return: MatchmakingService.Callback) !u32 {
             const ctx = try self.peer.allocator.create(MatchmakingService.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -677,6 +760,26 @@ pub const Bootstrap = struct {
         results_sent_elsewhere,
         take_from_other_question: u32,
         accept_from_third_party,
+
+        /// Collapse this BootstrapResponse into its Client or a typed
+        /// rpc.peer.CallError. Locally synthesized exception reasons map to
+        /// their dedicated errors; every other exception is RemoteException
+        /// (reason available on the union arm).
+        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
+            return switch (self) {
+                .client => |c| c,
+                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                    error.CallTimedOut
+                else
+                    error.RemoteException,
+                .canceled => error.Canceled,
+                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+            };
+        }
     };
     pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;
 

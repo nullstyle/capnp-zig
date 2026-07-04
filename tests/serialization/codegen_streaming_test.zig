@@ -56,7 +56,7 @@ test "Codegen emits streaming method types and handlers" {
     const output = try generator.generateFile(file);
     defer allocator.free(output);
 
-    try expectContains(output, "const stream = @import(\"capnp/stream.zig\");");
+    try expectContains(output, "pub const stream = @import(\"capnp/stream.zig\");");
     try expectNotContains(output, "@import(\"/capnp/stream.zig\")");
 
     // Streaming methods should have StreamHandler instead of Handler

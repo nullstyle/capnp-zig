@@ -6,7 +6,7 @@ const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
-const game_types = @import("game_types.zig");
+pub const game_types = @import("game_types.zig");
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"matchmaking.capnp\",\"module\":\"matchmaking\",\"serde\":[{\"id\":16124634606463764285,\"type_name\":\"CancelMatchParams\",\"to_json_export\":\"capnp_matchmaking_cancel_match_params_to_json\",\"from_json_export\":\"capnp_matchmaking_cancel_match_params_from_json\"},{\"id\":15025372661674644906,\"type_name\":\"CancelMatchResults\",\"to_json_export\":\"capnp_matchmaking_cancel_match_results_to_json\",\"from_json_export\":\"capnp_matchmaking_cancel_match_results_from_json\"},{\"id\":16419937472191504418,\"type_name\":\"DequeueParams\",\"to_json_export\":\"capnp_matchmaking_dequeue_params_to_json\",\"from_json_export\":\"capnp_matchmaking_dequeue_params_from_json\"},{\"id\":17070967301722097164,\"type_name\":\"DequeueResults\",\"to_json_export\":\"capnp_matchmaking_dequeue_results_to_json\",\"from_json_export\":\"capnp_matchmaking_dequeue_results_from_json\"},{\"id\":12839145321228703730,\"type_name\":\"EnqueueParams\",\"to_json_export\":\"capnp_matchmaking_enqueue_params_to_json\",\"from_json_export\":\"capnp_matchmaking_enqueue_params_from_json\"},{\"id\":15765494907565925142,\"type_name\":\"EnqueueResults\",\"to_json_export\":\"capnp_matchmaking_enqueue_results_to_json\",\"from_json_export\":\"capnp_matchmaking_enqueue_results_from_json\"},{\"id\":16469434815374819341,\"type_name\":\"FindMatchParams\",\"to_json_export\":\"capnp_matchmaking_find_match_params_to_json\",\"from_json_export\":\"capnp_matchmaking_find_match_params_from_json\"},{\"id\":13606124289119314743,\"type_name\":\"FindMatchResults\",\"to_json_export\":\"capnp_matchmaking_find_match_results_to_json\",\"from_json_export\":\"capnp_matchmaking_find_match_results_from_json\"},{\"id\":13837067657532026201,\"type_name\":\"GetInfoParams\",\"to_json_export\":\"capnp_matchmaking_get_info_params_to_json\",\"from_json_export\":\"capnp_matchmaking_get_info_params_from_json\"},{\"id\":15005573067494358496,\"type_name\":\"GetInfoResults\",\"to_json_export\":\"capnp_matchmaking_get_info_results_to_json\",\"from_json_export\":\"capnp_matchmaking_get_info_results_from_json\"},{\"id\":9309206374313584762,\"type_name\":\"GetMatchResultParams\",\"to_json_export\":\"capnp_matchmaking_get_match_result_params_to_json\",\"from_json_export\":\"capnp_matchmaking_get_match_result_params_from_json\"},{\"id\":14290855035734638999,\"type_name\":\"GetMatchResultResults\",\"to_json_export\":\"capnp_matchmaking_get_match_result_results_to_json\",\"from_json_export\":\"capnp_matchmaking_get_match_result_results_from_json\"},{\"id\":15727130575681286752,\"type_name\":\"GetQueueStatsParams\",\"to_json_export\":\"capnp_matchmaking_get_queue_stats_params_to_json\",\"from_json_export\":\"capnp_matchmaking_get_queue_stats_params_from_json\"},{\"id\":18225065652269819970,\"type_name\":\"GetQueueStatsResults\",\"to_json_export\":\"capnp_matchmaking_get_queue_stats_results_to_json\",\"from_json_export\":\"capnp_matchmaking_get_queue_stats_results_from_json\"},{\"id\":13320376183885480427,\"type_name\":\"MatchId\",\"to_json_export\":\"capnp_matchmaking_match_id_to_json\",\"from_json_export\":\"capnp_matchmaking_match_id_from_json\"},{\"id\":14227715785483873810,\"type_name\":\"MatchInfo\",\"to_json_export\":\"capnp_matchmaking_match_info_to_json\",\"from_json_export\":\"capnp_matchmaking_match_info_from_json\"},{\"id\":10217074924061465696,\"type_name\":\"MatchResult\",\"to_json_export\":\"capnp_matchmaking_match_result_to_json\",\"from_json_export\":\"capnp_matchmaking_match_result_from_json\"},{\"id\":10382636403325306410,\"type_name\":\"PlayerMatchStats\",\"to_json_export\":\"capnp_matchmaking_player_match_stats_to_json\",\"from_json_export\":\"capnp_matchmaking_player_match_stats_from_json\"},{\"id\":15932295295591514268,\"type_name\":\"QueueTicket\",\"to_json_export\":\"capnp_matchmaking_queue_ticket_to_json\",\"from_json_export\":\"capnp_matchmaking_queue_ticket_from_json\"},{\"id\":13362855826333986899,\"type_name\":\"ReportResultParams\",\"to_json_export\":\"capnp_matchmaking_report_result_params_to_json\",\"from_json_export\":\"capnp_matchmaking_report_result_params_from_json\"},{\"id\":16126148068112143901,\"type_name\":\"ReportResultResults\",\"to_json_export\":\"capnp_matchmaking_report_result_results_to_json\",\"from_json_export\":\"capnp_matchmaking_report_result_results_from_json\"},{\"id\":14790443913839441507,\"type_name\":\"SignalReadyParams\",\"to_json_export\":\"capnp_matchmaking_signal_ready_params_to_json\",\"from_json_export\":\"capnp_matchmaking_signal_ready_params_from_json\"},{\"id\":11143319628628533196,\"type_name\":\"SignalReadyResults\",\"to_json_export\":\"capnp_matchmaking_signal_ready_results_to_json\",\"from_json_export\":\"capnp_matchmaking_signal_ready_results_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
@@ -403,6 +403,26 @@ pub const MatchController = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -507,7 +527,6 @@ pub const MatchController = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -526,6 +545,26 @@ pub const MatchController = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -630,7 +669,6 @@ pub const MatchController = struct {
             const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -649,6 +687,26 @@ pub const MatchController = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -753,7 +811,6 @@ pub const MatchController = struct {
             const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -772,6 +829,26 @@ pub const MatchController = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -876,7 +953,6 @@ pub const MatchController = struct {
             const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -888,7 +964,14 @@ pub const MatchController = struct {
             return .{ .peer = peer, .cap_id = cap_id };
         }
 
-        pub fn callGetInfo(self: *Client, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
+        /// Release the import ref this Client owns (balances the bootstrap-return
+        /// retainCapability). Call at most once per owned Client; best-effort —
+        /// peer teardown's import release is the backstop.
+        pub fn release(self: Client) void {
+            self.peer.releaseImport(self.cap_id, 1) catch {};
+        }
+
+        pub fn callGetInfo(self: Client, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -897,7 +980,7 @@ pub const MatchController = struct {
             return question_id;
         }
 
-        pub fn callSignalReady(self: *Client, user_ctx: *anyopaque, build: ?SignalReady.BuildFn, on_return: SignalReady.Callback) !u32 {
+        pub fn callSignalReady(self: Client, user_ctx: *anyopaque, build: ?SignalReady.BuildFn, on_return: SignalReady.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SignalReady.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -906,7 +989,7 @@ pub const MatchController = struct {
             return question_id;
         }
 
-        pub fn callReportResult(self: *Client, user_ctx: *anyopaque, build: ?ReportResult.BuildFn, on_return: ReportResult.Callback) !u32 {
+        pub fn callReportResult(self: Client, user_ctx: *anyopaque, build: ?ReportResult.BuildFn, on_return: ReportResult.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ReportResult.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -915,7 +998,7 @@ pub const MatchController = struct {
             return question_id;
         }
 
-        pub fn callCancelMatch(self: *Client, user_ctx: *anyopaque, build: ?CancelMatch.BuildFn, on_return: CancelMatch.Callback) !u32 {
+        pub fn callCancelMatch(self: Client, user_ctx: *anyopaque, build: ?CancelMatch.BuildFn, on_return: CancelMatch.Callback) !u32 {
             const ctx = try self.peer.allocator.create(CancelMatch.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -935,7 +1018,7 @@ pub const MatchController = struct {
         question_id: u32,
         pointer_index: u16,
 
-        pub fn callGetInfo(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
+        pub fn callGetInfo(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInfo.BuildFn, on_return: GetInfo.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetInfo.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -944,7 +1027,7 @@ pub const MatchController = struct {
             return question_id;
         }
 
-        pub fn callSignalReady(self: *PipelinedClient, user_ctx: *anyopaque, build: ?SignalReady.BuildFn, on_return: SignalReady.Callback) !u32 {
+        pub fn callSignalReady(self: PipelinedClient, user_ctx: *anyopaque, build: ?SignalReady.BuildFn, on_return: SignalReady.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SignalReady.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -953,7 +1036,7 @@ pub const MatchController = struct {
             return question_id;
         }
 
-        pub fn callReportResult(self: *PipelinedClient, user_ctx: *anyopaque, build: ?ReportResult.BuildFn, on_return: ReportResult.Callback) !u32 {
+        pub fn callReportResult(self: PipelinedClient, user_ctx: *anyopaque, build: ?ReportResult.BuildFn, on_return: ReportResult.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ReportResult.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -962,7 +1045,7 @@ pub const MatchController = struct {
             return question_id;
         }
 
-        pub fn callCancelMatch(self: *PipelinedClient, user_ctx: *anyopaque, build: ?CancelMatch.BuildFn, on_return: CancelMatch.Callback) !u32 {
+        pub fn callCancelMatch(self: PipelinedClient, user_ctx: *anyopaque, build: ?CancelMatch.BuildFn, on_return: CancelMatch.Callback) !u32 {
             const ctx = try self.peer.allocator.create(CancelMatch.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -980,6 +1063,26 @@ pub const MatchController = struct {
         results_sent_elsewhere,
         take_from_other_question: u32,
         accept_from_third_party,
+
+        /// Collapse this BootstrapResponse into its Client or a typed
+        /// rpc.peer.CallError. Locally synthesized exception reasons map to
+        /// their dedicated errors; every other exception is RemoteException
+        /// (reason available on the union arm).
+        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
+            return switch (self) {
+                .client => |c| c,
+                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                    error.CallTimedOut
+                else
+                    error.RemoteException,
+                .canceled => error.Canceled,
+                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+            };
+        }
     };
     pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;
 
@@ -1399,6 +1502,26 @@ pub const MatchmakingService = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1503,7 +1626,6 @@ pub const MatchmakingService = struct {
             const results_builder = try results_any.initStruct(1, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1522,6 +1644,26 @@ pub const MatchmakingService = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1626,7 +1768,6 @@ pub const MatchmakingService = struct {
             const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1645,6 +1786,26 @@ pub const MatchmakingService = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1749,7 +1910,6 @@ pub const MatchmakingService = struct {
             const results_builder = try results_any.initStruct(0, 2);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1768,6 +1928,26 @@ pub const MatchmakingService = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1872,7 +2052,6 @@ pub const MatchmakingService = struct {
             const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1891,6 +2070,26 @@ pub const MatchmakingService = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1995,7 +2194,6 @@ pub const MatchmakingService = struct {
             const results_builder = try results_any.initStruct(1, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -2007,7 +2205,14 @@ pub const MatchmakingService = struct {
             return .{ .peer = peer, .cap_id = cap_id };
         }
 
-        pub fn callEnqueue(self: *Client, user_ctx: *anyopaque, build: ?Enqueue.BuildFn, on_return: Enqueue.Callback) !u32 {
+        /// Release the import ref this Client owns (balances the bootstrap-return
+        /// retainCapability). Call at most once per owned Client; best-effort —
+        /// peer teardown's import release is the backstop.
+        pub fn release(self: Client) void {
+            self.peer.releaseImport(self.cap_id, 1) catch {};
+        }
+
+        pub fn callEnqueue(self: Client, user_ctx: *anyopaque, build: ?Enqueue.BuildFn, on_return: Enqueue.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Enqueue.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2016,7 +2221,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callDequeue(self: *Client, user_ctx: *anyopaque, build: ?Dequeue.BuildFn, on_return: Dequeue.Callback) !u32 {
+        pub fn callDequeue(self: Client, user_ctx: *anyopaque, build: ?Dequeue.BuildFn, on_return: Dequeue.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Dequeue.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2025,7 +2230,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callFindMatch(self: *Client, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback) !u32 {
+        pub fn callFindMatch(self: Client, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback) !u32 {
             const ctx = try self.peer.allocator.create(FindMatch.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2034,7 +2239,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callGetQueueStats(self: *Client, user_ctx: *anyopaque, build: ?GetQueueStats.BuildFn, on_return: GetQueueStats.Callback) !u32 {
+        pub fn callGetQueueStats(self: Client, user_ctx: *anyopaque, build: ?GetQueueStats.BuildFn, on_return: GetQueueStats.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetQueueStats.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2043,7 +2248,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callGetMatchResult(self: *Client, user_ctx: *anyopaque, build: ?GetMatchResult.BuildFn, on_return: GetMatchResult.Callback) !u32 {
+        pub fn callGetMatchResult(self: Client, user_ctx: *anyopaque, build: ?GetMatchResult.BuildFn, on_return: GetMatchResult.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetMatchResult.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2052,7 +2257,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callFindMatchPipelined(self: *Client, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback) !FindMatchPipeline {
+        pub fn callFindMatchPipelined(self: Client, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback) !FindMatchPipeline {
             const qid = try self.callFindMatch(user_ctx, build, on_return);
             return .{ .peer = self.peer, .question_id = qid };
         }
@@ -2078,7 +2283,7 @@ pub const MatchmakingService = struct {
         question_id: u32,
         pointer_index: u16,
 
-        pub fn callEnqueue(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Enqueue.BuildFn, on_return: Enqueue.Callback) !u32 {
+        pub fn callEnqueue(self: PipelinedClient, user_ctx: *anyopaque, build: ?Enqueue.BuildFn, on_return: Enqueue.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Enqueue.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2087,7 +2292,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callDequeue(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Dequeue.BuildFn, on_return: Dequeue.Callback) !u32 {
+        pub fn callDequeue(self: PipelinedClient, user_ctx: *anyopaque, build: ?Dequeue.BuildFn, on_return: Dequeue.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Dequeue.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2096,7 +2301,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callFindMatch(self: *PipelinedClient, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback) !u32 {
+        pub fn callFindMatch(self: PipelinedClient, user_ctx: *anyopaque, build: ?FindMatch.BuildFn, on_return: FindMatch.Callback) !u32 {
             const ctx = try self.peer.allocator.create(FindMatch.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2105,7 +2310,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callGetQueueStats(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetQueueStats.BuildFn, on_return: GetQueueStats.Callback) !u32 {
+        pub fn callGetQueueStats(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetQueueStats.BuildFn, on_return: GetQueueStats.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetQueueStats.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2114,7 +2319,7 @@ pub const MatchmakingService = struct {
             return question_id;
         }
 
-        pub fn callGetMatchResult(self: *PipelinedClient, user_ctx: *anyopaque, build: ?GetMatchResult.BuildFn, on_return: GetMatchResult.Callback) !u32 {
+        pub fn callGetMatchResult(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetMatchResult.BuildFn, on_return: GetMatchResult.Callback) !u32 {
             const ctx = try self.peer.allocator.create(GetMatchResult.CallContext);
             errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
@@ -2132,6 +2337,26 @@ pub const MatchmakingService = struct {
         results_sent_elsewhere,
         take_from_other_question: u32,
         accept_from_third_party,
+
+        /// Collapse this BootstrapResponse into its Client or a typed
+        /// rpc.peer.CallError. Locally synthesized exception reasons map to
+        /// their dedicated errors; every other exception is RemoteException
+        /// (reason available on the union arm).
+        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
+            return switch (self) {
+                .client => |c| c,
+                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                    error.CallTimedOut
+                else
+                    error.RemoteException,
+                .canceled => error.Canceled,
+                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+            };
+        }
     };
     pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;
 

@@ -519,13 +519,15 @@ capnpc-zig.rpc.events.pressureThreshold: fn (usize) callconv(.@"inline") usize
 capnpc-zig.rpc.events: struct
 capnpc-zig.rpc.generated.persistent.CAPNP_SCHEMA_MANIFEST_JSON: const []const u8
 capnpc-zig.rpc.generated.persistent.Persistent.BootstrapCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.BootstrapResponse) anyerror!void
+capnpc-zig.rpc.generated.persistent.Persistent.BootstrapResponse.unwrap: fn (rpc.gen.capnp.persistent.Persistent.BootstrapResponse) error{CallTimedOut,Canceled,Disconnected,RemoteException,UnexpectedReturn}!rpc.gen.capnp.persistent.Persistent.Client
 capnpc-zig.rpc.generated.persistent.Persistent.BootstrapResponse: union
-capnpc-zig.rpc.generated.persistent.Persistent.Client.callSave: fn (*rpc.gen.capnp.persistent.Persistent.Client, *anyopaque, ?*const fn (*anyopaque, *rpc.gen.capnp.persistent.Persistent.SaveParams.Builder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.Save.Response, *const rpc.caps.inbound.InboundCapTable) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.persistent.Persistent.Client.callSave)).@"fn".return_type.?).error_union.error_set!u32
+capnpc-zig.rpc.generated.persistent.Persistent.Client.callSave: fn (rpc.gen.capnp.persistent.Persistent.Client, *anyopaque, ?*const fn (*anyopaque, *rpc.gen.capnp.persistent.Persistent.SaveParams.Builder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.Save.Response, *const rpc.caps.inbound.InboundCapTable) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.persistent.Persistent.Client.callSave)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.generated.persistent.Persistent.Client.fromBootstrap: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.BootstrapResponse) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.persistent.Persistent.Client.fromBootstrap)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.generated.persistent.Persistent.Client.init: fn (*rpc.peer.mod.Peer, u32) rpc.gen.capnp.persistent.Persistent.Client
+capnpc-zig.rpc.generated.persistent.Persistent.Client.release: fn (rpc.gen.capnp.persistent.Persistent.Client) void
 capnpc-zig.rpc.generated.persistent.Persistent.Client: struct
 capnpc-zig.rpc.generated.persistent.Persistent.Method: enum
-capnpc-zig.rpc.generated.persistent.Persistent.PipelinedClient.callSave: fn (*rpc.gen.capnp.persistent.Persistent.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc.gen.capnp.persistent.Persistent.SaveParams.Builder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.Save.Response, *const rpc.caps.inbound.InboundCapTable) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.persistent.Persistent.PipelinedClient.callSave)).@"fn".return_type.?).error_union.error_set!u32
+capnpc-zig.rpc.generated.persistent.Persistent.PipelinedClient.callSave: fn (rpc.gen.capnp.persistent.Persistent.PipelinedClient, *anyopaque, ?*const fn (*anyopaque, *rpc.gen.capnp.persistent.Persistent.SaveParams.Builder) anyerror!void, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.Save.Response, *const rpc.caps.inbound.InboundCapTable) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.gen.capnp.persistent.Persistent.PipelinedClient.callSave)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.generated.persistent.Persistent.PipelinedClient: struct
 capnpc-zig.rpc.generated.persistent.Persistent.Save.BuildFn: type = *const fn (*anyopaque, *rpc.gen.capnp.persistent.Persistent.SaveParams.Builder) anyerror!void
 capnpc-zig.rpc.generated.persistent.Persistent.Save.Callback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.gen.capnp.persistent.Persistent.Save.Response, *const rpc.caps.inbound.InboundCapTable) anyerror!void
@@ -948,6 +950,7 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool: struct
 capnpc-zig.rpc.integration.worker_pool: struct
 capnpc-zig.rpc.integration: struct
 capnpc-zig.rpc.peer.CallBuildFn: type = *const fn (*anyopaque, *rpc.wire.protocol.CallBuilder) anyerror!void
+capnpc-zig.rpc.peer.CallError: type = error{CallTimedOut,Canceled,Disconnected,RemoteException,UnexpectedReturn}
 capnpc-zig.rpc.peer.CallHandler: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable) anyerror!void
 capnpc-zig.rpc.peer.Export: struct
 capnpc-zig.rpc.peer.Peer.PeerStats: struct
@@ -1082,6 +1085,7 @@ capnpc-zig.rpc.peer.dispatch.InboundRoute: enum
 capnpc-zig.rpc.peer.dispatch.dispatchDecodedForPeer: fn (comptime type, anytype, []const u8, *rpc.wire.protocol.DecodedMessage, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_dispatch.dispatchDecodedForPeer)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.dispatch.route: fn (rpc.gen.capnp.rpc.Message.WhichTag) rpc.peer.peer_dispatch.InboundRoute
 capnpc-zig.rpc.peer.dispatch: struct
+capnpc-zig.rpc.peer.errors.CallError: type = error{CallTimedOut,Canceled,Disconnected,RemoteException,UnexpectedReturn}
 capnpc-zig.rpc.peer.errors.Lifecycle: type = error{PeerShuttingDown,TransportNotAttached}
 capnpc-zig.rpc.peer.errors.Limits: type = error{EmbargoIdExhausted,PeerLimitExceeded,QuestionIdExhausted,RefCountOverflow}
 capnpc-zig.rpc.peer.errors.PeerError: type = error{CapabilityUnavailable,ConflictingThirdPartyAnswer,DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,DuplicateQuestionId,DuplicateResolve,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,EmbargoIdExhausted,ExportIsNotPromise,InvalidJoinKeyPart,InvalidThirdPartyAnswerId,MissingCallTarget,MissingJoinKeyPart,PeerLimitExceeded,PeerShuttingDown,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved,PromisedAnswerMissing,QuestionIdExhausted,RefCountOverflow,ReleaseCountExceeded,RemoteAbort,TransportNotAttached,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}

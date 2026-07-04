@@ -92,24 +92,15 @@ fn onPingReturn(
 ) anyerror!void {
     const ctx: *CallCtx = @ptrCast(@alignCast(ctx_ptr));
     defer peer.allocator.destroy(ctx);
+    defer if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 
-    switch (response) {
-        .results => |results| {
-            ctx.state.result = try results.getCount();
-            ctx.state.done = true;
-            if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-        },
-        .exception => {
-            ctx.state.err = error.RemoteException;
-            ctx.state.done = true;
-            if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-        },
-        else => {
-            ctx.state.err = error.UnexpectedReturn;
-            ctx.state.done = true;
-            if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-        },
-    }
+    const results = response.unwrap() catch |err| {
+        ctx.state.err = err;
+        ctx.state.done = true;
+        return;
+    };
+    ctx.state.result = try results.getCount();
+    ctx.state.done = true;
 }
 
 fn onBootstrap(
@@ -118,24 +109,15 @@ fn onBootstrap(
     response: PingPong.BootstrapResponse,
 ) anyerror!void {
     const state: *ClientState = @ptrCast(@alignCast(ctx_ptr));
-    switch (response) {
-        .client => |client| {
-            var client_mut = client;
-            const call_ctx = try peer.allocator.create(CallCtx);
-            call_ctx.* = .{ .state = state };
-            _ = try client_mut.callPing(call_ctx, buildPing, onPingReturn);
-        },
-        .exception => {
-            state.err = error.BootstrapFailed;
-            state.done = true;
-            if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-        },
-        else => {
-            state.err = error.UnexpectedBootstrapResponse;
-            state.done = true;
-            if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
-        },
-    }
+    const client = response.unwrap() catch |err| {
+        state.err = err;
+        state.done = true;
+        if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
+        return;
+    };
+    const call_ctx = try peer.allocator.create(CallCtx);
+    call_ctx.* = .{ .state = state };
+    _ = try client.callPing(call_ctx, buildPing, onPingReturn);
 }
 
 // ---------------------------------------------------------------------------

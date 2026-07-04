@@ -262,12 +262,15 @@ pub const Generator = struct {
         }
 
         // Emit only imports that are referenced by generated declarations.
+        // Sibling imports are pub so consumers can name cross-schema types the
+        // generated API returns (e.g. a Client whose method results live in an
+        // imported schema module).
         for (requested_file.imports) |imp| {
             if (!self.used_import_file_ids.contains(imp.id)) continue;
             const mod_name = self.import_modules.get(imp.id) orelse continue;
             const import_path = try self.importPathFromCapnpName(imp.name);
             defer self.allocator.free(import_path);
-            try writer.print("const {s} = @import(\"{f}\");\n", .{ mod_name, std.zig.fmtString(import_path) });
+            try writer.print("pub const {s} = @import(\"{f}\");\n", .{ mod_name, std.zig.fmtString(import_path) });
         }
         try writer.writeByte('\n');
 
@@ -1384,6 +1387,12 @@ pub const Generator = struct {
         try writer.writeAll("        pub fn init(peer: *rpc.peer.Peer, cap_id: u32) Client {\n");
         try writer.writeAll("            return .{ .peer = peer, .cap_id = cap_id };\n");
         try writer.writeAll("        }\n\n");
+        try writer.writeAll("        /// Release the import ref this Client owns (balances the bootstrap-return\n");
+        try writer.writeAll("        /// retainCapability). Call at most once per owned Client; best-effort —\n");
+        try writer.writeAll("        /// peer teardown's import release is the backstop.\n");
+        try writer.writeAll("        pub fn release(self: Client) void {\n");
+        try writer.writeAll("            self.peer.releaseImport(self.cap_id, 1) catch {};\n");
+        try writer.writeAll("        }\n\n");
 
         // Own call methods
         for (interface_info.methods) |method| {
@@ -1455,7 +1464,26 @@ pub const Generator = struct {
         try writer.writeAll("        canceled,\n");
         try writer.writeAll("        results_sent_elsewhere,\n");
         try writer.writeAll("        take_from_other_question: u32,\n");
-        try writer.writeAll("        accept_from_third_party,\n");
+        try writer.writeAll("        accept_from_third_party,\n\n");
+        try writer.writeAll("        /// Collapse this BootstrapResponse into its Client or a typed\n");
+        try writer.writeAll("        /// rpc.peer.CallError. Locally synthesized exception reasons map to\n");
+        try writer.writeAll("        /// their dedicated errors; every other exception is RemoteException\n");
+        try writer.writeAll("        /// (reason available on the union arm).\n");
+        try writer.writeAll("        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {\n");
+        try writer.writeAll("            return switch (self) {\n");
+        try writer.writeAll("                .client => |c| c,\n");
+        try writer.writeAll("                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))\n");
+        try writer.writeAll("                    error.Disconnected\n");
+        try writer.writeAll("                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))\n");
+        try writer.writeAll("                    error.Disconnected\n");
+        try writer.writeAll("                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))\n");
+        try writer.writeAll("                    error.CallTimedOut\n");
+        try writer.writeAll("                else\n");
+        try writer.writeAll("                    error.RemoteException,\n");
+        try writer.writeAll("                .canceled => error.Canceled,\n");
+        try writer.writeAll("                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,\n");
+        try writer.writeAll("            };\n");
+        try writer.writeAll("        }\n");
         try writer.writeAll("    };\n");
         try writer.writeAll("    pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;\n\n");
 
@@ -1654,7 +1682,26 @@ pub const Generator = struct {
         try writer.writeAll("            canceled,\n");
         try writer.writeAll("            results_sent_elsewhere,\n");
         try writer.writeAll("            take_from_other_question: u32,\n");
-        try writer.writeAll("            accept_from_third_party,\n");
+        try writer.writeAll("            accept_from_third_party,\n\n");
+        try writer.writeAll("            /// Collapse this Response into its success payload or a typed\n");
+        try writer.writeAll("            /// rpc.peer.CallError. Locally synthesized exception reasons map to\n");
+        try writer.writeAll("            /// their dedicated errors; every other exception is RemoteException\n");
+        try writer.writeAll("            /// (reason available on the union arm).\n");
+        try writer.writeAll("            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {\n");
+        try writer.writeAll("                return switch (self) {\n");
+        try writer.writeAll("                    .results => |r| r,\n");
+        try writer.writeAll("                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))\n");
+        try writer.writeAll("                        error.Disconnected\n");
+        try writer.writeAll("                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))\n");
+        try writer.writeAll("                        error.Disconnected\n");
+        try writer.writeAll("                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))\n");
+        try writer.writeAll("                        error.CallTimedOut\n");
+        try writer.writeAll("                    else\n");
+        try writer.writeAll("                        error.RemoteException,\n");
+        try writer.writeAll("                    .canceled => error.Canceled,\n");
+        try writer.writeAll("                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,\n");
+        try writer.writeAll("                };\n");
+        try writer.writeAll("            }\n");
         try writer.writeAll("        };\n");
         try writer.writeAll("        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;\n\n");
 
@@ -1811,7 +1858,10 @@ pub const Generator = struct {
             });
             try writer.writeAll("            var results = Results.Builder.wrap(results_builder);\n");
             try writer.writeAll("            try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);\n");
-            try writer.writeAll("            _ = try ret.initCapTableTyped(0);\n");
+            // No cap-table init here: buildReturnDirect only ever runs inside
+            // peer.sendReturnResults, whose encodeReturnPayloadCapsWithEffects
+            // pass re-derives and (re)writes the payload cap table
+            // unconditionally, so a zero-length placeholder is dead weight.
             try writer.writeAll("        }\n");
         }
 
@@ -1889,7 +1939,7 @@ pub const Generator = struct {
         const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
         defer self.freeMethodCallParams(p);
 
-        try writer.print("        pub fn {s}(self: *Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
+        try writer.print("        pub fn {s}(self: Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
             p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
@@ -1997,7 +2047,7 @@ pub const Generator = struct {
         const method_prefix = ancestor_name orelse "";
         const dot = if (ancestor_name != null) "." else "";
 
-        try writer.print("        pub fn call{s}Pipelined(self: *Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
+        try writer.print("        pub fn call{s}Pipelined(self: Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
             zig_name, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
         });
         try writer.print("            const qid = try self.call{s}(user_ctx, build, on_return);\n", .{zig_name});
@@ -2038,7 +2088,7 @@ pub const Generator = struct {
         const p = try self.resolveMethodCallParams(method, interface_id_expr, ancestor_name);
         defer self.freeMethodCallParams(p);
 
-        try writer.print("        pub fn {s}(self: *PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
+        try writer.print("        pub fn {s}(self: PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
             p.call_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
@@ -3416,9 +3466,9 @@ test "Generator.generateFile emits unique escaped import aliases" {
     const output = try gen.generateFile(requested);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "const foo = @import(\"a/foo.zig\");"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "const foo_2 = @import(\"b/foo.zig\");"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "const @\"error\" = @import(\"error.zig\");"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const foo = @import(\"a/foo.zig\");"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const foo_2 = @import(\"b/foo.zig\");"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub const @\"error\" = @import(\"error.zig\");"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getA(self: Reader) !foo.AType.Reader"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getB(self: Reader) !foo_2.BType.Reader"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getE(self: Reader) !@\"error\".ErrorType.Reader"));

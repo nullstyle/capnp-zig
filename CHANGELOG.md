@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Generated client call methods take by-value receivers**:
+  `Client.callX(self: Client, ...)`, `Client.callXPipelined(self: Client,
+  ...)`, and `PipelinedClient.callX(self: PipelinedClient, ...)` (previously
+  `*Client` / `*PipelinedClient`). Call sites no longer need the
+  `var c = client;` copy ritual; `StreamClient` methods still take
+  `*StreamClient` (they mutate stream state).
+- **Generated `Response.unwrap()` / `BootstrapResponse.unwrap()`**: every
+  per-method Response union and the BootstrapResponse union now carry an
+  `unwrap()` that collapses the union into the success payload
+  (`Results.Reader` / `Client`) or a typed `rpc.peer.CallError`
+  (`RemoteException`, `Disconnected`, `CallTimedOut`, `Canceled`,
+  `UnexpectedReturn`). The peer's exported locally-synthesized exception
+  reasons (`disconnected_reason`, `shutdown_reason`, `deadline_reason`) map
+  to their dedicated errors; any other exception is `RemoteException`.
+  `rpc.peer.CallError` is the new shared error set (`src/rpc/peer/errors.zig`).
+- **Generated `Client.release()`**: every generated Client can now release
+  the import ref it owns (balances the bootstrap-return `retainCapability`);
+  best-effort, at most once per owned Client.
+- **Generated sibling schema imports are now `pub`**
+  (`pub const chat = @import("chat.zig");`), so consumers can name
+  cross-schema types the generated API returns.
+- **`peer.start(cb_ctx, on_error, on_close)`** (landed earlier on this
+  branch): both callbacks gained a leading user-context argument, threaded
+  through connection error/close and nonfatal-error reporting;
+  `HostPeer.start` mirrors the change. The deadline/shutdown exception
+  reasons became exported constants (`deadline_reason`, `shutdown_reason`)
+  alongside `disconnected_reason` so response unwrapping can match them.
 - **RPC public exports** are now domain-shaped. Use `rpc.wire`,
   `rpc.caps`, `rpc.promises`, `rpc.events`, `rpc.transport`, `rpc.peer`,
   `rpc.integration`, `rpc.generated`, and `rpc.testing`. Removed top-level
@@ -167,6 +194,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Generated `buildReturnDirect` no longer emits a zero-length cap table**:
+  `peer.sendReturnResults` re-derives and rewrites the payload cap table
+  unconditionally, so the placeholder was dead weight. No wire change.
 - **QUIC transport re-enabled on Zig master**: `quic_zig` repinned to
   upstream `0e4d540` (which itself targets `0.17.0-dev.813`), the
   transport adapter migrated to upstream's new tagged-union

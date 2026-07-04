@@ -13,15 +13,6 @@ pub fn capnpSchemaManifestJson() []const u8 {
 }
 
 pub const Entry = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -45,10 +36,9 @@ pub const Entry = struct {
         }
 
         pub fn getVersion(self: Reader) !u64 {
-            const raw = self._reader.readU64(0);
-            const value = raw ^ @as(u64, 0);
-            return value;
+            return self._reader.readU64(0);
         }
+
     };
 
     pub const Builder = struct {
@@ -72,22 +62,13 @@ pub const Entry = struct {
         }
 
         pub fn setVersion(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(0, stored);
+            self._builder.writeU64(0, @bitCast(value));
         }
+
     };
 };
 
 pub const WriteOp = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         put = 0,
         delete = 1,
@@ -115,14 +96,16 @@ pub const WriteOp = struct {
         }
 
         pub fn getPut(self: Reader) ![]const u8 {
+            if ((try self.which()) != .put) return error.WrongUnionMember;
             if (self._reader.isPointerNull(1)) return &[_]u8{};
             return try self._reader.readData(1);
         }
 
         pub fn getDelete(self: Reader) !void {
-            _ = self;
+            if ((try self.which()) != .delete) return error.WrongUnionMember;
             return {};
         }
+
     };
 
     pub const Builder = struct {
@@ -150,19 +133,11 @@ pub const WriteOp = struct {
             self._builder.writeU16(0, 1);
             _ = value;
         }
+
     };
 };
 
 pub const WriteOpResult = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const WhichTag = enum(u16) {
         put = 0,
         delete = 1,
@@ -190,13 +165,17 @@ pub const WriteOpResult = struct {
         }
 
         pub fn getPut(self: Reader) !Entry.Reader {
+            if ((try self.which()) != .put) return error.WrongUnionMember;
+            if (self._reader.isPointerNull(1)) return Entry.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(1);
             return Entry.Reader{ ._reader = value };
         }
 
         pub fn getDelete(self: Reader) !bool {
+            if ((try self.which()) != .delete) return error.WrongUnionMember;
             return self._reader.readBool(2, 0) != false;
         }
+
     };
 
     pub const Builder = struct {
@@ -225,19 +204,11 @@ pub const WriteOpResult = struct {
             self._builder.writeU16(0, 1);
             self._builder.writeBool(2, 0, value != false);
         }
+
     };
 };
 
 pub const BackupInfo = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -251,28 +222,21 @@ pub const BackupInfo = struct {
         }
 
         pub fn getBackupId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
 
         pub fn getTimestamp(self: Reader) !i64 {
-            const raw = self._reader.readU64(8);
-            const value = raw ^ @as(u64, 0);
-            return @bitCast(value);
+            return @bitCast(self._reader.readU64(8));
         }
 
         pub fn getSize(self: Reader) !u64 {
-            const raw = self._reader.readU64(16);
-            const value = raw ^ @as(u64, 0);
-            return value;
+            return self._reader.readU64(16);
         }
 
         pub fn getNumFiles(self: Reader) !u32 {
-            const raw = self._reader.readU32(4);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(4);
         }
+
     };
 
     pub const Builder = struct {
@@ -288,24 +252,21 @@ pub const BackupInfo = struct {
         }
 
         pub fn setBackupId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
 
         pub fn setTimestamp(self: *Builder, value: i64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(8, stored);
+            self._builder.writeU64(8, @bitCast(value));
         }
 
         pub fn setSize(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(16, stored);
+            self._builder.writeU64(16, @bitCast(value));
         }
 
         pub fn setNumFiles(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(4, stored);
+            self._builder.writeU32(4, @bitCast(value));
         }
+
     };
 };
 
@@ -319,8 +280,8 @@ pub const KvClientNotifier = struct {
     pub const KeysChanged = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = KeysChangedParams;
-        pub const Results = KeysChangedResults;
+        pub const Params = KvClientNotifier.KeysChangedParams;
+        pub const Results = KvClientNotifier.KeysChangedResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -331,6 +292,26 @@ pub const KvClientNotifier = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -338,6 +319,13 @@ pub const KvClientNotifier = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -428,15 +416,14 @@ pub const KvClientNotifier = struct {
             const results_builder = try results_any.initStruct(0, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const StateResetRequired = struct {
         pub const ordinal: u16 = 1;
         pub const is_streaming: bool = false;
-        pub const Params = StateResetRequiredParams;
-        pub const Results = StateResetRequiredResults;
+        pub const Params = KvClientNotifier.StateResetRequiredParams;
+        pub const Results = KvClientNotifier.StateResetRequiredResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -447,6 +434,26 @@ pub const KvClientNotifier = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -454,6 +461,13 @@ pub const KvClientNotifier = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -544,7 +558,6 @@ pub const KvClientNotifier = struct {
             const results_builder = try results_any.initStruct(0, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -556,21 +569,35 @@ pub const KvClientNotifier = struct {
             return .{ .peer = peer, .cap_id = cap_id };
         }
 
-        pub fn callKeysChanged(self: *Client, user_ctx: *anyopaque, build: ?KeysChanged.BuildFn, on_return: KeysChanged.Callback) !u32 {
-            const ctx = try self.peer.allocator.create(KeysChanged.CallContext);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn);
+        /// Release the import ref this Client owns (balances the bootstrap-return
+        /// retainCapability). Call at most once per owned Client; best-effort —
+        /// peer teardown's import release is the backstop.
+        pub fn release(self: Client) void {
+            self.peer.releaseImport(self.cap_id, 1) catch {};
         }
 
-        pub fn callStateResetRequired(self: *Client, user_ctx: *anyopaque, build: ?StateResetRequired.BuildFn, on_return: StateResetRequired.Callback) !u32 {
-            const ctx = try self.peer.allocator.create(StateResetRequired.CallContext);
+        pub fn callKeysChanged(self: Client, user_ctx: *anyopaque, build: ?KeysChanged.BuildFn, on_return: KeysChanged.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(KeysChanged.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, KeysChanged.CallContext.deinitCtx);
+            return question_id;
+        }
+
+        pub fn callStateResetRequired(self: Client, user_ctx: *anyopaque, build: ?StateResetRequired.BuildFn, on_return: StateResetRequired.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(StateResetRequired.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, StateResetRequired.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
+
     };
 
     pub const PipelinedClient = struct {
@@ -578,17 +605,24 @@ pub const KvClientNotifier = struct {
         question_id: u32,
         pointer_index: u16,
 
-        pub fn callKeysChanged(self: *PipelinedClient, user_ctx: *anyopaque, build: ?KeysChanged.BuildFn, on_return: KeysChanged.Callback) !u32 {
+        pub fn callKeysChanged(self: PipelinedClient, user_ctx: *anyopaque, build: ?KeysChanged.BuildFn, on_return: KeysChanged.Callback) !u32 {
             const ctx = try self.peer.allocator.create(KeysChanged.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, KeysChanged.ordinal, ctx, KeysChanged.callBuild, KeysChanged.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, KeysChanged.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callStateResetRequired(self: *PipelinedClient, user_ctx: *anyopaque, build: ?StateResetRequired.BuildFn, on_return: StateResetRequired.Callback) !u32 {
+        pub fn callStateResetRequired(self: PipelinedClient, user_ctx: *anyopaque, build: ?StateResetRequired.BuildFn, on_return: StateResetRequired.Callback) !u32 {
             const ctx = try self.peer.allocator.create(StateResetRequired.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StateResetRequired.ordinal, ctx, StateResetRequired.callBuild, StateResetRequired.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, StateResetRequired.CallContext.deinitCtx);
+            return question_id;
         }
+
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -598,12 +632,37 @@ pub const KvClientNotifier = struct {
         results_sent_elsewhere,
         take_from_other_question: u32,
         accept_from_third_party,
+
+        /// Collapse this BootstrapResponse into its Client or a typed
+        /// rpc.peer.CallError. Locally synthesized exception reasons map to
+        /// their dedicated errors; every other exception is RemoteException
+        /// (reason available on the union arm).
+        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
+            return switch (self) {
+                .client => |c| c,
+                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                    error.CallTimedOut
+                else
+                    error.RemoteException,
+                .canceled => error.Canceled,
+                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+            };
+        }
     };
     pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;
 
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -639,8 +698,11 @@ pub const KvClientNotifier = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
@@ -671,186 +733,156 @@ pub const KvClientNotifier = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const KeysChangedParams = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
 
-pub const KeysChangedParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn getChanges(self: Reader) !StructListReader(WriteOpResult) {
+                if (self._reader.isPointerNull(0)) return StructListReader(WriteOpResult){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(WriteOpResult){ ._list = raw };
+            }
 
-        pub fn getChanges(self: Reader) !StructListReader(WriteOpResult) {
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(WriteOpResult){ ._list = raw };
-        }
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initChanges(self: *Builder, element_count: u32) !StructListBuilder(WriteOpResult) {
+                const raw = try self._builder.writeStructList(0, element_count, 1, 2);
+                return StructListBuilder(WriteOpResult){ ._list = raw };
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const KeysChangedResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initChanges(self: *Builder, element_count: u32) !StructListBuilder(WriteOpResult) {
-            const raw = try self._builder.writeStructList(0, element_count, 1, 2);
-            return StructListBuilder(WriteOpResult){ ._list = raw };
-        }
-    };
-};
+        };
 
-pub const KeysChangedResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const StateResetRequiredParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-    };
-};
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-pub const StateResetRequiredParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
+            pub fn getRestoredBackupId(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
 
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn getNextVersion(self: Reader) !u64 {
+                return self._reader.readU64(8);
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+        };
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn getRestoredBackupId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(2, 0);
+                return .{ ._builder = builder };
+            }
 
-        pub fn getNextVersion(self: Reader) !u64 {
-            const raw = self._reader.readU64(8);
-            const value = raw ^ @as(u64, 0);
-            return value;
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+            pub fn setNextVersion(self: *Builder, value: u64) !void {
+                self._builder.writeU64(8, @bitCast(value));
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const StateResetRequiredResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(2, 0);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
-        }
+        };
 
-        pub fn setNextVersion(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(8, stored);
-        }
-    };
-};
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-pub const StateResetRequiredResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
 
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-    };
 };
 
 pub const KvStore = struct {
@@ -869,8 +901,8 @@ pub const KvStore = struct {
     pub const Get = struct {
         pub const ordinal: u16 = 0;
         pub const is_streaming: bool = false;
-        pub const Params = GetParams;
-        pub const Results = GetResults;
+        pub const Params = KvStore.GetParams;
+        pub const Results = KvStore.GetResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -881,6 +913,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -888,6 +940,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -978,15 +1037,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(1, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const WriteBatch = struct {
         pub const ordinal: u16 = 1;
         pub const is_streaming: bool = false;
-        pub const Params = WriteBatchParams;
-        pub const Results = WriteBatchResults;
+        pub const Params = KvStore.WriteBatchParams;
+        pub const Results = KvStore.WriteBatchResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -997,6 +1055,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1004,6 +1082,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1094,15 +1179,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(2, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const List = struct {
         pub const ordinal: u16 = 2;
         pub const is_streaming: bool = false;
-        pub const Params = ListParams;
-        pub const Results = ListResults;
+        pub const Params = KvStore.ListParams;
+        pub const Results = KvStore.ListResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1113,6 +1197,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1120,6 +1224,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1210,15 +1321,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const Subscribe = struct {
         pub const ordinal: u16 = 3;
         pub const is_streaming: bool = false;
-        pub const Params = SubscribeParams;
-        pub const Results = SubscribeResults;
+        pub const Params = KvStore.SubscribeParams;
+        pub const Results = KvStore.SubscribeResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1229,6 +1339,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1236,6 +1366,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1326,15 +1463,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(0, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const SetWatchedKeys = struct {
         pub const ordinal: u16 = 4;
         pub const is_streaming: bool = false;
-        pub const Params = SetWatchedKeysParams;
-        pub const Results = SetWatchedKeysResults;
+        pub const Params = KvStore.SetWatchedKeysParams;
+        pub const Results = KvStore.SetWatchedKeysResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1345,6 +1481,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1352,6 +1508,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1442,15 +1605,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(0, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const CreateBackup = struct {
         pub const ordinal: u16 = 5;
         pub const is_streaming: bool = false;
-        pub const Params = CreateBackupParams;
-        pub const Results = CreateBackupResults;
+        pub const Params = KvStore.CreateBackupParams;
+        pub const Results = KvStore.CreateBackupResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1461,6 +1623,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1468,6 +1650,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1558,15 +1747,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(1, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const ListBackups = struct {
         pub const ordinal: u16 = 6;
         pub const is_streaming: bool = false;
-        pub const Params = ListBackupsParams;
-        pub const Results = ListBackupsResults;
+        pub const Params = KvStore.ListBackupsParams;
+        pub const Results = KvStore.ListBackupsResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1577,6 +1765,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1584,6 +1792,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1674,15 +1889,14 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(0, 1);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
     pub const RestoreFromBackup = struct {
         pub const ordinal: u16 = 7;
         pub const is_streaming: bool = false;
-        pub const Params = RestoreFromBackupParams;
-        pub const Results = RestoreFromBackupResults;
+        pub const Params = KvStore.RestoreFromBackupParams;
+        pub const Results = KvStore.RestoreFromBackupResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -1693,6 +1907,26 @@ pub const KvStore = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -1700,6 +1934,13 @@ pub const KvStore = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -1790,7 +2031,6 @@ pub const KvStore = struct {
             const results_builder = try results_any.initStruct(2, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -1802,57 +2042,89 @@ pub const KvStore = struct {
             return .{ .peer = peer, .cap_id = cap_id };
         }
 
-        pub fn callGet(self: *Client, user_ctx: *anyopaque, build: ?Get.BuildFn, on_return: Get.Callback) !u32 {
+        /// Release the import ref this Client owns (balances the bootstrap-return
+        /// retainCapability). Call at most once per owned Client; best-effort —
+        /// peer teardown's import release is the backstop.
+        pub fn release(self: Client) void {
+            self.peer.releaseImport(self.cap_id, 1) catch {};
+        }
+
+        pub fn callGet(self: Client, user_ctx: *anyopaque, build: ?Get.BuildFn, on_return: Get.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Get.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Get.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callWriteBatch(self: *Client, user_ctx: *anyopaque, build: ?WriteBatch.BuildFn, on_return: WriteBatch.Callback) !u32 {
+        pub fn callWriteBatch(self: Client, user_ctx: *anyopaque, build: ?WriteBatch.BuildFn, on_return: WriteBatch.Callback) !u32 {
             const ctx = try self.peer.allocator.create(WriteBatch.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, WriteBatch.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callList(self: *Client, user_ctx: *anyopaque, build: ?List.BuildFn, on_return: List.Callback) !u32 {
+        pub fn callList(self: Client, user_ctx: *anyopaque, build: ?List.BuildFn, on_return: List.Callback) !u32 {
             const ctx = try self.peer.allocator.create(List.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, List.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callSubscribe(self: *Client, user_ctx: *anyopaque, build: ?Subscribe.BuildFn, on_return: Subscribe.Callback) !u32 {
+        pub fn callSubscribe(self: Client, user_ctx: *anyopaque, build: ?Subscribe.BuildFn, on_return: Subscribe.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Subscribe.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Subscribe.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callSetWatchedKeys(self: *Client, user_ctx: *anyopaque, build: ?SetWatchedKeys.BuildFn, on_return: SetWatchedKeys.Callback) !u32 {
+        pub fn callSetWatchedKeys(self: Client, user_ctx: *anyopaque, build: ?SetWatchedKeys.BuildFn, on_return: SetWatchedKeys.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SetWatchedKeys.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, SetWatchedKeys.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callCreateBackup(self: *Client, user_ctx: *anyopaque, build: ?CreateBackup.BuildFn, on_return: CreateBackup.Callback) !u32 {
+        pub fn callCreateBackup(self: Client, user_ctx: *anyopaque, build: ?CreateBackup.BuildFn, on_return: CreateBackup.Callback) !u32 {
             const ctx = try self.peer.allocator.create(CreateBackup.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, CreateBackup.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callListBackups(self: *Client, user_ctx: *anyopaque, build: ?ListBackups.BuildFn, on_return: ListBackups.Callback) !u32 {
+        pub fn callListBackups(self: Client, user_ctx: *anyopaque, build: ?ListBackups.BuildFn, on_return: ListBackups.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ListBackups.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, ListBackups.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callRestoreFromBackup(self: *Client, user_ctx: *anyopaque, build: ?RestoreFromBackup.BuildFn, on_return: RestoreFromBackup.Callback) !u32 {
+        pub fn callRestoreFromBackup(self: Client, user_ctx: *anyopaque, build: ?RestoreFromBackup.BuildFn, on_return: RestoreFromBackup.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RestoreFromBackup.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, RestoreFromBackup.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
+
     };
 
     pub const PipelinedClient = struct {
@@ -1860,53 +2132,78 @@ pub const KvStore = struct {
         question_id: u32,
         pointer_index: u16,
 
-        pub fn callGet(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Get.BuildFn, on_return: Get.Callback) !u32 {
+        pub fn callGet(self: PipelinedClient, user_ctx: *anyopaque, build: ?Get.BuildFn, on_return: Get.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Get.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Get.ordinal, ctx, Get.callBuild, Get.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Get.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callWriteBatch(self: *PipelinedClient, user_ctx: *anyopaque, build: ?WriteBatch.BuildFn, on_return: WriteBatch.Callback) !u32 {
+        pub fn callWriteBatch(self: PipelinedClient, user_ctx: *anyopaque, build: ?WriteBatch.BuildFn, on_return: WriteBatch.Callback) !u32 {
             const ctx = try self.peer.allocator.create(WriteBatch.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, WriteBatch.ordinal, ctx, WriteBatch.callBuild, WriteBatch.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, WriteBatch.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callList(self: *PipelinedClient, user_ctx: *anyopaque, build: ?List.BuildFn, on_return: List.Callback) !u32 {
+        pub fn callList(self: PipelinedClient, user_ctx: *anyopaque, build: ?List.BuildFn, on_return: List.Callback) !u32 {
             const ctx = try self.peer.allocator.create(List.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, List.ordinal, ctx, List.callBuild, List.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, List.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callSubscribe(self: *PipelinedClient, user_ctx: *anyopaque, build: ?Subscribe.BuildFn, on_return: Subscribe.Callback) !u32 {
+        pub fn callSubscribe(self: PipelinedClient, user_ctx: *anyopaque, build: ?Subscribe.BuildFn, on_return: Subscribe.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Subscribe.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Subscribe.ordinal, ctx, Subscribe.callBuild, Subscribe.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Subscribe.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callSetWatchedKeys(self: *PipelinedClient, user_ctx: *anyopaque, build: ?SetWatchedKeys.BuildFn, on_return: SetWatchedKeys.Callback) !u32 {
+        pub fn callSetWatchedKeys(self: PipelinedClient, user_ctx: *anyopaque, build: ?SetWatchedKeys.BuildFn, on_return: SetWatchedKeys.Callback) !u32 {
             const ctx = try self.peer.allocator.create(SetWatchedKeys.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, SetWatchedKeys.ordinal, ctx, SetWatchedKeys.callBuild, SetWatchedKeys.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, SetWatchedKeys.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callCreateBackup(self: *PipelinedClient, user_ctx: *anyopaque, build: ?CreateBackup.BuildFn, on_return: CreateBackup.Callback) !u32 {
+        pub fn callCreateBackup(self: PipelinedClient, user_ctx: *anyopaque, build: ?CreateBackup.BuildFn, on_return: CreateBackup.Callback) !u32 {
             const ctx = try self.peer.allocator.create(CreateBackup.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, CreateBackup.ordinal, ctx, CreateBackup.callBuild, CreateBackup.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, CreateBackup.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callListBackups(self: *PipelinedClient, user_ctx: *anyopaque, build: ?ListBackups.BuildFn, on_return: ListBackups.Callback) !u32 {
+        pub fn callListBackups(self: PipelinedClient, user_ctx: *anyopaque, build: ?ListBackups.BuildFn, on_return: ListBackups.Callback) !u32 {
             const ctx = try self.peer.allocator.create(ListBackups.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ListBackups.ordinal, ctx, ListBackups.callBuild, ListBackups.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, ListBackups.CallContext.deinitCtx);
+            return question_id;
         }
 
-        pub fn callRestoreFromBackup(self: *PipelinedClient, user_ctx: *anyopaque, build: ?RestoreFromBackup.BuildFn, on_return: RestoreFromBackup.Callback) !u32 {
+        pub fn callRestoreFromBackup(self: PipelinedClient, user_ctx: *anyopaque, build: ?RestoreFromBackup.BuildFn, on_return: RestoreFromBackup.Callback) !u32 {
             const ctx = try self.peer.allocator.create(RestoreFromBackup.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn);
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RestoreFromBackup.ordinal, ctx, RestoreFromBackup.callBuild, RestoreFromBackup.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, RestoreFromBackup.CallContext.deinitCtx);
+            return question_id;
         }
+
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -1916,12 +2213,37 @@ pub const KvStore = struct {
         results_sent_elsewhere,
         take_from_other_question: u32,
         accept_from_third_party,
+
+        /// Collapse this BootstrapResponse into its Client or a typed
+        /// rpc.peer.CallError. Locally synthesized exception reasons map to
+        /// their dedicated errors; every other exception is RemoteException
+        /// (reason available on the union arm).
+        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
+            return switch (self) {
+                .client => |c| c,
+                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                    error.CallTimedOut
+                else
+                    error.RemoteException,
+                .canceled => error.Canceled,
+                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+            };
+        }
     };
     pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;
 
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -1957,8 +2279,11 @@ pub const KvStore = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
@@ -2007,823 +2332,710 @@ pub const KvStore = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
-
-pub const GetParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getKey(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setKey(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(0, value);
-        }
-    };
-};
-
-pub const GetResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getEntry(self: Reader) !Entry.Reader {
-            const value = try self._reader.readStruct(0);
-            return Entry.Reader{ ._reader = value };
-        }
-
-        pub fn getFound(self: Reader) !bool {
-            return self._reader.readBool(0, 0) != false;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initEntry(self: *Builder) !Entry.Builder {
-            const builder = try self._builder.initStruct(0, 1, 2);
-            return Entry.Builder{ ._builder = builder };
-        }
-
-        pub fn setFound(self: *Builder, value: bool) !void {
-            self._builder.writeBool(0, 0, value != false);
-        }
-    };
-};
-
-pub const WriteBatchParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getOps(self: Reader) !StructListReader(WriteOp) {
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(WriteOp){ ._list = raw };
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initOps(self: *Builder, element_count: u32) !StructListBuilder(WriteOp) {
-            const raw = try self._builder.writeStructList(0, element_count, 1, 2);
-            return StructListBuilder(WriteOp){ ._list = raw };
-        }
-    };
-};
-
-pub const WriteBatchResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getResults(self: Reader) !StructListReader(WriteOpResult) {
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(WriteOpResult){ ._list = raw };
-        }
-
-        pub fn getApplied(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
-
-        pub fn getNextVersion(self: Reader) !u64 {
-            const raw = self._reader.readU64(8);
-            const value = raw ^ @as(u64, 0);
-            return value;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(2, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initResults(self: *Builder, element_count: u32) !StructListBuilder(WriteOpResult) {
-            const raw = try self._builder.writeStructList(0, element_count, 1, 2);
-            return StructListBuilder(WriteOpResult){ ._list = raw };
-        }
-
-        pub fn setApplied(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
-        }
-
-        pub fn setNextVersion(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(8, stored);
-        }
-    };
-};
-
-pub const ListParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getPrefix(self: Reader) ![]const u8 {
-            if (self._reader.isPointerNull(0)) return "";
-            return try self._reader.readText(0);
-        }
-
-        pub fn getLimit(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setPrefix(self: *Builder, value: []const u8) !void {
-            try self._builder.writeText(0, value);
-        }
-
-        pub fn setLimit(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
-        }
-    };
-};
-
-pub const ListResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getEntries(self: Reader) !StructListReader(Entry) {
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(Entry){ ._list = raw };
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initEntries(self: *Builder, element_count: u32) !StructListBuilder(Entry) {
-            const raw = try self._builder.writeStructList(0, element_count, 1, 2);
-            return StructListBuilder(Entry){ ._list = raw };
-        }
-    };
-};
-
-pub const SubscribeParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getNotifier(self: Reader) !message.Capability {
-            return try self._reader.readCapability(0);
-        }
-
-        pub fn resolveNotifier(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !KvClientNotifier.Client {
-            const cap = try self._reader.readCapability(0);
-            var mutable_caps = caps.*;
-            try mutable_caps.retainCapability(cap);
-            const resolved = try caps.resolveCapability(cap);
-            switch (resolved) {
-                .imported => |imported| return KvClientNotifier.Client.init(peer, imported.id),
-                else => return error.UnexpectedCapabilityType,
+    pub const GetParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
             }
-        }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getKey(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return "";
+                return try self._reader.readText(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setKey(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(0, value);
+            }
+
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const GetResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn initNotifier(self: *Builder) !message.AnyPointerBuilder {
-            return try self._builder.getAnyPointer(0);
-        }
+            pub fn getEntry(self: Reader) !Entry.Reader {
+                if (self._reader.isPointerNull(0)) return Entry.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return Entry.Reader{ ._reader = value };
+            }
 
-        pub fn clearNotifier(self: *Builder) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setNull();
-        }
+            pub fn getFound(self: Reader) !bool {
+                return self._reader.readBool(0, 0) != false;
+            }
 
-        pub fn setNotifierCapability(self: *Builder, cap: message.Capability) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(cap);
-        }
+        };
 
-        pub fn setNotifierServer(self: *Builder, peer: *rpc.peer.Peer, server: *KvClientNotifier.Server) !void {
-            const cap_id = try KvClientNotifier.exportServer(peer, server);
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = cap_id });
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn setNotifierClient(self: *Builder, client: KvClientNotifier.Client) !void {
-            var any = try self._builder.getAnyPointer(0);
-            try any.setCapability(.{ .id = client.cap_id });
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initEntry(self: *Builder) !Entry.Builder {
+                const builder = try self._builder.initStruct(0, 1, 2);
+                return Entry.Builder{ ._builder = builder };
+            }
+
+            pub fn setFound(self: *Builder, value: bool) !void {
+                self._builder.writeBool(0, 0, value != false);
+            }
+
+        };
     };
+
+    pub const WriteBatchParams = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
+
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getOps(self: Reader) !StructListReader(WriteOp) {
+                if (self._reader.isPointerNull(0)) return StructListReader(WriteOp){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(WriteOp){ ._list = raw };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initOps(self: *Builder, element_count: u32) !StructListBuilder(WriteOp) {
+                const raw = try self._builder.writeStructList(0, element_count, 1, 2);
+                return StructListBuilder(WriteOp){ ._list = raw };
+            }
+
+        };
+    };
+
+    pub const WriteBatchResults = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
+
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getResults(self: Reader) !StructListReader(WriteOpResult) {
+                if (self._reader.isPointerNull(0)) return StructListReader(WriteOpResult){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(WriteOpResult){ ._list = raw };
+            }
+
+            pub fn getApplied(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+            pub fn getNextVersion(self: Reader) !u64 {
+                return self._reader.readU64(8);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(2, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initResults(self: *Builder, element_count: u32) !StructListBuilder(WriteOpResult) {
+                const raw = try self._builder.writeStructList(0, element_count, 1, 2);
+                return StructListBuilder(WriteOpResult){ ._list = raw };
+            }
+
+            pub fn setApplied(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+            pub fn setNextVersion(self: *Builder, value: u64) !void {
+                self._builder.writeU64(8, @bitCast(value));
+            }
+
+        };
+    };
+
+    pub const ListParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getPrefix(self: Reader) ![]const u8 {
+                if (self._reader.isPointerNull(0)) return "";
+                return try self._reader.readText(0);
+            }
+
+            pub fn getLimit(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setPrefix(self: *Builder, value: []const u8) !void {
+                try self._builder.writeText(0, value);
+            }
+
+            pub fn setLimit(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+        };
+    };
+
+    pub const ListResults = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
+
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getEntries(self: Reader) !StructListReader(Entry) {
+                if (self._reader.isPointerNull(0)) return StructListReader(Entry){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(Entry){ ._list = raw };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initEntries(self: *Builder, element_count: u32) !StructListBuilder(Entry) {
+                const raw = try self._builder.writeStructList(0, element_count, 1, 2);
+                return StructListBuilder(Entry){ ._list = raw };
+            }
+
+        };
+    };
+
+    pub const SubscribeParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getNotifier(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
+
+            pub fn resolveNotifier(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !KvClientNotifier.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return KvClientNotifier.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initNotifier(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearNotifier(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setNotifierCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setNotifierServer(self: *Builder, peer: *rpc.peer.Peer, server: *KvClientNotifier.Server) !void {
+                const cap_id = try KvClientNotifier.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setNotifierClient(self: *Builder, client: KvClientNotifier.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+        };
+    };
+
+    pub const SubscribeResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const SetWatchedKeysParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getKeys(self: Reader) !message.TextListReader {
+                if (self._reader.isPointerNull(0)) return self._reader.emptyList(message.TextListReader);
+                return try self._reader.readTextList(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initKeys(self: *Builder, element_count: u32) !message.TextListBuilder {
+                return try self._builder.writeTextList(0, element_count);
+            }
+
+        };
+    };
+
+    pub const SetWatchedKeysResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const CreateBackupParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getFlushBeforeBackup(self: Reader) !bool {
+                return self._reader.readBool(0, 0) != false;
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setFlushBeforeBackup(self: *Builder, value: bool) !void {
+                self._builder.writeBool(0, 0, value != false);
+            }
+
+        };
+    };
+
+    pub const CreateBackupResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getBackup(self: Reader) !BackupInfo.Reader {
+                if (self._reader.isPointerNull(0)) return BackupInfo.Reader{ ._reader = self._reader.emptyStruct() };
+                const value = try self._reader.readStruct(0);
+                return BackupInfo.Reader{ ._reader = value };
+            }
+
+            pub fn getBackupCount(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initBackup(self: *Builder) !BackupInfo.Builder {
+                const builder = try self._builder.initStruct(0, 3, 0);
+                return BackupInfo.Builder{ ._builder = builder };
+            }
+
+            pub fn setBackupCount(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+        };
+    };
+
+    pub const ListBackupsParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const ListBackupsResults = struct {
+        const StructListReader = message.typed_list_helpers.StructListReader;
+        const StructListBuilder = message.typed_list_helpers.StructListBuilder;
+
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getBackups(self: Reader) !StructListReader(BackupInfo) {
+                if (self._reader.isPointerNull(0)) return StructListReader(BackupInfo){ ._list = self._reader.emptyStructList() };
+                const raw = try self._reader.readStructList(0);
+                return StructListReader(BackupInfo){ ._list = raw };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initBackups(self: *Builder, element_count: u32) !StructListBuilder(BackupInfo) {
+                const raw = try self._builder.writeStructList(0, element_count, 3, 0);
+                return StructListBuilder(BackupInfo){ ._list = raw };
+            }
+
+        };
+    };
+
+    pub const RestoreFromBackupParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getBackupId(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+            pub fn getKeepLogFiles(self: Reader) !bool {
+                return self._reader.readBool(4, 0) != false;
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setBackupId(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+            pub fn setKeepLogFiles(self: *Builder, value: bool) !void {
+                self._builder.writeBool(4, 0, value != false);
+            }
+
+        };
+    };
+
+    pub const RestoreFromBackupResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getRestoredBackupId(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+            pub fn getNextVersion(self: Reader) !u64 {
+                return self._reader.readU64(8);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(2, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+            pub fn setNextVersion(self: *Builder, value: u64) !void {
+                self._builder.writeU64(8, @bitCast(value));
+            }
+
+        };
+    };
+
 };
 
-pub const SubscribeResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-    };
-};
-
-pub const SetWatchedKeysParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getKeys(self: Reader) !message.TextListReader {
-            return try self._reader.readTextList(0);
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initKeys(self: *Builder, element_count: u32) !message.TextListBuilder {
-            return try self._builder.writeTextList(0, element_count);
-        }
-    };
-};
-
-pub const SetWatchedKeysResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-    };
-};
-
-pub const CreateBackupParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getFlushBeforeBackup(self: Reader) !bool {
-            return self._reader.readBool(0, 0) != false;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setFlushBeforeBackup(self: *Builder, value: bool) !void {
-            self._builder.writeBool(0, 0, value != false);
-        }
-    };
-};
-
-pub const CreateBackupResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getBackup(self: Reader) !BackupInfo.Reader {
-            const value = try self._reader.readStruct(0);
-            return BackupInfo.Reader{ ._reader = value };
-        }
-
-        pub fn getBackupCount(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initBackup(self: *Builder) !BackupInfo.Builder {
-            const builder = try self._builder.initStruct(0, 3, 0);
-            return BackupInfo.Builder{ ._builder = builder };
-        }
-
-        pub fn setBackupCount(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
-        }
-    };
-};
-
-pub const ListBackupsParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-    };
-};
-
-pub const ListBackupsResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getBackups(self: Reader) !StructListReader(BackupInfo) {
-            const raw = try self._reader.readStructList(0);
-            return StructListReader(BackupInfo){ ._list = raw };
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(0, 1);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn initBackups(self: *Builder, element_count: u32) !StructListBuilder(BackupInfo) {
-            const raw = try self._builder.writeStructList(0, element_count, 3, 0);
-            return StructListBuilder(BackupInfo){ ._list = raw };
-        }
-    };
-};
-
-pub const RestoreFromBackupParams = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getBackupId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
-
-        pub fn getKeepLogFiles(self: Reader) !bool {
-            return self._reader.readBool(4, 0) != false;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setBackupId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
-        }
-
-        pub fn setKeepLogFiles(self: *Builder, value: bool) !void {
-            self._builder.writeBool(4, 0, value != false);
-        }
-    };
-};
-
-pub const RestoreFromBackupResults = struct {
-    const EnumListReader = message.typed_list_helpers.EnumListReader;
-    const EnumListBuilder = message.typed_list_helpers.EnumListBuilder;
-    const StructListReader = message.typed_list_helpers.StructListReader;
-    const StructListBuilder = message.typed_list_helpers.StructListBuilder;
-    const DataListReader = message.typed_list_helpers.DataListReader;
-    const DataListBuilder = message.typed_list_helpers.DataListBuilder;
-    const CapabilityListReader = message.typed_list_helpers.CapabilityListReader;
-    const CapabilityListBuilder = message.typed_list_helpers.CapabilityListBuilder;
-
-    pub const Reader = struct {
-        _reader: message.StructReader,
-
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
-
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
-
-        pub fn getRestoredBackupId(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
-
-        pub fn getNextVersion(self: Reader) !u64 {
-            const raw = self._reader.readU64(8);
-            const value = raw ^ @as(u64, 0);
-            return value;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(2, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setRestoredBackupId(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
-        }
-
-        pub fn setNextVersion(self: *Builder, value: u64) !void {
-            const stored = @as(u64, @bitCast(value)) ^ @as(u64, 0);
-            self._builder.writeU64(8, stored);
-        }
-    };
-};

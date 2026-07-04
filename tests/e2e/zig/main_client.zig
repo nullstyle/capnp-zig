@@ -148,13 +148,11 @@ fn bootstrapGameWorld(app: *ClientApp, peer: *rpc.peer.Peer) !void {
 
 fn onGameWorldBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: game_world.GameWorld.BootstrapResponse) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
-    switch (response) {
-        .client => |client| {
-            var c = client;
-            _ = try c.callSpawnEntity(app, buildSpawnEntity, onSpawnEntityReturn);
-        },
-        else => failAndFinish(app, peer, "bootstrap game_world capability"),
-    }
+    const client = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap game_world capability");
+        return;
+    };
+    _ = try client.callSpawnEntity(app, buildSpawnEntity, onSpawnEntityReturn);
 }
 
 fn buildSpawnEntity(ctx_ptr: *anyopaque, params: *game_world.GameWorld.SpawnEntity.Params.Builder) !void {
@@ -178,14 +176,14 @@ fn onSpawnEntityReturn(
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
-    switch (response) {
-        .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "spawnEntity returns ok status");
-            const entity = try results.getEntity();
-            app.tap.ok(std.mem.eql(u8, try entity.getName(), "ZigClientHero"), "spawnEntity returns expected name");
-        },
-        else => app.tap.ok(false, "spawnEntity returns results"),
-    }
+    const results = response.unwrap() catch {
+        app.tap.ok(false, "spawnEntity returns results");
+        finish(app, peer);
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "spawnEntity returns ok status");
+    const entity = try results.getEntity();
+    app.tap.ok(std.mem.eql(u8, try entity.getName(), "ZigClientHero"), "spawnEntity returns expected name");
 
     finish(app, peer);
 }
@@ -196,13 +194,11 @@ fn bootstrapChat(app: *ClientApp, peer: *rpc.peer.Peer) !void {
 
 fn onChatBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: chat.ChatService.BootstrapResponse) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
-    switch (response) {
-        .client => |client| {
-            var c = client;
-            _ = try c.callCreateRoom(app, buildCreateRoom, onCreateRoomReturn);
-        },
-        else => failAndFinish(app, peer, "bootstrap chat capability"),
-    }
+    const client = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap chat capability");
+        return;
+    };
+    _ = try client.callCreateRoom(app, buildCreateRoom, onCreateRoomReturn);
 }
 
 fn buildCreateRoom(ctx_ptr: *anyopaque, params: *chat.ChatService.CreateRoom.Params.Builder) !void {
@@ -219,18 +215,18 @@ fn onCreateRoomReturn(
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
-    switch (response) {
-        .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "createRoom returns ok status");
-            const room_cap = try results.getRoom();
-            const resolved = try caps.resolveCapability(room_cap);
-            app.tap.ok(switch (resolved) {
-                .imported => true,
-                else => false,
-            }, "createRoom returns imported ChatRoom capability");
-        },
-        else => app.tap.ok(false, "createRoom returns results"),
-    }
+    const results = response.unwrap() catch {
+        app.tap.ok(false, "createRoom returns results");
+        finish(app, peer);
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "createRoom returns ok status");
+    const room_cap = try results.getRoom();
+    const resolved = try caps.resolveCapability(room_cap);
+    app.tap.ok(switch (resolved) {
+        .imported => true,
+        else => false,
+    }, "createRoom returns imported ChatRoom capability");
 
     finish(app, peer);
 }
@@ -241,13 +237,11 @@ fn bootstrapInventory(app: *ClientApp, peer: *rpc.peer.Peer) !void {
 
 fn onInventoryBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: inventory.InventoryService.BootstrapResponse) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
-    switch (response) {
-        .client => |client| {
-            var c = client;
-            _ = try c.callGetInventory(app, buildGetInventory, onGetInventoryReturn);
-        },
-        else => failAndFinish(app, peer, "bootstrap inventory capability"),
-    }
+    const client = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap inventory capability");
+        return;
+    };
+    _ = try client.callGetInventory(app, buildGetInventory, onGetInventoryReturn);
 }
 
 fn buildGetInventory(ctx_ptr: *anyopaque, params: *inventory.InventoryService.GetInventory.Params.Builder) !void {
@@ -264,14 +258,14 @@ fn onGetInventoryReturn(
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
-    switch (response) {
-        .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "getInventory returns ok status");
-            const inv = try results.getInventory();
-            app.tap.ok((try inv.getUsedSlots()) == 0, "new inventory has zero used slots");
-        },
-        else => app.tap.ok(false, "getInventory returns results"),
-    }
+    const results = response.unwrap() catch {
+        app.tap.ok(false, "getInventory returns results");
+        finish(app, peer);
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "getInventory returns ok status");
+    const inv = try results.getInventory();
+    app.tap.ok((try inv.getUsedSlots()) == 0, "new inventory has zero used slots");
 
     finish(app, peer);
 }
@@ -282,13 +276,11 @@ fn bootstrapMatchmaking(app: *ClientApp, peer: *rpc.peer.Peer) !void {
 
 fn onMatchmakingBootstrap(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, response: matchmaking.MatchmakingService.BootstrapResponse) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
-    switch (response) {
-        .client => |client| {
-            var c = client;
-            _ = try c.callEnqueue(app, buildEnqueue, onEnqueueReturn);
-        },
-        else => failAndFinish(app, peer, "bootstrap matchmaking capability"),
-    }
+    const client = response.unwrap() catch {
+        failAndFinish(app, peer, "bootstrap matchmaking capability");
+        return;
+    };
+    _ = try client.callEnqueue(app, buildEnqueue, onEnqueueReturn);
 }
 
 fn buildEnqueue(ctx_ptr: *anyopaque, params: *matchmaking.MatchmakingService.Enqueue.Params.Builder) !void {
@@ -310,14 +302,14 @@ fn onEnqueueReturn(
 ) !void {
     const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
 
-    switch (response) {
-        .results => |results| {
-            app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "enqueue returns ok status");
-            const ticket = try results.getTicket();
-            app.tap.ok((try ticket.getTicketId()) > 0, "enqueue returns a non-zero ticket id");
-        },
-        else => app.tap.ok(false, "enqueue returns results"),
-    }
+    const results = response.unwrap() catch {
+        app.tap.ok(false, "enqueue returns results");
+        finish(app, peer);
+        return;
+    };
+    app.tap.ok((try results.getStatus()) == statusOk(game_types.StatusCode), "enqueue returns ok status");
+    const ticket = try results.getTicket();
+    app.tap.ok((try ticket.getTicketId()) > 0, "enqueue returns a non-zero ticket id");
 
     finish(app, peer);
 }

@@ -7,6 +7,11 @@ const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
 
+pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"examples/pingpong.capnp\",\"module\":\"pingpong\",\"serde\":[{\"id\":10408369240078422827,\"type_name\":\"PingParams\",\"to_json_export\":\"capnp_pingpong_ping_params_to_json\",\"from_json_export\":\"capnp_pingpong_ping_params_from_json\"},{\"id\":12204507717862133617,\"type_name\":\"PingResults\",\"to_json_export\":\"capnp_pingpong_ping_results_to_json\",\"from_json_export\":\"capnp_pingpong_ping_results_from_json\"}]}";
+pub fn capnpSchemaManifestJson() []const u8 {
+    return CAPNP_SCHEMA_MANIFEST_JSON;
+}
+
 pub const PingPong = struct {
     pub const interface_id: u64 = 0xcf57ad2c7f5dc67b;
     pub const Method = enum(u16) {
@@ -15,8 +20,9 @@ pub const PingPong = struct {
 
     pub const Ping = struct {
         pub const ordinal: u16 = 0;
-        pub const Params = PingParams;
-        pub const Results = PingResults;
+        pub const is_streaming: bool = false;
+        pub const Params = PingPong.PingParams;
+        pub const Results = PingPong.PingResults;
         pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
         pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
         pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
@@ -27,6 +33,26 @@ pub const PingPong = struct {
             results_sent_elsewhere,
             take_from_other_question: u32,
             accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
         };
         pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
 
@@ -34,6 +60,13 @@ pub const PingPong = struct {
             user_ctx: *anyopaque,
             build: ?BuildFn,
             callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
         };
 
         const DirectReturnContext = struct {
@@ -124,7 +157,6 @@ pub const PingPong = struct {
             const results_builder = try results_any.initStruct(1, 0);
             var results = Results.Builder.wrap(results_builder);
             try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
-            _ = try ret.initCapTableTyped(0);
         }
     };
 
@@ -136,14 +168,39 @@ pub const PingPong = struct {
             return .{ .peer = peer, .cap_id = cap_id };
         }
 
-        pub fn callPing(self: *Client, user_ctx: *anyopaque, build: ?Ping.BuildFn, on_return: Ping.Callback) !u32 {
+        /// Release the import ref this Client owns (balances the bootstrap-return
+        /// retainCapability). Call at most once per owned Client; best-effort —
+        /// peer teardown's import release is the backstop.
+        pub fn release(self: Client) void {
+            self.peer.releaseImport(self.cap_id, 1) catch {};
+        }
+
+        pub fn callPing(self: Client, user_ctx: *anyopaque, build: ?Ping.BuildFn, on_return: Ping.Callback) !u32 {
             const ctx = try self.peer.allocator.create(Ping.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            return self.peer.sendCall(self.cap_id, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn);
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Ping.CallContext.deinitCtx);
+            return question_id;
         }
 
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
+        }
+    };
+
+    pub const PipelinedClient = struct {
+        peer: *rpc.peer.Peer,
+        question_id: u32,
+        pointer_index: u16,
+
+        pub fn callPing(self: PipelinedClient, user_ctx: *anyopaque, build: ?Ping.BuildFn, on_return: Ping.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(Ping.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Ping.ordinal, ctx, Ping.callBuild, Ping.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, Ping.CallContext.deinitCtx);
+            return question_id;
         }
     };
 
@@ -154,12 +211,37 @@ pub const PingPong = struct {
         results_sent_elsewhere,
         take_from_other_question: u32,
         accept_from_third_party,
+
+        /// Collapse this BootstrapResponse into its Client or a typed
+        /// rpc.peer.CallError. Locally synthesized exception reasons map to
+        /// their dedicated errors; every other exception is RemoteException
+        /// (reason available on the union arm).
+        pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
+            return switch (self) {
+                .client => |c| c,
+                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                    error.Disconnected
+                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                    error.CallTimedOut
+                else
+                    error.RemoteException,
+                .canceled => error.Canceled,
+                .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+            };
+        }
     };
     pub const BootstrapCallback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: BootstrapResponse) anyerror!void;
 
     const BootstrapContext = struct {
         user_ctx: *anyopaque,
         callback: BootstrapCallback,
+
+        fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const dead: *BootstrapContext = @ptrCast(@alignCast(ctx_ptr));
+            ctx_allocator.destroy(dead);
+        }
     };
 
     fn bootstrapReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
@@ -195,8 +277,11 @@ pub const PingPong = struct {
 
     pub fn bootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
         const ctx = try peer.allocator.create(BootstrapContext);
+        errdefer peer.allocator.destroy(ctx);
         ctx.* = .{ .user_ctx = user_ctx, .callback = callback };
-        return peer.sendBootstrap(ctx, bootstrapReturn);
+        const question_id = try peer.sendBootstrap(ctx, bootstrapReturn);
+        peer.setQuestionDeinitCtx(question_id, BootstrapContext.deinitCtx);
+        return question_id;
     }
 
     pub const Server = struct {
@@ -224,80 +309,75 @@ pub const PingPong = struct {
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
-};
+    pub const PingParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-pub const PingParams = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn getCount(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+        };
 
-        pub fn getCount(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setCount(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+        };
     };
 
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
+    pub const PingResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
 
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
 
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
 
-        pub fn setCount(self: *Builder, value: u32) !void {
-            self._builder.writeU32(0, @bitCast(value));
-        }
-    };
-};
+            pub fn getCount(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+        };
 
-pub const PingResults = struct {
-    pub const Reader = struct {
-        _reader: message.StructReader,
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
 
-        pub fn init(msg: *const message.Message) !Reader {
-            const root = try msg.getRootStruct();
-            return .{ ._reader = root };
-        }
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
 
-        pub fn wrap(reader: message.StructReader) Reader {
-            return .{ ._reader = reader };
-        }
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
 
-        pub fn getCount(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
-        }
-    };
-
-    pub const Builder = struct {
-        _builder: message.StructBuilder,
-
-        pub fn init(msg: *message.MessageBuilder) !Builder {
-            const builder = try msg.allocateStruct(1, 0);
-            return .{ ._builder = builder };
-        }
-
-        pub fn wrap(builder: message.StructBuilder) Builder {
-            return .{ ._builder = builder };
-        }
-
-        pub fn setCount(self: *Builder, value: u32) !void {
-            self._builder.writeU32(0, @bitCast(value));
-        }
+            pub fn setCount(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+        };
     };
 };

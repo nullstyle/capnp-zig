@@ -59,6 +59,21 @@ pub const Remote = error{
     RemoteAbort,
 };
 
+/// Typed failure surface of generated Response.unwrap().
+pub const CallError = error{
+    /// Remote answered with an exception (reason available on the union arm).
+    RemoteException,
+    /// Locally synthesized: transport closed / peer shut down / peer deinit.
+    Disconnected,
+    /// Locally synthesized by deadline expiry (checkDeadlines).
+    CallTimedOut,
+    /// Remote confirmed our cancellation (Return.canceled).
+    Canceled,
+    /// Rare Return arms the plain-call path never initiates
+    /// (resultsSentElsewhere / takeFromOtherQuestion / acceptFromThirdParty).
+    UnexpectedReturn,
+};
+
 pub const PeerError = Limits ||
     Lifecycle ||
     Routing ||

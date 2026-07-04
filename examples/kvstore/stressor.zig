@@ -295,27 +295,18 @@ fn onWriteBatchReturn(
     if (duration_ns < stressor.min_latency_ns) stressor.min_latency_ns = duration_ns;
     if (duration_ns > stressor.max_latency_ns) stressor.max_latency_ns = duration_ns;
 
-    switch (response) {
-        .results => |results| {
-            const applied = try results.getApplied();
-            _ = try results.getNextVersion();
-            const returned_results = try results.getResults();
-            _ = returned_results;
+    const results = response.unwrap() catch {
+        stressor.operations_failed += 1;
+        fail(stressor, StresserError.RpcFailure, peer);
+        return;
+    };
+    const applied = try results.getApplied();
+    _ = try results.getNextVersion();
+    const returned_results = try results.getResults();
+    _ = returned_results;
 
-            stressor.operations_completed += 1;
-            stressor.operations_applied += applied;
-        },
-        .exception => {
-            stressor.operations_failed += 1;
-            fail(stressor, StresserError.RpcFailure, peer);
-            return;
-        },
-        else => {
-            stressor.operations_failed += 1;
-            fail(stressor, StresserError.RpcFailure, peer);
-            return;
-        },
-    }
+    stressor.operations_completed += 1;
+    stressor.operations_applied += applied;
 
     reportProgress(stressor);
 
@@ -352,7 +343,7 @@ fn pumpRequests(stressor: *KvStoreStressor, peer: *rpc.peer.Peer) !void {
     if (stressor.err != null) return;
     if (stressor.done) return;
     if (stressor.client == null) return;
-    var client = stressor.client.?;
+    const client = stressor.client.?;
 
     while (stressor.operations_started < stressor.args.operations and stressor.operations_inflight < stressor.args.concurrency) {
         if (stressor.done) return;

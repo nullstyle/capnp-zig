@@ -763,13 +763,10 @@ fn onWakeKeysChangedReturn(
     response: KvClientNotifier.KeysChanged.Response,
     _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
-    switch (response) {
-        .exception => |ex| {
-            _ = ex;
-            std.log.debug("client notifier returned exception", .{});
-        },
-        else => {},
-    }
+    _ = response.unwrap() catch |err| {
+        std.log.debug("client notifier returned {s}", .{@errorName(err)});
+        return;
+    };
 }
 
 fn onWakeStateResetReturn(
@@ -778,13 +775,10 @@ fn onWakeStateResetReturn(
     response: KvClientNotifier.StateResetRequired.Response,
     _: *const rpc.caps.table.InboundCapTable,
 ) anyerror!void {
-    switch (response) {
-        .exception => |ex| {
-            _ = ex;
-            std.log.debug("client reset notifier returned exception", .{});
-        },
-        else => {},
-    }
+    _ = response.unwrap() catch |err| {
+        std.log.debug("client reset notifier returned {s}", .{@errorName(err)});
+        return;
+    };
 }
 
 /// Called on the connection's own thread when woken by another thread.
@@ -820,7 +814,7 @@ fn onConnectionWake(conn: *rpc.transport.tcp.Connection) void {
     sub.pending_mu.unlock();
 
     // Copy notifier reference so we can release the service lock before I/O.
-    var notifier = sub.notifier;
+    const notifier = sub.notifier;
     svc.mu.unlock();
 
     // Process each queued notification on this connection's thread.

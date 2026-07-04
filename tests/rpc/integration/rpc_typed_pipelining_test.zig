@@ -21,10 +21,10 @@ const Bootstrap = e2e.Bootstrap;
 
 // -- Reflection over generated types ----------------------------------------
 //
-// bootstrap.zig imports game_world.zig with a non-pub `const game_world`, so
-// the sibling module's types (GameWorld.PipelinedClient, GameWorld.Server,
-// the per-method Response unions) are NOT nameable from outside the generated
-// module. Everything below is derived from what Bootstrap's pub decls expose.
+// bootstrap.zig re-exports its sibling schema imports (`pub const
+// game_world`, ...), so cross-schema types are directly nameable these days.
+// The reflection below is kept deliberately: it pins that everything the
+// probe needs is reachable from Bootstrap's own pub decl surface alone.
 
 fn ReturnType(comptime f: anytype) type {
     return @typeInfo(@TypeOf(f)).@"fn".return_type.?;
@@ -336,16 +336,16 @@ test "generated typed pipelining stubs run end-to-end (E-order, wire shape, repl
     // Bootstrap answers synchronously through the in-process wire, so the
     // callback has fired (and captured the Client) by the time this returns.
     _ = try Bootstrap.Client.fromBootstrap(&client_peer, &probe, ProbeState.onBootstrap);
-    var client = probe.client orelse return error.BootstrapDidNotResolve;
+    const client = probe.client orelse return error.BootstrapDidNotResolve;
 
     // Q1: callGameWorldPipelined — the server parks it (deferred handler).
-    var pipeline = try client.callGameWorldPipelined(&probe, null, ProbeState.onGameWorldReturn);
+    const pipeline = try client.callGameWorldPipelined(&probe, null, ProbeState.onGameWorldReturn);
     const q1 = pipeline.question_id;
     try std.testing.expectEqual(@as(u32, 1), server_state.game_world_calls);
     try std.testing.expect(server_state.held_sender != null);
 
     // Q2: the dependent call, through the generated pipeline surface only.
-    var service = pipeline.getService();
+    const service = pipeline.getService();
     const q2 = try service.callDespawnEntity(&probe, null, ProbeState.onDespawnReturn);
     try std.testing.expect(q1 != q2);
 
@@ -402,4 +402,90 @@ test "generated typed pipelining stubs run end-to-end (E-order, wire shape, repl
     try std.testing.expect(q1_return_index < q2_return_index);
 
     // (4) Leak-freedom is enforced by std.testing.allocator on teardown.
+}
+
+// -- unwrap() contract --------------------------------------------------------
+//
+// Pins the generated Response.unwrap()/BootstrapResponse.unwrap() mapping to
+// rpc.peer.CallError: the peer's exported locally-synthesized exception
+// reasons map to their dedicated errors, any other reason is RemoteException,
+// and the rare Return arms are UnexpectedReturn. All arms are remote-
+// controlled bytes, so nothing maps to unreachable.
+
+test "generated Response.unwrap maps exception reasons and rare arms to typed CallErrors" {
+    const Response = Bootstrap.GameWorld.Response;
+
+    const reason_cases = [_]struct {
+        reason: []const u8,
+        expected: peer_impl.CallError,
+    }{
+        .{ .reason = peer_impl.disconnected_reason, .expected = error.Disconnected },
+        .{ .reason = peer_impl.shutdown_reason, .expected = error.Disconnected },
+        .{ .reason = peer_impl.deadline_reason, .expected = error.CallTimedOut },
+        .{ .reason = "vat exploded", .expected = error.RemoteException },
+        .{ .reason = "", .expected = error.RemoteException },
+    };
+    for (reason_cases) |case| {
+        const response = Response{ .exception = .{
+            .reason = case.reason,
+            .trace = "",
+            .type_value = 0,
+        } };
+        try std.testing.expectError(case.expected, response.unwrap());
+    }
+
+    try std.testing.expectError(error.Canceled, (Response{ .canceled = {} }).unwrap());
+    try std.testing.expectError(error.UnexpectedReturn, (Response{ .results_sent_elsewhere = {} }).unwrap());
+    try std.testing.expectError(error.UnexpectedReturn, (Response{ .take_from_other_question = 7 }).unwrap());
+    try std.testing.expectError(error.UnexpectedReturn, (Response{ .accept_from_third_party = {} }).unwrap());
+}
+
+test "generated Response.unwrap returns the results reader on success" {
+    const allocator = std.testing.allocator;
+
+    // A real (empty) results struct: GameWorldResults is 0 data words, 1 ptr.
+    var builder = capnpc.message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    _ = try builder.allocateStruct(0, 1);
+    const bytes = try builder.toBytes();
+    defer allocator.free(bytes);
+    var msg = try capnpc.message.Message.initUnvalidated(allocator, bytes);
+    defer msg.deinit();
+    const root = try msg.getRootStruct();
+
+    const response = Bootstrap.GameWorld.Response{
+        .results = Bootstrap.GameWorldResults.Reader.wrap(root),
+    };
+    const results = try response.unwrap();
+    try std.testing.expectEqual(root.pointer_count, results._reader.pointer_count);
+}
+
+test "generated BootstrapResponse.unwrap returns the client or a typed CallError" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const ok = Bootstrap.BootstrapResponse{ .client = Bootstrap.Client.init(&peer, 7) };
+    const client = try ok.unwrap();
+    try std.testing.expectEqual(@as(u32, 7), client.cap_id);
+    try std.testing.expectEqual(&peer, client.peer);
+
+    const disconnected = Bootstrap.BootstrapResponse{ .exception = .{
+        .reason = peer_impl.disconnected_reason,
+        .trace = "",
+        .type_value = 0,
+    } };
+    try std.testing.expectError(error.Disconnected, disconnected.unwrap());
+
+    const remote = Bootstrap.BootstrapResponse{ .exception = .{
+        .reason = "no bootstrap for you",
+        .trace = "",
+        .type_value = 0,
+    } };
+    try std.testing.expectError(error.RemoteException, remote.unwrap());
+
+    try std.testing.expectError(error.Canceled, (Bootstrap.BootstrapResponse{ .canceled = {} }).unwrap());
+    try std.testing.expectError(error.UnexpectedReturn, (Bootstrap.BootstrapResponse{ .take_from_other_question = 3 }).unwrap());
 }
