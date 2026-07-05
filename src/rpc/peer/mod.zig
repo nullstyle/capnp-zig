@@ -357,21 +357,23 @@ pub const ProvideHandle = struct {
 /// table (the B↔A connection), while the Provide question lives on a DIFFERENT
 /// peer (the B↔C connection), which `provide_peer` points at.
 ///
-/// LIFETIME CONSTRAINT (known limitation of this minimal slice): `provide_peer`
-/// is a borrowed raw pointer with no back-reference. If the host-of-provided-cap
-/// peer (B↔C) is destroyed while a coupled vine is still live on the
-/// host-of-recipient peer (B↔A) — e.g. the VatC connection drops, then VatA
-/// later Releases the vine — `finishOriginatedProvide` would dereference a freed
-/// peer. The app MUST therefore tear down the recipient-facing peer (or release
-/// the vine) before, or together with, the provided-cap peer. Making this
-/// resilient to arbitrary per-connection teardown needs cross-peer coupling
-/// liveness (a VatNetwork-owned registry) — tracked as an L3 hardening
-/// follow-up, out of scope for the P0–P2 origination slice.
+/// LIVENESS: `provide_peer` is a borrowed pointer, but the coupling is made
+/// resilient to arbitrary per-connection teardown order by a symmetric
+/// back-registration. Every live coupling records a back-link on `provide_peer`
+/// (`Peer.coupled_vines`); when the provided-cap peer (B↔C) deinits, it walks
+/// those back-links and NULLs `provide_peer` in each recipient's coupling entry
+/// BEFORE its own memory is freed (see `neutralizeCoupledVinesOnProvidePeer`).
+/// A subsequent vine Release on the recipient then finds a null `provide_peer`
+/// and skips the Finish — a correct no-op, because the provided-cap peer's own
+/// `deinit` already force-cancelled (removed + Finished) the held-open Provide
+/// question. So the freed pointer is removed, never read after free, regardless
+/// of which peer is torn down first.
 const OutboundProvide = struct {
     /// The peer on which the held-open Provide question was sent (B↔C).
-    /// Borrowed; see the LIFETIME CONSTRAINT above — the app owns both peers'
-    /// lifetimes and must order teardown so this pointer never dangles.
-    provide_peer: *Peer,
+    /// Borrowed. Null once that peer has deinited (it neutralizes every coupling
+    /// pointing at it before freeing itself), so `finishOriginatedProvide` is
+    /// never handed a dangling pointer.
+    provide_peer: ?*Peer,
     /// The Provide question id to Finish when the vine is released.
     provide_question_id: u32,
     /// When the handoff was originated by resolving a promise EXPORT to the
@@ -383,6 +385,18 @@ const OutboundProvide = struct {
     /// avoid a dangling target. Null for a bare `sendProvide` handoff (no promise
     /// export involved, e.g. the P0–P2 return-a-vine path).
     resolved_promise_export_id: ?u32 = null,
+};
+
+/// Liveness back-link recorded on the host-of-provided-cap peer (B↔C) for each
+/// coupling that peer anchors. Names the recipient peer (B↔A) whose
+/// `outbound_provides[vine_id]` entry borrows a pointer back to this peer, so
+/// this peer's `deinit` can find and NULL that borrowed pointer before it frees
+/// itself. The reverse of the `OutboundProvide.provide_peer` edge.
+const CoupledVine = struct {
+    /// The host-of-recipient peer (B↔A) that owns the coupling entry.
+    recipient_peer: *Peer,
+    /// The vine export id keying the coupling in `recipient_peer.outbound_provides`.
+    vine_id: u32,
 };
 
 pub const Peer = struct {
@@ -468,6 +482,15 @@ pub const Peer = struct {
     /// may live on a different peer (see `OutboundProvide`). Consulted from
     /// `handleRelease` to Finish the Provide once the recipient drops the vine.
     outbound_provides: std.AutoHashMap(u32, OutboundProvide),
+    /// LIVENESS back-links for the cross-peer `outbound_provides` coupling. When
+    /// THIS peer holds a held-open Provide question anchored by a vine minted on
+    /// ANOTHER (recipient) peer, each such coupling records a `CoupledVine` here
+    /// naming that recipient peer + vine id. On `deinit` this peer walks the list
+    /// and NULLs its `provide_peer` back-pointer in every recipient's coupling
+    /// entry, so a later vine Release can never dereference this freed peer.
+    /// Entries are removed as soon as their coupling drains (vine Release, or the
+    /// recipient peer's own deinit). Empty for a peer that originated no handoffs.
+    coupled_vines: std.ArrayList(CoupledVine),
     /// In-progress Join operations collecting parts.
     pending_joins: std.AutoHashMap(u32, JoinState),
     /// Maps a Join answer's question ID to its join ID + part number.
@@ -691,6 +714,7 @@ pub const Peer = struct {
             .provides_by_question = std.AutoHashMap(u32, ProvideEntry).init(allocator),
             .provides_by_key = std.StringHashMap(u32).init(allocator),
             .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
+            .coupled_vines = .empty,
             .pending_joins = std.AutoHashMap(u32, JoinState).init(allocator),
             .pending_join_questions = std.AutoHashMap(u32, PendingJoinQuestion).init(allocator),
             .pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)).init(allocator),
@@ -935,6 +959,15 @@ pub const Peer = struct {
     pub fn deinit(self: *Peer) void {
         self.assertThreadAffinity();
         self.in_deinit = true;
+        // LIVENESS (BUG #55): this peer may host held-open Provide questions that
+        // recipient peers' `outbound_provides` entries borrow a `provide_peer`
+        // pointer back to. `forceCancelAllQuestions` below removes and Finishes
+        // those Provide questions, but the borrowed pointer to THIS peer would
+        // still dangle. Neutralize it here — null every recipient's back-pointer
+        // BEFORE this peer's memory is freed — so a later vine Release is a safe
+        // no-op instead of a freed-peer deref. Must run before we return; running
+        // it first keeps it independent of any error path below.
+        self.neutralizeCoupledVinesOnProvidePeer();
         _ = self.forceCancelAllQuestions(disconnected_reason);
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
@@ -999,10 +1032,24 @@ pub const Peer = struct {
         );
         self.provides_by_key.deinit();
         // OutboundProvide entries own no heap memory (borrowed peer pointer +
-        // plain ids); a straight deinit suffices. A live entry at teardown means
-        // a handoff was still in flight — the paired Provide question is torn
-        // down with its own peer's `provides_by_question`.
+        // plain ids). A live entry at teardown means a handoff was still in
+        // flight — the paired Provide question is torn down with its own peer's
+        // `provides_by_question`. Before dropping the map, deregister each still
+        // live coupling's back-link from its provide_peer (if that peer is still
+        // alive), so a provider peer that outlives THIS recipient never walks a
+        // back-link into freed recipient memory.
+        {
+            var op_it = self.outbound_provides.iterator();
+            while (op_it.next()) |entry| {
+                if (entry.value_ptr.provide_peer) |pp| {
+                    pp.deregisterCoupledVine(self, entry.key_ptr.*);
+                }
+            }
+        }
         self.outbound_provides.deinit();
+        // Symmetric back-link list (this peer as a provide_peer). Any residual
+        // entries were neutralized at the top of deinit; free the backing store.
+        self.coupled_vines.deinit(self.allocator);
 
         peer_cleanup.deinitJoinStateMap(
             @TypeOf(self.pending_joins),
@@ -1494,6 +1541,14 @@ pub const Peer = struct {
             .provide_question_id = question_id,
         });
         errdefer _ = host_of_recipient.outbound_provides.remove(vine_id);
+
+        // (3b) LIVENESS (BUG #55): register the reverse back-link on `self` (the
+        //      host-of-provided-cap peer). If `self` deinits before the vine is
+        //      released, this lets it null the borrowed pointer above so the
+        //      later Release never dereferences freed memory. Must land or the
+        //      whole coupling unwinds (the errdefers above roll it back).
+        try self.registerCoupledVine(host_of_recipient, vine_id);
+        errdefer self.deregisterCoupledVine(host_of_recipient, vine_id);
 
         // (4) Send the Provide to the host of the provided cap (VatC).
         var builder = protocol.MessageBuilder.init(self.allocator);
@@ -2442,6 +2497,9 @@ pub const Peer = struct {
             _ = self.outbound_provides.remove(handle.vine_id);
             self.caps.clearThirdPartyHosted(handle.vine_id);
             self.releaseVineExport(handle.vine_id);
+            // Drop the liveness back-link `sendProvide` registered on the
+            // provide_peer (BUG #55) so unwinding leaves no stale coupling.
+            provide_peer.deregisterCoupledVine(self, handle.vine_id);
             self.finishOriginatedProvide(provide_peer, handle.question_id);
         };
 
@@ -4336,7 +4394,15 @@ pub const Peer = struct {
                         }
                     }
                 }
-                self.finishOriginatedProvide(entry.provide_peer, entry.provide_question_id);
+                // LIVENESS (BUG #55): if `provide_peer` is null the
+                // host-of-provided-cap peer already deinited — it removed and
+                // Finished the held-open Provide question itself and neutralized
+                // this coupling — so Finishing is a safe no-op we skip. Otherwise
+                // Finish the question and drop the reverse back-link on that peer.
+                if (entry.provide_peer) |provide_peer| {
+                    provide_peer.deregisterCoupledVine(self, release.id);
+                    self.finishOriginatedProvide(provide_peer, entry.provide_question_id);
+                }
             }
         }
     }
@@ -4351,6 +4417,61 @@ pub const Peer = struct {
         provide_peer.sendFinishForHost(provide_question_id, false, false) catch |err| {
             log.debug("provide finish send failed for question {}: {}", .{ provide_question_id, err });
         };
+    }
+
+    /// LIVENESS (BUG #55). Record a back-link on the host-of-provided-cap peer
+    /// (`self` == the peer that owns the held-open Provide question) naming the
+    /// recipient peer whose `outbound_provides[vine_id]` entry borrows a pointer
+    /// back to `self`. Called when a coupling is created; the paired
+    /// `deregisterCoupledVine` drops it when the coupling drains. On `self`'s
+    /// `deinit`, `neutralizeCoupledVinesOnProvidePeer` walks these links and
+    /// nulls the borrowed pointer so it is never dereferenced after free.
+    ///
+    /// Returns `error.OutOfMemory` if the back-link cannot be recorded; the
+    /// caller must then unwind the coupling rather than leave a half-registered
+    /// (untracked, thus un-neutralizable) borrow.
+    fn registerCoupledVine(self: *Peer, recipient_peer: *Peer, vine_id: u32) !void {
+        try self.coupled_vines.append(self.allocator, .{
+            .recipient_peer = recipient_peer,
+            .vine_id = vine_id,
+        });
+    }
+
+    /// LIVENESS (BUG #55). Drop the back-link recorded by `registerCoupledVine`
+    /// for `(recipient_peer, vine_id)`. Called when the coupling drains normally
+    /// (vine Release on the recipient) or when the recipient peer deinits while
+    /// this provide_peer is still alive. Idempotent: a missing link is a no-op
+    /// (e.g. already removed, or never registered on a rollback path).
+    fn deregisterCoupledVine(self: *Peer, recipient_peer: *Peer, vine_id: u32) void {
+        var i: usize = 0;
+        while (i < self.coupled_vines.items.len) {
+            const link = self.coupled_vines.items[i];
+            if (link.recipient_peer == recipient_peer and link.vine_id == vine_id) {
+                _ = self.coupled_vines.swapRemove(i);
+                return;
+            }
+            i += 1;
+        }
+    }
+
+    /// LIVENESS (BUG #55). Called from `deinit` on the host-of-provided-cap peer.
+    /// For every coupling anchored here, null the borrowed `provide_peer` pointer
+    /// in the recipient peer's `outbound_provides` entry so a subsequent vine
+    /// Release finds no provide_peer and skips the Finish (a correct no-op — this
+    /// peer's own `forceCancelAllQuestions` already removed and Finished the
+    /// held-open Provide question). This runs BEFORE this peer's memory is freed,
+    /// which is exactly what makes the borrow liveness-safe under arbitrary
+    /// per-connection teardown order.
+    fn neutralizeCoupledVinesOnProvidePeer(self: *Peer) void {
+        for (self.coupled_vines.items) |link| {
+            if (link.recipient_peer.outbound_provides.getPtr(link.vine_id)) |op| {
+                // Only clear the edge that points back at THIS peer; a recipient
+                // could in principle re-key the same vine id to another provide
+                // peer, though the id space makes that vanishingly unlikely.
+                if (op.provide_peer == self) op.provide_peer = null;
+            }
+        }
+        self.coupled_vines.clearRetainingCapacity();
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
@@ -4691,6 +4812,9 @@ pub const Peer = struct {
     fn findOriginatedProvideForPromise(self: *Peer, promise_export_id: u32) ?*Peer {
         var it = self.outbound_provides.valueIterator();
         while (it.next()) |op| {
+            // A null provide_peer means the host-of-provided-cap peer already
+            // deinited (BUG #55 neutralization); there is nothing to forward to,
+            // so skip it exactly as if no coupling existed.
             if (op.resolved_promise_export_id == promise_export_id) return op.provide_peer;
         }
         return null;

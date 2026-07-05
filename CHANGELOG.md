@@ -36,11 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sendResultsTo=thirdParty`, and `Peer.registerPendingThirdPartyAwait` primes the
   third party to adopt it — proven end to end (results reach the third party via
   `ThirdPartyAnswer`, never the caller, which settles with `awaitFromThirdParty`).
-  Known constraint: the
-  vine→Provide coupling borrows a raw peer pointer, so the app must tear down the
-  recipient-facing peer (or release the vine) before/with the provided-cap peer —
-  cross-peer coupling liveness is a tracked hardening follow-up. Two-party peers
-  are unaffected (all additive behind an unset `vat_network`).
+  The vine→Provide coupling is now liveness-safe under arbitrary per-connection
+  teardown order (resolves the earlier #55 constraint): each coupling records a
+  reverse back-link on the provided-cap peer, and that peer's `deinit`
+  neutralizes every coupled vine on the recipient peer — nulling the borrowed
+  pointer before its own memory is freed — so a later vine `Release` is a safe
+  no-op rather than a freed-peer dereference. Proven by a leak-checked chaos test
+  driving the previously-forbidden order (drop the provided-cap connection first,
+  then Release the vine). Two-party peers are unaffected (all additive behind an
+  unset `vat_network`).
 - **Cross-impl `resolve_disembargo` e2e scenario** — a reflected-capability
   resolve/embargo scenario in the Docker interop matrix, exercising the full
   `senderLoopback`/`receiverLoopback` `Disembargo` handshake end to end against

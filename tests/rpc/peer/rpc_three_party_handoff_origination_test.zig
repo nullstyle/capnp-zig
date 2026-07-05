@@ -560,3 +560,155 @@ test "three-party handoff origination: Provide+Accept hands C's cap to A directl
     // C holds no lingering imports and no third-party-hosted marks.
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(c.caps.imports.count())));
 }
+
+// -- BUG #55 chaos: drop the B<->C peer FIRST, then Release the vine ----------
+//
+// The previously-forbidden teardown order for the cross-peer vine->Provide
+// coupling: the host-of-provided-cap connection (B<->C) is destroyed while a
+// coupled vine is still live on the host-of-recipient connection (B<->A). Under
+// the old borrowed-raw-`*Peer` coupling, the subsequent vine Release on b_to_a
+// dereferenced a freed peer (UAF). The liveness fix neutralizes the coupling at
+// b_to_c.deinit() time (nulling the back-pointer in b_to_a.outbound_provides),
+// so this exact ordering must now run UAF-clean: the Release is a safe no-op.
+//
+// This test deliberately manages b_to_c's lifetime by hand (no `defer`) so it
+// can be deinited MID-FLOW, before the vine Release. Everything runs under
+// std.testing.allocator, so any leak or double-free fails the test.
+test "BUG #55: drop B<->C peer before Release-vine is UAF-clean and drains" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    // Vat C: single peer serving B's Provide and (were it reached) A's Accept.
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+
+    // Vat B endpoints. b_to_c is deinited BY HAND mid-test (the dropped
+    // provided-cap connection), so it is NOT registered with a `defer`.
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    var b_to_c_alive = true;
+    defer if (b_to_c_alive) b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+
+    // Vat A endpoints.
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-nonce-chaos";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_c.attachVatNetwork(net.network());
+
+    // C hosts Carol; B imports her over B<->C.
+    var carol = Carol{};
+    _ = try c.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+    var carol_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&carol_probe, CarolImportProbe.onReturn);
+    const carol_import_id = carol_probe.carol_import_id orelse return error.CarolBootstrapFailed;
+
+    // B's Introducer on A<->B; A bootstraps + calls introduce() to originate.
+    var introducer = Introducer{
+        .b_to_c = &b_to_c,
+        .b_to_a = &b_to_a,
+        .carol_import_id = carol_import_id,
+        .recipient_nonce = recipient_nonce,
+    };
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse
+        return error.IntroducerBootstrapFailed;
+
+    var introduce_call = IntroduceCall{};
+    _ = try a_to_b.sendCall(
+        introducer_import_id,
+        0x1234_5678_9abc_def0,
+        0,
+        &introduce_call,
+        null,
+        IntroduceCall.onReturn,
+    );
+
+    // (1) Handoff originated: vine coupled on b_to_a, Provide held open on b_to_c.
+    const provide_question_id = introducer.provide_question_id orelse return error.ProvideNotSent;
+    const vine_id = introducer.vine_id orelse return error.VineNotMinted;
+    const vine_import_id = introduce_call.vine_import_id orelse return error.VineNotImportedByA;
+    try std.testing.expectEqual(vine_id, vine_import_id);
+    try std.testing.expect(b_to_a.outbound_provides.contains(vine_id));
+    // The held-open Provide question lives on b_to_c (the provided-cap peer);
+    // C recorded the matching provide entry.
+    try std.testing.expect(b_to_c.questions.contains(provide_question_id));
+    try std.testing.expect(c.provides_by_question.contains(provide_question_id));
+    // The provide_peer coupling on b_to_a records a back-link on b_to_c.
+    try std.testing.expectEqual(@as(usize, 1), b_to_c.coupled_vines.items.len);
+    // The coupling borrows a live pointer to b_to_c right now.
+    try std.testing.expectEqual(
+        @as(?*Peer, &b_to_c),
+        b_to_a.outbound_provides.get(vine_id).?.provide_peer,
+    );
+
+    // (2) FORBIDDEN ORDER, step one: tear down the B<->C peer FIRST while the
+    //     vine is still live and coupled on b_to_a. Stop forwarding B<->C frames
+    //     so the teardown Finish/Release do not reach a half-gone peer, exactly
+    //     as production teardown drops the socket. b_to_c.deinit() must NULL the
+    //     coupling's provide_peer on b_to_a before freeing its own memory.
+    link.forwarding = false;
+    b_to_c.deinit();
+    b_to_c_alive = false;
+    link.forwarding = true;
+
+    // The coupling survived the peer drop but no longer points at freed memory:
+    // its provide_peer was neutralized to null.
+    try std.testing.expect(b_to_a.outbound_provides.contains(vine_id));
+    try std.testing.expectEqual(
+        @as(?*Peer, null),
+        b_to_a.outbound_provides.get(vine_id).?.provide_peer,
+    );
+
+    // (3) FORBIDDEN ORDER, step two: A Releases the vine on b_to_a. Under the old
+    //     coupling this dereferenced the freed b_to_c. Now handleRelease finds a
+    //     null provide_peer and skips the Finish — a safe no-op. No UAF.
+    try a_to_b.releaseImport(vine_import_id, 1);
+
+    // The vine export is gone and the coupling drained cleanly.
+    try std.testing.expect(!b_to_a.exports.contains(vine_id));
+    try std.testing.expect(!b_to_a.outbound_provides.contains(vine_id));
+
+    // Teardown: release the remaining live imports so every table drains. (The
+    // Accept was never sent — the provided-cap connection dropped first — so
+    // there is no direct Carol import on A to release. b_to_c already deinited,
+    // dropping its own Carol import on the way out.)
+    try a_to_b.releaseImport(introducer_import_id, 1);
+    try std.testing.expect(!a_to_b.caps.hasImport(introducer_import_id));
+    // No coupling back-links linger on b_to_a either (it never anchored one).
+    try std.testing.expectEqual(@as(usize, 0), b_to_a.coupled_vines.items.len);
+}
