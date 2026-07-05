@@ -20,9 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`setHandoffPickupHandler`) makes a Zig peer, on receiving such a Resolve,
   connect to the third vat via its `VatNetwork` and `Accept` the cap automatically
   (falling back to the Level-1/2 vine proxy when no `VatNetwork` is attached).
-  This is the P0–P3 slice: no in-flight-promise embargo during handoff (Phase 4)
-  yet, and it is Zig↔Zig-only (no reference impl performs spec-current three-party
-  pickup). Known constraint: the
+  The embargo/disembargo ordering during a live-promise handoff is implemented
+  (Phase 4): when the recipient has an in-flight pipelined call, its auto-pickup
+  sends `Accept{embargo}` + a `context.accept` `Disembargo` down the promise path,
+  the introducer forwards that Disembargo to the capability host, and the host
+  holds the `Accept` until it arrives — proven to preserve e-order (a pipelined
+  call reaches the third vat strictly before the post-pickup direct call, and the
+  embargo demonstrably gates the direct call). Still Zig↔Zig-only (no reference
+  impl performs spec-current three-party pickup), and one orthogonal gap remains:
+  the introducer does not yet forward the *original* parked pipelined calls on the
+  promise to the host (they hit the Level-1/2 rejecting vine) — tracked separately.
+  Known constraint: the
   vine→Provide coupling borrows a raw peer pointer, so the app must tear down the
   recipient-facing peer (or release the vine) before/with the provided-cap peer —
   cross-peer coupling liveness is a tracked hardening follow-up. Two-party peers

@@ -9,7 +9,13 @@ pub fn DisembargoOps(comptime PeerType: type) type {
         send_disembargo_receiver_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
         take_pending_embargo_promise: *const fn (*PeerType, u32) ?u32,
         clear_resolved_import_embargo: *const fn (*PeerType, u32) void,
-        release_embargoed_accepts: *const fn (*PeerType, []const u8) anyerror!void,
+        /// Handle an inbound `context.accept` Disembargo. Receives the target so
+        /// the introducer (VatB) can forward the Disembargo to the capability
+        /// host (VatC) it originated the `Provide` on, rather than release
+        /// locally: only VatC holds the embargoed `Accept`. Implementations that
+        /// are the host release; implementations that are the introducer forward
+        /// (rpc.capnp:889-903).
+        release_embargoed_accepts: *const fn (*PeerType, protocol.MessageTarget, []const u8) anyerror!void,
     };
 }
 
@@ -21,7 +27,7 @@ pub fn handleDisembargo(
     send_disembargo_receiver_loopback: *const fn (*PeerType, protocol.MessageTarget, u32) anyerror!void,
     take_pending_embargo_promise: *const fn (*PeerType, u32) ?u32,
     clear_resolved_import_embargo: *const fn (*PeerType, u32) void,
-    release_embargoed_accepts: *const fn (*PeerType, []const u8) anyerror!void,
+    release_embargoed_accepts: *const fn (*PeerType, protocol.MessageTarget, []const u8) anyerror!void,
 ) !void {
     const ops = DisembargoOps(PeerType){
         .has_known_disembargo_target = has_known_disembargo_target,
@@ -68,7 +74,7 @@ pub fn handleDisembargoWithOps(
         },
         .accept => {
             const accept_embargo = disembargo.accept orelse return;
-            try ops.release_embargoed_accepts(peer, accept_embargo);
+            try ops.release_embargoed_accepts(peer, disembargo.target, accept_embargo);
         },
     }
 }
@@ -157,7 +163,7 @@ test "peer_disembargo receiver loopback clears resolved import embargo" {
         .take_pending_embargo_promise = takePendingEmbargoPromiseForPeerFn(State),
         .clear_resolved_import_embargo = clearResolvedImportEmbargoForPeerFn(State),
         .release_embargoed_accepts = struct {
-            fn call(_: *State, _: []const u8) !void {
+            fn call(_: *State, _: protocol.MessageTarget, _: []const u8) !void {
                 return error.TestUnexpectedResult;
             }
         }.call,
@@ -213,7 +219,7 @@ test "peer_disembargo sender loopback validates target and echoes receiver loopb
             fn call(_: *State, _: u32) void {}
         }.call,
         struct {
-            fn call(_: *State, _: []const u8) !void {}
+            fn call(_: *State, _: protocol.MessageTarget, _: []const u8) !void {}
         }.call,
     );
 
@@ -246,7 +252,7 @@ test "peer_disembargo sender loopback validates target and echoes receiver loopb
             fn call(_: *State, _: u32) void {}
         }.call,
         struct {
-            fn call(_: *State, _: []const u8) !void {}
+            fn call(_: *State, _: protocol.MessageTarget, _: []const u8) !void {}
         }.call,
     ));
 }

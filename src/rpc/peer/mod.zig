@@ -523,6 +523,14 @@ pub const Peer = struct {
     next_question_id: u32 = 0,
     /// Monotonically increasing embargo ID counter.
     next_embargo_id: u32 = 0,
+    /// Monotonically increasing counter for Level-3 three-party handoff
+    /// `Accept` embargo ids. Distinct from `next_embargo_id`: an accept embargo
+    /// is an opaque BYTE string carried in `Accept.embargo` and matched
+    /// byte-for-byte by the capability host (VatC) against a `context.accept`
+    /// `Disembargo` (rpc.capnp:870-903), whereas `next_embargo_id` names the
+    /// numeric senderLoopback embargo namespace. Keeping them separate avoids
+    /// cross-talk between the two ordering mechanisms.
+    next_accept_embargo_id: u64 = 0,
     /// Export ID of the bootstrap capability, if set.
     bootstrap_export_id: ?u32 = null,
 
@@ -2318,6 +2326,24 @@ pub const Peer = struct {
         var rollback_wire_ref = true;
         errdefer if (rollback_wire_ref) self.rollbackExportRef(handle.vine_id);
 
+        // Record the resolving promise export on the coupling BEFORE emitting the
+        // Resolve. Two reasons: (1) the vine teardown clears the promise's
+        // resolution target (see handleRelease); (2) — critically for Phase 4 —
+        // emitting the Resolve can synchronously drive the recipient's auto-pickup
+        // to send a `context.accept` Disembargo straight back to us on the promise
+        // path (single-threaded loopback), and `handleAcceptDisembargo` must find
+        // this coupling by `resolved_promise_export_id` to forward the Disembargo
+        // on to the capability host. If we set it only after the Resolve returns,
+        // a synchronous Disembargo would find no coupling and never reach VatC.
+        if (self.outbound_provides.getPtr(handle.vine_id)) |op| {
+            op.resolved_promise_export_id = promise_id;
+        }
+        errdefer if (origination_owned) {
+            if (self.outbound_provides.getPtr(handle.vine_id)) |op| {
+                op.resolved_promise_export_id = null;
+            }
+        };
+
         try peer_outbound_control.sendResolveCapViaSendFrame(
             Peer,
             self,
@@ -2327,12 +2353,6 @@ pub const Peer = struct {
         );
         rollback_wire_ref = false;
         origination_owned = false;
-
-        // Record the resolving promise export on the coupling so the vine
-        // teardown clears the promise's resolution target (see handleRelease).
-        if (self.outbound_provides.getPtr(handle.vine_id)) |op| {
-            op.resolved_promise_export_id = promise_id;
-        }
 
         // Re-fetch the promise entry: the vine insert above may have rehashed
         // `self.exports`, invalidating the pointer captured during validation.
@@ -2407,7 +2427,7 @@ pub const Peer = struct {
             }
         }
 
-        return peer_call_sender.sendCallToImport(
+        const question_id = try peer_call_sender.sendCallToImport(
             Peer,
             CallBuildFn,
             QuestionCallback,
@@ -2428,6 +2448,17 @@ pub const Peer = struct {
             Peer.recordQuestionParamExports,
             Peer.sendBuilder,
         );
+        // Record the promise-import target on the question so the Level-3
+        // recipient auto-pickup can observe an in-flight pipelined call against
+        // this (as-yet unresolved) import — the spec condition for embargoing
+        // the handoff Accept (rpc.capnp:885-888). Only calls to imports NOT yet
+        // in `resolved_imports` reach here (resolved caps take the fast path
+        // above), so this marks exactly the still-in-flight-promise targets. The
+        // mark is dropped implicitly when the question leaves the table.
+        if (self.questions.getPtr(question_id)) |q| {
+            q.target_promise_import = target_id;
+        }
+        return question_id;
     }
 
     /// Send a call to a resolved (non-promise) capability. Dispatches to the
@@ -4301,15 +4332,98 @@ pub const Peer = struct {
         var heap_owned = true;
         errdefer if (heap_owned) self.allocator.destroy(heap);
 
-        // Send the Accept on the third-vat connection. No embargo (Phase 4): this
-        // slice does not order in-flight promise calls against the handoff.
-        const question_id = try accept_peer.sendAccept(provision, null, heap, onHandoffAcceptReturn);
+        // PHASE 4 — embargo/disembargo ordering during a live-promise handoff.
+        //
+        // If VatA (this peer, holding the promise import) still has a pipelined
+        // call in flight against the promise being resolved, the accepted cap
+        // MUST be embargoed so that the pipelined call (which VatB will forward
+        // to VatC on the old path) is delivered to VatC BEFORE any post-pickup
+        // direct call — preserving Alice's e-order (rpc.capnp:885-903). We:
+        //   (1) allocate an opaque accept-embargo byte id,
+        //   (2) send `Accept{embargo=id}` to VatC (VatC holds the Return + any
+        //       pipelined calls until the disembargo arrives), and
+        //   (3) send `Disembargo{context.accept=id}` to VatB on the promise path;
+        //       VatB forwards it to VatC behind the already-forwarded pipelined
+        //       call, releasing the held Accept in e-order.
+        // If NO call is in flight, keep the P3 fast path (`embargo = null`): there
+        // is nothing to order the handoff against.
+        var accept_embargo_buf: [ACCEPT_EMBARGO_ID_LEN]u8 = undefined;
+        const embargo: ?[]const u8 = if (self.promiseImportHasInFlightCall(promise_id))
+            self.nextAcceptEmbargoId(&accept_embargo_buf)
+        else
+            null;
+
+        // Send the Accept on the third-vat connection.
+        const question_id = try accept_peer.sendAccept(provision, embargo, heap, onHandoffAcceptReturn);
         heap_owned = false;
         vine_owned = false; // ownership transferred to the Accept flow.
         accept_peer.setQuestionDeinitCtx(question_id, HandoffPickupContext.deinitCtx);
 
-        log.debug("auto-pickup: sent Accept question={} for promise={} vine={}", .{ question_id, promise_id, third.vine_id });
+        // (3) Emit the paired `context.accept` Disembargo on the promise path to
+        // VatB. Best-effort AFTER the Accept is safely on the wire and ownership
+        // has transferred: a failed Disembargo cannot roll back the sent Accept
+        // (that would desync VatC's provide table), and VatC would then simply
+        // hold the embargoed Accept until a later Finish/teardown drains it. We
+        // therefore log rather than propagate.
+        if (embargo) |embargo_bytes| {
+            self.sendHandoffAcceptDisembargo(promise_id, embargo_bytes) catch |err| {
+                log.warn("auto-pickup: accept-disembargo send failed for promise {}: {}", .{ promise_id, err });
+            };
+        }
+
+        log.debug("auto-pickup: sent Accept question={} for promise={} vine={} embargoed={}", .{
+            question_id,
+            promise_id,
+            third.vine_id,
+            embargo != null,
+        });
         return true;
+    }
+
+    /// Length of an opaque accept-embargo byte id. A big-endian encoding of the
+    /// per-peer `next_accept_embargo_id` counter: unique per handoff on this
+    /// peer, which is all VatC needs to correlate the `Accept` with its
+    /// `context.accept` `Disembargo`.
+    const ACCEPT_EMBARGO_ID_LEN = 8;
+
+    /// Fill `buf` with the next opaque accept-embargo byte id and return it.
+    fn nextAcceptEmbargoId(self: *Peer, buf: *[ACCEPT_EMBARGO_ID_LEN]u8) []const u8 {
+        const id = self.next_accept_embargo_id;
+        self.next_accept_embargo_id +%= 1;
+        std.mem.writeInt(u64, buf, id, .big);
+        return buf[0..];
+    }
+
+    /// True if this peer has an outbound Call still in flight (Return not yet
+    /// received) that targeted the promise import `promise_id`. The mark is set
+    /// on the `Question` by `sendCall` (see `target_promise_import`) and cleared
+    /// implicitly when the question leaves the table, so a live matching question
+    /// is exactly an in-flight pipelined call against the promise.
+    fn promiseImportHasInFlightCall(self: *Peer, promise_id: u32) bool {
+        var it = self.questions.valueIterator();
+        while (it.next()) |q| {
+            if (q.cancelled) continue;
+            if (q.target_promise_import == promise_id) return true;
+        }
+        return false;
+    }
+
+    /// Send a `Disembargo{context.accept}` on the promise path (this peer, the
+    /// VatA↔VatB connection) targeting the promise import being handed off. VatB
+    /// forwards it to VatC (see `handleAcceptDisembargo`/`forwardAcceptDisembargo`),
+    /// which releases the matching held `Accept`. The target names the promise import
+    /// (an entry in the sender's import table → the receiver's export table),
+    /// matching how VatB keys its promise export.
+    fn sendHandoffAcceptDisembargo(self: *Peer, promise_id: u32, embargo: []const u8) !void {
+        const target = protocol.MessageTarget{
+            .tag = .importedCap,
+            .imported_cap = promise_id,
+            .promised_answer = null,
+        };
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildDisembargoAccept(target, embargo);
+        try self.sendBuilder(&builder);
     }
 
     /// Return callback for the auto-pickup `Accept`. Runs on the third-vat peer
@@ -4372,16 +4486,88 @@ pub const Peer = struct {
             .send_disembargo_receiver_loopback = peer_outbound_control.sendDisembargoReceiverLoopbackViaSendFrameForPeerFn(Peer, Peer.sendFrame),
             .take_pending_embargo_promise = peer_disembargo.takePendingEmbargoPromiseForPeerFn(Peer),
             .clear_resolved_import_embargo = peer_disembargo.clearResolvedImportEmbargoForPeerFn(Peer),
-            .release_embargoed_accepts = peer_embargo_accepts.releaseEmbargoedAcceptsForPeerFn(
+            .release_embargoed_accepts = Peer.handleAcceptDisembargo,
+        };
+        try peer_disembargo.handleDisembargoWithOps(Peer, self, disembargo_msg, ops);
+    }
+
+    /// Dispatch an inbound `context.accept` Disembargo. Role is decided by state,
+    /// not by the target (which is meaningless once forwarded off the promise
+    /// path): a vat is the capability HOST for this embargo iff it holds a queued
+    /// `Accept` under these exact embargo bytes.
+    ///
+    ///   * HOST (VatC): holds a pending embargoed `Accept` for `embargo`. Release
+    ///     it, delivering the queued Return + parked pipelined calls in e-order
+    ///     (rpc.capnp:900-903).
+    ///
+    ///   * INTRODUCER (VatB): does NOT hold a matching `Accept`. The Disembargo
+    ///     arrived on the promise path this peer used to originate a
+    ///     `Provide`+`thirdPartyHosted` Resolve; forward it to the capability host
+    ///     on the connection the paired `Provide` was sent on, behind the
+    ///     already-forwarded pipelined call (rpc.capnp:889-899). The `target`
+    ///     names this peer's promise EXPORT (VatA's promise import id), matched
+    ///     against the `resolved_promise_export_id` recorded at origination.
+    ///
+    /// Deciding by "do I hold this Accept?" rather than by target-matching keeps
+    /// the two roles unambiguous even for a vat that is simultaneously an
+    /// introducer for one handoff and a host for another. A Disembargo that
+    /// matches neither role is a benign no-op (the release drains nothing and no
+    /// forward target is found).
+    fn handleAcceptDisembargo(self: *Peer, target: protocol.MessageTarget, embargo: []const u8) !void {
+        // HOST role: we hold the queued Accept for this embargo → release it.
+        if (self.pending_accepts_by_embargo.contains(embargo)) {
+            try peer_embargo_accepts.releaseEmbargoedAcceptsForPeer(
                 Peer,
                 PendingEmbargoedAccept,
                 ProvideEntry,
                 ProvideTarget,
+                self,
+                embargo,
                 Peer.sendReturnProvidedTarget,
                 Peer.sendReturnException,
-            ),
-        };
-        try peer_disembargo.handleDisembargoWithOps(Peer, self, disembargo_msg, ops);
+            );
+            return;
+        }
+
+        // INTRODUCER role: forward toward the host we originated the Provide on.
+        if (target.tag == .importedCap) {
+            if (target.imported_cap) |promise_export_id| {
+                if (self.findOriginatedProvideForPromise(promise_export_id)) |provide_peer| {
+                    try self.forwardAcceptDisembargo(provide_peer, target, embargo);
+                    return;
+                }
+            }
+        }
+
+        // Neither role: nothing to release, nothing to forward. Benign — a late
+        // or duplicate Disembargo whose Accept already drained (or a target we do
+        // not recognise). Dropping it silently matches the receiver-loopback arm.
+        log.debug("accept-disembargo matched no held Accept and no originated provide; dropping", .{});
+    }
+
+    /// If this peer originated a three-party handoff by resolving the promise
+    /// EXPORT `promise_export_id` to a third party, return the connection the
+    /// paired `Provide` was sent on (the host-of-provided-cap peer, B↔C).
+    /// Otherwise null — this peer is not the introducer for that promise.
+    fn findOriginatedProvideForPromise(self: *Peer, promise_export_id: u32) ?*Peer {
+        var it = self.outbound_provides.valueIterator();
+        while (it.next()) |op| {
+            if (op.resolved_promise_export_id == promise_export_id) return op.provide_peer;
+        }
+        return null;
+    }
+
+    /// Forward a `context.accept` Disembargo to the capability host (VatC) on the
+    /// connection this introducer (VatB) sent the paired `Provide` on. The target
+    /// is carried through unchanged; VatC keys the release solely on the embargo
+    /// bytes (see `handleAcceptDisembargo`), so the target is informational only
+    /// on the B↔C hop.
+    fn forwardAcceptDisembargo(_: *Peer, provide_peer: *Peer, target: protocol.MessageTarget, embargo: []const u8) !void {
+        provide_peer.assertThreadAffinity();
+        var builder = protocol.MessageBuilder.init(provide_peer.allocator);
+        defer builder.deinit();
+        try builder.buildDisembargoAccept(target, embargo);
+        try provide_peer.sendBuilder(&builder);
     }
 
     fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {

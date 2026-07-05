@@ -135,6 +135,18 @@ pub fn Question(comptime QuestionCallbackType: type) type {
         /// an exception and a Finish has been sent; the entry stays in the
         /// table only to absorb the remote's guaranteed Return silently.
         cancelled: bool = false,
+        /// When this outbound Call targeted an UNRESOLVED promise import, this
+        /// records that promise import id. Used by the Level-3 recipient
+        /// auto-pickup (`tryAutoPickupThirdParty`) to detect whether a
+        /// pipelined call is still in flight against the promise being handed
+        /// off — the spec condition (`rpc.capnp:885-888`) under which the
+        /// pickup must embargo the `Accept` and emit a `context.accept`
+        /// `Disembargo` to preserve e-order. The question's mere presence in
+        /// the table (with this field set) IS the in-flight signal; it is
+        /// removed exactly once when the Return arrives, so no separate
+        /// per-return decrement is needed. Null for calls to resolved caps,
+        /// exports, or promised answers.
+        target_promise_import: ?u32 = null,
     };
 }
 
