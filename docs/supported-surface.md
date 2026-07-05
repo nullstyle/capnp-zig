@@ -128,10 +128,21 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   addition to the inbound `Provide` / `Accept` / `Join` / `ThirdPartyAnswer`
   handling that was already present. This arc is **lightly soaked and
   Zig↔Zig-only**: no reference implementation performs spec-current three-party
-  pickup, so it has no cross-implementation interop partner. One functional gap
-  remains: the introducer does not forward the *original* parked pipelined calls
-  on a promise to the host (they hit the Level-1/2 rejecting vine) — tracked
-  separately. Do not depend on the L3 surface for production interop.
+  pickup, so it has no cross-implementation interop partner. The former gap —
+  the introducer not forwarding the *original* parked pipelined calls on a
+  promise to the host (they hit the Level-1/2 rejecting vine) — is now
+  **RESOLVED**: when the handed-off promise resolves, the introducer forwards
+  each parked pipelined call cross-peer to the capability host (targeting the
+  provided cap on the introducer↔host connection) and relays the host's result
+  back to complete the caller's original pipelined question, preserving e-order
+  (spec `rpc.capnp:898` and the handoff ordering section: parked calls reach the
+  host in send order and strictly before any post-pickup direct call) and the
+  vine refcount/liveness coupling. One narrow nuance remains: this forwarding
+  handles cap-free params/results (the common pipelined getter/counter shape); a
+  forwarded pipelined call whose params or results carry capabilities degrades to
+  a clean exception rather than corrupt cross-connection cap state (cross-peer
+  cap-table remapping is a follow-up). Do not depend on the L3 surface for
+  production interop.
 
 ## Known limitations (v0.3.0)
 

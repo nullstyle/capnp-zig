@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RPC Level-3 three-party handoff — introducer now FORWARDS parked pipelined
+  promise-calls to the capability host (Experimental; closes issue #56).** When a
+  caller (VatA) pipelines calls on a promise it holds from the introducer (VatB)
+  and VatB hands that promise off to the capability host (VatC) via
+  `resolvePromiseExportToThirdParty`, the caller's parked pipelined calls are now
+  FORWARDED cross-peer to VatC — targeting the provided capability on the B↔C
+  connection — and VatC's results are relayed back to complete VatA's original
+  pipelined questions. Previously those replayed calls hit the Level-1/2 rejecting
+  vine and returned an exception. The forward preserves e-order (parked calls
+  reach VatC in the exact order VatA sent them, and strictly before any
+  post-pickup direct call) and is refcount/UAF-safe: it takes no new ref on the
+  vine, completes each caller question exactly once, and the vine→Provide liveness
+  coupling (the #55 fix) stays intact — a torn-down provided-cap peer safely
+  no-ops the forward. The cross-peer relay is also allocation-failure-safe under
+  the hardest interleaving: if the forwarded call's own post-return work (e.g. the
+  auto-Finish to the host) fails with OOM AFTER the caller's question was already
+  answered, the relay neither sends a duplicate Return nor double-frees/restores a
+  question whose relay context was already released — the forwarded question is
+  created non-restorable, and a settle flag distinguishes "already answered" from
+  "never sent". Proven by a new leak-checked three-peer Zig↔Zig test (forwarded
+  parked calls reach VatC with the correct values, in order), a fault-injection
+  test that forces that post-return OOM and asserts exactly one Return reaches the
+  caller, and by the existing live-promise embargo test, now upgraded to assert the
+  ordering on the REAL P-pipeline (forwarded parked call reaches VatC before the
+  post-pickup direct call) rather than only approximating it via the Accept-result
+  pipeline.
+  This slice forwards cap-free params/results (the common pipelined getter/counter
+  shape); a forwarded call whose params or results carry capabilities degrades to
+  a clean exception rather than corrupt cross-connection cap state (cross-peer
+  cap-table remapping is a follow-up). Still Experimental and Zig↔Zig-only.
+
 ## [0.3.0] - 2026-07-05
 
 This release promotes the two-party RPC core and serialization to **Stable**;

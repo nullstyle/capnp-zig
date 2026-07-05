@@ -117,7 +117,15 @@ pub fn handleResolvedExportedCallForPeer(
     note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    // L3 parked-call forwarding (issue #56): a call replayed onto an export can
+    // land on a handoff VINE. When it does, forward it cross-peer to VatC rather
+    // than dispatching to the vine's rejecting handler. Returns true if it
+    // consumed the call (forwarded or produced its own Return), false to fall
+    // through to normal export dispatch. Non-vine exports always return false.
+    maybe_forward_export_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!bool,
 ) !void {
+    if (try maybe_forward_export_call(peer, call, inbound_caps, export_id)) return;
+
     const exported_entry = peer.exports.getEntry(export_id) orelse {
         try send_return_exception(peer, call.question_id, "unknown promised capability");
         return;
@@ -147,6 +155,7 @@ pub fn handleResolvedExportedCallForPeerFn(
     comptime note_call_send_results: *const fn (*PeerType, protocol.Call) anyerror!void,
     comptime handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     comptime send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    comptime maybe_forward_export_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!bool,
 ) *const fn (*PeerType, protocol.Call, *const InboundCapsType, u32) anyerror!void {
     return struct {
         fn call(peer: *PeerType, rpc_call: protocol.Call, inbound_caps: *const InboundCapsType, export_id: u32) anyerror!void {
@@ -160,6 +169,7 @@ pub fn handleResolvedExportedCallForPeerFn(
                 note_call_send_results,
                 handle_resolved_call,
                 send_return_exception,
+                maybe_forward_export_call,
             );
         }
     }.call;
@@ -556,6 +566,14 @@ test "peer_call_orchestration handleResolvedExportedCallForPeerFn reports unknow
             state.last_question_id = question_id;
             state.last_reason = reason;
         }
+
+        fn noForward(state: *State, call: protocol.Call, inbound: *const InboundCaps, export_id: u32) !bool {
+            _ = state;
+            _ = call;
+            _ = inbound;
+            _ = export_id;
+            return false;
+        }
     };
 
     var state = State.init(std.testing.allocator);
@@ -587,6 +605,7 @@ test "peer_call_orchestration handleResolvedExportedCallForPeerFn reports unknow
         Hooks.note,
         Hooks.handleResolved,
         Hooks.sendException,
+        Hooks.noForward,
     );
     try handle_exported(&state, call, &inbound, 999);
 

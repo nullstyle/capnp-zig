@@ -74,8 +74,15 @@ const PingReturnCtx = struct {
 const Carol = struct {
     seq: u32 = 0,
     /// The stamp at which Carol saw ping(n==N). The source of truth for
-    /// pipelined-before-direct ordering.
-    ping_pipelined_seq: ?u32 = null, // ping(1) — the pipelined call
+    /// pipelined-before-direct ordering. Three distinct pings are proven here:
+    ///   n==1  the REAL P-pipeline: a call VatA pipelined on the promise P,
+    ///         parked at VatB, then FORWARDED to Carol on resolution (issue #56).
+    ///   n==3  the ACCEPT-result pipeline: a call pipelined on the Accept
+    ///         question, PARKED at C behind the embargoed Accept, released on
+    ///         disembargo (the embargo-gating proof).
+    ///   n==2  the post-pickup DIRECT call on the accepted cap.
+    ping_parked_seq: ?u32 = null, // ping(1) — the forwarded parked P-pipeline call
+    ping_accept_pipeline_seq: ?u32 = null, // ping(3) — the embargo-gated Accept pipeline
     ping_direct_seq: ?u32 = null, // ping(2) — the post-pickup direct call
 
     fn onCall(
@@ -90,8 +97,9 @@ const Carol = struct {
         }
         self.seq += 1;
         const n = try readPingN(call.params);
-        if (n == 1) self.ping_pipelined_seq = self.seq;
+        if (n == 1) self.ping_parked_seq = self.seq;
         if (n == 2) self.ping_direct_seq = self.seq;
+        if (n == 3) self.ping_accept_pipeline_seq = self.seq;
         var ret_ctx = PingReturnCtx{ .n = n };
         try peer.sendReturnResults(call.question_id, &ret_ctx, PingReturnCtx.build);
     }
@@ -522,19 +530,29 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     try std.testing.expect(c.pending_accepts_by_embargo.count() > 0);
     // The Accept question A sent to C was captured off the wire.
     const accept_qid = link.accept_question_id orelse return error.AcceptQuestionNotObserved;
-    // Carol has still seen nothing.
-    try std.testing.expectEqual(@as(u32, 0), carol.seq);
+
+    // *** REAL P-pipeline forwarding proof (issue #56). ***
+    // The parked ping(1) — pipelined by A on P, parked at B — was FORWARDED to
+    // Carol on resolution (via B's own import of Carol on B<->C), NOT rejected by
+    // the vine. It reaches Carol immediately and returns the correct value to A.
+    // This is delivered through B's non-embargoed import, so it is not gated by
+    // the Accept embargo; it therefore lands at Carol FIRST, ahead of every
+    // post-pickup call — exactly the e-order the parked calls require.
+    try std.testing.expect(pipelined_ping.returned);
+    try std.testing.expectEqual(@as(u32, 1), pipelined_ping.result_n.?);
+    try std.testing.expectEqual(@as(u32, 1), carol.seq);
+    try std.testing.expect(carol.ping_parked_seq != null);
+    try std.testing.expectEqual(@as(u32, 1), carol.ping_parked_seq.?);
 
     // *** Spec bar(): pipeline ping on the ACCEPT's result. ***
-    // A sends ping(1)'s successor as a promisedAnswer on the Accept question
+    // A sends a call as a promisedAnswer on the Accept question
     // (rpc.capnp:895-897). C PARKS it because the Accept is embargoed: it must
     // not deliver a call to the newly-accepted cap until the embargo releases.
-    // (We reuse n==1 as "the pipelined call" — Carol stamps whichever ping with
-    // n==1 arrives first; the direct call below uses n==2.)
+    // (n==3 keeps this distinct from the forwarded parked call, n==1.)
     // The Accept Return encodes the accepted cap (Carol) as the payload CONTENT
     // capability directly (see sendReturnProvidedTarget), so the promised-answer
     // transform to reach it is EMPTY (the content itself is the cap).
-    var accept_pipelined_ping = PingCall{ .n = 1 };
+    var accept_pipelined_ping = PingCall{ .n = 3 };
     _ = try a_to_c.sendCallPromisedWithOps(
         accept_qid,
         &[_]protocol.PromisedAnswerOp{},
@@ -544,17 +562,18 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
         PingCall.build,
         PingCall.onReturn,
     );
-    // Still gated: the pipelined call is PARKED at C behind the embargoed Accept
-    // (rpc.capnp:895-897) — it must not be delivered to the newly-accepted cap
-    // until the embargo releases.
+    // Still gated: this Accept-pipelined call is PARKED at C behind the embargoed
+    // Accept (rpc.capnp:895-897) — it must not be delivered to the newly-accepted
+    // cap until the embargo releases. Carol has still seen ONLY the forwarded
+    // parked call (seq 1); the Accept pipeline has not landed.
     try std.testing.expect(c.pending_promises.count() >= 1);
     try std.testing.expect(!accept_pipelined_ping.returned);
-    try std.testing.expectEqual(@as(u32, 0), carol.seq);
-    try std.testing.expect(carol.ping_pipelined_seq == null);
+    try std.testing.expectEqual(@as(u32, 1), carol.seq);
+    try std.testing.expect(carol.ping_accept_pipeline_seq == null);
 
     // *** Release the embargo: deliver the buffered Disembargo to C. ***
     // C releases the held Accept: it Returns the accepted cap AND replays the
-    // parked pipelined ping to Carol, all in e-order.
+    // parked Accept-pipelined ping to Carol, all in e-order.
     try link.releaseBufferedDisembargo();
 
     // The pickup fired now (and only now): A has the direct cap.
@@ -562,15 +581,17 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
     try std.testing.expect(a_to_c.caps.hasImport(accepted_carol_id));
 
-    // The pipelined ping reached Carol as part of releasing the embargo.
+    // The Accept-pipelined ping reached Carol as part of releasing the embargo
+    // (seq 2 — after the forwarded parked call, still before any direct call).
     try std.testing.expect(accept_pipelined_ping.returned);
-    try std.testing.expect(carol.ping_pipelined_seq != null);
-    try std.testing.expectEqual(@as(u32, 1), carol.seq);
+    try std.testing.expect(carol.ping_accept_pipeline_seq != null);
+    try std.testing.expectEqual(@as(u32, 2), carol.seq);
+    try std.testing.expectEqual(@as(u32, 2), carol.ping_accept_pipeline_seq.?);
 
     // *** Post-pickup DIRECT call. ***
     // Only reachable now: the accepted cap did not exist at A until the embargo
     // cleared, so this direct ping could not have raced ahead of the pipelined
-    // one — the embargo demonstrably gated it.
+    // ones — the embargo demonstrably gated it.
     var direct_ping = PingCall{ .n = 2 };
     _ = try a_to_c.sendCall(
         accepted_carol_id,
@@ -584,19 +605,18 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     try std.testing.expectEqual(@as(u32, 2), direct_ping.result_n.?);
     try std.testing.expect(carol.ping_direct_seq != null);
 
-    // *** THE ORDERING ASSERTION ***
-    // The pipelined call reached Carol STRICTLY BEFORE the post-pickup direct
-    // call. No reordering — e-order preserved across the three-connection handoff.
-    try std.testing.expect(carol.ping_pipelined_seq.? < carol.ping_direct_seq.?);
-    try std.testing.expectEqual(@as(u32, 1), carol.ping_pipelined_seq.?);
-    try std.testing.expectEqual(@as(u32, 2), carol.ping_direct_seq.?);
-
-    // -- The original P pipelined call (parked at B) was rejected by the vine
-    //    proxy on resolution (Level-1/2 fallback), so it returned an exception;
-    //    that is the known limitation this slice does not close (B does not yet
-    //    forward parked calls to C). The e-order guarantee proven above does not
-    //    depend on it: the pipelined-before-direct ordering is proven at Carol on
-    //    C via the Accept-result pipeline, which the embargo genuinely gates.
+    // *** THE ORDERING ASSERTIONS ***
+    // (a) THE REAL P-pipeline: the forwarded parked call reached Carol STRICTLY
+    //     BEFORE the post-pickup direct call. This is the full spec e-order
+    //     guarantee, now proven on the real P-pipeline (issue #56) rather than
+    //     only approximated by the Accept-result pipeline.
+    try std.testing.expect(carol.ping_parked_seq.? < carol.ping_direct_seq.?);
+    // (b) The embargo-gated Accept pipeline also lands before the direct call.
+    try std.testing.expect(carol.ping_accept_pipeline_seq.? < carol.ping_direct_seq.?);
+    // Exact stamps: forwarded parked (1) < Accept pipeline (2) < direct (3).
+    try std.testing.expectEqual(@as(u32, 1), carol.ping_parked_seq.?);
+    try std.testing.expectEqual(@as(u32, 2), carol.ping_accept_pipeline_seq.?);
+    try std.testing.expectEqual(@as(u32, 3), carol.ping_direct_seq.?);
 
     // -- Teardown: release every remaining import so all tables drain. ---------
     try a_to_c.releaseImport(accepted_carol_id, 1);

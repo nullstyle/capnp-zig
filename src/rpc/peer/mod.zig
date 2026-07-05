@@ -220,6 +220,59 @@ const ForwardReturnBuildContext = struct {
     inbound_caps: *const cap_table.InboundCapTable,
 };
 
+/// L3 parked-call FORWARDING relay state (issue #56). Threads a call that was
+/// pipelined by VatA on a handed-off promise — parked at VatB, then replayed
+/// onto the handoff vine — through to VatC and relays VatC's Return back to
+/// complete VatA's ORIGINAL pipelined question.
+///
+/// It spans two peers: the forwarded call goes out on `provide_peer` (B↔C, the
+/// peer field carried by the outbound question), but the relayed result must
+/// complete VatA's question on `recipient_peer` (B↔A) under
+/// `recipient_answer_id`. Heap-allocated because the forwarded question outlives
+/// the synchronous replay in a real async transport; freed by
+/// `forwardVineReturn` on the single Return, or by the forwarded question's
+/// `deinit_ctx` if the B↔C peer tears down first.
+const ForwardVineCallContext = struct {
+    /// The peer that received VatA's original pipelined call (B↔A). Its
+    /// `recipient_answer_id` active-inbound question is completed with VatC's
+    /// result.
+    recipient_peer: *Peer,
+    /// VatA's original pipelined question id on `recipient_peer` (B↔A).
+    recipient_answer_id: u32,
+    /// VatA's parked call params, cloned into the forwarded call sent to VatC.
+    /// Read ONLY by `forwardVineParams`, which runs synchronously inside the
+    /// `sendCall` that registers this ctx as the outbound question's callback —
+    /// while the parked frame these readers point into is still alive. It is
+    /// never touched after `sendCall` returns (the later `forwardVineReturn`
+    /// reads only `recipient_peer` / `recipient_answer_id` / `settled_flag`), so
+    /// the ctx may safely outlive the parked frame.
+    source_params: protocol.Payload,
+    /// One-shot back-signal to `forwardVineCallToProvidedCap`, set true by
+    /// `forwardVineReturn` the instant the return callback runs (before it frees
+    /// this ctx). It points at a stack-local `bool` in that caller and is valid
+    /// ONLY while the callback runs SYNCHRONOUSLY nested inside `sendCall` (the
+    /// loopback case), where that frame is still live. The caller nulls it before
+    /// its frame unwinds on the async hand-off path, so a later callback never
+    /// writes through a dangling pointer. It lets the caller's post-`sendCall`
+    /// code (including its error path) distinguish "the callback already answered
+    /// VatA and freed this ctx" from "the callback never ran" — so a `sendCall`
+    /// that fails in post-callback work does not double-answer VatA or double-free
+    /// this ctx.
+    settled_flag: ?*bool = null,
+
+    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+        const ctx: *ForwardVineCallContext = @ptrCast(@alignCast(ctx_ptr));
+        allocator.destroy(ctx);
+    }
+};
+
+/// Build-closure state for cloning a (cap-free) payload's content into an
+/// outbound builder — used to relay VatC's results onto VatA's Return.
+/// Stack-owned by its caller for the synchronous duration of the build.
+const ClonePayloadContentContext = struct {
+    source: protocol.Payload,
+};
+
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
 }
@@ -379,13 +432,28 @@ const OutboundProvide = struct {
     provide_question_id: u32,
     /// When the handoff was originated by resolving a promise EXPORT to the
     /// third party (`resolvePromiseExportToThirdParty`), this is that promise
-    /// export id on THIS peer, and it resolved locally to the vine (routing
-    /// pipelined calls through the vine per the Level-1/2 fallback). The vine's
-    /// destruction on Release invalidates that resolution target, so the vine
-    /// teardown in `handleRelease` nulls the promise export's `resolved` link to
-    /// avoid a dangling target. Null for a bare `sendProvide` handoff (no promise
-    /// export involved, e.g. the P0–P2 return-a-vine path).
+    /// export id on THIS peer, and it resolved locally to the vine (so replayed
+    /// pipelined calls dispatch to the vine — where, with `provided_import_id`
+    /// set, they are FORWARDED to VatC per issue #56 rather than rejected). The
+    /// vine's destruction on Release invalidates that resolution target, so the
+    /// vine teardown in `handleRelease` nulls the promise export's `resolved` link
+    /// to avoid a dangling target. Null for a bare `sendProvide` handoff (no
+    /// promise export involved, e.g. the P0–P2 return-a-vine path).
     resolved_promise_export_id: ?u32 = null,
+    /// L3 parked-call FORWARDING (issue #56): the import id, on `provide_peer`
+    /// (B↔C), of the capability that was provided to VatC — i.e. the
+    /// `provided_target.imported_cap` VatB passed to `sendProvide`. When a
+    /// caller (VatA) pipelined calls on the handed-off promise and they were
+    /// parked at VatB, resolving the promise replays them onto the VINE export
+    /// (the Level-1/2 fallback). Rather than reject them at the vine, VatB
+    /// FORWARDS each replayed call to VatC over `provide_peer`, targeting this
+    /// import, and relays VatC's result back to complete VatA's original
+    /// pipelined question (see `forwardVineCallToProvidedCap`). Null when the
+    /// provided target is not a simple imported cap (e.g. a `promisedAnswer`
+    /// target, or the P0–P2 return-a-vine path with no pipelined caller): in
+    /// that case the vine keeps its rejecting behavior, since there is no
+    /// unambiguous single import on `provide_peer` to forward to.
+    provided_import_id: ?u32 = null,
 };
 
 /// Liveness back-link recorded on the host-of-provided-cap peer (B↔C) for each
@@ -1564,9 +1632,18 @@ pub const Peer = struct {
             host_of_recipient.outbound_provides.count(),
             host_of_recipient.limits.max_active_provides,
         );
+        // Remember how to reach the provided cap on `provide_peer` (B↔C) so a
+        // parked pipelined call replayed on the vine can be FORWARDED to VatC
+        // (issue #56) instead of hitting the rejecting vine. Only a simple
+        // `importedCap` target has an unambiguous single import to forward to;
+        // for any other target shape the vine keeps rejecting (documented on
+        // OutboundProvide.provided_import_id).
+        const provided_import_id: ?u32 =
+            if (provided_target.tag == .importedCap) provided_target.imported_cap else null;
         try host_of_recipient.outbound_provides.put(vine_id, .{
             .provide_peer = self,
             .provide_question_id = question_id,
+            .provided_import_id = provided_import_id,
         });
         errdefer _ = host_of_recipient.outbound_provides.remove(vine_id);
 
@@ -1743,11 +1820,15 @@ pub const Peer = struct {
         owns_key = false;
     }
 
-    /// Call handler installed on a vine export. A vine is a pure liveness/refcount
-    /// anchor for a three-party handoff; it proxies no methods in this slice, so
-    /// any call routed to it is answered with an exception rather than silently
-    /// dropped. (The Level-1/2 proxy fallback — forwarding vine calls to the
-    /// provided cap — is out of scope here.)
+    /// Call handler installed on a vine export. A vine is primarily a
+    /// liveness/refcount anchor for a three-party handoff. When a caller (VatA)
+    /// pipelined calls on the handed-off promise, those calls are replayed onto
+    /// this vine and are FORWARDED to VatC by `maybeForwardVineCall` (issue #56)
+    /// BEFORE dispatch ever reaches this handler — so this handler only runs for
+    /// a call on a vine with NO forwarding coupling (`provided_import_id` unset,
+    /// or `provide_peer` already torn down). That is genuine non-handoff misuse
+    /// or a raced teardown; answer it with a clean exception rather than
+    /// silently dropping it.
     fn vineRejectingCall(
         _: *anyopaque,
         peer: *Peer,
@@ -1755,6 +1836,246 @@ pub const Peer = struct {
         _: *const cap_table.InboundCapTable,
     ) anyerror!void {
         try peer.sendReturnException(call.question_id, "vine capability is not directly callable");
+    }
+
+    /// L3 parked-call FORWARDING pre-dispatch hook (issue #56). Runs for every
+    /// call replayed onto an export. Returns `true` (call consumed) only when
+    /// `export_id` is a handoff VINE with a live forwarding coupling — a
+    /// `provide_peer` still attached (BUG #55 nulls it on provided-cap-peer
+    /// teardown) and a known `provided_import_id`. In that case the call is
+    /// forwarded cross-peer to VatC and its result is relayed back to complete
+    /// VatA's original pipelined question. Returns `false` for any non-vine
+    /// export and for a vine whose coupling cannot forward (no import target, or
+    /// a torn-down provide_peer), letting normal export dispatch — and thus
+    /// `vineRejectingCall` for the vine — run.
+    fn maybeForwardVineCall(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        export_id: u32,
+    ) anyerror!bool {
+        const coupling = self.outbound_provides.get(export_id) orelse return false;
+        const provide_peer = coupling.provide_peer orelse return false;
+        const provided_import_id = coupling.provided_import_id orelse return false;
+        if (provide_peer.is_shutting_down) return false;
+
+        try self.forwardVineCallToProvidedCap(call, inbound_caps, provide_peer, provided_import_id);
+        return true;
+    }
+
+    /// Forward one replayed pipelined call from the handoff vine (on `self`,
+    /// B↔A) to the provided capability on VatC (`provide_peer`, B↔C), and relay
+    /// VatC's Return back to complete VatA's original pipelined question
+    /// (`call.question_id`) on `self`.
+    ///
+    /// E-ORDER: parked calls are replayed in the exact order VatA sent them
+    /// (`pending_export_promises` is an ordered ArrayList drained front-to-back),
+    /// and each is sent to VatC synchronously here before the next replay, so
+    /// their arrival order at VatC matches VatA's send order. Because the forward
+    /// is a normal outbound Call on `provide_peer`, it also orders correctly
+    /// against any later direct calls VatA makes on the accepted cap (which only
+    /// exist AFTER the embargo clears — the pipelined-before-direct guarantee).
+    ///
+    /// REFCOUNTS: the forwarded call takes no new ref on the vine (it targets
+    /// VatC's cap directly); VatA's original question is completed exactly once
+    /// (VatC returns exactly once); the relay context is freed on that Return or
+    /// by the forwarded question's `deinit_ctx` on a raced peer teardown. The
+    /// vine's own lifetime is unchanged — still driven solely by VatA's Release.
+    ///
+    /// CAP-CARRYING PAYLOADS: this slice forwards cap-FREE params and relays
+    /// cap-free results (the common pipelined getter/counter shape). Params or
+    /// results that carry capabilities would need cross-peer cap-table remapping
+    /// (the two connections have independent id spaces); rather than corrupt
+    /// state, such a call degrades to a clean exception on VatA's question —
+    /// consistent with the forwarded-intermediary limitation already documented
+    /// for `takeFromOtherQuestion`/`resultsSentElsewhere`.
+    fn forwardVineCallToProvidedCap(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        provide_peer: *Peer,
+        provided_import_id: u32,
+    ) !void {
+        _ = inbound_caps;
+
+        // Cap-carrying params cannot be safely remapped across the two
+        // independent connections in this slice — degrade cleanly.
+        if (call.params.cap_table) |table| {
+            if (table.len() > 0) {
+                try self.sendReturnException(call.question_id, "forwarded pipelined call params carry capabilities (unsupported)");
+                return;
+            }
+        }
+
+        // One heap ctx serves BOTH callbacks `sendCall` drives with a single
+        // ctx: `forwardVineParams` (synchronous build, reads `source_params`)
+        // and `forwardVineReturn` (later, reads `recipient_*`).
+        const relay = try self.allocator.create(ForwardVineCallContext);
+        relay.* = .{
+            .recipient_peer = self,
+            .recipient_answer_id = call.question_id,
+            .source_params = call.params,
+        };
+        var relay_owned = true;
+        errdefer if (relay_owned) self.allocator.destroy(relay);
+
+        // Set true by `forwardVineReturn` iff it runs SYNCHRONOUSLY nested inside
+        // the `sendCall` below (the loopback case) — meaning the return callback
+        // already answered VatA and freed `relay`. `sendCall` can still fail in
+        // post-callback work AFTER that (e.g. OOM sending the forwarded question's
+        // auto-Finish to VatC), so its error path must NOT then re-answer VatA or
+        // re-free `relay`. This flag distinguishes "callback already settled
+        // everything" from "the call never went out". It lives on this stack
+        // frame; the async hand-off below nulls the ctx's back-pointer so a later
+        // callback never writes through it once this frame has unwound.
+        var forward_settled = false;
+        relay.settled_flag = &forward_settled;
+
+        // Send the forwarded call to VatC on the B↔C connection. The build
+        // closure clones VatA's params synchronously (source readers valid for
+        // the duration of this send); the return closure relays VatC's result
+        // back onto VatA's question on `self`. `sendForwardedVineCall` allocates
+        // the question with `restore_on_return_error = false` so a post-callback
+        // error (e.g. OOM in the auto-Finish) does NOT restore a question whose
+        // ctx `forwardVineReturn` already freed — critical in synchronous loopback
+        // where the return is processed inside this send, before any post-send
+        // code could clear that flag.
+        const forwarded_question_id = provide_peer.sendForwardedVineCall(
+            provided_import_id,
+            call.interface_id,
+            call.method_id,
+            relay,
+            forwardVineParams,
+            forwardVineReturn,
+        ) catch |err| {
+            if (forward_settled) {
+                // The synchronous return callback already answered VatA and freed
+                // `relay` before `sendCall`'s post-callback work failed. VatA is
+                // settled exactly once; swallow the trailing error.
+                relay_owned = false;
+                return;
+            }
+            // The callback never ran: the forwarded call did not go out. `relay`
+            // is still ours — free it explicitly (a plain `return` would skip the
+            // errdefer) and answer VatA with a clean exception rather than leaving
+            // its question hung. Failing to send that exception is itself
+            // best-effort (logged, not propagated): VatA's own connection settles
+            // the question on teardown if this last resort also fails.
+            relay_owned = false;
+            self.allocator.destroy(relay);
+            self.sendReturnException(call.question_id, @errorName(err)) catch |send_err| {
+                log.debug("forwarded pipelined call: failed to fail question {}: {}", .{ call.question_id, send_err });
+            };
+            return;
+        };
+        if (forward_settled) {
+            // Synchronous loopback: the return callback already ran, answered
+            // VatA, and freed `relay`. Nothing left to own or hand off.
+            relay_owned = false;
+            return;
+        }
+        // Async transport (or VatC deferred its answer): the return callback has
+        // not run yet. Detach the stack-local settle flag — this frame is about
+        // to unwind — so the deferred callback never writes through a dangling
+        // pointer, then hand `relay` ownership to the forwarded question. Its
+        // `deinit_ctx` frees it if the B↔C peer tears down before the Return
+        // (which never completes VatA's question; VatA's own connection settles
+        // it independently). The question is already `restore_on_return_error =
+        // false` from `sendForwardedVineCall`.
+        relay.settled_flag = null;
+        if (provide_peer.questions.getPtr(forwarded_question_id)) |q| {
+            q.deinit_ctx = ForwardVineCallContext.deinit;
+        }
+        relay_owned = false;
+    }
+
+    /// Build closure for the forwarded call to VatC: clone VatA's parked params
+    /// (cap-free — guaranteed by `forwardVineCallToProvidedCap`) into the new
+    /// call's payload. Runs synchronously inside `sendCall`.
+    fn forwardVineParams(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
+        const ctx: *const ForwardVineCallContext = castCtx(*const ForwardVineCallContext, ctx_ptr);
+        var payload = try call_builder.payloadTyped();
+        const any_builder = try payload.initContent();
+        try message.cloneAnyPointer(ctx.source_params.content, any_builder);
+    }
+
+    /// Return closure for the forwarded call: relay VatC's Return back onto
+    /// VatA's original pipelined question on the recipient peer (B↔A). Runs on
+    /// `provide_peer` (B↔C) as the forwarded question's callback; the `peer`
+    /// arg here is that B↔C peer, NOT the recipient. Completes VatA's question
+    /// exactly once and frees the relay ctx.
+    ///
+    /// This callback deliberately NEVER propagates an error: it relays
+    /// best-effort (a send failure completing VatA's question is logged, not
+    /// returned) and always frees the ctx. It also sets `settled_flag` — when the
+    /// caller is still on the stack (the synchronous-loopback case) — the instant
+    /// it runs, BEFORE freeing the ctx. Together these keep the ctx single-freed
+    /// and VatA answered exactly once even when `sendCall` ITSELF fails in
+    /// post-callback work AFTER this callback already answered VatA and freed the
+    /// ctx (e.g. OOM sending the forwarded question's auto-Finish): the caller's
+    /// error path sees `settled_flag == true` and neither re-answers VatA nor
+    /// re-frees. Swallowing here alone is not sufficient — the trailing failure
+    /// originates in `sendCall`, not in this callback — so the flag is load-bearing.
+    fn forwardVineReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const ctx: *ForwardVineCallContext = castCtx(*ForwardVineCallContext, ctx_ptr);
+        const recipient = ctx.recipient_peer;
+        const answer_id = ctx.recipient_answer_id;
+        // Signal the synchronous caller that the callback ran (it is about to
+        // answer VatA and free this ctx) BEFORE freeing — while `settled_flag`,
+        // if set, still points at that caller's live stack frame. On the async
+        // hand-off path the caller has already nulled it, so this is a no-op.
+        if (ctx.settled_flag) |flag| flag.* = true;
+        defer recipient.allocator.destroy(ctx);
+
+        relayForwardedVineReturn(recipient, answer_id, ret) catch |err| {
+            log.debug("forwarded pipelined return relay failed for question {}: {}", .{ answer_id, err });
+        };
+    }
+
+    /// Complete VatA's original pipelined question (`answer_id` on `recipient`,
+    /// B↔A) from VatC's forwarded Return. Cap-free results are cloned onto VatA's
+    /// Return; cap-carrying params/results and non-results returns degrade to a
+    /// clean exception. Its errors are swallowed by `forwardVineReturn`.
+    fn relayForwardedVineReturn(recipient: *Peer, answer_id: u32, ret: protocol.Return) !void {
+        switch (ret.tag) {
+            .results => {
+                const payload = ret.results orelse {
+                    try recipient.sendReturnException(answer_id, "forwarded pipelined call: missing results");
+                    return;
+                };
+                // Cap-carrying results cannot be remapped across the two
+                // connections in this slice — degrade cleanly.
+                if (payload.cap_table) |table| {
+                    if (table.len() > 0) {
+                        try recipient.sendReturnException(answer_id, "forwarded pipelined call results carry capabilities (unsupported)");
+                        return;
+                    }
+                }
+                var results_ctx = ClonePayloadContentContext{ .source = payload };
+                try recipient.sendReturnResults(answer_id, &results_ctx, forwardVineResults);
+            },
+            .exception => {
+                const reason = if (ret.exception) |e| e.reason else "forwarded pipelined call failed";
+                try recipient.sendReturnException(answer_id, reason);
+            },
+            else => {
+                try recipient.sendReturnException(answer_id, "forwarded pipelined call: unexpected return");
+            },
+        }
+    }
+
+    /// Build closure for relaying VatC's results onto VatA's question: clone
+    /// VatC's (cap-free) result content into VatA's Return payload.
+    fn forwardVineResults(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {
+        const ctx: *const ClonePayloadContentContext = castCtx(*const ClonePayloadContentContext, ctx_ptr);
+        var payload = try ret_builder.payloadTyped();
+        const any_builder = try payload.initContent();
+        try message.cloneAnyPointer(ctx.source.content, any_builder);
     }
 
     /// Destroy a freshly-minted vine export on the origination error path,
@@ -2583,12 +2904,15 @@ pub const Peer = struct {
         // `self.exports`, invalidating the pointer captured during validation.
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
 
-        // Route pipelined calls that arrive on the promise export through the vine
-        // (the Level-1/2 fallback: a full impl proxies to VatC; this slice's vine
-        // rejects). NO promise-held pin is taken on the vine: its lifetime is
-        // driven solely by VatA's wire Release (the handoff-completion signal),
-        // which must destroy it to Finish the Provide. A pin would keep the vine
-        // alive past that Release and stall the Finish.
+        // Route pipelined calls that arrive on the promise export through the
+        // vine. With `provided_import_id` recorded on the coupling (an importedCap
+        // provided target), the replay FORWARDS each parked call to VatC over the
+        // B↔C connection (issue #56, `maybeForwardVineCall`); only a coupling that
+        // cannot forward (no import target, or a torn-down provide_peer) falls
+        // back to the vine's rejecting handler. NO promise-held pin is taken on
+        // the vine: its lifetime is driven solely by VatA's wire Release (the
+        // handoff-completion signal), which must destroy it to Finish the Provide.
+        // A pin would keep the vine alive past that Release and stall the Finish.
         promise_entry.value_ptr.resolved = .{ .exported = .{ .id = handle.vine_id } };
         self.caps.clearExportPromise(promise_id);
         try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
@@ -2692,6 +3016,48 @@ pub const Peer = struct {
             q.target_promise_import = target_id;
         }
         return question_id;
+    }
+
+    /// Send a forwarded L3 vine call to a plain import (issue #56). Mirrors the
+    /// import path of `sendCall` but allocates the question with
+    /// `restore_on_return_error = false` (`allocateQuestionNoRestore`): the return
+    /// callback (`forwardVineReturn`) frees the relay ctx, so a restore after a
+    /// post-callback error would re-reference freed memory. It deliberately skips
+    /// `sendCall`'s resolved-import fast path and the `target_promise_import` mark:
+    /// the forward targets B's own (non-promise, non-embargoed) import of VatC's
+    /// cap and must not be treated as an in-flight promise for auto-pickup.
+    fn sendForwardedVineCall(
+        self: *Peer,
+        target_id: u32,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+        return peer_call_sender.sendCallToImport(
+            Peer,
+            CallBuildFn,
+            QuestionCallback,
+            self.allocator,
+            &self.caps,
+            self,
+            onOutboundCap,
+            rollbackOutboundCap,
+            self,
+            target_id,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            Peer.allocateQuestionNoRestore,
+            Peer.removeQuestion,
+            Peer.recordQuestionParamExports,
+            Peer.sendBuilder,
+        );
     }
 
     /// Send a call to a resolved (non-promise) capability. Dispatches to the
@@ -3968,6 +4334,26 @@ pub const Peer = struct {
     }
 
     fn allocateQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        return self.allocateQuestionWithRestore(ctx, on_return, true);
+    }
+
+    /// Allocate an outbound question whose `on_return` callback OWNS and FREES
+    /// the ctx (so the question must NOT be restored on a post-callback error —
+    /// a restored copy would reference a ctx the callback already freed, a UAF at
+    /// teardown). Used by `sendForwardedVineCall` (issue #56): its return callback
+    /// frees the relay ctx, and in synchronous loopback the return is processed
+    /// INSIDE the send, so `restore_on_return_error` must be false from creation —
+    /// it cannot be cleared after the send the way async paths do.
+    fn allocateQuestionNoRestore(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        return self.allocateQuestionWithRestore(ctx, on_return, false);
+    }
+
+    fn allocateQuestionWithRestore(
+        self: *Peer,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+        restore_on_return_error: bool,
+    ) !u32 {
         const questions_before = self.questions.count();
         try ensureCountLimit(false, questions_before, self.limits.max_outbound_questions);
         var deadline_ns: ?i64 = null;
@@ -3988,6 +4374,7 @@ pub const Peer = struct {
                 .is_loopback = false,
                 .deadline_ns = deadline_ns,
                 .started_ns = started_ns,
+                .restore_on_return_error = restore_on_return_error,
             },
         );
         events.emitPressureCrossing(
@@ -5230,6 +5617,7 @@ pub const Peer = struct {
                 ),
                 Peer.handleResolvedCall,
                 Peer.sendReturnException,
+                Peer.maybeForwardVineCall,
             ),
             peer_forward_orchestration.forwardResolvedCallForPeerFn(
                 Peer,

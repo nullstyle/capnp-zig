@@ -22,6 +22,8 @@ Two of three judges rank freeze-now first, and their core reasoning holds: seria
 
 **#56 is explicitly deferred.** It is L3 feature-completeness inside an Experimental, loopback-only surface — the freeze neither needs nor improves it, and all three judges agree it is the correct cut. It stays a disclosed known-limitation.
 
+> **Post-freeze update (after v0.3.0):** #56 has since been **resolved** — the introducer now forwards parked pipelined promise-calls cross-peer to the host, and the P4 embargo e-order is proven on the real P-pipeline. This planning doc records the freeze-time decision; the paragraph above and the table row below are preserved as the historical cut, not the current state. See the CHANGELOG and `docs/supported-surface.md` for the current L3 status.
+
 ---
 
 ## Fate of the two L3 defects
