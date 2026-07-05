@@ -18,6 +18,22 @@ const capnpc = @import("capnpc-zig");
 
 const max_depth = 6;
 
+// F2 boundary assertion. This tool imports `capnpc-zig` in a NON-test build,
+// so it sees exactly the surface a consumer sees. The test-only RPC clusters
+// (`Peer.test_hooks` methods and the `rpc.testing` Internal facade) are gated
+// behind `builtin.is_test`; from here they must be empty containers with no
+// reachable decls. If a future change re-exposes them on the consumer surface,
+// this block fails to compile — a self-checking Stable/Internal boundary that
+// does not depend on a human reviewing the snapshot diff.
+comptime {
+    if (std.meta.declarations(capnpc.rpc.peer.Peer.test_hooks).len != 0) {
+        @compileError("Peer.test_hooks is reachable from the consumer surface (src/lib.zig); it must be gated behind builtin.is_test");
+    }
+    if (std.meta.declarations(capnpc.rpc.testing).len != 0) {
+        @compileError("rpc.testing is reachable from the consumer surface (src/lib.zig); it must be gated behind builtin.is_test");
+    }
+}
+
 fn isContainer(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .@"struct", .@"enum", .@"union", .@"opaque" => true,

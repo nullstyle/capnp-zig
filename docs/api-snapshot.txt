@@ -1034,29 +1034,6 @@ capnpc-zig.rpc.peer.Peer.shutdown: fn (*rpc.peer.mod.Peer, ?*const fn (*rpc.peer
 capnpc-zig.rpc.peer.Peer.start: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer, anyerror) void, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer) void) void
 capnpc-zig.rpc.peer.Peer.stats: fn (*const rpc.peer.mod.Peer) rpc.peer.mod.Peer.PeerStats
 capnpc-zig.rpc.peer.Peer.takeAttachedConnection: fn (*rpc.peer.mod.Peer, comptime type) anytype
-capnpc-zig.rpc.peer.Peer.test_hooks.ForwardCallContextType: struct
-capnpc-zig.rpc.peer.Peer.test_hooks.bufferPendingThirdPartyReturn: fn (*rpc.peer.mod.Peer, u32, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.bufferPendingThirdPartyReturn)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.clonePayloadWithRemappedCaps: fn (*rpc.peer.mod.Peer, *serialization.message.MessageBuilder, serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).StructBuilder, rpc.wire.protocol.Payload, *const rpc.caps.inbound.InboundCapTable) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.clonePayloadWithRemappedCaps)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.collectReleaseCounts: fn (*rpc.peer.mod.Peer, *rpc.caps.inbound.InboundCapTable) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.collectReleaseCounts)).@"fn".return_type.?).error_union.error_set!hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
-capnpc-zig.rpc.peer.Peer.test_hooks.ensureJoinBudget: fn (*rpc.peer.mod.Peer, u32, u16, u16, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.ensureJoinBudget)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.ensurePendingThirdPartyAnswerBudget: fn (*rpc.peer.mod.Peer, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.ensurePendingThirdPartyAnswerBudget)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.ensurePendingThirdPartyAwaitBudget: fn (*rpc.peer.mod.Peer, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.ensurePendingThirdPartyAwaitBudget)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.ensureProvideBudget: fn (*rpc.peer.mod.Peer, u32, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.ensureProvideBudget)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.ensureThirdPartyAdoptionBudget: fn (*rpc.peer.mod.Peer, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.ensureThirdPartyAdoptionBudget)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.handleCall: fn (*rpc.peer.mod.Peer, []const u8, rpc.wire.protocol.Call) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.handleCall)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.handleFinish: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Finish) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.handleFinish)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.handleResolvedCall: fn (*rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable, rpc.caps.descriptors.ResolvedCap) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.handleResolvedCall)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.makeProvideTarget: fn (*rpc.peer.mod.Peer, rpc.caps.descriptors.ResolvedCap) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.makeProvideTarget)).@"fn".return_type.?).error_union.error_set!rpc.peer.peer_state_types.ProvideTarget
-capnpc-zig.rpc.peer.Peer.test_hooks.onConnectionClose: fn (*rpc.peer.mod.Peer) void
-capnpc-zig.rpc.peer.Peer.test_hooks.onConnectionError: fn (*rpc.peer.mod.Peer, anyerror) void
-capnpc-zig.rpc.peer.Peer.test_hooks.onForwardedReturn: fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
-capnpc-zig.rpc.peer.Peer.test_hooks.queueEmbargoedAccept: fn (*rpc.peer.mod.Peer, u32, u32, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.queueEmbargoedAccept)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.queuePromisedCall: fn (*rpc.peer.mod.Peer, u32, []const u8, rpc.caps.inbound.InboundCapTable) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.queuePromisedCall)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.rememberPendingEmbargo: fn (*rpc.peer.mod.Peer, u32, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.rememberPendingEmbargo)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.removeQuestion: fn (*rpc.peer.mod.Peer, u32) void
-capnpc-zig.rpc.peer.Peer.test_hooks.sendFrame: fn (*rpc.peer.mod.Peer, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.sendFrame)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.sendReturnProvidedTarget: fn (*rpc.peer.mod.Peer, u32, *const rpc.peer.peer_state_types.ProvideTarget) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.sendReturnProvidedTarget)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.Peer.test_hooks.storeResolvedImport: fn (*rpc.peer.mod.Peer, u32, ?rpc.caps.descriptors.ResolvedCap, ?u32, bool) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.test_hooks.storeResolvedImport)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.test_hooks: struct
 capnpc-zig.rpc.peer.Peer: struct
 capnpc-zig.rpc.peer.PeerLimits: struct
@@ -1349,109 +1326,6 @@ capnpc-zig.rpc.promises.promised_answer.cloneOpsFromSlice: fn (mem.Allocator, []
 capnpc-zig.rpc.promises.promised_answer.resolvePromisedAnswer: fn (rpc.wire.protocol.Payload, rpc.wire.protocol.PromisedAnswerTransform) @typeInfo(@typeInfo(@TypeOf(rpc.promises.promised_answer.resolvePromisedAnswer)).@"fn".return_type.?).error_union.error_set!rpc.promises.promised_answer.ResolvedPromisedCap
 capnpc-zig.rpc.promises.promised_answer: struct
 capnpc-zig.rpc.promises: struct
-capnpc-zig.rpc.testing.payload_remap: struct
-capnpc-zig.rpc.testing.peer_bootstrap: struct
-capnpc-zig.rpc.testing.peer_cap_lifecycle.clearExportForPeer: fn (comptime type, anytype, u32) void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.clearExportForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_cap_lifecycle.handleRelease: fn (comptime type, anytype, rpc.wire.protocol.Release, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.handleRelease)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.importRefCountForPeer: fn (comptime type, anytype, u32) u32
-capnpc-zig.rpc.testing.peer_cap_lifecycle.importRefCountForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_cap_lifecycle.noteAnswerExportRef: fn (comptime type, anytype, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.noteAnswerExportRef)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.noteAnswerHeldResultCaps: fn (comptime type, anytype, mem.Allocator, []const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.noteAnswerHeldResultCaps)).@"fn".return_type.?).error_union.error_set![]u32
-capnpc-zig.rpc.testing.peer_cap_lifecycle.noteExportRef: fn (comptime type, anytype, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.noteExportRef)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.notePromiseExportRef: fn (comptime type, anytype, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.notePromiseExportRef)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseAnswerHeldExport: fn (comptime type, comptime type, comptime type, anytype, mem.Allocator, anytype, anytype, ?u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseAnswerHeldExport)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseExport: fn (comptime type, comptime type, comptime type, anytype, mem.Allocator, anytype, anytype, ?u32, u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseExport)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseImport: fn (comptime type, anytype, u32, u32, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseImport)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseImportRefForPeer: fn (comptime type, anytype, u32) bool
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseImportRefForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releasePromiseHeldExport: fn (comptime type, comptime type, comptime type, anytype, mem.Allocator, anytype, anytype, ?u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releasePromiseHeldExport)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseResolvedImport: fn (comptime type, comptime type, comptime type, anytype, anytype, *hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80), u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseResolvedImport)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.releaseResultCaps: fn (comptime type, anytype, mem.Allocator, []const u8, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.releaseResultCaps)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle.storeResolvedImport: fn (comptime type, comptime type, comptime type, anytype, anytype, *hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80), u32, anytype, ?u32, bool, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.peer_cap_lifecycle.storeResolvedImport)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_cap_lifecycle: struct
-capnpc-zig.rpc.testing.peer_cleanup.clearOptionalOwnedBytes: fn (mem.Allocator, *?[]u8) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitJoinStateMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitOptionalOwnedBytesMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitOwnedBytesMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitOwnedStringKeyListMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitOwnedStringKeyMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitPendingCallMapOwned: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitProvideEntryMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup.deinitResolvedAnswerMap: fn (comptime type, mem.Allocator, anytype) void
-capnpc-zig.rpc.testing.peer_cleanup: struct
-capnpc-zig.rpc.testing.peer_disembargo: struct
-capnpc-zig.rpc.testing.peer_dispatch: struct
-capnpc-zig.rpc.testing.peer_embargo_accepts: struct
-capnpc-zig.rpc.testing.peer_finish: struct
-capnpc-zig.rpc.testing.peer_provide_accept_join: struct
-capnpc-zig.rpc.testing.peer_provide_join_orchestration: struct
-capnpc-zig.rpc.testing.peer_resolve: struct
-capnpc-zig.rpc.testing.peer_return_dispatch.dispatchQuestionReturn: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.dispatchQuestionReturn)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.dispatchQuestionReturnForPeer: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.dispatchQuestionReturnForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.dispatchQuestionReturnForPeerFn: fn (comptime type, comptime type, comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch.invokeQuestionReturnForPeer: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype) anyerror!void
-capnpc-zig.rpc.testing.peer_return_dispatch.invokeQuestionReturnForPeerFn: fn (comptime type, comptime type, comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch.maybeSendAutoFinish: fn (comptime type, comptime type, anytype, anytype, u32, bool, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.maybeSendAutoFinish)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.maybeSendAutoFinishForPeerFn: fn (comptime type, comptime type, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch.releaseInboundCaps: fn (comptime type, comptime type, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.releaseInboundCaps)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.releaseInboundCapsForPeerFn: fn (comptime type, comptime type, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch.reportNonfatalErrorForPeer: fn (comptime type, anytype, anyerror) void
-capnpc-zig.rpc.testing.peer_return_dispatch.reportNonfatalErrorForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch.restoreAdoptedAnswerOriginal: fn (*hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80), u32, u32) void
-capnpc-zig.rpc.testing.peer_return_dispatch.restoreAdoptedAnswerOriginalForPeer: fn (comptime type, anytype, u32, u32) void
-capnpc-zig.rpc.testing.peer_return_dispatch.restoreAdoptedAnswerOriginalForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnAcceptFromThirdPartyForPeer: fn (comptime type, anytype, u32, ?[]const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnAcceptFromThirdPartyForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnExceptionForPeer: fn (comptime type, anytype, u32, []const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnExceptionForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnTagForPeer: fn (comptime type, anytype, u32, rpc.gen.capnp.rpc.Return.WhichTag, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnTagForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer: fn (comptime type, anytype, u32, u32, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_dispatch.sendReturnTakeFromOtherQuestionForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_dispatch.takeAdoptedAnswerOriginal: fn (*hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80), u32) ?u32
-capnpc-zig.rpc.testing.peer_return_dispatch.takeAdoptedAnswerOriginalForPeer: fn (comptime type, anytype, u32) ?u32
-capnpc-zig.rpc.testing.peer_return_dispatch.takeAdoptedAnswerOriginalForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_dispatch: struct
-capnpc-zig.rpc.testing.peer_return_orchestration.completeQuestionRemovalForPeer: fn (comptime type, anytype) void
-capnpc-zig.rpc.testing.peer_return_orchestration.completeQuestionRemovalForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.deinitInboundCapsForType: fn (comptime type, anytype) void
-capnpc-zig.rpc.testing.peer_return_orchestration.deinitInboundCapsForTypeFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.getQuestionForPeer: fn (comptime type, comptime type, anytype, u32) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.getQuestionForPeerFn: fn (comptime type, comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.handleMissingReturnQuestionForPeer: fn (comptime type, anytype, []const u8, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.handleMissingReturnQuestionForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_orchestration.handleMissingReturnQuestionForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.handleReturn: fn (comptime type, comptime type, comptime type, anytype, []const u8, rpc.wire.protocol.Return, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) anyerror!void
-capnpc-zig.rpc.testing.peer_return_orchestration.handleReturnRegular: fn (comptime type, comptime type, comptime type, anytype, anytype, rpc.wire.protocol.Return, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.handleReturnRegular)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_orchestration.handleReturnRegularForPeer: fn (comptime type, comptime type, comptime type, comptime anytype, comptime anytype, anytype, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.handleReturnRegularForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_orchestration.handleReturnRegularForPeerFn: fn (comptime type, comptime type, comptime type, comptime anytype, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.initInboundCapsForPeer: fn (comptime type, comptime type, anytype, rpc.wire.protocol.Return) @typeInfo(@typeInfo(@TypeOf(rpc.peer.return.peer_return_orchestration.initInboundCapsForPeer)).@"fn".return_type.?).error_union.error_set!anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.initInboundCapsForPeerFn: fn (comptime type, comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.removeQuestionForReturnForPeer: fn (comptime type, anytype, u32) bool
-capnpc-zig.rpc.testing.peer_return_orchestration.removeQuestionForReturnForPeerFn: fn (comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration.restoreQuestionForReturnForPeer: fn (comptime type, comptime type, anytype, u32, anytype) void
-capnpc-zig.rpc.testing.peer_return_orchestration.restoreQuestionForReturnForPeerFn: fn (comptime type, comptime type) anytype
-capnpc-zig.rpc.testing.peer_return_orchestration: struct
-capnpc-zig.rpc.testing.peer_return_send_helpers.clearSendResultsRoutingForPeer: fn (comptime type, anytype, u32, anytype) void
-capnpc-zig.rpc.testing.peer_return_send_helpers.clearSendResultsToThirdPartyForPeer: fn (comptime type, anytype, u32) void
-capnpc-zig.rpc.testing.peer_return_send_helpers.noteOutboundReturnCapRefsForPeer: fn (comptime type, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.promises.return_send.noteOutboundReturnCapRefsForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_send_helpers.noteSendResultsToThirdPartyForPeer: fn (comptime type, anytype, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, *const fn (mem.Allocator, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!?[]u8) @typeInfo(@typeInfo(@TypeOf(rpc.promises.return_routing.noteSendResultsToThirdPartyForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_send_helpers.noteSendResultsToYourselfForPeer: fn (comptime type, anytype, u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.promises.return_routing.noteSendResultsToYourselfForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_send_helpers.rollbackOutboundReturnCapRefsForPeer: fn (comptime type, anytype, rpc.wire.protocol.Return, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.promises.return_send.rollbackOutboundReturnCapRefsForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_send_helpers.sendReturnFrameWithLoopbackForPeer: fn (comptime type, anytype, u32, []const u8, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.promises.return_send.sendReturnFrameWithLoopbackForPeer)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.testing.peer_return_send_helpers: struct
-capnpc-zig.rpc.testing.peer_third_party: struct
-capnpc-zig.rpc.testing.peer_transport_callbacks.bindingForConnection: fn (comptime type, comptime type, anytype, comptime anytype, comptime anytype, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_callbacks.onConnectionCloseFor: fn (comptime type, comptime type, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_callbacks.onConnectionErrorFor: fn (comptime type, comptime type, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_callbacks.onConnectionMessageFor: fn (comptime type, comptime type, comptime anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_callbacks.onConnectionTickFor: fn (comptime type, comptime type) anytype
-capnpc-zig.rpc.testing.peer_transport_callbacks.peerFromConnection: fn (comptime type, comptime type, anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_callbacks: struct
-capnpc-zig.rpc.testing.peer_transport_state.attachTransportForPeer: fn (comptime type, comptime type, comptime type, comptime type, comptime type, anytype, *anyopaque, anytype, anytype, anytype, anytype) void
-capnpc-zig.rpc.testing.peer_transport_state.closeAttachedTransportForPeer: fn (comptime type, anytype) void
-capnpc-zig.rpc.testing.peer_transport_state.detachTransportForPeer: fn (comptime type, anytype) void
-capnpc-zig.rpc.testing.peer_transport_state.getAttachedConnectionForPeer: fn (comptime type, comptime type, anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_state.hasAttachedTransportForPeer: fn (comptime type, anytype) bool
-capnpc-zig.rpc.testing.peer_transport_state.isAttachedTransportClosingForPeer: fn (comptime type, anytype) bool
-capnpc-zig.rpc.testing.peer_transport_state.takeAttachedConnectionForPeer: fn (comptime type, comptime type, anytype, anytype) anytype
-capnpc-zig.rpc.testing.peer_transport_state: struct
 capnpc-zig.rpc.testing: struct
 capnpc-zig.rpc.time.Clock.fromIo: fn (*const Io) rpc.time.Clock
 capnpc-zig.rpc.time.Clock.now: fn (rpc.time.Clock) i64

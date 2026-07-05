@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const log = std.log.scoped(.rpc_peer);
 const events = @import("../events.zig");
 const rpc_time = @import("../time.zig");
@@ -5515,8 +5516,11 @@ pub const Peer = struct {
     }
 
     /// Exposed for integration tests that exercise internal Peer methods.
-    /// Not part of the public API.
-    pub const test_hooks = struct {
+    /// Not part of the public API — gated behind `builtin.is_test` so it is
+    /// absent from the frozen consumer surface (`src/lib.zig`) and the
+    /// generated `docs/api-snapshot.txt`, and unreachable from application
+    /// code. Test builds (`is_test == true`) still see the full facade.
+    pub const test_hooks = if (builtin.is_test) struct {
         pub const ForwardCallContextType = ForwardCallContext;
 
         pub fn sendFrame(self: *Peer, frame: []const u8) !void {
@@ -5684,5 +5688,5 @@ pub const Peer = struct {
         pub fn ensureThirdPartyAdoptionBudget(self: *Peer, adopted_answer_id: u32) !void {
             return Peer.ensureThirdPartyAdoptionBudget(self, adopted_answer_id);
         }
-    };
+    } else struct {};
 };

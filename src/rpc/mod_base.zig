@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const quic_disabled = @import("./transport/quic_disabled.zig");
 
 pub const wire = struct {
@@ -78,4 +79,10 @@ pub const generated = struct {
     pub const rpc = @import("./gen/capnp/rpc.zig");
     pub const persistent = @import("./gen/capnp/persistent.zig");
 };
-pub const testing = @import("./testing.zig");
+/// Deliberately unstable RPC test-support facade. Gated behind
+/// `builtin.is_test` so the ~104 Internal helper decls it re-exports are
+/// absent from the frozen consumer surface (`src/lib.zig`) and the generated
+/// `docs/api-snapshot.txt`, and unreachable from application code. Test builds
+/// (`is_test == true`) see the full facade; the RPC test suites reach it via
+/// `capnpc-zig`.rpc.testing unchanged.
+pub const testing = if (builtin.is_test) @import("./testing.zig") else struct {};
