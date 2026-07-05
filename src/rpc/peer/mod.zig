@@ -2855,6 +2855,46 @@ pub const Peer = struct {
         }
     }
 
+    /// Send the tail-Finish for a forwarded question (relayed from the upstream
+    /// caller's Finish) and neutralize that forwarded question so any LATE
+    /// forwarded return is absorbed cleanly rather than emitting a spurious
+    /// Return to the now-finished upstream question.
+    ///
+    /// Both forwarding modes that hold the forwarded question open until the
+    /// upstream Finish route their forwarded Finish through here
+    /// (`forwarded_tail_questions`, see finishForwardResolvedCall):
+    ///   - `.sent_elsewhere` (spec tail-call): the late return is a bare
+    ///     `resultsSentElsewhere` marker — harmless either way.
+    ///   - `.translate_to_caller` (W1 reflected loopback): the late return
+    ///     carries REAL results that `onForwardedReturn` would otherwise
+    ///     translate onto the upstream answer — but the upstream caller already
+    ///     Finished, so that Return would be spurious. Neutralizing here frees
+    ///     the ForwardCallContext, drops the forwarded_questions mapping, and
+    ///     marks the question cancelled so `handleReturn` absorbs the late
+    ///     return via its cancelled-question path without emitting or leaking.
+    ///
+    /// In the common (non-race) order the forwarded return already arrived and
+    /// removed the forwarded question before this Finish relay fires, so the
+    /// neutralize step is a no-op beyond sending the Finish.
+    fn sendTailFinishAndNeutralize(self: *Peer, tail_question_id: u32, release_result_caps: bool) !void {
+        try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+            Peer,
+            self,
+            tail_question_id,
+            release_result_caps,
+            false,
+            Peer.sendFrameControl,
+        );
+        if (self.questions.getPtr(tail_question_id)) |question| {
+            if (question.deinit_ctx) |deinit_ctx| {
+                deinit_ctx(self.allocator, question.ctx);
+                question.deinit_ctx = null;
+            }
+            question.cancelled = true;
+        }
+        _ = self.forwarded_questions.remove(tail_question_id);
+    }
+
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
         const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, ctx_ptr);
         try peer_third_party.applyForwardedCallSendResults(
@@ -4287,7 +4327,11 @@ pub const Peer = struct {
                 PendingEmbargoedAccept,
             ),
             .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
-            .send_finish = peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
+            // The tail Finish is only ever sent for a forwarded question held open
+            // by finishForwardResolvedCall; neutralize that question here so a late
+            // forwarded return is absorbed rather than re-emitted (see
+            // sendTailFinishAndNeutralize / W1).
+            .send_finish = Peer.sendTailFinishAndNeutralize,
             .take_resolved_answer_frame = peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
             .release_answer_caps_for_frame = releaseAnswerHeldResultCaps,
             .release_caps_for_frame = releaseResultCaps,

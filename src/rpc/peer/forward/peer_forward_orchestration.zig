@@ -5,6 +5,7 @@ const peer_third_party = @import("../third_party.zig");
 const protocol = @import("../../wire/protocol.zig");
 
 pub const ForwardResolvedMode = enum {
+    translate_to_caller,
     sent_elsewhere,
     propagate_results_sent_elsewhere,
     propagate_accept_from_third_party,
@@ -28,10 +29,39 @@ pub fn toControlMode(mode: ForwardReturnMode) peer_third_party.ForwardedReturnMo
 
 pub fn fromResolvedMode(mode: ForwardResolvedMode) ForwardReturnMode {
     return switch (mode) {
+        .translate_to_caller => .translate_to_caller,
         .sent_elsewhere => .sent_elsewhere,
         .propagate_results_sent_elsewhere => .propagate_results_sent_elsewhere,
         .propagate_accept_from_third_party => .propagate_accept_from_third_party,
     };
+}
+
+/// Pick the forward mode for a call being relayed to a resolved promise target.
+///
+/// `resolved` selects the topology and `tag` is the ORIGINAL call's
+/// `sendResultsTo` discriminant:
+///   - `.imported` is the REFLECTED-LOOPBACK case (W1): the promise resolved to
+///     a capability the CALLER hosts, so the relayed call travels back out the
+///     same link it came in on. For a plain `.caller`-originated pipelined call
+///     we forward it as a normal `.caller` call and translate the real results
+///     straight back to the original question (`.translate_to_caller`). The
+///     spec-canonical `yourself` + `takeFromOtherQuestion` tail-call is
+///     protocol-correct and cheaper, but two reference peers cannot follow it:
+///     go-capnp rejects an inbound `sendResultsTo != caller` call outright
+///     (Unimplemented) and cannot parse a `takeFromOtherQuestion`/
+///     `resultsSentElsewhere` return at all, and capnp-rpc only completes the
+///     take-from path under narrow conditions. `.translate_to_caller` emits only
+///     plain `.caller` calls and `.results` returns, which every reference impl
+///     consumes, at the cost of routing the results back through this vat. A
+///     nested tail-call being reflected (original tag already `.yourself`/
+///     `.thirdParty`) keeps its propagate mode so its own tail-call semantics
+///     survive.
+///   - `.promised` (a promise resolving to another promised-answer target) keeps
+///     the tag-driven mapping unchanged — that is a different (non-reflected)
+///     topology and is out of W1's scope.
+fn forwardModeForResolved(resolved: cap_table.ResolvedCap, tag: protocol.SendResultsToTag) ForwardResolvedMode {
+    if (resolved == .imported and tag == .caller) return .translate_to_caller;
+    return forwardModeForSendResults(tag);
 }
 
 fn forwardModeForSendResults(tag: protocol.SendResultsToTag) ForwardResolvedMode {
@@ -58,7 +88,7 @@ pub fn handleResolvedCall(
             try handle_exported(peer, call, inbound_caps, cap.id);
         },
         .imported, .promised => {
-            const mode = forwardModeForSendResults(call.send_results_to.tag);
+            const mode = forwardModeForResolved(resolved, call.send_results_to.tag);
             forward_resolved_call(peer, call, inbound_caps, resolved, mode) catch |err| {
                 try send_return_exception(peer, call.question_id, @errorName(err));
             };
@@ -110,12 +140,26 @@ pub fn finishForwardResolvedCall(
 ) !ForwardResolvedCompletion {
     try forwarded_questions.put(forwarded_question_id, upstream_question_id);
 
-    if (mode == .sent_elsewhere) {
+    // Both the spec-canonical tail-call (`.sent_elsewhere`) and the W1
+    // reflected-loopback translate mode (`.translate_to_caller`) hold the
+    // forwarded outbound question OPEN until the upstream caller sends its Finish
+    // for the original question: register the tail mapping so `handleFinish`
+    // relays a single Finish to the forwarded question, and suppress the
+    // forwarded question's own auto-finish so it is not finished twice (once on
+    // its own return, once on the relayed upstream Finish). The two modes differ
+    // only in what is returned on the upstream question NOW: `.sent_elsewhere`
+    // emits the eager `takeFromOtherQuestion` redirect; `.translate_to_caller`
+    // emits nothing yet and later translates the real results back
+    // (see peer_forwarded_return_logic + onForwardedReturn). Routing the
+    // forwarded Finish through the upstream Finish (rather than auto-finishing on
+    // the forwarded return) also cancels the forwarded question cleanly when the
+    // caller Finishes before the forwarded return arrives (ordering race).
+    if (mode == .sent_elsewhere or mode == .translate_to_caller) {
         try forwarded_tail_questions.put(upstream_question_id, forwarded_question_id);
         if (questions.getEntry(forwarded_question_id)) |question| {
             question.value_ptr.suppress_auto_finish = true;
         }
-        return .{ .send_take_from_other_question = true };
+        return .{ .send_take_from_other_question = mode == .sent_elsewhere };
     }
     return .{};
 }
@@ -275,10 +319,12 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
     var questions = std.AutoHashMap(u32, Question).init(std.testing.allocator);
     defer questions.deinit();
 
+    // A non-tail mode (propagate-results-sent-elsewhere): records only the
+    // forwarded_questions mapping, no tail state, no eager take-from redirect.
     try questions.put(20, .{});
     const completion_normal = try finishForwardResolvedCall(
         Question,
-        .translate_to_caller,
+        .propagate_results_sent_elsewhere,
         10,
         20,
         &forwarded_questions,
@@ -291,6 +337,8 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
     try std.testing.expectEqual(@as(usize, 0), forwarded_tail_questions.count());
     try std.testing.expect(!questions.get(20).?.suppress_auto_finish);
 
+    // The spec-canonical tail-call mode: tail mapping + suppressed auto-finish +
+    // eager takeFromOtherQuestion redirect on the upstream question.
     try questions.put(21, .{});
     const completion_tail = try finishForwardResolvedCall(
         Question,
@@ -306,6 +354,26 @@ test "peer_forward_orchestration finishForwardResolvedCall records forwarding an
     try std.testing.expectEqual(@as(u32, 11), forwarded_questions.get(21).?);
     try std.testing.expectEqual(@as(u32, 21), forwarded_tail_questions.get(11).?);
     try std.testing.expect(questions.get(21).?.suppress_auto_finish);
+
+    // W1 reflected-loopback translate mode: tail mapping + suppressed auto-finish
+    // (so the forwarded question is finished exactly once, via the relayed
+    // upstream Finish) but NO eager takeFromOtherQuestion — the real results are
+    // translated back on the upstream question later instead.
+    try questions.put(22, .{});
+    const completion_translate = try finishForwardResolvedCall(
+        Question,
+        .translate_to_caller,
+        12,
+        22,
+        &forwarded_questions,
+        &forwarded_tail_questions,
+        &questions,
+    );
+
+    try std.testing.expect(!completion_translate.send_take_from_other_question);
+    try std.testing.expectEqual(@as(u32, 12), forwarded_questions.get(22).?);
+    try std.testing.expectEqual(@as(u32, 22), forwarded_tail_questions.get(12).?);
+    try std.testing.expect(questions.get(22).?.suppress_auto_finish);
 }
 
 test "peer_forward_orchestration peer-map helpers lookup/remove/take/remove-send-results" {

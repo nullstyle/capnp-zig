@@ -256,15 +256,15 @@ const PingCall = struct {
     n: u32,
     result_n: ?u32 = null,
     returned: bool = false,
-    /// The Return tag observed for this call. A pipelined call forwarded back to
-    /// its own origin (loopback reflection) uses the Level-1 `sendResultsTo =
-    /// yourself` tail-call optimization; the runtime runs the handler locally and
-    /// delivers the computed results INLINE when the `takeFromOtherQuestion`
-    /// redirect resolves, so the caller sees plain `.results` (with the value)
-    /// rather than the bare relay tag. A direct post-resolution call likewise
-    /// returns `.results`. The `.takeFromOtherQuestion` arm remains as a
-    /// tolerated fallback for cases the runtime cannot deliver inline (e.g.
-    /// results carrying capabilities).
+    /// The Return tag observed for this call. As of W1, a pipelined call that the
+    /// server relays back to a caller-hosted cap (reflected loopback) is forwarded
+    /// with `sendResultsTo=caller`, and the server translates the real results
+    /// straight back onto the caller's pipelined question as a plain `.results`
+    /// Return — the shape every reference impl (cpp/python/go/rust) consumes. A
+    /// direct post-resolution call likewise returns `.results`. The
+    /// `.takeFromOtherQuestion` arm is retained as a tolerated fallback for the
+    /// exotic modes still using the spec-canonical tail-call (a nested
+    /// `sendResultsTo=yourself` call being reflected).
     return_tag: ?protocol.ReturnTag = null,
 
     fn build(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {

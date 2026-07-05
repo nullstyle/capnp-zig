@@ -50,12 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `senderLoopback`/`receiverLoopback` `Disembargo` handshake end to end against
   the C++, Go, Python, and Rust reference implementations. capnp-zig both
   originates the reflection (server, via `resolvePromiseExportToImport`) and
-  drives the embargo (client). The matrix is asymmetric only because of
-  reference-library gaps (recorded as `SKIP`, never run): pycapnp cannot host the
-  reflecting server, and go-capnp / capnp-rpc clients cannot consume Zig's
-  Level-1 `takeFromOtherQuestion` loopback return. Net 5 pass / 3 skip / 0 fail,
-  stable across repeated runs. See `docs/supported-surface.md` Known limitations
-  #4.
+  drives the embargo (client). One remaining `SKIP`: pycapnp cannot host the
+  reflecting server. (The earlier go/rust client skips were removed once the
+  reflected-loopback return was changed to a plain caller return — see the entry
+  below.) Net 7 pass / 1 skip / 0 fail, stable across repeated runs. See
+  `docs/supported-surface.md` Known limitations #4.
+- **Reflected-loopback returns are now consumable by every reference client.**
+  When capnp-zig relays a caller's parked pipelined call back to a caller-hosted
+  cap (reflected loopback), it no longer returns the eager `takeFromOtherQuestion`
+  redirect — it forwards the relayed call as a plain `sendResultsTo=caller` call
+  and translates the real results straight back onto the caller's pipelined
+  question as a plain `.results` return (a new internal `.translate_to_caller`
+  forward mode in `peer_forward_orchestration.zig`, only for the `.imported`
+  reflected case; non-reflected forwarding and two-party paths are unchanged).
+  This shape is consumed by all four reference clients — go-capnp (which rejects
+  an inbound `sendResultsTo != caller`) and capnp-rpc (which stalled on
+  `takeFromOtherQuestion`) now both pass the `resolve_disembargo` matrix in the
+  embargo-client direction. Resolves Known limitation #4. E-order preserved
+  (pipelined-before-direct); proven by the updated reflected-loopback tests + the
+  docker matrix.
 - **`Peer.resolvePromiseExportToImport`** — resolve a previously exported
   promise capability to a cap the *remote* peer hosts (one we hold as an
   import). This is the "reflected capability" resolution: because the promise

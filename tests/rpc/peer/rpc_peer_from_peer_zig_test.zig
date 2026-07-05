@@ -2481,7 +2481,15 @@ test "handleFinish keeps queued promised call when early-cancel workaround is en
     try std.testing.expectEqual(@as(usize, 1), pending_after.items.len);
 }
 
-test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and propagated finish" {
+test "reflected caller call forwards with sendResultsTo=caller and translates results back (W1)" {
+    // W1: when a parked pipelined call (sendResultsTo=caller) is replayed against
+    // a promise that resolved to a CALLER-hosted cap (reflected loopback,
+    // target == .imported), the forward uses `.translate_to_caller`, NOT the
+    // spec-canonical `yourself` + `takeFromOtherQuestion` tail-call. The relayed
+    // call carries `sendResultsTo=caller` and the real results are translated
+    // straight back to the upstream question as a plain `.results` Return — the
+    // only shapes go-capnp and capnp-rpc can consume in this topology. The
+    // forwarded question auto-finishes normally (no tail-question state).
     const allocator = std.testing.allocator;
 
     const Capture = struct {
@@ -2533,58 +2541,92 @@ test "forwarded caller tail call emits yourself call, takeFromOtherQuestion, and
 
     try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{ .imported = .{ .id = target_import_id } });
 
-    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    // Only the forwarded CALL is emitted; no eager `takeFromOtherQuestion`
+    // return — the upstream question waits for the real results.
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
 
     var out_call_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer out_call_decoded.deinit();
     try std.testing.expectEqual(protocol.MessageTag.call, out_call_decoded.tag);
     const forwarded_call = try out_call_decoded.asCall();
-    try std.testing.expectEqual(protocol.SendResultsToTag.yourself, forwarded_call.send_results_to.tag);
+    // *** W1: the relayed call goes out with sendResultsTo=caller, not yourself. ***
+    try std.testing.expectEqual(protocol.SendResultsToTag.caller, forwarded_call.send_results_to.tag);
+    // The call reached the reflected (caller-hosted) cap, preserving iface/method.
     try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, forwarded_call.target.tag);
     try std.testing.expectEqual(target_import_id, forwarded_call.target.imported_cap.?);
     try std.testing.expectEqual(interface_id, forwarded_call.interface_id);
     try std.testing.expectEqual(method_id, forwarded_call.method_id);
     const forwarded_question_id = forwarded_call.question_id;
 
-    var out_ret_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
-    defer out_ret_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.@"return", out_ret_decoded.tag);
-    const tail_ret = try out_ret_decoded.asReturn();
-    try std.testing.expectEqual(upstream_question_id, tail_ret.answer_id);
-    try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, tail_ret.tag);
-    try std.testing.expectEqual(forwarded_question_id, tail_ret.take_from_other_question.?);
-
+    // Forwarding state: the forwarded question maps back to the upstream one AND
+    // is held open by a tail mapping with suppressed auto-finish — the forwarded
+    // question is Finished exactly once, driven by the upstream caller's Finish,
+    // not eagerly on its own return. (This is what makes the ordering-race clean;
+    // see the companion premature-finish test.)
     try std.testing.expectEqual(upstream_question_id, peer.forwarded_questions.get(forwarded_question_id).?);
     try std.testing.expectEqual(forwarded_question_id, peer.forwarded_tail_questions.get(upstream_question_id).?);
     const question_entry = peer.questions.getEntry(forwarded_question_id) orelse return error.UnknownQuestion;
     try std.testing.expect(question_entry.value_ptr.suppress_auto_finish);
 
+    // The reflected cap answers with real results (one data word n=42). B must
+    // translate those results straight back to the upstream question as a plain
+    // `.results` Return (the shape every reference impl consumes). Auto-finish is
+    // suppressed, so no forwarded Finish is emitted yet.
+    const ResultBuild = struct {
+        fn build(_: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            const results = try any.initStruct(1, 0);
+            results.writeU32(0, 42);
+        }
+    };
     var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
     defer fwd_ret_builder.deinit();
-    _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
+    var fwd_ret = try fwd_ret_builder.beginReturn(forwarded_question_id, .results);
+    var dummy: u8 = 0;
+    try ResultBuild.build(&dummy, &fwd_ret);
     const fwd_ret_frame = try fwd_ret_builder.finish();
     defer allocator.free(fwd_ret_frame);
     try peer.handleFrame(fwd_ret_frame);
 
+    // Exactly one new frame: the translated `.results` Return to the upstream
+    // caller carrying the real value (42). The forwarded question is drained from
+    // the questions table but its tail mapping remains until the upstream Finish.
     try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
     try std.testing.expect(!peer.questions.contains(forwarded_question_id));
+    try std.testing.expect(!peer.forwarded_questions.contains(forwarded_question_id));
 
+    var upstream_ret_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
+    defer upstream_ret_decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.@"return", upstream_ret_decoded.tag);
+    const upstream_ret = try upstream_ret_decoded.asReturn();
+    try std.testing.expectEqual(upstream_question_id, upstream_ret.answer_id);
+    try std.testing.expectEqual(protocol.ReturnTag.results, upstream_ret.tag);
+    const upstream_payload = upstream_ret.results orelse return error.MissingResults;
+    const upstream_content = try upstream_payload.content.getStruct();
+    try std.testing.expectEqual(@as(u32, 42), upstream_content.readU32(0));
+
+    // Upstream caller Finishes the original question → B relays a single Finish
+    // for the forwarded question and clears the tail mapping. All state drains.
     try peer_test_hooks.handleFinish(&peer, .{
         .question_id = upstream_question_id,
         .release_result_caps = false,
         .require_early_cancellation = false,
     });
-
-    try std.testing.expect(!peer.forwarded_tail_questions.contains(upstream_question_id));
     try std.testing.expectEqual(@as(usize, 3), capture.frames.items.len);
-    var out_finish_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[2]);
-    defer out_finish_decoded.deinit();
-    try std.testing.expectEqual(protocol.MessageTag.finish, out_finish_decoded.tag);
-    const forwarded_finish = try out_finish_decoded.asFinish();
+    try std.testing.expect(!peer.forwarded_tail_questions.contains(upstream_question_id));
+    var forwarded_finish_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[2]);
+    defer forwarded_finish_decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.finish, forwarded_finish_decoded.tag);
+    const forwarded_finish = try forwarded_finish_decoded.asFinish();
     try std.testing.expectEqual(forwarded_question_id, forwarded_finish.question_id);
 }
 
-test "forwarded tail finish before forwarded return still emits single finish and drains state" {
+test "reflected caller call: upstream finish before forwarded return cancels and drains (W1)" {
+    // W1 translate-to-caller ordering race: the upstream caller sends Finish for
+    // the reflected pipelined call BEFORE the forwarded call returns. B must
+    // cancel the forwarded outbound question (single Finish to the target) and
+    // drain all forwarding state, tolerating the late forwarded return.
     const allocator = std.testing.allocator;
 
     const Capture = struct {
@@ -2631,41 +2673,56 @@ test "forwarded tail finish before forwarded return still emits single finish an
     const parsed = try decoded_call.asCall();
 
     try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{ .imported = .{ .id = 222 } });
-    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    // Only the forwarded CALL (sendResultsTo=caller); no eager tail return.
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
 
     var out_call_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
     defer out_call_decoded.deinit();
     const forwarded_call = try out_call_decoded.asCall();
+    try std.testing.expectEqual(protocol.SendResultsToTag.caller, forwarded_call.send_results_to.tag);
     const forwarded_question_id = forwarded_call.question_id;
 
+    // Upstream Finish arrives first. B cancels the forwarded question and emits a
+    // single Finish for it.
     try peer_test_hooks.handleFinish(&peer, .{
         .question_id = upstream_question_id,
         .release_result_caps = false,
         .require_early_cancellation = false,
     });
 
-    try std.testing.expectEqual(@as(usize, 3), capture.frames.items.len);
-    try std.testing.expect(!peer.forwarded_tail_questions.contains(upstream_question_id));
-
-    var out_finish_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[2]);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    var out_finish_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
     defer out_finish_decoded.deinit();
     try std.testing.expectEqual(protocol.MessageTag.finish, out_finish_decoded.tag);
     const forwarded_finish = try out_finish_decoded.asFinish();
     try std.testing.expectEqual(forwarded_question_id, forwarded_finish.question_id);
 
+    // The late forwarded return is absorbed without emitting anything further.
     var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
     defer fwd_ret_builder.deinit();
-    _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
+    var fwd_ret = try fwd_ret_builder.beginReturn(forwarded_question_id, .results);
+    var payload = try fwd_ret.payloadTyped();
+    var any = try payload.initContent();
+    _ = try any.initStruct(1, 0);
     const fwd_ret_frame = try fwd_ret_builder.finish();
     defer allocator.free(fwd_ret_frame);
     try peer.handleFrame(fwd_ret_frame);
 
-    try std.testing.expectEqual(@as(usize, 3), capture.frames.items.len);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
     try std.testing.expect(!peer.forwarded_questions.contains(forwarded_question_id));
+    try std.testing.expect(!peer.forwarded_tail_questions.contains(upstream_question_id));
     try std.testing.expect(!peer.questions.contains(forwarded_question_id));
 }
 
-test "forwarded tail cleanup stays stable under repeated finish/return ordering races" {
+test "reflected caller call: translate-to-caller stays stable under finish/return ordering races (W1)" {
+    // W1: exercise both interleavings of the reflected-loopback forward under
+    // `.translate_to_caller` across many rounds, asserting each round drains all
+    // forwarding state with no leaks and emits exactly the right frames:
+    //   - return-then-finish: forwarded `.results` → translated `.results` to the
+    //     upstream caller; upstream Finish → single forwarded Finish.
+    //   - finish-then-return (race): upstream Finish → single forwarded Finish +
+    //     neutralize; the late forwarded `.results` is absorbed with no extra
+    //     frame (never a spurious Return to the finished upstream question).
     const allocator = std.testing.allocator;
 
     const Capture = struct {
@@ -2677,6 +2734,15 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
             const copy = try ctx.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
             try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+
+    const ResultBuild = struct {
+        fn build(_: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            const results = try any.initStruct(1, 0);
+            results.writeU32(0, 7);
         }
     };
 
@@ -2716,61 +2782,76 @@ test "forwarded tail cleanup stays stable under repeated finish/return ordering 
         const parsed = try decoded_call.asCall();
 
         try peer_test_hooks.handleResolvedCall(&peer, parsed, &inbound, .{ .imported = .{ .id = 222 } });
-        try std.testing.expectEqual(frame_start + 2, capture.frames.items.len);
+        // Only the forwarded call (sendResultsTo=caller); no eager tail return.
+        try std.testing.expectEqual(frame_start + 1, capture.frames.items.len);
 
         var out_call_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start]);
         defer out_call_decoded.deinit();
         const forwarded_call = try out_call_decoded.asCall();
+        try std.testing.expectEqual(protocol.SendResultsToTag.caller, forwarded_call.send_results_to.tag);
         const forwarded_question_id = forwarded_call.question_id;
 
-        var out_ret_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 1]);
-        defer out_ret_decoded.deinit();
-        const tail_ret = try out_ret_decoded.asReturn();
-        try std.testing.expectEqual(upstream_question_id, tail_ret.answer_id);
-        try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, tail_ret.tag);
-        try std.testing.expectEqual(forwarded_question_id, tail_ret.take_from_other_question.?);
-
         if ((round & 1) == 0) {
+            // return-then-finish: real results come back first and translate to
+            // the upstream caller as a plain `.results` Return.
             var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
             defer fwd_ret_builder.deinit();
-            _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
+            var fwd_ret = try fwd_ret_builder.beginReturn(forwarded_question_id, .results);
+            var dummy: u8 = 0;
+            try ResultBuild.build(&dummy, &fwd_ret);
             const fwd_ret_frame = try fwd_ret_builder.finish();
             defer allocator.free(fwd_ret_frame);
             try peer.handleFrame(fwd_ret_frame);
 
             try std.testing.expectEqual(frame_start + 2, capture.frames.items.len);
             try std.testing.expect(!peer.questions.contains(forwarded_question_id));
+            var up_ret = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 1]);
+            defer up_ret.deinit();
+            const ret = try up_ret.asReturn();
+            try std.testing.expectEqual(upstream_question_id, ret.answer_id);
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
 
             try peer_test_hooks.handleFinish(&peer, .{
                 .question_id = upstream_question_id,
                 .release_result_caps = false,
                 .require_early_cancellation = false,
             });
+            // The upstream Finish relays the single forwarded Finish.
+            try std.testing.expectEqual(frame_start + 3, capture.frames.items.len);
+            var fin = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 2]);
+            defer fin.deinit();
+            try std.testing.expectEqual(protocol.MessageTag.finish, fin.tag);
+            try std.testing.expectEqual(forwarded_question_id, (try fin.asFinish()).question_id);
         } else {
+            // finish-then-return race: upstream Finishes first → one forwarded
+            // Finish + neutralize; the late results Return is absorbed silently.
             try peer_test_hooks.handleFinish(&peer, .{
                 .question_id = upstream_question_id,
                 .release_result_caps = false,
                 .require_early_cancellation = false,
             });
+            try std.testing.expectEqual(frame_start + 2, capture.frames.items.len);
+            var fin = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 1]);
+            defer fin.deinit();
+            try std.testing.expectEqual(protocol.MessageTag.finish, fin.tag);
+            try std.testing.expectEqual(forwarded_question_id, (try fin.asFinish()).question_id);
 
             var fwd_ret_builder = protocol.MessageBuilder.init(allocator);
             defer fwd_ret_builder.deinit();
-            _ = try fwd_ret_builder.beginReturn(forwarded_question_id, .resultsSentElsewhere);
+            var fwd_ret = try fwd_ret_builder.beginReturn(forwarded_question_id, .results);
+            var dummy: u8 = 0;
+            try ResultBuild.build(&dummy, &fwd_ret);
             const fwd_ret_frame = try fwd_ret_builder.finish();
             defer allocator.free(fwd_ret_frame);
             try peer.handleFrame(fwd_ret_frame);
+            // No spurious Return to the finished upstream question.
+            try std.testing.expectEqual(frame_start + 2, capture.frames.items.len);
         }
 
-        try std.testing.expectEqual(frame_start + 3, capture.frames.items.len);
+        // Every round drains all forwarding state, whichever order fired.
         try std.testing.expect(!peer.forwarded_tail_questions.contains(upstream_question_id));
         try std.testing.expect(!peer.forwarded_questions.contains(forwarded_question_id));
         try std.testing.expect(!peer.questions.contains(forwarded_question_id));
-
-        var finish_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[frame_start + 2]);
-        defer finish_decoded.deinit();
-        try std.testing.expectEqual(protocol.MessageTag.finish, finish_decoded.tag);
-        const finish = try finish_decoded.asFinish();
-        try std.testing.expectEqual(forwarded_question_id, finish.question_id);
     }
 }
 

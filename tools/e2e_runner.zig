@@ -85,11 +85,16 @@ const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .re
 /// reference plays the embargo-driving CLIENT.
 ///   - Reflecting SERVER: must export an unresolved promise capability and
 ///     resolve it later. pycapnp has no such API, so python is client-only here.
-///   - Embargo CLIENT: must consume the Level-1 `takeFromOtherQuestion` return
-///     Zig emits when it relays a reflected-loopback pipelined call. go-capnp
-///     cannot parse that return; capnp-rpc parses it but only completes the call
-///     when the forwarded call used `sendResultsTo=yourself` (Zig uses
-///     `.caller`), so it hangs. cpp and python consume it correctly.
+///   - Embargo CLIENT: relays a reflected-loopback pipelined call back to a
+///     caller-hosted cap. As of W1 Zig forwards that relayed call with
+///     `sendResultsTo=caller` and translates the real results back as a plain
+///     `.results` Return (see forwardModeForResolved / `.translate_to_caller`),
+///     rather than the spec-canonical `yourself` + `takeFromOtherQuestion`
+///     tail-call. Every reference client — cpp, python, go, and rust — consumes
+///     that plain shape, so no client direction is skipped anymore. (The prior
+///     skips existed because go-capnp rejects an inbound `sendResultsTo != caller`
+///     call as Unimplemented and cannot parse a `takeFromOtherQuestion` return,
+///     and capnp-rpc only completed the take-from path under narrow conditions.)
 fn resolveDisembargoSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
     if (schema != .resolve_disembargo) return null;
     if (zig_is_client) {
@@ -99,12 +104,9 @@ fn resolveDisembargoSkip(schema: Schema, backend: Backend, zig_is_client: bool) 
             else => null,
         };
     }
-    // Reference is the embargo-driving client.
-    return switch (backend) {
-        .go => "SKIP(go-capnp-cannot-parse-takeFromOtherQuestion)",
-        .rust => "SKIP(capnp-rpc-hangs-on-takeFromOtherQuestion)",
-        else => null,
-    };
+    // Reference is the embargo-driving client; W1 made the relayed return
+    // universally consumable, so all reference clients run.
+    return null;
 }
 
 const Paths = struct {

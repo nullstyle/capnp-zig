@@ -122,7 +122,13 @@ cooperating peer.
    (`src/rpc/peer/forward/peer_forwarded_return_logic.zig:90-96`). Reachable only in
    a proxy topology no two-party deployment exercises.
 
-4. **Reflected-loopback return interop (`takeFromOtherQuestion`)** — when capnp-zig
+4. **Reflected-loopback return interop (`takeFromOtherQuestion`)** — **RESOLVED after
+   v0.2.0** (Unreleased): capnp-zig now relays the reflected call as a plain
+   `sendResultsTo=caller` call and translates the real results straight back onto the
+   caller's pipelined question as a plain `.results` return (internal
+   `.translate_to_caller` forward mode), a shape every reference client consumes; the
+   `resolve_disembargo` go/rust client skips were removed. The v0.2.0 behavior is
+   described below for the record. — when capnp-zig
    resolves a promise to a *caller-hosted* capability and relays the caller's parked
    pipelined calls back to it, it returns the original question with
    `takeFromOtherQuestion` and forwards the relayed call with `sendResultsTo=caller`
