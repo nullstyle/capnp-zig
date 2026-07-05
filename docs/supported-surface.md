@@ -1,7 +1,7 @@
-# Supported Surface (v0.2.0)
+# Supported Surface (v0.3.0)
 
 This is the authoritative statement of what `capnpc-zig` promises a consumer at
-v0.2.0 — which modules are stable, what the RPC implementation conforms to, the
+v0.3.0 — which modules are stable, what the RPC implementation conforms to, the
 error contract, and the known limitations you are opting into. It is the single
 source of truth; where other docs disagree, this file wins.
 
@@ -12,12 +12,19 @@ and [`CHANGELOG.md`](../CHANGELOG.md) (what changed).
 
 The project is pre-1.0. Per semver, **0.x minor bumps may break the API** — and
 they will, deliberately, for anything marked Experimental below. Pin an exact
-version (`zig fetch --save …#v0.2.0`) and read the CHANGELOG before bumping.
+version (`zig fetch --save …#v0.3.0`) and read the CHANGELOG before bumping.
 
-- **Stable** (serialization + codegen): breaking changes are avoided within 0.2.x
-  and called out in the CHANGELOG when unavoidable.
-- **Experimental** (RPC runtime + transport): may break at any 0.x minor bump
-  (0.2 → 0.3). Functional and tested, but the API is not frozen.
+- **Stable** (serialization + codegen + the two-party RPC core): the Stable
+  surface is **frozen and CI-gated**. It is pinned by
+  [`docs/api-snapshot.txt`](api-snapshot.txt) — the categorized Stable-only
+  contract — and `zig build check-api` fails on any unreviewed drift. Breaking
+  changes are avoided within 0.3.x and called out in the CHANGELOG when
+  unavoidable.
+- **Experimental** (L3 three-party origination, reflected-cap resolve, QUIC,
+  persistence vat-restore, events, `io_backend`, the demoted transport/ctor
+  variants): may break at any 0.x minor bump. Functional and tested, but the API
+  is not frozen; its surface evolves in
+  [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt) (ungated).
 
 ## Modules — which to import
 
@@ -41,9 +48,13 @@ earlier docs that mention only one name are being reconciled to point here.
 | Schema types + parsing (`schema`, `request`) | **Stable** |
 | Code generation (`codegen`, the `capnpc-zig` plugin) | **Stable** |
 | Reader convenience (`reader`) | **Stable** |
-| RPC runtime (`rpc.peer`, `rpc.transport`, generated interface code) | **Experimental** |
+| RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`, generated interface code) | **Stable** (frozen, CI-gated) |
+| RPC L3 three-party origination, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
 | WASM host ABI (`src/wasm`) | **Experimental** |
 
+The frozen Stable RPC surface is exactly the categorized set in
+[`api-snapshot.txt`](api-snapshot.txt); the Experimental RPC surface is tracked
+(ungated) in [`api-snapshot-experimental.txt`](api-snapshot-experimental.txt).
 See [`stability.md`](stability.md) for the full matrix and per-platform status.
 
 ## Error contract
@@ -58,93 +69,115 @@ The one frozen public error set is validation:
 For RPC, the frozen client-facing set is:
 
 - `rpc.peer.CallError` = `{ RemoteException, Disconnected, CallTimedOut,
-  Canceled, UnexpectedReturn }` (`src/rpc/peer/errors.zig:63`) — returned by the
-  generated `Response.unwrap()` / `BootstrapResponse.unwrap()`
-  (`src/capnpc-zig/generator.zig:1547,1765`). This is the contract for consuming
-  a call result and is stable in shape.
+  Canceled, UnexpectedReturn }` (`src/rpc/peer/errors.zig`) — returned by the
+  generated `Response.unwrap()` / `BootstrapResponse.unwrap()`. This is the
+  contract for consuming a call result. In 0.3.0 it is part of the **frozen**
+  Stable RPC surface (pinned in `api-snapshot.txt`).
 
-**Not frozen:** the *inferred* error sets on `callX` / `sendCall` / other `Peer`
-methods (they fan into deep dispatch stacks and render by-reference in the API
-snapshot). `Peer` is Experimental-tier; these may narrow in a later 0.x. Consume
-results through `unwrap()` — that is the stable path.
+**Deliberately open:** the public user-callback typedefs (`CallBuildFn` /
+`QuestionCallback` / `CallHandler` / `SaveHandler` / `RestoreHandler`) keep
+`anyerror` by design — an application handler may fail any way it likes; the F1
+freeze intentionally left these open. Consume call results through `unwrap()` —
+that is the stable, `CallError`-typed path.
 
 ## RPC conformance
 
 capnpc-zig implements **Cap'n Proto RPC Level 1** — the two-party core:
 bootstrap, calls, returns, finish, promise pipelining, and promise
-resolution/embargo. This is proven bidirectionally against the C++, Go, Python,
-and Rust reference implementations in the cross-implementation e2e matrix
-(returned-capability invocation, typed pipelining with E-order, and capability
-release).
+resolution/embargo. In 0.3.0 this core is **Stable and frozen**: its public
+entry points are the categorized Stable set in [`api-snapshot.txt`](api-snapshot.txt),
+CI-gated by `zig build check-api`. It is proven bidirectionally against the C++,
+Go, Python, and Rust reference implementations in the cross-implementation e2e
+matrix (returned-capability invocation, typed pipelining with E-order, and
+capability release).
+
+**Performance + soak evidence.** The two-party core carries committed regression
+evidence: `bench-rpc` gates round-trip latency (p50/p99/max) + calls/sec against
+a committed baseline (`bench-check`), and the RPC soak harness reports latency
+percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
 
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
 the `senderLoopback`/`receiverLoopback` `Disembargo` — is exercised end to end by
-the `resolve_disembargo` e2e scenario. capnp-zig plays both roles: it originates
-the reflection (server) against C++ and Python clients, and receives-and-embargoes
-(client) against C++, Go, and Rust servers. The matrix is asymmetric only because
-of reference-library gaps, not capnp-zig behavior — see Known limitations #4.
+the `resolve_disembargo` e2e scenario. As of 0.3.0 (W1) capnp-zig relays the
+reflected call as a plain `sendResultsTo=caller` call and translates the results
+straight back onto the caller's pipelined question, a shape **all four** reference
+clients consume: the go-capnp and capnp-rpc client directions are de-SKIPped and
+now pass. The scenario also exercises **server-invokes-a-client-cap** (cap in call
+params) and **disconnect-mid-call** cross-impl (E2). The one remaining `SKIP` is
+`zig-client → python-server`: pycapnp cannot host the reflecting server. The
+matrix is asymmetric only because of that single reference-library gap, not
+capnp-zig behavior — see Known limitations #4.
 
-Beyond Level 1:
+Note this cross-implementation matrix runs on a **local Docker host only** (Docker
+Desktop / WSL2); hosted CI runners cannot run the Linux-container reference
+matrix, so it is verified locally before each release. The Zig↔Zig self-interop
+e2e (`zig build e2e-self`) does run in hosted CI on every push.
+
+Beyond Level 1 (all **Experimental**, outside the frozen contract):
 
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present
-  (`rpc.peer` persistence surface). Experimental.
-- **Level 3 (three-party handoff):** **receive-only, no origination.** The peer
-  handles *inbound* `Provide` / `Accept` / `Join` / `ThirdPartyAnswer`
-  (`src/rpc/peer/mod.zig:3651,3687,3707,3752`) but never *originates* them —
-  there is no `sendProvide` / `sendAccept` / `sendJoin`, and no outbound
-  `thirdPartyHosted` descriptor. The runtime is architecturally two-party. A
-  full Level-3 initiator (VatNetwork) is out of scope for 0.2.0.
+  (`rpc.peer` persistence surface). Experimental; the vat-level restore interface
+  may change.
+- **Level 3 (three-party handoff):** a minimal **origination** slice has landed
+  as of 0.3.0 (Experimental): `Peer.sendProvide` / `sendAccept`,
+  `resolvePromiseExportToThirdParty`, `sendThirdPartyAnswer`,
+  `registerPendingThirdPartyAwait`, a recipient auto-pickup seam
+  (`setHandoffPickupHandler`), the `rpc.vat.network.VatNetwork` addressing seam
+  (+ `LoopbackVatNetwork`), and `thirdPartyHosted` descriptor emission — in
+  addition to the inbound `Provide` / `Accept` / `Join` / `ThirdPartyAnswer`
+  handling that was already present. This arc is **lightly soaked and
+  Zig↔Zig-only**: no reference implementation performs spec-current three-party
+  pickup, so it has no cross-implementation interop partner. One functional gap
+  remains: the introducer does not forward the *original* parked pipelined calls
+  on a promise to the host (they hit the Level-1/2 rejecting vine) — tracked
+  separately. Do not depend on the L3 surface for production interop.
 
-## Known limitations (v0.2.0)
+## Known limitations (v0.3.0)
 
 Each of these is a defined, non-corrupting behavior — safe to tag with, listed so
 you know exactly what you are relying on. None is a leak/UAF/hang against a
 cooperating peer.
 
-1. **Echoed `Unimplemented(Disembargo)`** — if a peer that cannot parse our
-   `Disembargo` echoes it back as `Unimplemented`, we do not clear the associated
-   embargo state: the target import stays flagged `embargoed` and its
-   `pending_embargoes` entry is retained for the connection's life
-   (`src/rpc/peer/bootstrap.zig:21-30`, `src/rpc/peer/mod.zig:1924-1928`). Bounded
-   (one entry per stuck disembargo), reachable only against a broken/hostile Level-0
-   peer, no corruption or hang. (Echoed `Provide`/`Accept` are unreachable — no
-   sender emits that state.)
+The one remaining active limitation on the frozen two-party surface is the
+forwarded-return intermediary case; three of the four v0.2.0 limitations were
+fixed this release (see *Resolved since v0.2.0* below).
 
-2. **`hasKnownDisembargoTarget` over-accepts** — it treats a target as known if it
-   matches *either* an export or an import id (`src/rpc/peer/mod.zig:3564`), rather
-   than the exact origin the spec implies. Side-effect-free (a control-flow echo
-   that allocates nothing and mutates no refcount); the laxity is not exploitable.
-
-3. **Forwarded-return `takeFromOtherQuestion` / `resultsSentElsewhere`** — when
+1. **Forwarded-return `takeFromOtherQuestion` / `resultsSentElsewhere`** — when
    acting as a forwarding intermediary, these two Return modes are not fully
    translated and degrade to a clean exception Return rather than corrupt state
-   (`src/rpc/peer/forward/peer_forwarded_return_logic.zig:90-96`). Reachable only in
-   a proxy topology no two-party deployment exercises.
+   (`src/rpc/peer/forward/peer_forwarded_return_logic.zig`). Reachable only in a
+   proxy topology no two-party deployment exercises. This is the top target for
+   the post-tag conformance push; it does not affect correctness for a standard
+   two-party client/server.
 
-4. **Reflected-loopback return interop (`takeFromOtherQuestion`)** — **RESOLVED after
-   v0.2.0** (Unreleased): capnp-zig now relays the reflected call as a plain
-   `sendResultsTo=caller` call and translates the real results straight back onto the
-   caller's pipelined question as a plain `.results` return (internal
-   `.translate_to_caller` forward mode), a shape every reference client consumes; the
-   `resolve_disembargo` go/rust client skips were removed. The v0.2.0 behavior is
-   described below for the record. — when capnp-zig
-   resolves a promise to a *caller-hosted* capability and relays the caller's parked
-   pipelined calls back to it, it returns the original question with
-   `takeFromOtherQuestion` and forwards the relayed call with `sendResultsTo=caller`
-   (`src/rpc/peer/forward/peer_forward_orchestration.zig`). This is protocol-correct
-   and consumed transparently by kj-capnp (C++) and pycapnp, but two reference
-   *clients* cannot follow it: go-capnp does not parse a `takeFromOtherQuestion`
-   return at all, and capnp-rpc (Rust) parses it but only completes the call when the
-   forwarded call used `sendResultsTo=yourself`, so it stalls. Reachable only in the
-   reflected-loopback topology (a peer pipelining on a promise that resolves to its
-   own cap); the `resolve_disembargo` e2e scenario skips those two reference-client
-   directions (recorded as `SKIP`, not failures). A related consequence: a *direct*
-   (non-deferred) generated handler on a reflected-to cap does not run its body,
-   because the results-build closure is skipped on the `resultsSentElsewhere` path —
-   use a deferred handler for caps that may be reflected to. Emitting
-   `sendResultsTo=yourself` for the relayed loopback call would run direct handlers,
-   deliver results inline, and broaden client interop; tracked separately.
+### Resolved since v0.2.0
 
-These are tracked as the top targets for the post-tag conformance push; they do
-not affect correctness for a standard two-party client/server.
+- **Echoed `Unimplemented(Disembargo)` (was #1) — RESOLVED (W2).** An echoed
+  `Unimplemented(Disembargo)` was previously silently dropped, leaving the target
+  import flagged `embargoed` with a retained `pending_embargoes` entry. It is now
+  treated as the protocol violation it is: the peer sends an `Abort` ("peer echoed
+  Disembargo as Unimplemented") and returns `error.EchoedDisembargoUnimplemented`,
+  which tears the connection down (`src/rpc/peer/bootstrap.zig`,
+  `src/rpc/peer/errors.zig`). No stuck embargo state can accumulate.
+
+- **`hasKnownDisembargoTarget` over-accepts (was #2) — RESOLVED (W3).** The
+  `importedCap` arm previously accepted an export *or* import id; it now validates
+  against the export table only, the exact id space the spec names on the
+  `senderLoopback` path (`src/rpc/peer/mod.zig`, `hasKnownDisembargoTarget`).
+
+- **Reflected-loopback return interop (was #4) — RESOLVED (W1).** capnp-zig
+  previously returned the caller's original question with an eager
+  `takeFromOtherQuestion` redirect (forwarding the relayed call with
+  `sendResultsTo=caller`); kj-capnp (C++) and pycapnp consumed it, but go-capnp
+  could not parse `takeFromOtherQuestion` and capnp-rpc (Rust) stalled on it. It
+  now relays the reflected call as a plain `sendResultsTo=caller` call and
+  translates the real results straight back onto the caller's pipelined question
+  as a plain `.results` return (internal `.translate_to_caller` forward mode,
+  `src/rpc/peer/forward/peer_forward_orchestration.zig`) — a shape **all four**
+  reference clients consume. The `resolve_disembargo` go/rust client skips were
+  removed; the only remaining skip is `zig-client → python-server` (pycapnp cannot
+  host the reflecting server). A former side effect — a *direct* (non-deferred)
+  generated handler on a reflected-to cap not running its body on the
+  `resultsSentElsewhere` path — no longer applies on the reflected loopback path,
+  since results now flow as plain `.results`.

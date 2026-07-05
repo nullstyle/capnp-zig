@@ -48,22 +48,62 @@ updated as phases land.
 | Code Generation | `src/capnpc-zig/generator.zig`, `src/capnpc-zig/struct_gen.zig`, `src/capnpc-zig/types.zig` | Generates idiomatic Zig Reader/Builder types from `.capnp` schemas. |
 | Reader Convenience | `src/serialization/reader.zig` | Segment-aware message reader with packed support. |
 
+#### Stable RPC — the two-party core (new in 0.3.0)
+
+The two-party Cap'n Proto RPC Level-1 core is promoted to Stable in 0.3.0 on a
+**frozen public surface**: the Stable RPC entry points below are pinned by the
+`docs/api-snapshot.txt` snapshot and gated in CI (`zig build check-api`) — a
+diff is a reviewed breaking change, not an accident. The complementary
+Experimental surface evolves in `docs/api-snapshot-experimental.txt` (ungated).
+
+| Module | Path | Frozen surface |
+|---|---|---|
+| RPC Protocol | `src/rpc/wire/protocol.zig` | Wire readers/builders for RPC messages (Call, Return, Resolve, Disembargo, …). |
+| RPC Framing | `src/rpc/wire/framing.zig` | Segment-framed message reassembly from byte streams. |
+| RPC Capability Table | `src/rpc/caps/table.zig` | Export/import tracking for capabilities. |
+| RPC Connection (narrowed) | `src/rpc/transport/tcp/connection.zig` | The narrowed public `Connection` surface: `init` (post-F3 canonical shape, opaque socket handle), `Options.default()`, `enableWake`, lifecycle. Demoted `attachTransport*`/`initDetached*` variants remain Experimental. |
+| TCP `ClientSession` | `src/rpc/transport/tcp/*` | `ClientSession.connect` / `connectHost` — the one-call client lifecycle (`run`/`close`/`requestStop`/`deinit`). |
+| TCP `ServerSession.accept` | `src/rpc/transport/tcp/*` | The `ServerSession.accept` consumer entry point + its `run`/`close`/`requestStop`/`deinit` lifecycle. The `ServerSession` struct/type *beyond* `.accept` is Experimental. |
+| RPC Peer — two-party entry points | `src/rpc/peer/mod.zig` | The canonical two-party `Peer` surface: `init`, `attachConnection`, `sendBootstrap`, the `sendCall*` family, `addExport`, `addPromiseExport`, `setBootstrap`, `releaseImport`, basic promise resolution, and lifecycle — plus the `CallError` error set (`rpc.peer.CallError`), the public callback typedefs (which keep `anyerror`), and `PeerLimits`. Demoted ctor/attach variants (F3), L3 origination, and `resolvePromiseExportToImport` stay Experimental (see below). |
+
+**Honest disclosures for the Stable RPC core:**
+
+- **Soaked, with committed regression evidence.** A `bench-rpc` round-trip
+  latency + calls/sec regression gate (p50/p99/max, committed baseline) and the
+  RPC soak harness (latency percentiles + a flat memory-growth curve asserted at
+  ≥100 concurrent peers) run against the two-party core. This is real soak
+  evidence, not a claim.
+- **Cross-implementation e2e is local-Docker only.** The Zig↔Zig self-interop
+  e2e (`zig build e2e-self`) runs in hosted CI on every push, but the
+  cross-implementation matrix against the C++, Go, Python, and Rust reference
+  peers runs only on a local Docker host (Docker Desktop / WSL2) — hosted CI
+  runners cannot run the Linux-container reference matrix. Conformance against
+  the reference impls is verified locally before each release, not on every push.
+
 ### Experimental
+
+Everything below is outside the frozen contract and may break at any 0.x minor
+bump. The L3 three-party arc in particular is **lightly soaked and Zig↔Zig-only**
+— no reference implementation performs spec-current three-party pickup, so it has
+no cross-implementation interop partner.
 
 | Module | Path | Notes |
 |---|---|---|
 | RPC Runtime | `src/rpc/transport/tcp/runtime.zig` | Listener and socket helpers. API will evolve. |
-| RPC Connection | `src/rpc/transport/tcp/connection.zig` | Transport + framer combination. Under active development. |
-| RPC Peer | `src/rpc/peer/mod.zig` | Full RPC peer with question/answer tables, capability lifecycle, and bootstrap. Core design is stabilizing but the public API may still change. |
-| RPC Protocol | `src/rpc/wire/protocol.zig` | Wire readers/builders for RPC messages (Call, Return, Resolve, etc.). |
-| RPC Capability Table | `src/rpc/caps/table.zig` | Export/import tracking for capabilities. |
-| RPC Framing | `src/rpc/wire/framing.zig` | Segment-framed message reassembly from byte streams. |
+| RPC Connection — demoted variants | `src/rpc/transport/tcp/connection.zig` | The `attachTransport*` / `initDetached*` (F3-demoted) constructors and any raw-socket-handle entry points. The narrowed `Connection` (`init`/`Options.default`/`enableWake`/lifecycle) is Stable — see above. |
+| RPC Peer — beyond the two-party core | `src/rpc/peer/mod.zig` | The Experimental parts of `Peer`: the F3-demoted ctor/attach variants, `test_hooks`, and everything under the L3 / reflected-cap surfaces below. The two-party entry points are Stable — see above. |
+| RPC Peer — reflected-cap resolve | `src/rpc/peer/mod.zig` (`resolvePromiseExportToImport`) | Resolve a promise export to a *caller-hosted* cap (drives the `senderLoopback`/`receiverLoopback` Disembargo). New in 0.3.0; verified in loopback + a partial cross-impl matrix (see supported-surface Known limitations). Not frozen. |
+| RPC Peer — L3 three-party origination | `src/rpc/peer/mod.zig`, `src/rpc/peer/provide/*`, `src/rpc/peer/third_party/*` | The full Level-3 arc: `sendProvide`, `sendAccept`, `resolvePromiseExportToThirdParty`, `sendThirdPartyAnswer`, `registerPendingThirdPartyAwait`, `setHandoffPickupHandler`, `ProvideHandle`, `thirdPartyHosted` emission. **Lightly soaked, Zig↔Zig-only** (no reference impl performs spec-current three-party pickup). Not frozen. |
+| RPC Vat Network | `src/rpc/vat/network.zig` | `VatNetwork` addressing seam + `LoopbackVatNetwork` for L3 origination. Experimental; Zig↔Zig-only. |
+| RPC `ServerSession` (as a type) | `src/rpc/transport/tcp/*` | The `ServerSession` struct/API *beyond* its `.accept` consumer entry point. `.accept` + its lifecycle are Stable (see above); the type itself is not frozen. |
 | RPC Transport | `src/rpc/transport/tcp/stream_transport.zig` | Concurrent read/write I/O. |
 | RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events. Event names may grow while payloads stay redacted. |
+| Switchable Io Backend | `src/io_backend.zig` | Backend selection (`process_init`/`threaded`/`evented`). Selector shape may change. |
 | RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/caps/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
-| RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions documented in `rpc_runtime_design.md`; the vat-level restore interface may change. |
+| RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions documented in `rpc_runtime_design.md`; the vat-level restore interface may change. Not frozen. |
+| Forwarded / 3-party internals | `src/rpc/peer/forward/*`, `src/rpc/peer/third_party/*` | Proxy/intermediary forwarding and third-party transfer internals. Not part of the frozen surface. |
 
 ### Internal
 
@@ -116,10 +156,12 @@ facade for narrow white-box coverage.
 
 capnpc-zig follows [Semantic Versioning 2.0.0](https://semver.org/).
 
-- The current version is **0.2.0** — the first tagged release, still early
-  development. See [`supported-surface.md`](supported-surface.md) for the
-  authoritative consumer contract. All public APIs may change between 0.x
-  releases per the tiers above.
+- The current version is **0.3.0** — this release promotes the two-party RPC
+  core and serialization to **Stable** on a frozen, CI-gated public surface
+  (`docs/api-snapshot.txt`); it is still early (0.x) development. See
+  [`supported-surface.md`](supported-surface.md) for the authoritative consumer
+  contract. Experimental APIs may still change between 0.x releases per the
+  tiers above.
 - Within the 0.x series, **minor** bumps may include breaking changes to
   experimental modules. Stable modules will remain compatible within a minor
   version where possible, with breaking changes clearly documented in the

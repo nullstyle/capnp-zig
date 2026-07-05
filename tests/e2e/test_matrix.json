@@ -8,14 +8,14 @@
   ],
   "scenario_exclusions": {
     "resolve_disembargo": {
-      "note": "Reflected-capability resolve/embargo. Per-direction skips are reference-library gaps, not capnp-zig behavior; recorded as SKIP by tools/e2e_runner.zig (resolveDisembargoSkip). See docs/supported-surface.md Known limitations #4.",
+      "note": "Reflected-capability resolve/embargo. The one remaining per-direction skip is a reference-library gap, not capnp-zig behavior; recorded as SKIP by tools/e2e_runner.zig (resolveDisembargoSkip). See docs/supported-surface.md Known limitations #4.",
       "zig-client_to_reference-server": {
         "excluded_backends": ["python"],
         "reason": "pycapnp cannot host the reflecting server (no promise-fulfiller API to return an unresolved capability and resolve it later)."
       },
       "reference-client_to_zig-server": {
-        "excluded_backends": ["go", "rust"],
-        "reason": "reference client cannot consume Zig's Level-1 takeFromOtherQuestion loopback return: go-capnp cannot parse it; capnp-rpc parses it but only completes when the forwarded call used sendResultsTo=yourself, so it hangs."
+        "excluded_backends": [],
+        "reason": "W1 (v0.3.0) made the reflected-loopback return a plain sendResultsTo=caller call with plain .results — consumable by all four reference clients. The earlier go/rust skips (go-capnp could not parse takeFromOtherQuestion; capnp-rpc stalled on it) were removed."
       }
     }
   },

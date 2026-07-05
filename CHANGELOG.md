@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-05
+
+This release promotes the two-party RPC core and serialization to **Stable**;
+L3 three-party origination, the reflected-cap resolver, QUIC, and persistence
+remain **Experimental** (may change at 0.x minor bumps). The public Stable
+surface is now **frozen and CI-gated** — pinned by `docs/api-snapshot.txt` and
+enforced by `zig build check-api`; the Experimental surface evolves in
+`docs/api-snapshot-experimental.txt`. See
+[`docs/supported-surface.md`](docs/supported-surface.md).
+
 ### Added
 
 - **RPC Level-3 three-party handoff origination — minimal slice (Experimental).**
@@ -97,6 +107,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ClientSession`. Strictly one connection per session. `examples/rpc_pingpong.zig`
   and the getting-started guide now use it — the last hand-wired
   `Listener`/`Connection`/`Peer` server recipe is gone.
+- **RPC-level performance + soak evidence (v0.3.0 gate).** A new `bench-rpc`
+  benchmark reports round-trip latency (p50/p99/max) + calls/sec and is wired
+  into `bench-check` regression gating with a committed baseline (proven to go
+  red on an intentional regression). The RPC soak harness (`tools/soak_rpc.zig`)
+  now emits latency percentiles + a periodic memory-growth curve asserted flat
+  within noise, and runs at ≥100 concurrent peers. This is the committed
+  soak/regression evidence backing the two-party core's promotion to Stable.
+- **Cross-impl `resolve_disembargo` de-SKIP + new conformance scenarios (E1/E2).**
+  After the reflected-loopback return fix (below), the go-capnp and capnp-rpc
+  embargo-client directions of `resolve_disembargo` are de-SKIPped and pass; the
+  only remaining skip is `zig-client -> python-server` (pycapnp cannot host the
+  reflecting server). The scenario additionally exercises **server-invokes-a-
+  client-cap** (a capability passed in call params, invoked by the reflector) and
+  **disconnect-mid-call** (the server closes its own transport mid-call, and every
+  reference client asserts a disconnect-class error) across the reference matrix.
+
+### Changed
+
+- **Public API frozen and CI-gated (F1-F4 API freeze).** The Stable public
+  surface is now pinned by `docs/api-snapshot.txt` (the Stable-only contract) and
+  gated by `zig build check-api` — a diff is a reviewed breaking change, not an
+  accident. The Experimental surface is tracked separately (ungated) in
+  `docs/api-snapshot-experimental.txt`. As part of the freeze:
+  - **F1** — narrowed leaked public error sets on the frozen entry points
+    (`releaseImport`, the `sendCall*` family, `Connection.init` /
+    `Connection.enableWake`) to named sets in `rpc/peer/errors.zig`. The five
+    public user-callback typedefs (`CallBuildFn` / `QuestionCallback` /
+    `CallHandler` / `SaveHandler` / `RestoreHandler`) intentionally **keep**
+    `anyerror` — an application handler may fail any way it likes.
+  - **F2** — `Peer.test_hooks` and the `rpc.testing` white-box internals moved
+    off the frozen public surface behind an Internal facade; no Internal entry is
+    reachable from `src/lib.zig`.
+  - **F3** — canonicalized the entry-point shape: one public `Peer` constructor
+    and one primary transport-attach (the `initDetached*` / `attachTransport*`
+    variants are demoted to Experimental/deprecated aliases, not deleted), a
+    `Connection.Options.default()` contract, and an opaque socket-handle wrapper
+    so a raw POSIX handle is not baked into the frozen signature.
+    `ClientSession.connect` / `ServerSession.accept` compile unchanged.
+  - **F4** — the api-snapshot gate is scoped to a promoted-symbol allowlist that
+    structurally excludes every Experimental symbol, so the Experimental surface
+    can keep evolving post-tag without a false-red gate or an accidental freeze.
+
+### Fixed
+
+- **Echoed `Unimplemented(Disembargo)` now aborts the connection (W2, #1).** An
+  echoed `Unimplemented(Disembargo)` was silently dropped, leaving the target
+  import flagged `embargoed` with a retained `pending_embargoes` entry for the
+  connection's life. It is now treated as the protocol violation it is: the peer
+  sends an `Abort` and returns `error.EchoedDisembargoUnimplemented`, tearing the
+  connection down. No stuck embargo state accumulates.
+- **`hasKnownDisembargoTarget` validates exports-only (W3, #2).** Its
+  `importedCap` arm accepted an export *or* import id; it now validates against
+  the export table only — the exact id space the spec names on the
+  `senderLoopback` path.
 
 ## [0.2.0] - 2026-07-04
 
@@ -485,5 +549,6 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/nullstyle/capnp-zig/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nullstyle/capnp-zig/releases/tag/v0.2.0
