@@ -15,9 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supplies how a peer names/reaches a third vat; a `LoopbackVatNetwork` drives
   in-process tests) and `thirdPartyHosted` descriptor emission. Proven end to end
   by a three-peer Zig↔Zig loopback `Provide`+`Accept` handoff test (leak-checked).
-  This is the P0–P2 slice: no in-flight-promise embargo during handoff (Phase 4)
-  and no resolve→handoff auto-trigger (Phase 3) yet, and it is Zig↔Zig-only (no
-  reference impl performs spec-current three-party pickup). Known constraint: the
+  `Peer.resolvePromiseExportToThirdParty` resolves a promise export to a third-vat
+  cap, emitting a `thirdPartyHosted` Resolve; and a recipient auto-pickup seam
+  (`setHandoffPickupHandler`) makes a Zig peer, on receiving such a Resolve,
+  connect to the third vat via its `VatNetwork` and `Accept` the cap automatically
+  (falling back to the Level-1/2 vine proxy when no `VatNetwork` is attached).
+  This is the P0–P3 slice: no in-flight-promise embargo during handoff (Phase 4)
+  yet, and it is Zig↔Zig-only (no reference impl performs spec-current three-party
+  pickup). Known constraint: the
   vine→Provide coupling borrows a raw peer pointer, so the app must tear down the
   recipient-facing peer (or release the vine) before/with the provided-cap peer —
   cross-peer coupling liveness is a tracked hardening follow-up. Two-party peers

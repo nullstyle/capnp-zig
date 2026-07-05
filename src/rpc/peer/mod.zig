@@ -65,6 +65,24 @@ pub const ReturnBuildFn = *const fn (ctx: *anyopaque, ret: *protocol.ReturnBuild
 pub const CallHandler = *const fn (ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void;
 /// Callback invoked when a return message arrives for a previously sent question.
 pub const QuestionCallback = *const fn (ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void;
+/// Callback invoked when a Level-3 three-party handoff auto-pickup completes: an
+/// inbound `thirdPartyHosted` Resolve for `promise_id` (on the peer holding the
+/// promise, VatA↔VatB) drove a `Provide` pickup, and the `Accept` `Return`
+/// carrying the direct capability just arrived on `accept_peer` (VatA↔VatC).
+/// The handler imports the direct cap from `ret`/`accept_caps` on `accept_peer`
+/// (retain it there — see `InboundCapTable.retainCapability`) so subsequent calls
+/// go straight to the third vat. `promise_id` names the fulfilled promise import
+/// on the promise-holding peer. The vine is released by the runtime immediately
+/// after this returns (driving VatB's Provide `Finish`), so the handler must not
+/// depend on the vine surviving. Errors are reported non-fatally.
+pub const HandoffPickupCallback = *const fn (
+    ctx: *anyopaque,
+    promise_peer: *Peer,
+    promise_id: u32,
+    accept_peer: *Peer,
+    ret: protocol.Return,
+    accept_caps: *const cap_table.InboundCapTable,
+) anyerror!void;
 /// Optional override for outbound frame delivery (used in testing).
 pub const SendFrameOverride = *const fn (ctx: *anyopaque, frame: []const u8) anyerror!void;
 
@@ -349,6 +367,15 @@ const OutboundProvide = struct {
     provide_peer: *Peer,
     /// The Provide question id to Finish when the vine is released.
     provide_question_id: u32,
+    /// When the handoff was originated by resolving a promise EXPORT to the
+    /// third party (`resolvePromiseExportToThirdParty`), this is that promise
+    /// export id on THIS peer, and it resolved locally to the vine (routing
+    /// pipelined calls through the vine per the Level-1/2 fallback). The vine's
+    /// destruction on Release invalidates that resolution target, so the vine
+    /// teardown in `handleRelease` nulls the promise export's `resolved` link to
+    /// avoid a dangling target. Null for a bare `sendProvide` handoff (no promise
+    /// export involved, e.g. the P0–P2 return-a-vine path).
+    resolved_promise_export_id: ?u32 = null,
 };
 
 pub const Peer = struct {
@@ -365,6 +392,18 @@ pub const Peer = struct {
     /// peer; set via `attachVatNetwork` before originating `Provide`/`Accept`
     /// handoffs. Borrowed — its `ctx` must outlive the peer.
     vat_network: ?VatNetwork = null,
+
+    /// Optional Level-3 recipient auto-pickup handler. When this peer holds a
+    /// promise import and receives a `thirdPartyHosted` Resolve for it AND a
+    /// `vat_network` is attached, the runtime connects to the third vat, sends an
+    /// `Accept`, and — when the accepted capability's `Return` arrives — invokes
+    /// this handler with the direct cap (see `HandoffPickupCallback`). Null (or a
+    /// null `vat_network`) keeps the Level-1/2 proxy-via-vine fallback: the
+    /// promise resolves to the vine import and no pickup is attempted. Set via
+    /// `setHandoffPickupHandler`. `handoff_pickup_ctx` is borrowed and must
+    /// outlive the peer.
+    handoff_pickup_ctx: ?*anyopaque = null,
+    on_handoff_pickup: ?HandoffPickupCallback = null,
 
     // -- Capability bookkeeping ---------------------------------------------
 
@@ -797,6 +836,27 @@ pub const Peer = struct {
     pub fn detachVatNetwork(self: *Peer) void {
         self.assertThreadAffinity();
         self.vat_network = null;
+    }
+
+    /// Install the Level-3 recipient auto-pickup handler. With both a
+    /// `vat_network` (see `attachVatNetwork`) and this handler set, an inbound
+    /// `thirdPartyHosted` Resolve for a promise this peer holds triggers an
+    /// automatic `Accept` against the third vat; the handler receives the direct
+    /// capability from the Accept `Return` (see `HandoffPickupCallback`). Without
+    /// it, the Level-1/2 proxy-via-vine fallback is used. `ctx` is borrowed and
+    /// must outlive the peer.
+    pub fn setHandoffPickupHandler(self: *Peer, ctx: *anyopaque, on_pickup: HandoffPickupCallback) void {
+        self.assertThreadAffinity();
+        self.handoff_pickup_ctx = ctx;
+        self.on_handoff_pickup = on_pickup;
+    }
+
+    /// Remove the Level-3 recipient auto-pickup handler, reverting to the
+    /// Level-1/2 proxy-via-vine fallback for inbound `thirdPartyHosted` Resolves.
+    pub fn clearHandoffPickupHandler(self: *Peer) void {
+        self.assertThreadAffinity();
+        self.handoff_pickup_ctx = null;
+        self.on_handoff_pickup = null;
     }
 
     /// Return whether a transport is currently attached to this peer.
@@ -2177,6 +2237,119 @@ pub const Peer = struct {
         rollback_import_ref = false;
         self.caps.clearExportPromise(promise_id);
         try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
+    }
+
+    /// Resolve a previously exported promise to a capability hosted by a THIRD
+    /// vat (Level-3 three-party handoff ORIGINATION). Mirror of
+    /// `resolvePromiseExportToImport`, but the resolution target lives on neither
+    /// this peer's export table nor its import table — it is hosted by VatC, so
+    /// the Resolve carries a `thirdPartyHosted{ id = ThirdPartyToContact, vineId }`
+    /// descriptor and this vat originates the paired `Provide` to VatC.
+    ///
+    /// `self` is the host-of-recipient connection (VatB↔VatA), where the promise
+    /// export lives, the vine is minted, and the Resolve is sent. `provide_peer`
+    /// is the host-of-provided-cap connection (VatB↔VatC), where the held-open
+    /// `Provide` is sent naming `provided_target` (VatC's Carol) and `recipient`
+    /// (the `ThirdPartyToAwait`). `contact_payload` is the serialized
+    /// `ThirdPartyToContact` VatA will redeem via its VatNetwork to reach VatC.
+    ///
+    /// This slice sends the Resolve with `embargo = null` semantics: there is no
+    /// in-flight-promise embargo/disembargo during the handoff (Phase 4).
+    ///
+    /// Returns the `ProvideHandle` (Provide question id + vine id). The vine's
+    /// wire reference is held by the emitted `thirdPartyHosted` descriptor; when
+    /// VatA releases the vine (after picking up Carol directly), `handleRelease`
+    /// Finishes the Provide on `provide_peer`.
+    pub fn resolvePromiseExportToThirdParty(
+        self: *Peer,
+        promise_id: u32,
+        provide_peer: *Peer,
+        provided_target: protocol.MessageTarget,
+        recipient: message.AnyPointerReader,
+        contact_payload: []const u8,
+    ) !ProvideHandle {
+        self.assertThreadAffinity();
+        provide_peer.assertThreadAffinity();
+        if (self.is_shutting_down or provide_peer.is_shutting_down) return error.PeerShuttingDown;
+
+        {
+            // Validate the promise export up front, but do NOT hold the entry
+            // pointer across `sendProvide`: it mints the vine into `self.exports`,
+            // which can rehash and invalidate any captured entry pointer. Re-fetch
+            // after origination (below) before mutating the promise entry.
+            const promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
+            if (!promise_entry.value_ptr.is_promise) return error.ExportIsNotPromise;
+            if (promise_entry.value_ptr.resolved != null) return error.PromiseAlreadyResolved;
+        }
+
+        // Originate the handoff: mint the vine on `self`, mark it
+        // third-party-hosted with the contact, couple vine → held-open Provide
+        // on `provide_peer`, and send the Provide to VatC. `sendProvide` rolls
+        // back all of that on any failure before it returns.
+        const handle = try provide_peer.sendProvide(provided_target, recipient, self, contact_payload);
+        // Undo the whole origination if the Resolve emission below fails: destroy
+        // the vine export + its handoff mark, drop the coupling, and Finish the
+        // Provide we just sent so VatC does not leak the provision.
+        var origination_owned = true;
+        errdefer if (origination_owned) {
+            _ = self.outbound_provides.remove(handle.vine_id);
+            self.caps.clearThirdPartyHosted(handle.vine_id);
+            self.releaseVineExport(handle.vine_id);
+            self.finishOriginatedProvide(provide_peer, handle.question_id);
+        };
+
+        // Build the Resolve's resolved descriptor: thirdPartyHosted{ id, vineId }.
+        // The recipient takes a wire reference on the VINE (the handoff anchor),
+        // exactly as the payload emitter does (caps/outbound.zig), so account for
+        // that reference here — buildResolveCap does NOT run the outbound-cap
+        // callback that would otherwise note it.
+        var contact_msg = try message.Message.initUnvalidated(self.allocator, contact_payload);
+        defer contact_msg.deinit();
+        const contact = try contact_msg.getRootAnyPointer();
+        const descriptor = protocol.CapDescriptor{
+            .tag = .thirdPartyHosted,
+            .id = null,
+            .promised_answer = null,
+            .third_party = .{ .id = contact, .vine_id = handle.vine_id },
+            .attached_fd = null,
+        };
+
+        try self.noteExportRef(handle.vine_id);
+        var rollback_wire_ref = true;
+        errdefer if (rollback_wire_ref) self.rollbackExportRef(handle.vine_id);
+
+        try peer_outbound_control.sendResolveCapViaSendFrame(
+            Peer,
+            self,
+            promise_id,
+            descriptor,
+            Peer.sendFrame,
+        );
+        rollback_wire_ref = false;
+        origination_owned = false;
+
+        // Record the resolving promise export on the coupling so the vine
+        // teardown clears the promise's resolution target (see handleRelease).
+        if (self.outbound_provides.getPtr(handle.vine_id)) |op| {
+            op.resolved_promise_export_id = promise_id;
+        }
+
+        // Re-fetch the promise entry: the vine insert above may have rehashed
+        // `self.exports`, invalidating the pointer captured during validation.
+        var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
+
+        // Route pipelined calls that arrive on the promise export through the vine
+        // (the Level-1/2 fallback: a full impl proxies to VatC; this slice's vine
+        // rejects). NO promise-held pin is taken on the vine: its lifetime is
+        // driven solely by VatA's wire Release (the handoff-completion signal),
+        // which must destroy it to Finish the Provide. A pin would keep the vine
+        // alive past that Release and stall the Finish.
+        promise_entry.value_ptr.resolved = .{ .exported = .{ .id = handle.vine_id } };
+        self.caps.clearExportPromise(promise_id);
+        try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
+
+        log.debug("resolved promise export {} to third party via vine {}", .{ promise_id, handle.vine_id });
+        return handle;
     }
 
     /// Resolve a previously exported promise to an exception.
@@ -3979,6 +4152,20 @@ pub const Peer = struct {
                 // then Finish the held-open Provide question on its own peer.
                 _ = self.outbound_provides.remove(release.id);
                 self.caps.clearThirdPartyHosted(release.id);
+                // If this vine anchored a promise-export resolution
+                // (`resolvePromiseExportToThirdParty`), that promise resolved
+                // locally to the now-destroyed vine. Clear the stale target so a
+                // later Release of the promise export does not cascade into a
+                // vanished vine (benign no-op, but avoids a dangling resolution).
+                if (entry.resolved_promise_export_id) |promise_id| {
+                    if (self.exports.getEntry(promise_id)) |pe| {
+                        if (pe.value_ptr.resolved) |resolved| {
+                            if (resolved == .exported and resolved.exported.id == release.id) {
+                                pe.value_ptr.resolved = null;
+                            }
+                        }
+                    }
+                }
                 self.finishOriginatedProvide(entry.provide_peer, entry.provide_question_id);
             }
         }
@@ -3997,6 +4184,31 @@ pub const Peer = struct {
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
+        // Level-3 recipient auto-pickup: an inbound `thirdPartyHosted` Resolve for
+        // a promise we hold, when a VatNetwork + pickup handler are configured,
+        // is picked up directly from the third vat instead of proxied through the
+        // vine. This branch is fully isolated from the two-party/reflected-
+        // loopback resolve path below — it only fires for the thirdPartyHosted
+        // descriptor tag with both L3 seams attached, and returns before the
+        // generic ops run. Every other resolve (cap/exception, incl. the fragile
+        // reflected-loopback `receiverHosted`/`senderHosted` cases) is unchanged.
+        if (resolve_msg.tag == .cap) {
+            if (resolve_msg.cap) |descriptor| {
+                if (descriptor.tag == .thirdPartyHosted and
+                    self.vat_network != null and
+                    self.on_handoff_pickup != null and
+                    self.caps.imports.contains(resolve_msg.promise_id))
+                {
+                    if (try self.tryAutoPickupThirdParty(resolve_msg.promise_id, descriptor)) {
+                        return;
+                    }
+                    // tryAutoPickup returned false: not actionable (e.g. the
+                    // network could not resolve the contact). Fall through to the
+                    // Level-1/2 vine fallback so the promise still resolves.
+                }
+            }
+        }
+
         const ops = peer_resolve.ResolveOps(Peer){
             .has_known_promise = peer_resolve.hasKnownResolvePromiseForPeerFn(Peer),
             .resolve_cap_descriptor = peer_resolve.resolveCapDescriptorForPeerFn(Peer),
@@ -4008,6 +4220,128 @@ pub const Peer = struct {
             .store_resolved_import = storeResolvedImport,
         };
         try peer_resolve.handleResolveWithOps(Peer, self, resolve_msg, ops);
+    }
+
+    /// Heap context threaded through the auto-pickup `Accept` question. Owns no
+    /// heap besides itself; freed by `onHandoffAcceptReturn` on the normal path
+    /// or by its `deinit_ctx` if the accept peer tears down first.
+    const HandoffPickupContext = struct {
+        /// The peer holding the promise import (VatA↔VatB). Borrowed.
+        promise_peer: *Peer,
+        /// The promise import id being fulfilled by this handoff.
+        promise_id: u32,
+        /// The vine import id on `promise_peer`, released after pickup to drive
+        /// VatB's Provide Finish.
+        vine_id: u32,
+        /// Application pickup handler + its ctx, copied from the promise peer.
+        user_ctx: *anyopaque,
+        user_cb: HandoffPickupCallback,
+
+        fn deinitCtx(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            const ctx: *HandoffPickupContext = @ptrCast(@alignCast(ctx_ptr));
+            allocator.destroy(ctx);
+        }
+    };
+
+    /// Attempt the Level-3 recipient auto-pickup for an inbound `thirdPartyHosted`
+    /// Resolve. Returns true if the pickup was initiated (an `Accept` was sent and
+    /// ownership of the vine reference transferred to the pickup flow); false if
+    /// the handoff is not actionable and the caller should fall back to the
+    /// Level-1/2 vine proxy. On a true return the promise import's vine reference
+    /// has been noted and will be released when the Accept `Return` arrives.
+    fn tryAutoPickupThirdParty(self: *Peer, promise_id: u32, descriptor: protocol.CapDescriptor) !bool {
+        const third = descriptor.third_party orelse return false;
+        const contact = third.id orelse return false;
+        const network = self.vat_network orelse return false;
+        const user_cb = self.on_handoff_pickup orelse return false;
+        const user_ctx = self.handoff_pickup_ctx orelse return false;
+
+        // Resolve the ThirdPartyToContact to a live peer connected to the third
+        // vat plus the completion to present in the Accept, BEFORE noting the vine
+        // import. A network that cannot place the contact returns false, leaving
+        // the caller on the vine-proxy fallback (which does its own noteImport) —
+        // so we must not have taken a vine ref yet on that path. Every early
+        // return below this point is either an error (handled by errdefer) or
+        // happens before `noteImport`.
+        var introduced = network.connectToIntroduced(contact) catch |err| {
+            log.debug("auto-pickup connectToIntroduced failed: {}; using vine fallback", .{err});
+            return false;
+        };
+        defer introduced.deinit(self.allocator);
+        const accept_peer = introduced.peer;
+        accept_peer.assertThreadAffinity();
+        if (accept_peer.is_shutting_down) return false;
+
+        // Account for the wire reference the descriptor hands us on the vine. We
+        // own it now and release it once the direct cap is in hand (below /
+        // onHandoffAcceptReturn). This is the ref whose eventual Release signals
+        // VatB to Finish its Provide (rpc.capnp:1232-1237). Past this point every
+        // remaining failure is an error return, so the errdefer covers rollback;
+        // there is no non-error `return false` that could leak the ref.
+        try self.caps.noteImport(third.vine_id);
+        var vine_owned = true;
+        errdefer if (vine_owned) {
+            self.releaseImport(third.vine_id, 1) catch |err| {
+                log.debug("auto-pickup vine rollback release failed: {}", .{err});
+            };
+        };
+
+        var completion_msg = try message.Message.initUnvalidated(self.allocator, introduced.completion);
+        defer completion_msg.deinit();
+        const provision = try completion_msg.getRootAnyPointer();
+
+        const heap = try self.allocator.create(HandoffPickupContext);
+        heap.* = .{
+            .promise_peer = self,
+            .promise_id = promise_id,
+            .vine_id = third.vine_id,
+            .user_ctx = user_ctx,
+            .user_cb = user_cb,
+        };
+        var heap_owned = true;
+        errdefer if (heap_owned) self.allocator.destroy(heap);
+
+        // Send the Accept on the third-vat connection. No embargo (Phase 4): this
+        // slice does not order in-flight promise calls against the handoff.
+        const question_id = try accept_peer.sendAccept(provision, null, heap, onHandoffAcceptReturn);
+        heap_owned = false;
+        vine_owned = false; // ownership transferred to the Accept flow.
+        accept_peer.setQuestionDeinitCtx(question_id, HandoffPickupContext.deinitCtx);
+
+        log.debug("auto-pickup: sent Accept question={} for promise={} vine={}", .{ question_id, promise_id, third.vine_id });
+        return true;
+    }
+
+    /// Return callback for the auto-pickup `Accept`. Runs on the third-vat peer
+    /// (VatA↔VatC). Delivers the accepted direct capability to the application's
+    /// pickup handler, then releases the vine on the promise peer (VatA↔VatB) —
+    /// the wire signal that drives VatB's Provide Finish.
+    fn onHandoffAcceptReturn(
+        ctx_ptr: *anyopaque,
+        accept_peer: *Peer,
+        ret: protocol.Return,
+        accept_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const ctx: *HandoffPickupContext = castCtx(*HandoffPickupContext, ctx_ptr);
+        defer accept_peer.allocator.destroy(ctx);
+        const promise_peer = ctx.promise_peer;
+
+        // Deliver the direct cap to the app FIRST (so it retains the accepted
+        // import on `accept_peer` before we touch the vine), then release the
+        // vine regardless of handler outcome — the pickup is complete on the wire
+        // and the vine's job (holding the third-party cap alive until pickup) is
+        // done. Releasing it drives VatB's Provide Finish.
+        var handler_err: ?anyerror = null;
+        ctx.user_cb(ctx.user_ctx, promise_peer, ctx.promise_id, accept_peer, ret, accept_caps) catch |err| {
+            handler_err = err;
+            log.debug("auto-pickup handler failed for promise {}: {}", .{ ctx.promise_id, err });
+        };
+
+        promise_peer.releaseImport(ctx.vine_id, 1) catch |err| {
+            log.debug("auto-pickup vine release failed for promise {}: {}", .{ ctx.promise_id, err });
+        };
+
+        if (handler_err) |err| return err;
     }
 
     fn hasKnownDisembargoTarget(self: *Peer, target: protocol.MessageTarget) bool {
