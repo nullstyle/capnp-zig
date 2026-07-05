@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **RPC forwarded-return intermediary translation now handles
+  `takeFromOtherQuestion` / `resultsSentElsewhere` instead of degrading to a clean
+  exception.** A peer acting as a forwarding intermediary now rewrites nested
+  `takeFromOtherQuestion` IDs through the forwarded-question map in the
+  caller-translation, `sendResultsTo.yourself`, and `sendResultsTo.thirdParty`
+  propagation modes, and preserves `resultsSentElsewhere` markers for upstream
+  callers. This closes the remaining v0.3.0 frozen two-party known limitation in
+  proxy topologies; ordinary two-party client/server calls were already
+  unaffected. Proven by focused peer regressions covering all forwarding modes.
+
 ### Added
 
 - **RPC Level-3 three-party handoff — introducer now FORWARDS parked pipelined

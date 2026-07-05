@@ -88,15 +88,10 @@ pub fn handleForwardedReturnWithOps(
             },
             .canceled => try ops.send_return_tag(peer, answer_id, .canceled),
             .resultsSentElsewhere => {
-                try ops.send_return_exception(peer, answer_id, "forwarded resultsSentElsewhere unsupported");
+                try ops.send_return_tag(peer, answer_id, .resultsSentElsewhere);
             },
             .takeFromOtherQuestion => {
-                const other_local_id = ret.take_from_other_question orelse return error.MissingQuestionId;
-                const translated = ops.lookup_forwarded_question(peer, other_local_id) orelse {
-                    try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion missing mapping");
-                    return;
-                };
-                try ops.send_take_from_other_question(peer, answer_id, translated);
+                try translateTakeFromOtherQuestion(PeerType, InboundCapsType, peer, answer_id, ret, ops);
             },
             .awaitFromThirdParty => {
                 const await_payload = try ops.capture_payload(peer, ret.accept_from_third_party);
@@ -123,7 +118,7 @@ pub fn handleForwardedReturnWithOps(
                 try ops.send_return_exception(peer, answer_id, ex.reason);
             },
             .takeFromOtherQuestion => {
-                try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion unsupported");
+                try translateTakeFromOtherQuestion(PeerType, InboundCapsType, peer, answer_id, ret, ops);
             },
             .awaitFromThirdParty, .results => {
                 try ops.send_return_tag(peer, answer_id, .resultsSentElsewhere);
@@ -149,7 +144,7 @@ pub fn handleForwardedReturnWithOps(
                 try ops.send_return_exception(peer, answer_id, ex.reason);
             },
             .takeFromOtherQuestion => {
-                try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion unsupported");
+                try translateTakeFromOtherQuestion(PeerType, InboundCapsType, peer, answer_id, ret, ops);
             },
             .results => {
                 const payload = ret.results orelse {
@@ -160,6 +155,22 @@ pub fn handleForwardedReturnWithOps(
             },
         },
     }
+}
+
+fn translateTakeFromOtherQuestion(
+    comptime PeerType: type,
+    comptime InboundCapsType: type,
+    peer: *PeerType,
+    answer_id: u32,
+    ret: protocol.Return,
+    ops: ForwardedReturnOps(PeerType, InboundCapsType),
+) !void {
+    const other_local_id = ret.take_from_other_question orelse return error.MissingQuestionId;
+    const translated = ops.lookup_forwarded_question(peer, other_local_id) orelse {
+        try ops.send_return_exception(peer, answer_id, "forwarded takeFromOtherQuestion missing mapping");
+        return;
+    };
+    try ops.send_take_from_other_question(peer, answer_id, translated);
 }
 
 test "peer_forwarded_return_logic translate mode missing results payload sends exception callback" {

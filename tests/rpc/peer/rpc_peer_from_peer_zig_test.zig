@@ -1132,7 +1132,7 @@ test "forwarded return translates takeFromOtherQuestion id" {
     try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
 }
 
-test "forwarded return converts resultsSentElsewhere to exception" {
+test "forwarded return propagates resultsSentElsewhere tag" {
     const allocator = std.testing.allocator;
 
     const CallbackCtx = struct {
@@ -1144,9 +1144,7 @@ test "forwarded return converts resultsSentElsewhere to exception" {
             _ = caps;
             const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
-            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
-            const ex = ret.exception orelse return error.MissingException;
-            try std.testing.expectEqualStrings("forwarded resultsSentElsewhere unsupported", ex.reason);
+            try std.testing.expectEqual(protocol.ReturnTag.resultsSentElsewhere, ret.tag);
         }
     };
 
@@ -1254,11 +1252,12 @@ test "forwarded return translate mode missing payload sends exception" {
     try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
 }
 
-test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
+test "forwarded return propagate-results mode translates takeFromOtherQuestion id" {
     const allocator = std.testing.allocator;
 
     const CallbackCtx = struct {
         seen: bool = false,
+        referenced_answer: u32 = 0,
     };
     const Handlers = struct {
         fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
@@ -1266,9 +1265,8 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
             _ = caps;
             const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
             state.seen = true;
-            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
-            const ex = ret.exception orelse return error.MissingException;
-            try std.testing.expectEqualStrings("forwarded takeFromOtherQuestion unsupported", ex.reason);
+            try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, ret.tag);
+            state.referenced_answer = ret.take_from_other_question orelse return error.MissingQuestionId;
         }
     };
 
@@ -1277,6 +1275,8 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
 
     const upstream_answer_id: u32 = 352;
     const local_forwarded_question_id: u32 = 353;
+    const local_referenced_question_id: u32 = 354;
+    const translated_upstream_answer_id: u32 = 355;
 
     var callback_ctx = CallbackCtx{};
     try peer.questions.put(upstream_answer_id, .{
@@ -1286,6 +1286,7 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
     });
     try peer.loopback_questions.put(upstream_answer_id, {});
     try peer.forwarded_questions.put(local_forwarded_question_id, upstream_answer_id);
+    try peer.forwarded_questions.put(local_referenced_question_id, translated_upstream_answer_id);
 
     const forward_ctx = try allocator.create(ForwardCallContext);
     forward_ctx.* = .{
@@ -1307,11 +1308,78 @@ test "forwarded return propagate-results mode rejects takeFromOtherQuestion" {
         .tag = .takeFromOtherQuestion,
         .results = null,
         .exception = null,
-        .take_from_other_question = 900,
+        .take_from_other_question = local_referenced_question_id,
     };
     try peer_test_hooks.onForwardedReturn(forward_ctx, &peer, ret, &inbound);
 
     try std.testing.expect(callback_ctx.seen);
+    try std.testing.expectEqual(translated_upstream_answer_id, callback_ctx.referenced_answer);
+    try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
+}
+
+test "forwarded return propagate-accept mode translates takeFromOtherQuestion id" {
+    const allocator = std.testing.allocator;
+
+    const CallbackCtx = struct {
+        seen: bool = false,
+        referenced_answer: u32 = 0,
+    };
+    const Handlers = struct {
+        fn onReturn(ctx: *anyopaque, peer: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = peer;
+            _ = caps;
+            const state: *CallbackCtx = castCtx(*CallbackCtx, ctx);
+            state.seen = true;
+            try std.testing.expectEqual(protocol.ReturnTag.takeFromOtherQuestion, ret.tag);
+            state.referenced_answer = ret.take_from_other_question orelse return error.MissingQuestionId;
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    const upstream_answer_id: u32 = 356;
+    const local_forwarded_question_id: u32 = 357;
+    const local_referenced_question_id: u32 = 358;
+    const translated_upstream_answer_id: u32 = 359;
+
+    var callback_ctx = CallbackCtx{};
+    try peer.questions.put(upstream_answer_id, .{
+        .ctx = &callback_ctx,
+        .on_return = Handlers.onReturn,
+        .is_loopback = true,
+    });
+    try peer.loopback_questions.put(upstream_answer_id, {});
+    try peer.forwarded_questions.put(local_forwarded_question_id, upstream_answer_id);
+    try peer.forwarded_questions.put(local_referenced_question_id, translated_upstream_answer_id);
+
+    const forward_ctx = try allocator.create(ForwardCallContext);
+    forward_ctx.* = .{
+        .peer = &peer,
+        .payload = undefined,
+        .inbound_caps = try cap_table.InboundCapTable.init(allocator, null, &peer.caps),
+        .send_results_to = .thirdParty,
+        .send_results_to_third_party_payload = null,
+        .answer_id = upstream_answer_id,
+        .mode = .propagate_accept_from_third_party,
+    };
+
+    var inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    defer inbound.deinit();
+
+    const ret = protocol.Return{
+        .answer_id = local_forwarded_question_id,
+        .release_param_caps = false,
+        .no_finish_needed = false,
+        .tag = .takeFromOtherQuestion,
+        .results = null,
+        .exception = null,
+        .take_from_other_question = local_referenced_question_id,
+    };
+    try peer_test_hooks.onForwardedReturn(forward_ctx, &peer, ret, &inbound);
+
+    try std.testing.expect(callback_ctx.seen);
+    try std.testing.expectEqual(translated_upstream_answer_id, callback_ctx.referenced_answer);
     try std.testing.expect(!peer.forwarded_questions.contains(local_forwarded_question_id));
 }
 

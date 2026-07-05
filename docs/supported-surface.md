@@ -150,17 +150,21 @@ Each of these is a defined, non-corrupting behavior — safe to tag with, listed
 you know exactly what you are relying on. None is a leak/UAF/hang against a
 cooperating peer.
 
-The one remaining active limitation on the frozen two-party surface is the
-forwarded-return intermediary case; three of the four v0.2.0 limitations were
-fixed this release (see *Resolved since v0.2.0* below).
+The forwarded-return intermediary case that shipped as the one remaining active
+v0.3.0 limitation is resolved on main; no active limitation is currently
+documented for the frozen two-party surface. Historical resolved items are listed
+below so release-to-release behavior changes stay auditable.
 
-1. **Forwarded-return `takeFromOtherQuestion` / `resultsSentElsewhere`** — when
-   acting as a forwarding intermediary, these two Return modes are not fully
-   translated and degrade to a clean exception Return rather than corrupt state
-   (`src/rpc/peer/forward/peer_forwarded_return_logic.zig`). Reachable only in a
-   proxy topology no two-party deployment exercises. This is the top target for
-   the post-tag conformance push; it does not affect correctness for a standard
-   two-party client/server.
+### Resolved since v0.3.0
+
+- **Forwarded-return `takeFromOtherQuestion` / `resultsSentElsewhere` — RESOLVED.**
+  When acting as a forwarding intermediary, capnp-zig now translates nested
+  `takeFromOtherQuestion` IDs through the forwarded-question map in the
+  caller-translation and propagation modes, and preserves `resultsSentElsewhere`
+  markers instead of degrading to a clean exception
+  (`src/rpc/peer/forward/peer_forwarded_return_logic.zig`). Reachable only in
+  proxy topologies; standard two-party client/server calls were already
+  unaffected.
 
 ### Resolved since v0.2.0
 
