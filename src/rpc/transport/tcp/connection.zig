@@ -160,19 +160,45 @@ pub const Connection = struct {
     }
 
     pub const Options = struct {
+        /// Size of the per-connection inbound read buffer. Default: 64 KiB.
         read_buffer_size: usize = 64 * 1024,
+        /// Maximum number of frames queued for the writer before backpressure.
+        /// Default: `Transport.default_max_queued_items` (1024).
         write_queue_max_items: usize = transport_mod.Transport.default_max_queued_items,
+        /// Maximum bytes queued for the writer before backpressure.
+        /// Default: `Transport.default_max_queued_bytes` (64 MiB).
         write_queue_max_bytes: usize = transport_mod.Transport.default_max_queued_bytes,
+        /// Optional event observer. Default: none.
         observer: ?events.Observer = null,
-        /// See `Connection.tick_interval_ms`.
+        /// See `Connection.tick_interval_ms`. Default: none (no tick cadence).
         tick_interval_ms: ?u32 = null,
-        /// See `Connection.idle_timeout_ms`.
+        /// See `Connection.idle_timeout_ms`. Default: none (no idle timeout).
         idle_timeout_ms: ?u64 = null,
         /// Cap on bytes buffered while assembling one inbound frame
         /// (header plus segments). Exceeding it is a fatal framing error.
         /// Mirrors the QUIC transport's per-message bound; lower this for
-        /// untrusted peers.
+        /// untrusted peers. Default: `Framer.default_max_buffered_bytes`.
         max_buffered_frame_bytes: usize = framing.Framer.default_max_buffered_bytes,
+
+        /// The documented default `Options` set, spelled out explicitly.
+        ///
+        /// This establishes the stable defaults contract for the frozen
+        /// `Options` surface: `Options.default()` and the field-default form
+        /// `.{}` are equivalent and will remain so. Prefer `.{ ...overrides }`
+        /// for callers that only change a few tunables; use `default()` when
+        /// you want an explicit, named starting point (e.g. copying then
+        /// mutating a base config).
+        pub fn default() Options {
+            return .{
+                .read_buffer_size = 64 * 1024,
+                .write_queue_max_items = transport_mod.Transport.default_max_queued_items,
+                .write_queue_max_bytes = transport_mod.Transport.default_max_queued_bytes,
+                .observer = null,
+                .tick_interval_ms = null,
+                .idle_timeout_ms = null,
+                .max_buffered_frame_bytes = framing.Framer.default_max_buffered_bytes,
+            };
+        }
     };
 
     /// Reachable failures of `init`. The only fallible step is allocating the
@@ -1176,4 +1202,16 @@ test "connection isClosing reflects transport state" {
 
     conn.transport.close_requested.store(true, .release);
     try std.testing.expect(conn.isClosing());
+}
+
+test "Connection.Options.default matches field-default form" {
+    const defaults = Connection.Options.default();
+    const empty: Connection.Options = .{};
+    try std.testing.expectEqual(empty.read_buffer_size, defaults.read_buffer_size);
+    try std.testing.expectEqual(empty.write_queue_max_items, defaults.write_queue_max_items);
+    try std.testing.expectEqual(empty.write_queue_max_bytes, defaults.write_queue_max_bytes);
+    try std.testing.expectEqual(empty.observer, defaults.observer);
+    try std.testing.expectEqual(empty.tick_interval_ms, defaults.tick_interval_ms);
+    try std.testing.expectEqual(empty.idle_timeout_ms, defaults.idle_timeout_ms);
+    try std.testing.expectEqual(empty.max_buffered_frame_bytes, defaults.max_buffered_frame_bytes);
 }

@@ -680,22 +680,37 @@ pub const Peer = struct {
         state.assertThreadAffinity(self.owner_thread_id, self.runtime_thread_checks);
     }
 
-    /// Create a peer and immediately attach it to a connection/transport.
+    /// Canonical `Peer` constructor: create a peer and immediately attach it
+    /// to a connection/transport. This is the single supported entry point for
+    /// normal RPC use — `ClientSession.connect` and `ServerSession.accept` both
+    /// build their peer this way. Prefer it unless you have a specific reason
+    /// to construct a detached peer (see `initDetached`).
+    ///
+    /// Under the hood this is `initDetached` followed by `attachConnection`;
+    /// the two-step form exists only for advanced/embedded scenarios.
     pub fn init(allocator: std.mem.Allocator, conn: anytype) Peer {
         var peer = initDetached(allocator);
         peer.attachConnection(conn);
         return peer;
     }
 
-    /// Create a peer without an attached transport.
+    /// Advanced/internal: create a peer WITHOUT an attached transport.
     ///
-    /// Useful for WASM, unit tests, or manual frame injection via
-    /// `handleFrame` and `setSendFrameOverride`.
+    /// Most callers want the canonical `init`, which attaches a connection in
+    /// one step. Reach for `initDetached` only when there is no connection to
+    /// attach yet — WASM, unit tests, or manual frame injection via
+    /// `handleFrame` and `setSendFrameOverride`. Pair it with a later
+    /// `attachConnection` (or `attachTransport*`) before driving real traffic.
     pub fn initDetached(allocator: std.mem.Allocator) Peer {
         return initDetachedWithLimits(allocator, .{});
     }
 
-    /// Create a peer without an attached transport and with explicit limits.
+    /// Advanced/internal: like `initDetached`, but with explicit resource
+    /// limits instead of the defaults.
+    ///
+    /// Prefer the canonical `init` and set limits afterward via `setLimits`
+    /// when you can; this variant exists to construct a detached peer with a
+    /// non-default `PeerLimits` in one call. Not the normal-use entry point.
     pub fn initDetachedWithLimits(allocator: std.mem.Allocator, limits: PeerLimits) Peer {
         return .{
             .allocator = allocator,
@@ -794,7 +809,14 @@ pub const Peer = struct {
         entry.deadline_ns = null;
     }
 
-    /// Bind a typed connection to this peer, wiring up transport callbacks.
+    /// Canonical transport-attach: bind a typed connection to this peer,
+    /// wiring up transport callbacks. This is the single supported way to give
+    /// a peer a transport — `Peer.init` calls it, and it is what
+    /// `ClientSession`/`ServerSession` rely on. Prefer it whenever you have a
+    /// connection object (e.g. `transport.tcp.Connection`).
+    ///
+    /// The lower-level `attachTransport` / `attachTransportBinding` seams exist
+    /// for building brand-new transports and are not the normal-use path.
     ///
     /// Asserts that no transport is already attached. Call `detachConnection`
     /// first if you need to replace an existing transport.
@@ -837,11 +859,14 @@ pub const Peer = struct {
         self.detachTransport();
     }
 
-    /// Attach raw transport callbacks (send, close, isClosing) to this peer.
+    /// Advanced: attach raw transport callbacks (start, send, close,
+    /// isClosing) to this peer.
     ///
-    /// Unlike `attachConnection`, this does not wrap a typed connection object;
-    /// the caller provides each callback individually. Panics if a transport
-    /// is already attached.
+    /// Prefer the canonical `attachConnection` when you have a typed connection
+    /// object — it wires these callbacks for you. Use `attachTransport` only
+    /// when bridging a transport that is not a `Connection`-shaped object and
+    /// you must supply each callback individually. Panics if a transport is
+    /// already attached.
     pub fn attachTransport(
         self: *Peer,
         ctx: *anyopaque,
@@ -853,10 +878,12 @@ pub const Peer = struct {
         self.attachTransportBinding(.init(ctx, start_fn, send_fn, close_fn, is_closing));
     }
 
-    /// Attach a named transport binding to this peer.
+    /// Advanced: attach a named transport binding to this peer.
     ///
-    /// This is the preferred boundary for new transports: adapt the transport
-    /// into a `TransportBinding`, then attach the binding here.
+    /// Prefer the canonical `attachConnection` for normal use. This is the
+    /// preferred low-level boundary when *building a new transport*: adapt the
+    /// transport into a `TransportBinding`, then attach the binding here.
+    /// `attachConnection` and `attachTransport` are thin wrappers over it.
     pub fn attachTransportBinding(self: *Peer, binding: TransportBinding) void {
         self.assertThreadAffinity();
         if (self.hasAttachedTransport()) {

@@ -4,11 +4,17 @@ const log = std.log.scoped(.rpc_transport);
 const net = std.Io.net;
 const events = @import("../../events.zig");
 
-/// A connected socket passed into the transport layer. A thin named
-/// wrapper: `std.Io.net.Socket.Handle` is an `i32` on POSIX and a pointer
-/// (`HANDLE`) on Windows, and naming the type keeps the public surface —
-/// and the docs/api-snapshot.txt gate built from it — identical on every
-/// platform.
+/// Opaque platform-stable socket handle wrapper passed into the transport
+/// layer. This is the canonical handle type in every public, handle-taking
+/// entry point (`Connection.init`, `Listener.initFd`/`acceptFd`/`listenHandle`,
+/// `Transport.init*`, `createLoopbackSocketPair`, and the `runtime` re-export).
+///
+/// It is a thin named wrapper so the raw platform handle never leaks into a
+/// frozen signature: `std.Io.net.Socket.Handle` is an `i32` on POSIX and a
+/// pointer (`*anyopaque`/`HANDLE`) on Windows. Wrapping it keeps the public
+/// surface — and the `docs/api-snapshot.txt` gate built from it — byte-for-byte
+/// identical on every platform. Treat `handle` as opaque; do not depend on its
+/// concrete type across targets.
 pub const SocketFd = struct {
     handle: net.Socket.Handle,
 };
