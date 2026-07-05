@@ -285,6 +285,30 @@ const GetNumberCall = struct {
     }
 };
 
+const GetNumberResultOrExceptionCall = struct {
+    result: ?u32 = null,
+    returned: bool = false,
+    exception: bool = false,
+
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *GetNumberResultOrExceptionCall = castCtx(*GetNumberResultOrExceptionCall, ctx_ptr);
+        self.returned = true;
+        switch (ret.tag) {
+            .results => {
+                const payload = ret.results orelse return error.MissingGetNumberPayload;
+                self.result = try readNumberN(payload);
+            },
+            .exception => self.exception = true,
+            else => return error.UnexpectedGetNumberReturn,
+        }
+    }
+};
+
 // -- Three-connection synchronous wire ---------------------------------------
 //
 // Frames from A<->B and B<->C forward straight to the paired endpoint. Vat C's
@@ -1452,6 +1476,282 @@ test "three-party handoff: forwarded parked call remaps cap-bearing results" {
     try std.testing.expect(!b_to_c.caps.hasImport(counter_import_id));
     try std.testing.expect(!a_to_b.caps.hasImport(introducer_import_id));
     try std.testing.expectEqual(@as(usize, 0), b_to_c.coupled_vines.items.len);
+}
+
+test "three-party handoff: cross-peer result proxy survives source peer teardown" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    var b_to_c_alive = true;
+    defer if (b_to_c_alive) b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-proxy-source-deinit-nonce";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_c.attachVatNetwork(net.network());
+
+    var helper = Carol{};
+    const helper_export_id = try c.addExport(.{ .ctx = &helper, .on_call = Carol.onCall });
+    var cap_returner = CapReturningCounter{ .helper_export_id = helper_export_id };
+    _ = try c.setBootstrap(.{ .ctx = &cap_returner, .on_call = CapReturningCounter.onCall });
+    var counter_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&counter_probe, CarolImportProbe.onReturn);
+    const counter_import_id = counter_probe.carol_import_id orelse return error.CounterBootstrapFailed;
+
+    var introducer = PromiseIntroducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = PromiseIntroducer.onCall });
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse return error.IntroducerBootstrapFailed;
+
+    var promise_probe = PromiseImportProbe{};
+    _ = try a_to_b.sendCall(introducer_import_id, 0x1234_5678_9abc_def0, 0, &promise_probe, null, PromiseImportProbe.onReturn);
+    const promise_import_id = promise_probe.promise_import_id orelse return error.PromiseNotImportedByA;
+
+    var cap_result = CapResultCall{};
+    const cap_result_question_id = try a_to_b.sendCall(
+        promise_import_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &cap_result,
+        null,
+        CapResultCall.onReturn,
+    );
+    try std.testing.expect(!cap_result.returned);
+    try std.testing.expect(b_to_a.pending_export_promises.contains(promise_import_id));
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = counter_import_id,
+        .promised_answer = null,
+    };
+    const handle = try b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        provided_target,
+        recipient,
+        introduction.to_contact,
+    );
+
+    try std.testing.expect(cap_result.returned);
+    try std.testing.expect(!cap_result.exception);
+    const returned_cap_import_id = cap_result.cap_import_id orelse return error.ResultCapNotImportedByA;
+    try std.testing.expect(a_to_b.caps.hasImport(returned_cap_import_id));
+    try std.testing.expect(b_to_a.exports.contains(returned_cap_import_id));
+    try std.testing.expectEqual(@as(usize, 1), b_to_c.cross_peer_proxy_links.items.len);
+    try std.testing.expectEqual(@as(u32, 1), cap_returner.calls);
+
+    var before_drop = GetNumberCall{};
+    _ = try a_to_b.sendCall(
+        returned_cap_import_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &before_drop,
+        null,
+        GetNumberCall.onReturn,
+    );
+    try std.testing.expectEqual(@as(u32, 42), before_drop.result.?);
+    try std.testing.expectEqual(@as(u32, 1), helper.get_number_calls);
+
+    link.forwarding = false;
+    b_to_c.deinit();
+    b_to_c_alive = false;
+    link.b_to_c = null;
+    link.forwarding = true;
+
+    var after_drop = GetNumberResultOrExceptionCall{};
+    _ = try a_to_b.sendCall(
+        returned_cap_import_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &after_drop,
+        null,
+        GetNumberResultOrExceptionCall.onReturn,
+    );
+    try std.testing.expect(after_drop.returned);
+    try std.testing.expect(after_drop.exception);
+    try std.testing.expectEqual(@as(?u32, null), after_drop.result);
+    try std.testing.expectEqual(@as(u32, 1), helper.get_number_calls);
+
+    try a_to_b.releaseImport(returned_cap_import_id, 1);
+    try std.testing.expect(!a_to_b.caps.hasImport(returned_cap_import_id));
+    try a_to_b.sendFinishForHost(cap_result_question_id, false, false);
+    try std.testing.expect(!b_to_a.exports.contains(returned_cap_import_id));
+
+    const vine_id = handle.vine_id;
+    try a_to_b.releaseImport(vine_id, 1);
+    try a_to_b.releaseImport(introducer_import_id, 1);
+
+    try std.testing.expect(!b_to_a.exports.contains(vine_id));
+    try std.testing.expect(!b_to_a.outbound_provides.contains(vine_id));
+    try std.testing.expect(!a_to_b.caps.hasImport(introducer_import_id));
+
+    link.forwarding = false;
+}
+
+test "three-party handoff: cross-peer result proxy deregisters when owner peer dies first" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    defer b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    var b_to_a_alive = true;
+    defer if (b_to_a_alive) b_to_a.deinit();
+
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-proxy-owner-deinit-nonce";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_c.attachVatNetwork(net.network());
+
+    var helper = Carol{};
+    const helper_export_id = try c.addExport(.{ .ctx = &helper, .on_call = Carol.onCall });
+    var cap_returner = CapReturningCounter{ .helper_export_id = helper_export_id };
+    _ = try c.setBootstrap(.{ .ctx = &cap_returner, .on_call = CapReturningCounter.onCall });
+    var counter_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&counter_probe, CarolImportProbe.onReturn);
+    const counter_import_id = counter_probe.carol_import_id orelse return error.CounterBootstrapFailed;
+
+    var introducer = PromiseIntroducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = PromiseIntroducer.onCall });
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse return error.IntroducerBootstrapFailed;
+
+    var promise_probe = PromiseImportProbe{};
+    _ = try a_to_b.sendCall(introducer_import_id, 0x1234_5678_9abc_def0, 0, &promise_probe, null, PromiseImportProbe.onReturn);
+    const promise_import_id = promise_probe.promise_import_id orelse return error.PromiseNotImportedByA;
+
+    var cap_result = CapResultCall{};
+    _ = try a_to_b.sendCall(
+        promise_import_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &cap_result,
+        null,
+        CapResultCall.onReturn,
+    );
+    try std.testing.expect(!cap_result.returned);
+    try std.testing.expect(b_to_a.pending_export_promises.contains(promise_import_id));
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = counter_import_id,
+        .promised_answer = null,
+    };
+    const handle = try b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        provided_target,
+        recipient,
+        introduction.to_contact,
+    );
+    _ = handle;
+
+    try std.testing.expect(cap_result.returned);
+    try std.testing.expect(!cap_result.exception);
+    const returned_cap_import_id = cap_result.cap_import_id orelse return error.ResultCapNotImportedByA;
+    try std.testing.expect(a_to_b.caps.hasImport(returned_cap_import_id));
+    try std.testing.expect(b_to_a.exports.contains(returned_cap_import_id));
+    try std.testing.expectEqual(@as(usize, 1), b_to_c.cross_peer_proxy_links.items.len);
+    try std.testing.expectEqual(@as(u32, 1), cap_returner.calls);
+
+    link.forwarding = false;
+    b_to_a.deinit();
+    b_to_a_alive = false;
+    link.b_to_a = null;
+
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.cross_peer_proxy_links.items.len);
+
+    try b_to_c.releaseImport(counter_import_id, 1);
+    try std.testing.expect(!b_to_c.caps.hasImport(counter_import_id));
 }
 
 // ============================================================================
