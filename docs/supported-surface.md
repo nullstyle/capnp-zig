@@ -137,12 +137,10 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   back to complete the caller's original pipelined question, preserving e-order
   (spec `rpc.capnp:898` and the handoff ordering section: parked calls reach the
   host in send order and strictly before any post-pickup direct call) and the
-  vine refcount/liveness coupling. One narrow nuance remains: this forwarding
-  handles cap-free params/results (the common pipelined getter/counter shape); a
-  forwarded pipelined call whose params or results carry capabilities degrades to
-  a clean exception rather than corrupt cross-connection cap state (cross-peer
-  cap-table remapping is a follow-up). Do not depend on the L3 surface for
-  production interop.
+  vine refcount/liveness coupling. On main, this forwarding also remaps
+  cap-bearing params/results by minting cross-peer proxy exports, so caller-hosted
+  param caps and host-returned result caps can be invoked through the relay. Do
+  not depend on the L3 surface for production interop.
 
 ## Known limitations (v0.3.0)
 

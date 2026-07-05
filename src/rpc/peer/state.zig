@@ -71,9 +71,12 @@ pub const PeerTimeouts = struct {
     shutdown_drain_timeout_ms: ?u64 = null,
 };
 
+const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
+
 pub fn ExportEntry(comptime ExportType: type) type {
     return struct {
         handler: ?ExportType = null,
+        deinit_ctx: ?ExportDeinitCtxFn = null,
         /// Wire references: one per cap descriptor sent to the remote peer,
         /// released by inbound Release messages (or Finish.releaseResultCaps).
         ref_count: u32,

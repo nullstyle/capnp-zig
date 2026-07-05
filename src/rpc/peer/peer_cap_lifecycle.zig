@@ -122,14 +122,19 @@ fn destroyExportEntry(
     clear_export: *const fn (*PeerType, u32) void,
     deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
 ) void {
-    _ = exports.remove(id);
+    const removed = exports.fetchRemove(id) orelse return;
     clear_export(peer, id);
-    if (pending_export_promises.fetchRemove(id)) |removed| {
-        var pending = removed.value;
+    if (pending_export_promises.fetchRemove(id)) |pending_removed| {
+        var pending = pending_removed.value;
         for (pending.items) |*pending_call| {
             deinit_pending_call(peer, pending_call, allocator);
         }
         pending.deinit(allocator);
+    }
+    if (@hasField(ExportEntryType, "deinit_ctx")) {
+        if (removed.value.deinit_ctx) |deinit_ctx| {
+            if (removed.value.handler) |handler| deinit_ctx(allocator, handler.ctx);
+        }
     }
 }
 

@@ -187,6 +187,7 @@ pub const PeerLimits = state.PeerLimits;
 pub const PeerTimeouts = state.PeerTimeouts;
 
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
+const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
 const Question = state.Question(QuestionCallback);
 const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
 
@@ -233,6 +234,9 @@ const ForwardReturnBuildContext = struct {
 /// `forwardVineReturn` on the single Return, or by the forwarded question's
 /// `deinit_ctx` if the B↔C peer tears down first.
 const ForwardVineCallContext = struct {
+    /// The peer used to forward the call to VatC (B↔C). Parameter-cap proxy
+    /// exports created while building the forwarded call live on this peer.
+    forward_peer: *Peer,
     /// The peer that received VatA's original pipelined call (B↔A). Its
     /// `recipient_answer_id` active-inbound question is completed with VatC's
     /// result.
@@ -247,6 +251,12 @@ const ForwardVineCallContext = struct {
     /// reads only `recipient_peer` / `recipient_answer_id` / `settled_flag`), so
     /// the ctx may safely outlive the parked frame.
     source_params: protocol.Payload,
+    /// VatA's parked call cap table. Only used synchronously by
+    /// `forwardVineParams`, but stored here so capability pointers in
+    /// `source_params` can be remapped into B↔C proxy exports.
+    source_inbound_caps: *cap_table.InboundCapTable,
+    created_param_proxy_ids: std.ArrayList(u32) = .empty,
+    param_proxies_committed: bool = false,
     /// One-shot back-signal to `forwardVineCallToProvidedCap`, set true by
     /// `forwardVineReturn` the instant the return callback runs (before it frees
     /// this ctx). It points at a stack-local `bool` in that caller and is valid
@@ -260,17 +270,132 @@ const ForwardVineCallContext = struct {
     /// this ctx.
     settled_flag: ?*bool = null,
 
+    fn rollbackParamProxies(ctx: *ForwardVineCallContext) void {
+        if (ctx.param_proxies_committed) return;
+        for (ctx.created_param_proxy_ids.items) |id| {
+            ctx.forward_peer.destroyUnreferencedProxyExport(id);
+        }
+    }
+
     fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *ForwardVineCallContext = @ptrCast(@alignCast(ctx_ptr));
+        ctx.rollbackParamProxies();
+        ctx.created_param_proxy_ids.deinit(allocator);
         allocator.destroy(ctx);
     }
 };
 
-/// Build-closure state for cloning a (cap-free) payload's content into an
-/// outbound builder — used to relay VatC's results onto VatA's Return.
-/// Stack-owned by its caller for the synchronous duration of the build.
-const ClonePayloadContentContext = struct {
+const CrossPeerProxyContext = struct {
+    owner_peer: *Peer,
+    export_id: u32 = 0,
+    /// Peer whose cap table can call the original capability represented by
+    /// `target`. When the proxy is released, an owned source import ref is
+    /// released on this peer if one was retained.
+    source_peer: ?*Peer,
+    target: cap_table.ResolvedCap,
+    release_source_import_id: ?u32 = null,
+
+    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+        const ctx: *CrossPeerProxyContext = @ptrCast(@alignCast(ctx_ptr));
+        if (ctx.source_peer) |source_peer| {
+            source_peer.deregisterCrossPeerProxy(ctx.owner_peer, ctx.export_id);
+            if (ctx.release_source_import_id) |import_id| {
+                source_peer.releaseImport(import_id, 1) catch |err| {
+                    log.debug("cross-peer proxy: failed to release source import {}: {}", .{ import_id, err });
+                };
+            }
+        }
+        allocator.destroy(ctx);
+    }
+
+    fn onCall(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const ctx: *CrossPeerProxyContext = castCtx(*CrossPeerProxyContext, ctx_ptr);
+        const source_peer = ctx.source_peer orelse {
+            try peer.sendReturnException(call.question_id, "cross-peer proxy source disconnected");
+            return;
+        };
+        try peer.forwardCrossPeerProxyCall(call, inbound_caps, source_peer, ctx.target);
+    }
+};
+
+const CrossPeerProxyCallContext = struct {
+    recipient_peer: *Peer,
+    recipient_answer_id: u32,
+    forward_peer: *Peer,
+    target: cap_table.ResolvedCap,
+    source_params: protocol.Payload,
+    source_inbound_caps: *cap_table.InboundCapTable,
+    created_param_proxy_ids: std.ArrayList(u32) = .empty,
+    param_proxies_committed: bool = false,
+    settled_flag: ?*bool = null,
+
+    fn rollbackParamProxies(ctx: *CrossPeerProxyCallContext) void {
+        if (ctx.param_proxies_committed) return;
+        for (ctx.created_param_proxy_ids.items) |id| {
+            ctx.forward_peer.destroyUnreferencedProxyExport(id);
+        }
+    }
+
+    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+        const ctx: *CrossPeerProxyCallContext = @ptrCast(@alignCast(ctx_ptr));
+        ctx.rollbackParamProxies();
+        ctx.created_param_proxy_ids.deinit(allocator);
+        allocator.destroy(ctx);
+    }
+};
+
+const CrossPeerCapMapContext = struct {
+    inbound_peer: *Peer,
+    outbound_peer: *Peer,
+    inbound_caps: *cap_table.InboundCapTable,
+    created_proxy_ids: *std.ArrayList(u32),
+    remapped_by_index: std.AutoHashMap(u32, u32),
+
+    fn init(
+        inbound_peer: *Peer,
+        outbound_peer: *Peer,
+        inbound_caps: *cap_table.InboundCapTable,
+        created_proxy_ids: *std.ArrayList(u32),
+    ) CrossPeerCapMapContext {
+        return .{
+            .inbound_peer = inbound_peer,
+            .outbound_peer = outbound_peer,
+            .inbound_caps = inbound_caps,
+            .created_proxy_ids = created_proxy_ids,
+            .remapped_by_index = std.AutoHashMap(u32, u32).init(outbound_peer.allocator),
+        };
+    }
+
+    fn deinit(ctx: *CrossPeerCapMapContext) void {
+        ctx.remapped_by_index.deinit();
+    }
+};
+
+const CrossPeerReturnRelayContext = struct {
+    source_peer: *Peer,
+    target_peer: *Peer,
     source: protocol.Payload,
+    source_inbound_caps: *cap_table.InboundCapTable,
+    release_param_caps: bool = true,
+    created_result_proxy_ids: std.ArrayList(u32) = .empty,
+    result_proxies_committed: bool = false,
+
+    fn rollbackResultProxies(ctx: *CrossPeerReturnRelayContext) void {
+        if (ctx.result_proxies_committed) return;
+        for (ctx.created_result_proxy_ids.items) |id| {
+            ctx.target_peer.destroyUnreferencedProxyExport(id);
+        }
+    }
+
+    fn deinit(ctx: *CrossPeerReturnRelayContext, allocator: std.mem.Allocator) void {
+        ctx.rollbackResultProxies();
+        ctx.created_result_proxy_ids.deinit(allocator);
+    }
 };
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
@@ -468,6 +593,15 @@ const CoupledVine = struct {
     vine_id: u32,
 };
 
+/// Liveness back-link for a cross-peer capability proxy. The proxy export lives
+/// on `owner_peer`, but its handler borrows a pointer to the source peer so it
+/// can forward calls and release the retained source import. If the source peer
+/// deinits first, it walks these links and nulls those borrowed pointers.
+const CrossPeerProxyLink = struct {
+    owner_peer: *Peer,
+    proxy_export_id: u32,
+};
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     limits: PeerLimits,
@@ -560,6 +694,10 @@ pub const Peer = struct {
     /// Entries are removed as soon as their coupling drains (vine Release, or the
     /// recipient peer's own deinit). Empty for a peer that originated no handoffs.
     coupled_vines: std.ArrayList(CoupledVine),
+    /// Back-links from proxy exports on other peers that borrow this peer as
+    /// their source. Walked at deinit to null those borrowed pointers before this
+    /// peer's memory is freed.
+    cross_peer_proxy_links: std.ArrayList(CrossPeerProxyLink),
     /// In-progress Join operations collecting parts.
     pending_joins: std.AutoHashMap(u32, JoinState),
     /// Maps a Join answer's question ID to its join ID + part number.
@@ -799,6 +937,7 @@ pub const Peer = struct {
             .provides_by_key = std.StringHashMap(u32).init(allocator),
             .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
             .coupled_vines = .empty,
+            .cross_peer_proxy_links = .empty,
             .pending_joins = std.AutoHashMap(u32, JoinState).init(allocator),
             .pending_join_questions = std.AutoHashMap(u32, PendingJoinQuestion).init(allocator),
             .pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)).init(allocator),
@@ -1064,6 +1203,7 @@ pub const Peer = struct {
         // no-op instead of a freed-peer deref. Must run before we return; running
         // it first keeps it independent of any error path below.
         self.neutralizeCoupledVinesOnProvidePeer();
+        self.neutralizeCrossPeerProxiesOnSourcePeer();
         _ = self.forceCancelAllQuestions(disconnected_reason);
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
@@ -1118,6 +1258,14 @@ pub const Peer = struct {
             while (p_it.next()) |st| self.allocator.destroy(st.*);
         }
         self.persistent_exports.deinit();
+        {
+            var e_it = self.exports.valueIterator();
+            while (e_it.next()) |entry| {
+                if (entry.deinit_ctx) |deinit_ctx| {
+                    if (entry.handler) |handler| deinit_ctx(self.allocator, handler.ctx);
+                }
+            }
+        }
         self.exports.deinit();
         self.forwarded_questions.deinit();
         self.forwarded_tail_questions.deinit();
@@ -1146,6 +1294,7 @@ pub const Peer = struct {
         // Symmetric back-link list (this peer as a provide_peer). Any residual
         // entries were neutralized at the top of deinit; free the backing store.
         self.coupled_vines.deinit(self.allocator);
+        self.cross_peer_proxy_links.deinit(self.allocator);
 
         peer_cleanup.deinitJoinStateMap(
             @TypeOf(self.pending_joins),
@@ -1494,12 +1643,17 @@ pub const Peer = struct {
 
     /// Register a local capability for export and return its export ID.
     pub fn addExport(self: *Peer, exported: Export) !u32 {
+        return self.addExportWithDeinit(exported, null);
+    }
+
+    fn addExportWithDeinit(self: *Peer, exported: Export, deinit_ctx: ?ExportDeinitCtxFn) !u32 {
         self.assertThreadAffinity();
         const id = try self.caps.allocExportId();
         try self.caps.noteExport(id);
         errdefer self.caps.clearExport(id);
         try self.exports.put(id, .{
             .handler = exported,
+            .deinit_ctx = deinit_ctx,
             .ref_count = 0,
             .is_promise = false,
             .resolved = null,
@@ -1882,13 +2036,11 @@ pub const Peer = struct {
     /// by the forwarded question's `deinit_ctx` on a raced peer teardown. The
     /// vine's own lifetime is unchanged — still driven solely by VatA's Release.
     ///
-    /// CAP-CARRYING PAYLOADS: this slice forwards cap-FREE params and relays
-    /// cap-free results (the common pipelined getter/counter shape). Params or
-    /// results that carry capabilities would need cross-peer cap-table remapping
-    /// (the two connections have independent id spaces); rather than corrupt
-    /// state, such a call degrades to a clean exception on VatA's question —
-    /// consistent with the forwarded-intermediary limitation already documented
-    /// for `takeFromOtherQuestion`/`resultsSentElsewhere`.
+    /// CAP-CARRYING PAYLOADS: params and results are cloned across independent
+    /// connection id spaces by minting proxy exports on the outgoing peer. Those
+    /// proxies retain the source-side inbound import ref until the destination
+    /// releases the proxy, so callbacks can flow through the forwarded handoff
+    /// without dangling the original call/return cap table.
     fn forwardVineCallToProvidedCap(
         self: *Peer,
         call: protocol.Call,
@@ -1896,28 +2048,19 @@ pub const Peer = struct {
         provide_peer: *Peer,
         provided_import_id: u32,
     ) !void {
-        _ = inbound_caps;
-
-        // Cap-carrying params cannot be safely remapped across the two
-        // independent connections in this slice — degrade cleanly.
-        if (call.params.cap_table) |table| {
-            if (table.len() > 0) {
-                try self.sendReturnException(call.question_id, "forwarded pipelined call params carry capabilities (unsupported)");
-                return;
-            }
-        }
-
         // One heap ctx serves BOTH callbacks `sendCall` drives with a single
         // ctx: `forwardVineParams` (synchronous build, reads `source_params`)
         // and `forwardVineReturn` (later, reads `recipient_*`).
         const relay = try self.allocator.create(ForwardVineCallContext);
         relay.* = .{
+            .forward_peer = provide_peer,
             .recipient_peer = self,
             .recipient_answer_id = call.question_id,
             .source_params = call.params,
+            .source_inbound_caps = @constCast(inbound_caps),
         };
         var relay_owned = true;
-        errdefer if (relay_owned) self.allocator.destroy(relay);
+        errdefer if (relay_owned) ForwardVineCallContext.deinit(self.allocator, relay);
 
         // Set true by `forwardVineReturn` iff it runs SYNCHRONOUSLY nested inside
         // the `sendCall` below (the loopback case) — meaning the return callback
@@ -1962,7 +2105,7 @@ pub const Peer = struct {
             // best-effort (logged, not propagated): VatA's own connection settles
             // the question on teardown if this last resort also fails.
             relay_owned = false;
-            self.allocator.destroy(relay);
+            ForwardVineCallContext.deinit(self.allocator, relay);
             self.sendReturnException(call.question_id, @errorName(err)) catch |send_err| {
                 log.debug("forwarded pipelined call: failed to fail question {}: {}", .{ call.question_id, send_err });
             };
@@ -1982,6 +2125,7 @@ pub const Peer = struct {
         // (which never completes VatA's question; VatA's own connection settles
         // it independently). The question is already `restore_on_return_error =
         // false` from `sendForwardedVineCall`.
+        relay.param_proxies_committed = true;
         relay.settled_flag = null;
         if (provide_peer.questions.getPtr(forwarded_question_id)) |q| {
             q.deinit_ctx = ForwardVineCallContext.deinit;
@@ -1990,13 +2134,19 @@ pub const Peer = struct {
     }
 
     /// Build closure for the forwarded call to VatC: clone VatA's parked params
-    /// (cap-free — guaranteed by `forwardVineCallToProvidedCap`) into the new
-    /// call's payload. Runs synchronously inside `sendCall`.
+    /// into the new call's payload, remapping capability pointers into B↔C
+    /// proxy exports. Runs synchronously inside `sendCall`.
     fn forwardVineParams(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
-        const ctx: *const ForwardVineCallContext = castCtx(*const ForwardVineCallContext, ctx_ptr);
-        var payload = try call_builder.payloadTyped();
-        const any_builder = try payload.initContent();
-        try message.cloneAnyPointer(ctx.source_params.content, any_builder);
+        const ctx: *ForwardVineCallContext = castCtx(*ForwardVineCallContext, ctx_ptr);
+        const payload_builder = try call_builder.payloadTyped();
+        try ctx.forward_peer.clonePayloadAcrossPeers(
+            call_builder.call.builder,
+            payload_builder,
+            ctx.source_params,
+            ctx.recipient_peer,
+            ctx.source_inbound_caps,
+            &ctx.created_param_proxy_ids,
+        );
     }
 
     /// Return closure for the forwarded call: relay VatC's Return back onto
@@ -2018,64 +2168,39 @@ pub const Peer = struct {
     /// originates in `sendCall`, not in this callback — so the flag is load-bearing.
     fn forwardVineReturn(
         ctx_ptr: *anyopaque,
-        _: *Peer,
+        peer: *Peer,
         ret: protocol.Return,
-        _: *const cap_table.InboundCapTable,
+        inbound_caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
         const ctx: *ForwardVineCallContext = castCtx(*ForwardVineCallContext, ctx_ptr);
         const recipient = ctx.recipient_peer;
         const answer_id = ctx.recipient_answer_id;
+        const release_param_caps = ctx.created_param_proxy_ids.items.len == 0;
         // Signal the synchronous caller that the callback ran (it is about to
         // answer VatA and free this ctx) BEFORE freeing — while `settled_flag`,
         // if set, still points at that caller's live stack frame. On the async
         // hand-off path the caller has already nulled it, so this is a no-op.
         if (ctx.settled_flag) |flag| flag.* = true;
-        defer recipient.allocator.destroy(ctx);
+        defer ForwardVineCallContext.deinit(peer.allocator, ctx);
 
-        relayForwardedVineReturn(recipient, answer_id, ret) catch |err| {
+        relayForwardedVineReturn(recipient, answer_id, peer, ret, inbound_caps, release_param_caps) catch |err| {
             log.debug("forwarded pipelined return relay failed for question {}: {}", .{ answer_id, err });
         };
     }
 
     /// Complete VatA's original pipelined question (`answer_id` on `recipient`,
-    /// B↔A) from VatC's forwarded Return. Cap-free results are cloned onto VatA's
-    /// Return; cap-carrying params/results and non-results returns degrade to a
-    /// clean exception. Its errors are swallowed by `forwardVineReturn`.
-    fn relayForwardedVineReturn(recipient: *Peer, answer_id: u32, ret: protocol.Return) !void {
-        switch (ret.tag) {
-            .results => {
-                const payload = ret.results orelse {
-                    try recipient.sendReturnException(answer_id, "forwarded pipelined call: missing results");
-                    return;
-                };
-                // Cap-carrying results cannot be remapped across the two
-                // connections in this slice — degrade cleanly.
-                if (payload.cap_table) |table| {
-                    if (table.len() > 0) {
-                        try recipient.sendReturnException(answer_id, "forwarded pipelined call results carry capabilities (unsupported)");
-                        return;
-                    }
-                }
-                var results_ctx = ClonePayloadContentContext{ .source = payload };
-                try recipient.sendReturnResults(answer_id, &results_ctx, forwardVineResults);
-            },
-            .exception => {
-                const reason = if (ret.exception) |e| e.reason else "forwarded pipelined call failed";
-                try recipient.sendReturnException(answer_id, reason);
-            },
-            else => {
-                try recipient.sendReturnException(answer_id, "forwarded pipelined call: unexpected return");
-            },
-        }
-    }
-
-    /// Build closure for relaying VatC's results onto VatA's question: clone
-    /// VatC's (cap-free) result content into VatA's Return payload.
-    fn forwardVineResults(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {
-        const ctx: *const ClonePayloadContentContext = castCtx(*const ClonePayloadContentContext, ctx_ptr);
-        var payload = try ret_builder.payloadTyped();
-        const any_builder = try payload.initContent();
-        try message.cloneAnyPointer(ctx.source.content, any_builder);
+    /// B↔A) from VatC's forwarded Return. Results are cloned onto VatA's Return
+    /// with the same cross-peer capability proxying used for forwarded params.
+    /// Its errors are swallowed by `forwardVineReturn`.
+    fn relayForwardedVineReturn(
+        recipient: *Peer,
+        answer_id: u32,
+        source_peer: *Peer,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+        release_param_caps: bool,
+    ) !void {
+        try relayReturnAcrossPeers(recipient, answer_id, source_peer, ret, inbound_caps, release_param_caps);
     }
 
     /// Destroy a freshly-minted vine export on the origination error path,
@@ -3414,6 +3539,275 @@ pub const Peer = struct {
     /// origin-carrying forward/provide paths match the app-authored path.
     fn exportedCapTag(self: *Peer, cap_id: u32) protocol.CapDescriptorTag {
         return if (self.caps.isExportPromise(cap_id)) .senderPromise else .senderHosted;
+    }
+
+    fn addCrossPeerProxyExport(
+        self: *Peer,
+        source_peer: *Peer,
+        target: cap_table.ResolvedCap,
+        release_source_import_id: ?u32,
+    ) !u32 {
+        self.assertThreadAffinity();
+        var proxy_ctx: ?*CrossPeerProxyContext = null;
+        errdefer {
+            if (proxy_ctx) |ctx| {
+                CrossPeerProxyContext.deinit(self.allocator, ctx);
+            } else if (release_source_import_id) |import_id| {
+                source_peer.releaseImport(import_id, 1) catch |err| {
+                    log.debug("cross-peer proxy: failed to release source import {} after allocation failure: {}", .{ import_id, err });
+                };
+            }
+        }
+
+        const ctx = try self.allocator.create(CrossPeerProxyContext);
+        proxy_ctx = ctx;
+        ctx.* = .{
+            .owner_peer = self,
+            .source_peer = source_peer,
+            .target = target,
+            .release_source_import_id = release_source_import_id,
+        };
+
+        const id = try self.addExportWithDeinit(
+            .{ .ctx = ctx, .on_call = CrossPeerProxyContext.onCall },
+            CrossPeerProxyContext.deinit,
+        );
+        ctx.export_id = id;
+        source_peer.registerCrossPeerProxy(self, id) catch |err| {
+            proxy_ctx = null;
+            self.destroyUnreferencedProxyExport(id);
+            return err;
+        };
+        proxy_ctx = null;
+        return id;
+    }
+
+    fn destroyUnreferencedProxyExport(self: *Peer, id: u32) void {
+        const entry = self.exports.get(id) orelse return;
+        if (entry.ref_count != 0 or entry.answer_ref_count != 0 or entry.promise_ref_count != 0) return;
+
+        const removed = self.exports.fetchRemove(id) orelse return;
+        self.caps.clearExport(id);
+        if (removed.value.deinit_ctx) |deinit_ctx| {
+            if (removed.value.handler) |handler| deinit_ctx(self.allocator, handler.ctx);
+        }
+    }
+
+    fn clonePayloadAcrossPeers(
+        self: *Peer,
+        builder: *message.MessageBuilder,
+        payload_builder: protocol.PayloadBuilder,
+        source: protocol.Payload,
+        inbound_peer: *Peer,
+        inbound_caps: *cap_table.InboundCapTable,
+        created_proxy_ids: *std.ArrayList(u32),
+    ) !void {
+        var map_ctx = CrossPeerCapMapContext.init(inbound_peer, self, inbound_caps, created_proxy_ids);
+        defer map_ctx.deinit();
+        try payload_remap.clonePayloadWithRemappedCaps(
+            CrossPeerCapMapContext,
+            self.allocator,
+            &map_ctx,
+            builder,
+            payload_builder,
+            source,
+            inbound_caps,
+            mapCrossPeerInboundCap,
+        );
+    }
+
+    fn mapCrossPeerInboundCap(
+        ctx: *CrossPeerCapMapContext,
+        _: *const cap_table.InboundCapTable,
+        cap_index: u32,
+    ) !?payload_remap.RemappedCap {
+        if (ctx.remapped_by_index.get(cap_index)) |proxy_id| {
+            return .{
+                .origin_code = cap_table.descriptors.originCodeForTag(.senderHosted),
+                .cap_id = proxy_id,
+            };
+        }
+
+        const entry = try ctx.inbound_caps.get(cap_index);
+        if (entry == .none) return null;
+
+        const release_source_import_id: ?u32 = switch (entry) {
+            .imported => |cap| blk: {
+                try ctx.inbound_caps.retainIndex(cap_index);
+                break :blk cap.id;
+            },
+            else => null,
+        };
+
+        const proxy_id = try ctx.outbound_peer.addCrossPeerProxyExport(
+            ctx.inbound_peer,
+            entry,
+            release_source_import_id,
+        );
+        errdefer ctx.outbound_peer.destroyUnreferencedProxyExport(proxy_id);
+        try ctx.created_proxy_ids.append(ctx.outbound_peer.allocator, proxy_id);
+        try ctx.remapped_by_index.put(cap_index, proxy_id);
+
+        return .{
+            .origin_code = cap_table.descriptors.originCodeForTag(.senderHosted),
+            .cap_id = proxy_id,
+        };
+    }
+
+    fn forwardCrossPeerProxyCall(
+        self: *Peer,
+        call: protocol.Call,
+        inbound_caps: *const cap_table.InboundCapTable,
+        forward_peer: *Peer,
+        target: cap_table.ResolvedCap,
+    ) !void {
+        if (target == .none) {
+            try self.sendReturnException(call.question_id, "cross-peer proxy target unavailable");
+            return;
+        }
+
+        const relay = try forward_peer.allocator.create(CrossPeerProxyCallContext);
+        relay.* = .{
+            .recipient_peer = self,
+            .recipient_answer_id = call.question_id,
+            .forward_peer = forward_peer,
+            .target = target,
+            .source_params = call.params,
+            .source_inbound_caps = @constCast(inbound_caps),
+        };
+        var relay_owned = true;
+        errdefer if (relay_owned) CrossPeerProxyCallContext.deinit(forward_peer.allocator, relay);
+
+        var forward_settled = false;
+        relay.settled_flag = &forward_settled;
+
+        const forwarded_question_id = forward_peer.sendCrossPeerProxyResolvedCall(
+            target,
+            call.interface_id,
+            call.method_id,
+            relay,
+            buildCrossPeerProxyCall,
+            onCrossPeerProxyReturn,
+        ) catch |err| {
+            if (forward_settled) {
+                relay_owned = false;
+                return;
+            }
+            relay_owned = false;
+            CrossPeerProxyCallContext.deinit(forward_peer.allocator, relay);
+            self.sendReturnException(call.question_id, @errorName(err)) catch |send_err| {
+                log.debug("cross-peer proxy: failed to fail question {}: {}", .{ call.question_id, send_err });
+            };
+            return;
+        };
+
+        if (forward_settled) {
+            relay_owned = false;
+            return;
+        }
+        relay.param_proxies_committed = true;
+        relay.settled_flag = null;
+        if (forward_peer.questions.getPtr(forwarded_question_id)) |q| {
+            q.deinit_ctx = CrossPeerProxyCallContext.deinit;
+            q.restore_on_return_error = false;
+        }
+        relay_owned = false;
+    }
+
+    fn sendCrossPeerProxyResolvedCall(
+        self: *Peer,
+        target: cap_table.ResolvedCap,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+    ) !u32 {
+        return switch (target) {
+            .imported => |cap| self.sendForwardedVineCall(cap.id, interface_id, method_id, ctx, build, on_return),
+            .exported, .promised => self.sendCallResolved(target, interface_id, method_id, ctx, build, on_return),
+            .none => error.CapabilityUnavailable,
+        };
+    }
+
+    fn buildCrossPeerProxyCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
+        const ctx: *CrossPeerProxyCallContext = castCtx(*CrossPeerProxyCallContext, ctx_ptr);
+        const payload_builder = try call_builder.payloadTyped();
+        try ctx.forward_peer.clonePayloadAcrossPeers(
+            call_builder.call.builder,
+            payload_builder,
+            ctx.source_params,
+            ctx.recipient_peer,
+            ctx.source_inbound_caps,
+            &ctx.created_param_proxy_ids,
+        );
+    }
+
+    fn onCrossPeerProxyReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const ctx: *CrossPeerProxyCallContext = castCtx(*CrossPeerProxyCallContext, ctx_ptr);
+        const recipient = ctx.recipient_peer;
+        const answer_id = ctx.recipient_answer_id;
+        const release_param_caps = ctx.created_param_proxy_ids.items.len == 0;
+        if (ctx.settled_flag) |flag| flag.* = true;
+        defer CrossPeerProxyCallContext.deinit(peer.allocator, ctx);
+
+        relayReturnAcrossPeers(recipient, answer_id, peer, ret, inbound_caps, release_param_caps) catch |err| {
+            log.debug("cross-peer proxy return relay failed for question {}: {}", .{ answer_id, err });
+        };
+    }
+
+    fn relayReturnAcrossPeers(
+        recipient: *Peer,
+        answer_id: u32,
+        source_peer: *Peer,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+        release_param_caps: bool,
+    ) !void {
+        switch (ret.tag) {
+            .results => {
+                const payload = ret.results orelse {
+                    try recipient.sendReturnException(answer_id, "cross-peer forwarded call: missing results");
+                    return;
+                };
+                var results_ctx = CrossPeerReturnRelayContext{
+                    .source_peer = source_peer,
+                    .target_peer = recipient,
+                    .source = payload,
+                    .source_inbound_caps = @constCast(inbound_caps),
+                    .release_param_caps = release_param_caps,
+                };
+                defer results_ctx.deinit(recipient.allocator);
+                try recipient.sendReturnResults(answer_id, &results_ctx, buildCrossPeerReturnResults);
+                results_ctx.result_proxies_committed = true;
+            },
+            .exception => {
+                const reason = if (ret.exception) |e| e.reason else "cross-peer forwarded call failed";
+                try recipient.sendReturnException(answer_id, reason);
+            },
+            else => {
+                try recipient.sendReturnException(answer_id, "cross-peer forwarded call: unexpected return");
+            },
+        }
+    }
+
+    fn buildCrossPeerReturnResults(ctx_ptr: *anyopaque, ret_builder: *protocol.ReturnBuilder) anyerror!void {
+        const ctx: *CrossPeerReturnRelayContext = castCtx(*CrossPeerReturnRelayContext, ctx_ptr);
+        ret_builder.setReleaseParamCaps(ctx.release_param_caps);
+        const payload_builder = try ret_builder.payloadTyped();
+        try ctx.target_peer.clonePayloadAcrossPeers(
+            ret_builder.ret.builder,
+            payload_builder,
+            ctx.source,
+            ctx.source_peer,
+            ctx.source_inbound_caps,
+            &ctx.created_result_proxy_ids,
+        );
     }
 
     /// Send a return with results for a previously received call.
@@ -4948,6 +5342,40 @@ pub const Peer = struct {
             }
         }
         self.coupled_vines.clearRetainingCapacity();
+    }
+
+    fn registerCrossPeerProxy(self: *Peer, owner_peer: *Peer, proxy_export_id: u32) !void {
+        try self.cross_peer_proxy_links.append(self.allocator, .{
+            .owner_peer = owner_peer,
+            .proxy_export_id = proxy_export_id,
+        });
+    }
+
+    fn deregisterCrossPeerProxy(self: *Peer, owner_peer: *Peer, proxy_export_id: u32) void {
+        var i: usize = 0;
+        while (i < self.cross_peer_proxy_links.items.len) {
+            const link = self.cross_peer_proxy_links.items[i];
+            if (link.owner_peer == owner_peer and link.proxy_export_id == proxy_export_id) {
+                _ = self.cross_peer_proxy_links.swapRemove(i);
+                return;
+            }
+            i += 1;
+        }
+    }
+
+    fn neutralizeCrossPeerProxiesOnSourcePeer(self: *Peer) void {
+        for (self.cross_peer_proxy_links.items) |link| {
+            if (link.owner_peer.exports.getPtr(link.proxy_export_id)) |entry| {
+                if (entry.handler) |handler| {
+                    const proxy_ctx = castCtx(*CrossPeerProxyContext, handler.ctx);
+                    if (proxy_ctx.source_peer == self) {
+                        proxy_ctx.source_peer = null;
+                        proxy_ctx.release_source_import_id = null;
+                    }
+                }
+            }
+        }
+        self.cross_peer_proxy_links.clearRetainingCapacity();
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {

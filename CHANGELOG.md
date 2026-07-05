@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy topologies; ordinary two-party client/server calls were already
   unaffected. Proven by focused peer regressions covering all forwarding modes.
 
+- **RPC Level-3 forwarded parked calls now remap cap-bearing params/results
+  instead of clean-exceptioning.** The introducer-side relay now clones forwarded
+  payloads across the independent caller↔introducer and introducer↔host cap-table
+  id spaces by minting sender-hosted proxy exports on the destination connection.
+  Each proxy retains the source-side import ref until the destination releases the
+  proxy, forwards calls back to the original peer, and neutralizes its borrowed
+  source-peer pointer if that source connection tears down first. This removes the
+  former issue #56 follow-up limitation: forwarded parked L3 calls are no longer
+  cap-free-only. Proven by three-peer regressions where the host calls a
+  caller-supplied param capability through the relay and where the caller invokes
+  a capability returned by the host through the relayed results.
+
 ### Added
 
 - **RPC Level-3 three-party handoff — introducer now FORWARDS parked pipelined
@@ -47,10 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ordering on the REAL P-pipeline (forwarded parked call reaches VatC before the
   post-pickup direct call) rather than only approximating it via the Accept-result
   pipeline.
-  This slice forwards cap-free params/results (the common pipelined getter/counter
-  shape); a forwarded call whose params or results carry capabilities degrades to
-  a clean exception rather than corrupt cross-connection cap state (cross-peer
-  cap-table remapping is a follow-up). Still Experimental and Zig↔Zig-only.
+  This slice now also remaps cap-bearing params/results by proxying capabilities
+  across the two independent peer connections. Still Experimental and
+  Zig↔Zig-only.
 
 ## [0.3.0] - 2026-07-05
 
