@@ -950,4 +950,36 @@ func testResolveDisembargo(ctx context.Context, rpcConn *rpc.Conn) {
 	call0, call1 := seq.snapshot()
 	ordered := call0 >= 0 && call1 >= 0 && call0 < call1
 	tap(ordered, "pipelined getNumber reached CallSequence before the direct call")
+
+	// Item 1 (server-invokes-cap): hand the reflector a SEPARATE CallSequence as
+	// `cb`. The server invokes cb.getNumber() itself and returns the observed
+	// value. A fresh cap's first (and only) getNumber returns 0.
+	invokeSeq := newCallSequenceServer()
+	invokeCb := resolve_disembargo.CallSequence_ServerToClient(invokeSeq)
+	defer invokeCb.Release()
+
+	invokeFut, releaseInvoke := reflector.InvokeCap(ctx, func(p resolve_disembargo.Reflector_invokeCap_Params) error {
+		return p.SetCb(invokeCb.AddRef())
+	})
+	defer releaseInvoke()
+
+	invokeRes, err := invokeFut.Struct()
+	if err != nil {
+		tap(false, fmt.Sprintf("invokeCap completes: %v", err))
+		return
+	}
+	invokeCall0, _ := invokeSeq.snapshot()
+	tap(invokeCall0 == 0, "server invoked the client-supplied cap exactly once")
+	tap(invokeRes.Observed() == 0,
+		"server-observed invokeCap value matches the client cap's returned value")
+
+	// Item 2 (disconnect-mid-call): call disconnectNow() LAST. The server closes
+	// its own transport in the handler, so this outstanding call fails with a
+	// disconnect-class error. Assert the disconnect class specifically via
+	// capnp.IsDisconnected -- not a blanket error catch.
+	disconnectFut, releaseDisconnect := reflector.DisconnectNow(ctx, nil)
+	defer releaseDisconnect()
+	_, disconnectErr := disconnectFut.Struct()
+	tap(disconnectErr != nil && capnp.IsDisconnected(disconnectErr),
+		"disconnectNow observes a disconnect-class error")
 }

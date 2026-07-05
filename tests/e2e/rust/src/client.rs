@@ -443,6 +443,59 @@ async fn test_resolve_disembargo(
             &format!("call0={}, call1={}", call0, call1),
         );
     }
+
+    // Item 1 (server-invokes-cap): hand the reflector a SEPARATE CallSequence as
+    // `cb`. The server invokes cb.getNumber() itself and returns the observed
+    // value. A fresh cap's first (and only) getNumber returns 0.
+    let invoke_state = CallSequenceState::new();
+    let invoke_cb: call_sequence::Client = capnp_rpc::new_client(CallSequenceImpl {
+        state: invoke_state.clone(),
+    });
+    let mut invoke_req = reflector.invoke_cap_request();
+    invoke_req.get().set_cb(invoke_cb);
+    let invoke_res = invoke_req
+        .send()
+        .promise
+        .await
+        .map_err(|e| format!("invokeCap completes: {}", e))?;
+    let observed = invoke_res.get().map_err(|e| e.to_string())?.get_observed();
+    if invoke_state.call0_seq.get() == 0 {
+        tap.ok("server invoked the client-supplied cap exactly once");
+    } else {
+        tap.not_ok(
+            "server invoked the client-supplied cap exactly once",
+            &format!("call0_seq={}", invoke_state.call0_seq.get()),
+        );
+    }
+    if observed == 0 {
+        tap.ok("server-observed invokeCap value matches the client cap's returned value");
+    } else {
+        tap.not_ok(
+            "server-observed invokeCap value matches the client cap's returned value",
+            &format!("observed={}", observed),
+        );
+    }
+
+    // Item 2 (disconnect-mid-call): call disconnectNow() LAST. The server closes
+    // its own transport in the handler, so this outstanding call fails with a
+    // disconnect-class error. Assert the error KIND specifically
+    // (ErrorKind::Disconnected) -- not a blanket error catch.
+    match reflector.disconnect_now_request().send().promise.await {
+        Ok(_) => tap.not_ok(
+            "disconnectNow observes a disconnect-class error",
+            "expected a disconnect error, got a normal return",
+        ),
+        Err(e) => {
+            if e.kind == capnp::ErrorKind::Disconnected {
+                tap.ok("disconnectNow observes a disconnect-class error");
+            } else {
+                tap.not_ok(
+                    "disconnectNow observes a disconnect-class error",
+                    &format!("expected Disconnected, got {:?}: {}", e.kind, e),
+                );
+            }
+        }
+    }
     Ok(())
 }
 

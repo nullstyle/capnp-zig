@@ -815,6 +815,32 @@ static void testResolveDisembargo(kj::WaitScope& waitScope, Reflector::Client re
   int64_t call1 = seqRef.call1Seq();
   bool ordered = call0 >= 0 && call1 >= 0 && call0 < call1;
   ok(ordered, "pipelined getNumber reached CallSequence before the direct call");
+
+  // Item 1 (server-invokes-cap): hand the reflector a SEPARATE CallSequence as
+  // `cb`. The server invokes cb.getNumber() itself and returns the observed
+  // value. A fresh cap's first (and only) getNumber returns 0.
+  auto invokeSeqImpl = kj::heap<CallSequenceImpl>();
+  CallSequenceImpl& invokeSeqRef = *invokeSeqImpl;
+  CallSequence::Client invokeCb = kj::mv(invokeSeqImpl);
+
+  auto invokeReq = reflector.invokeCapRequest();
+  invokeReq.setCb(invokeCb);
+  auto invokeRes = invokeReq.send().wait(waitScope);
+  ok(invokeSeqRef.call0Seq() == 0, "server invoked the client-supplied cap exactly once");
+  ok(invokeRes.getObserved() == 0,
+     "server-observed invokeCap value matches the client cap's returned value");
+
+  // Item 2 (disconnect-mid-call): call disconnectNow() LAST. The server closes
+  // its own transport in the handler, so this outstanding call resolves with a
+  // DISCONNECTED-class exception. Assert the exception TYPE specifically —
+  // not a blanket catch.
+  bool sawDisconnect = false;
+  try {
+    reflector.disconnectNowRequest().send().wait(waitScope);
+  } catch (kj::Exception& e) {
+    sawDisconnect = (e.getType() == kj::Exception::Type::DISCONNECTED);
+  }
+  ok(sawDisconnect, "disconnectNow observes a disconnect-class error");
 }
 
 // ---------------------------------------------------------------------------

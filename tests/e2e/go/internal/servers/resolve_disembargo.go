@@ -3,6 +3,7 @@ package servers
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 
 	capnp "capnproto.org/go/capnp/v3"
@@ -43,12 +44,32 @@ type ReflectorServer struct {
 	// failing later calls with "call on null client".
 	promise  resolve_disembargo.CallSequence
 	resolver capnp.Resolver[resolve_disembargo.CallSequence]
+	// The raw transport socket. disconnectNow() closes it directly (bypassing
+	// go-capnp's graceful shutdown, which would first flush a normal Return and
+	// also deadlock on the in-flight handler task) so the caller's outstanding
+	// call fails with a disconnect-class error instead of a normal result.
+	netConn net.Conn
 }
 
 // NewReflectorClient returns a Reflector bootstrap client backed by a fresh
 // ReflectorServer.
 func NewReflectorClient() resolve_disembargo.Reflector {
 	return resolve_disembargo.Reflector_ServerToClient(&ReflectorServer{})
+}
+
+// NewReflectorClientWithServer returns a Reflector bootstrap client and the
+// backing server, so the caller can wire the transport socket (needed by
+// disconnectNow) after the connection is created.
+func NewReflectorClientWithServer() (resolve_disembargo.Reflector, *ReflectorServer) {
+	srv := &ReflectorServer{}
+	return resolve_disembargo.Reflector_ServerToClient(srv), srv
+}
+
+// SetConn wires the raw transport socket so disconnectNow() can close it.
+func (s *ReflectorServer) SetConn(conn net.Conn) {
+	s.mu.Lock()
+	s.netConn = conn
+	s.mu.Unlock()
 }
 
 // Reflect imports and retains the caller's CallSequence, exports an unresolved
@@ -110,6 +131,53 @@ func (s *ReflectorServer) ResolveNow(ctx context.Context, call resolve_disembarg
 	// Fulfill -> CapTable().Add STEALS the reference it is given, so hand it a
 	// fresh AddRef() and keep our own retained `target` reference alive.
 	resolver.Fulfill(target.AddRef())
+	return nil
+}
+
+// InvokeCap implements the SERVER-invokes-caller-cap direction (cap-in-params,
+// distinct from reflect). The caller hands us its OWN CallSequence as `cb`; we
+// INVOKE it ourselves — cb.GetNumber() — and return the observed counter value
+// as `observed`. call.Go() releases the receive slot so blocking on the inbound
+// getNumber does not stall the connection, then we fill the results.
+func (s *ReflectorServer) InvokeCap(ctx context.Context, call resolve_disembargo.Reflector_invokeCap) error {
+	cb := call.Args().Cb().AddRef()
+	defer cb.Release()
+
+	// Release the receive slot so the blocking sub-call below can be serviced.
+	call.Go()
+
+	fut, release := cb.GetNumber(ctx, nil)
+	defer release()
+	inner, err := fut.Struct()
+	if err != nil {
+		return err
+	}
+	observed := inner.N()
+
+	res, err := call.AllocResults()
+	if err != nil {
+		return err
+	}
+	res.SetObserved(observed)
+	return nil
+}
+
+// DisconnectNow closes the raw transport socket so the caller's outstanding
+// call fails with a disconnect-class error. Closing the socket directly (rather
+// than rpc.Conn.Close, which flushes a graceful Return first and would deadlock
+// on this in-flight handler task) makes the write of any Return fail and the
+// caller sees EOF/reset, which go-capnp classifies as Disconnected. The caller
+// must call this LAST — the connection dies immediately.
+func (s *ReflectorServer) DisconnectNow(ctx context.Context, call resolve_disembargo.Reflector_disconnectNow) error {
+	s.mu.Lock()
+	conn := s.netConn
+	s.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+	// Never fill results: the socket is closed, so the Return write fails and
+	// the caller observes a disconnect-class error rather than a normal Return.
 	return nil
 }
 

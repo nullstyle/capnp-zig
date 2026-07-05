@@ -502,6 +502,12 @@ const ReflectorService = struct {
                     .reflect = undefined,
                     .reflect_deferred = onReflect,
                     .resolveNow = onResolveNow,
+                    // invokeCap() invokes the caller-supplied cap itself and can
+                    // only answer after that inbound getNumber returns, so it runs
+                    // as a DEFERRED handler that stashes its ReturnSender.
+                    .invokeCap = undefined,
+                    .invokeCap_deferred = onInvokeCap,
+                    .disconnectNow = onDisconnectNow,
                 },
             },
         };
@@ -582,6 +588,87 @@ fn onResolveNow(
 
     // resolveNow() has empty results (): the ResolveNowResults builder is left
     // untouched.
+}
+
+// ---------------------------------------------------------------------------
+// invokeCap: SERVER-invokes-caller-cap (cap-in-params, distinct direction from
+// reflect). The caller hands us one of its OWN CallSequence caps as `cb`; we
+// INVOKE it ourselves — cb.getNumber() — rather than reflecting it back, and
+// return the observed counter value as `observed`. This proves a distinct
+// client-supplied cap is invoked server-side (versus reflect, which loops a
+// pipelined call home). Because we answer only after the inbound getNumber
+// returns, the handler is DEFERRED: it stashes the outer question's ReturnSender
+// in a per-call heap context and completes the return from the getNumber
+// callback.
+// ---------------------------------------------------------------------------
+const InvokeCapCtx = struct {
+    sender: resolve_disembargo.Reflector.InvokeCap.ReturnSender,
+    observed: u32 = 0,
+
+    fn build(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+        const self: *const InvokeCapCtx = @ptrCast(@alignCast(ctx_ptr));
+        var payload = try ret.payloadTyped();
+        var any = try payload.initContent();
+        const results_builder = try any.initStruct(1, 0);
+        var results = resolve_disembargo.Reflector.InvokeCapResults.Builder.wrap(results_builder);
+        try results.setObserved(self.observed);
+    }
+};
+
+fn onInvokeCap(
+    _: *anyopaque,
+    peer: *rpc.peer.Peer,
+    params: resolve_disembargo.Reflector.InvokeCapParams.Reader,
+    caps: *const rpc.caps.table.InboundCapTable,
+    sender: resolve_disembargo.Reflector.InvokeCap.ReturnSender,
+) !void {
+    // Resolve the caller-supplied CallSequence (retains its import for the
+    // duration of the outbound call) and INVOKE it ourselves.
+    const cb = try params.resolveCb(peer, caps);
+
+    // Stash the outer question's ReturnSender so we can answer once the inbound
+    // getNumber returns. The context is freed in the getNumber callback.
+    const ctx = try peer.allocator.create(InvokeCapCtx);
+    errdefer peer.allocator.destroy(ctx);
+    ctx.* = .{ .sender = sender };
+
+    _ = try cb.callGetNumber(ctx, null, onInvokeCapInnerReturn);
+}
+
+fn onInvokeCapInnerReturn(
+    ctx_ptr: *anyopaque,
+    _: *rpc.peer.Peer,
+    response: resolve_disembargo.CallSequence.GetNumber.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const ctx: *InvokeCapCtx = @ptrCast(@alignCast(ctx_ptr));
+    defer ctx.sender.peer.allocator.destroy(ctx);
+
+    const results = response.unwrap() catch |err| {
+        // Surface the failure as an exception on the outer invokeCap question.
+        ctx.sender.sendException(@errorName(err)) catch {};
+        return;
+    };
+    ctx.observed = try results.getN();
+    try ctx.sender.sendResults(ctx, InvokeCapCtx.build);
+}
+
+// ---------------------------------------------------------------------------
+// disconnectNow: the handler closes its OWN transport so the caller's
+// outstanding call returns a DISCONNECT-class error. Self-closing here mirrors
+// the peer error/close paths (onPeerError) — the client observes clean
+// forceCancelAllQuestions(disconnected) delivery. Issued LAST by every client.
+// ---------------------------------------------------------------------------
+fn onDisconnectNow(
+    _: *anyopaque,
+    peer: *rpc.peer.Peer,
+    _: resolve_disembargo.Reflector.DisconnectNowParams.Reader,
+    _: *resolve_disembargo.Reflector.DisconnectNowResults.Builder,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    // Close our side of the transport. The outstanding disconnectNow question
+    // never gets a normal Return; the client sees error.Disconnected instead.
+    if (!peer.isAttachedTransportClosing()) peer.closeAttachedTransport();
 }
 
 fn parseSchema(text: []const u8) !Schema {

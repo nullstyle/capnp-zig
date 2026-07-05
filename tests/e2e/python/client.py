@@ -965,8 +965,46 @@ async def test_resolve_disembargo(host, port):
             ordered,
             f"call0={seq._call0_seq}, call1={seq._call1_seq}",
         )
+
+        # Item 1 (server-invokes-cap): hand the reflector a SEPARATE CallSequence
+        # as `cb`. The server invokes cb.getNumber() itself and returns the
+        # observed value. A fresh cap's first (and only) getNumber returns 0.
+        invoke_seq = CallSequenceImpl()
+        invoke_res = await reflector.invokeCap(cb=invoke_seq)
+        tap.test(
+            "server invoked the client-supplied cap exactly once",
+            invoke_seq._seen == 1,
+            f"seen={invoke_seq._seen}",
+        )
+        tap.test(
+            "server-observed invokeCap value matches the client cap's returned value",
+            invoke_res.observed == 0 and invoke_seq._call0_seq == 0,
+            f"observed={invoke_res.observed}, call0={invoke_seq._call0_seq}",
+        )
     except Exception:
         tap.not_ok("resolve_disembargo scenario", traceback.format_exc())
+        return
+
+    # Item 2 (disconnect-mid-call): call disconnectNow() LAST, outside the main
+    # try so the earlier assertions are unaffected. The server closes its own
+    # transport in the handler, so awaiting this call raises a disconnect-class
+    # KjException. Assert the exception TYPE specifically (its type string names
+    # "disconnected") rather than accepting any error.
+    try:
+        await reflector.disconnectNow()
+        tap.test(
+            "disconnectNow observes a disconnect-class error",
+            False,
+            "expected a disconnect error, got a normal return",
+        )
+    except Exception as exc:
+        exc_type = str(getattr(exc, "type", "")).lower()
+        is_disconnect = "disconnect" in exc_type or "disconnect" in str(exc).lower()
+        tap.test(
+            "disconnectNow observes a disconnect-class error",
+            is_disconnect,
+            f"type={getattr(exc, 'type', None)!r}, err={exc}",
+        )
 
 
 # ===========================================================================

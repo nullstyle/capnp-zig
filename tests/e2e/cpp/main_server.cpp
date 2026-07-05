@@ -975,6 +975,13 @@ private:
 
 class ReflectorImpl final : public Reflector::Server {
 public:
+  // `disconnect` closes this connection's transport when disconnectNow() is
+  // invoked, so the caller's outstanding call returns a DISCONNECTED-class
+  // error. Supplied by the per-connection accept loop (see the resolve_disembargo
+  // branch in main) since a TwoPartyServer hides the stream from the handler.
+  explicit ReflectorImpl(kj::Function<void()> disconnect)
+    : disconnect_(kj::mv(disconnect)) {}
+
   kj::Promise<void> reflect(ReflectContext context) override {
     // Retain the caller's CallSequence import so it outlives this call; it is
     // later named as the promise's resolution target in resolveNow(). Copying
@@ -1006,12 +1013,39 @@ public:
     return kj::READY_NOW;
   }
 
+  // invokeCap: SERVER-invokes-caller-cap (cap-in-params, distinct from reflect).
+  // The caller hands us its OWN CallSequence as `cb`; we INVOKE it ourselves —
+  // cb.getNumber() — and return the observed counter value as `observed`. The
+  // promise chain defers our Return until the inbound getNumber resolves.
+  kj::Promise<void> invokeCap(InvokeCapContext context) override {
+    auto cb = context.getParams().getCb();
+    return cb.getNumberRequest().send().then(
+        [context](capnp::Response<CallSequence::GetNumberResults> inner) mutable {
+          context.getResults().setObserved(inner.getN());
+        });
+  }
+
+  // disconnectNow: close our own transport so the caller's outstanding call
+  // returns a DISCONNECTED-class error. shutdownWrite() on the stream (via the
+  // injected callback) makes the caller see EOF, which KJ maps to a DISCONNECTED
+  // exception. Returning READY_NOW here would race the shutdown; instead we let
+  // the transport teardown deliver the disconnect. The caller must call this
+  // LAST — the connection dies once shutdown fires.
+  kj::Promise<void> disconnectNow(DisconnectNowContext context) override {
+    disconnect_();
+    // Never resolve this call's own Return: the transport is being torn down,
+    // so the caller observes a DISCONNECTED error rather than a normal result.
+    return kj::NEVER_DONE;
+  }
+
 private:
   // The retained caller-hosted CallSequence (held past reflect()). A null client
   // until reflect() runs.
   CallSequence::Client heldTarget = nullptr;
   // The resolver for the promise handed back from reflect(); null until then.
   kj::Own<kj::PromiseFulfiller<CallSequence::Client>> fulfiller;
+  // Closes this connection's transport when disconnectNow() runs.
+  kj::Function<void()> disconnect_;
 };
 
 // ---------------------------------------------------------------------------
@@ -1070,8 +1104,25 @@ int main(int argc, char* argv[]) {
       capnp::TwoPartyServer server(kj::heap<MatchmakingServiceImpl>());
       server.listen(*listener).wait(io.waitScope);
     } else if (schema == "resolve_disembargo") {
-      capnp::TwoPartyServer server(kj::heap<ReflectorImpl>());
-      server.listen(*listener).wait(io.waitScope);
+      // Manual per-connection accept loop (instead of TwoPartyServer) so the
+      // ReflectorImpl handler can reach the stream and close it in
+      // disconnectNow(). The e2e harness runs one connection at a time.
+      for (;;) {
+        kj::Own<kj::AsyncIoStream> conn = listener->accept().wait(io.waitScope);
+        // Keep a raw pointer for the disconnect callback; the stream is owned by
+        // this loop iteration and outlives the RpcSystem below.
+        kj::AsyncIoStream* streamPtr = conn.get();
+        capnp::TwoPartyVatNetwork network(*conn, capnp::rpc::twoparty::Side::SERVER);
+        auto reflector = kj::heap<ReflectorImpl>([streamPtr]() {
+          // shutdownWrite() sends EOF to the caller, which KJ surfaces as a
+          // DISCONNECTED exception on its outstanding disconnectNow() call.
+          streamPtr->shutdownWrite();
+        });
+        auto rpcSystem = capnp::makeRpcServer(network, Reflector::Client(kj::mv(reflector)));
+        // Serve this connection until the network drains (peer disconnect or our
+        // own shutdownWrite), then loop to accept the next one.
+        network.onDisconnect().wait(io.waitScope);
+      }
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
       std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking, resolve_disembargo" << std::endl;

@@ -7,7 +7,7 @@ const message = capnpc.message;
 const schema = capnpc.schema;
 const rpc = capnpc.rpc;
 
-pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"resolve_disembargo.capnp\",\"module\":\"resolve_disembargo\",\"serde\":[{\"id\":9962680609391703620,\"type_name\":\"CallSequence.GetNumberParams\",\"to_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_params_from_json\"},{\"id\":14646105543366786403,\"type_name\":\"CallSequence.GetNumberResults\",\"to_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_results_from_json\"},{\"id\":11368033413388954404,\"type_name\":\"Reflector.ReflectParams\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_reflect_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_reflect_params_from_json\"},{\"id\":18356068282649560356,\"type_name\":\"Reflector.ReflectResults\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_reflect_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_reflect_results_from_json\"},{\"id\":17891623339713859399,\"type_name\":\"Reflector.ResolveNowParams\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_params_from_json\"},{\"id\":15597228192799105856,\"type_name\":\"Reflector.ResolveNowResults\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_results_from_json\"}]}";
+pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"resolve_disembargo.capnp\",\"module\":\"resolve_disembargo\",\"serde\":[{\"id\":9962680609391703620,\"type_name\":\"CallSequence.GetNumberParams\",\"to_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_params_from_json\"},{\"id\":14646105543366786403,\"type_name\":\"CallSequence.GetNumberResults\",\"to_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_call_sequence_get_number_results_from_json\"},{\"id\":17490568085706673660,\"type_name\":\"Reflector.DisconnectNowParams\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_disconnect_now_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_disconnect_now_params_from_json\"},{\"id\":18051060727158561959,\"type_name\":\"Reflector.DisconnectNowResults\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_disconnect_now_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_disconnect_now_results_from_json\"},{\"id\":10582534823962516458,\"type_name\":\"Reflector.InvokeCapParams\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_invoke_cap_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_invoke_cap_params_from_json\"},{\"id\":17831614108965613794,\"type_name\":\"Reflector.InvokeCapResults\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_invoke_cap_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_invoke_cap_results_from_json\"},{\"id\":11368033413388954404,\"type_name\":\"Reflector.ReflectParams\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_reflect_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_reflect_params_from_json\"},{\"id\":18356068282649560356,\"type_name\":\"Reflector.ReflectResults\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_reflect_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_reflect_results_from_json\"},{\"id\":17891623339713859399,\"type_name\":\"Reflector.ResolveNowParams\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_params_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_params_from_json\"},{\"id\":15597228192799105856,\"type_name\":\"Reflector.ResolveNowResults\",\"to_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_results_to_json\",\"from_json_export\":\"capnp_resolve_disembargo_reflector_resolve_now_results_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
     return CAPNP_SCHEMA_MANIFEST_JSON;
 }
@@ -386,6 +386,8 @@ pub const Reflector = struct {
     pub const Method = enum(u16) {
         Reflect = 0,
         ResolveNow = 1,
+        InvokeCap = 2,
+        DisconnectNow = 3,
     };
 
     pub const Reflect = struct {
@@ -672,6 +674,290 @@ pub const Reflector = struct {
         }
     };
 
+    pub const InvokeCap = struct {
+        pub const ordinal: u16 = 2;
+        pub const is_streaming: bool = false;
+        pub const Params = Reflector.InvokeCapParams;
+        pub const Results = Reflector.InvokeCapResults;
+        pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Response = union(enum) {
+            results: Results.Reader,
+            exception: rpc.wire.protocol.Exception,
+            canceled,
+            results_sent_elsewhere,
+            take_from_other_question: u32,
+            accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
+        };
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+
+        const CallContext = struct {
+            user_ctx: *anyopaque,
+            build: ?BuildFn,
+            callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
+        };
+
+        const DirectReturnContext = struct {
+            handler: Handler,
+            ctx: *anyopaque,
+            peer: *rpc.peer.Peer,
+            params: Params.Reader,
+            caps: *const rpc.caps.table.InboundCapTable,
+        };
+
+        pub const ReturnSender = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
+                try self.peer.sendReturnResults(self.question_id, ctx, build);
+            }
+
+            pub fn sendException(self: ReturnSender, reason: []const u8) !void {
+                try self.peer.sendReturnException(self.question_id, reason);
+            }
+        };
+
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            var payload = try call.payloadTyped();
+            var params_any = try payload.initContent();
+            const params_builder = try params_any.initStruct(0, 1);
+            var params = Params.Builder.wrap(params_builder);
+            if (ctx.build) |build_fn| {
+                try build_fn(ctx.user_ctx, &params);
+            }
+            _ = try call.initCapTableTyped(0);
+        }
+
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            defer peer.allocator.destroy(ctx);
+            var response: Response = undefined;
+            switch (ret.tag) {
+                .results => {
+                    const payload = ret.results orelse return error.MissingReturnPayload;
+                    const struct_reader = try payload.content.getStruct();
+                    const results = Results.Reader.wrap(struct_reader);
+                    response = .{ .results = results };
+                },
+                .exception => {
+                    const ex = ret.exception orelse return error.MissingException;
+                    response = .{ .exception = ex };
+                },
+                .canceled => response = .canceled,
+                .resultsSentElsewhere => response = .results_sent_elsewhere,
+                .takeFromOtherQuestion => {
+                    const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
+                    response = .{ .take_from_other_question = qid };
+                },
+                .awaitFromThirdParty => response = .accept_from_third_party,
+            }
+            try ctx.callback(ctx.user_ctx, peer, response, caps);
+        }
+
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const params_struct = try call.params.content.getStruct();
+            const params = Params.Reader.wrap(params_struct);
+            if (deferred_handler) |deferred_fn| {
+                const sender = ReturnSender{ .peer = peer, .question_id = call.question_id };
+                try deferred_fn(ctx, peer, params, caps, sender);
+            } else {
+                var dctx = DirectReturnContext{
+                    .handler = handler,
+                    .ctx = ctx,
+                    .peer = peer,
+                    .params = params,
+                    .caps = caps,
+                };
+                try peer.sendReturnResults(call.question_id, &dctx, buildReturnDirect);
+            }
+        }
+
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            try handleCallDirect(server.vtable.invokeCap, server.vtable.invokeCap_deferred, server.ctx, peer, call, caps);
+        }
+
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+            const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
+            var payload = try ret.payloadTyped();
+            var results_any = try payload.initContent();
+            const results_builder = try results_any.initStruct(1, 0);
+            var results = Results.Builder.wrap(results_builder);
+            try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
+        }
+    };
+
+    pub const DisconnectNow = struct {
+        pub const ordinal: u16 = 3;
+        pub const is_streaming: bool = false;
+        pub const Params = Reflector.DisconnectNowParams;
+        pub const Results = Reflector.DisconnectNowResults;
+        pub const BuildFn = *const fn (ctx: *anyopaque, params: *Params.Builder) anyerror!void;
+        pub const Handler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, results: *Results.Builder, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+        pub const DeferredHandler = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, params: Params.Reader, caps: *const rpc.caps.table.InboundCapTable, sender: ReturnSender) anyerror!void;
+        pub const Response = union(enum) {
+            results: Results.Reader,
+            exception: rpc.wire.protocol.Exception,
+            canceled,
+            results_sent_elsewhere,
+            take_from_other_question: u32,
+            accept_from_third_party,
+
+            /// Collapse this Response into its success payload or a typed
+            /// rpc.peer.CallError. Locally synthesized exception reasons map to
+            /// their dedicated errors; every other exception is RemoteException
+            /// (reason available on the union arm).
+            pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
+                return switch (self) {
+                    .results => |r| r,
+                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
+                        error.Disconnected
+                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    .canceled => error.Canceled,
+                    .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
+                };
+            }
+        };
+        pub const Callback = *const fn (ctx: *anyopaque, peer: *rpc.peer.Peer, response: Response, caps: *const rpc.caps.table.InboundCapTable) anyerror!void;
+
+        const CallContext = struct {
+            user_ctx: *anyopaque,
+            build: ?BuildFn,
+            callback: Callback,
+
+            // Frees the heap ctx if the question is still outstanding at
+            // Peer.deinit (the normal return path frees it in callReturn).
+            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+                const dead: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+                ctx_allocator.destroy(dead);
+            }
+        };
+
+        const DirectReturnContext = struct {
+            handler: Handler,
+            ctx: *anyopaque,
+            peer: *rpc.peer.Peer,
+            params: Params.Reader,
+            caps: *const rpc.caps.table.InboundCapTable,
+        };
+
+        pub const ReturnSender = struct {
+            peer: *rpc.peer.Peer,
+            question_id: u32,
+
+            pub fn sendResults(self: ReturnSender, ctx: *anyopaque, build: *const fn (ctx: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void) !void {
+                try self.peer.sendReturnResults(self.question_id, ctx, build);
+            }
+
+            pub fn sendException(self: ReturnSender, reason: []const u8) !void {
+                try self.peer.sendReturnException(self.question_id, reason);
+            }
+        };
+
+        fn callBuild(ctx_ptr: *anyopaque, call: *rpc.wire.protocol.CallBuilder) anyerror!void {
+            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            var payload = try call.payloadTyped();
+            var params_any = try payload.initContent();
+            const params_builder = try params_any.initStruct(0, 0);
+            var params = Params.Builder.wrap(params_builder);
+            if (ctx.build) |build_fn| {
+                try build_fn(ctx.user_ctx, &params);
+            }
+            _ = try call.initCapTableTyped(0);
+        }
+
+        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            defer peer.allocator.destroy(ctx);
+            var response: Response = undefined;
+            switch (ret.tag) {
+                .results => {
+                    const payload = ret.results orelse return error.MissingReturnPayload;
+                    const struct_reader = try payload.content.getStruct();
+                    const results = Results.Reader.wrap(struct_reader);
+                    response = .{ .results = results };
+                },
+                .exception => {
+                    const ex = ret.exception orelse return error.MissingException;
+                    response = .{ .exception = ex };
+                },
+                .canceled => response = .canceled,
+                .resultsSentElsewhere => response = .results_sent_elsewhere,
+                .takeFromOtherQuestion => {
+                    const qid = ret.take_from_other_question orelse return error.MissingQuestionId;
+                    response = .{ .take_from_other_question = qid };
+                },
+                .awaitFromThirdParty => response = .accept_from_third_party,
+            }
+            try ctx.callback(ctx.user_ctx, peer, response, caps);
+        }
+
+        pub fn handleCallDirect(handler: Handler, deferred_handler: ?DeferredHandler, ctx: *anyopaque, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            const params_struct = try call.params.content.getStruct();
+            const params = Params.Reader.wrap(params_struct);
+            if (deferred_handler) |deferred_fn| {
+                const sender = ReturnSender{ .peer = peer, .question_id = call.question_id };
+                try deferred_fn(ctx, peer, params, caps, sender);
+            } else {
+                var dctx = DirectReturnContext{
+                    .handler = handler,
+                    .ctx = ctx,
+                    .peer = peer,
+                    .params = params,
+                    .caps = caps,
+                };
+                try peer.sendReturnResults(call.question_id, &dctx, buildReturnDirect);
+            }
+        }
+
+        fn handleCall(server: *Server, peer: *rpc.peer.Peer, call: rpc.wire.protocol.Call, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
+            try handleCallDirect(server.vtable.disconnectNow, server.vtable.disconnectNow_deferred, server.ctx, peer, call, caps);
+        }
+
+        fn buildReturnDirect(ctx_ptr: *anyopaque, ret: *rpc.wire.protocol.ReturnBuilder) anyerror!void {
+            const dctx: *DirectReturnContext = @ptrCast(@alignCast(ctx_ptr));
+            var payload = try ret.payloadTyped();
+            var results_any = try payload.initContent();
+            const results_builder = try results_any.initStruct(1, 0);
+            var results = Results.Builder.wrap(results_builder);
+            try dctx.handler(dctx.ctx, dctx.peer, dctx.params, &results, dctx.caps);
+        }
+    };
+
     pub const Client = struct {
         peer: *rpc.peer.Peer,
         cap_id: u32,
@@ -702,6 +988,24 @@ pub const Reflector = struct {
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
             const question_id = try self.peer.sendCall(self.cap_id, interface_id, ResolveNow.ordinal, ctx, ResolveNow.callBuild, ResolveNow.callReturn);
             self.peer.setQuestionDeinitCtx(question_id, ResolveNow.CallContext.deinitCtx);
+            return question_id;
+        }
+
+        pub fn callInvokeCap(self: Client, user_ctx: *anyopaque, build: ?InvokeCap.BuildFn, on_return: InvokeCap.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(InvokeCap.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, InvokeCap.ordinal, ctx, InvokeCap.callBuild, InvokeCap.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, InvokeCap.CallContext.deinitCtx);
+            return question_id;
+        }
+
+        pub fn callDisconnectNow(self: Client, user_ctx: *anyopaque, build: ?DisconnectNow.BuildFn, on_return: DisconnectNow.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(DisconnectNow.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
+            const question_id = try self.peer.sendCall(self.cap_id, interface_id, DisconnectNow.ordinal, ctx, DisconnectNow.callBuild, DisconnectNow.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, DisconnectNow.CallContext.deinitCtx);
             return question_id;
         }
 
@@ -746,6 +1050,24 @@ pub const Reflector = struct {
             ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
             const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ResolveNow.ordinal, ctx, ResolveNow.callBuild, ResolveNow.callReturn);
             self.peer.setQuestionDeinitCtx(question_id, ResolveNow.CallContext.deinitCtx);
+            return question_id;
+        }
+
+        pub fn callInvokeCap(self: PipelinedClient, user_ctx: *anyopaque, build: ?InvokeCap.BuildFn, on_return: InvokeCap.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(InvokeCap.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, InvokeCap.ordinal, ctx, InvokeCap.callBuild, InvokeCap.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, InvokeCap.CallContext.deinitCtx);
+            return question_id;
+        }
+
+        pub fn callDisconnectNow(self: PipelinedClient, user_ctx: *anyopaque, build: ?DisconnectNow.BuildFn, on_return: DisconnectNow.Callback) !u32 {
+            const ctx = try self.peer.allocator.create(DisconnectNow.CallContext);
+            errdefer self.peer.allocator.destroy(ctx);
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
+            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, DisconnectNow.ordinal, ctx, DisconnectNow.callBuild, DisconnectNow.callReturn);
+            self.peer.setQuestionDeinitCtx(question_id, DisconnectNow.CallContext.deinitCtx);
             return question_id;
         }
 
@@ -841,6 +1163,10 @@ pub const Reflector = struct {
         reflect_deferred: ?Reflect.DeferredHandler = null,
         resolveNow: ResolveNow.Handler,
         resolveNow_deferred: ?ResolveNow.DeferredHandler = null,
+        invokeCap: InvokeCap.Handler,
+        invokeCap_deferred: ?InvokeCap.DeferredHandler = null,
+        disconnectNow: DisconnectNow.Handler,
+        disconnectNow_deferred: ?DisconnectNow.DeferredHandler = null,
     };
 
     pub fn exportServer(peer: *rpc.peer.Peer, server: *Server) !u32 {
@@ -856,6 +1182,8 @@ pub const Reflector = struct {
         switch (call.method_id) {
             Reflect.ordinal => try Reflect.handleCall(server, peer, call, caps),
             ResolveNow.ordinal => try ResolveNow.handleCall(server, peer, call, caps),
+            InvokeCap.ordinal => try InvokeCap.handleCall(server, peer, call, caps),
+            DisconnectNow.ordinal => try DisconnectNow.handleCall(server, peer, call, caps),
             else => try peer.sendReturnException(call.question_id, "unknown method"),
         }
     }
@@ -1054,6 +1382,182 @@ pub const Reflector = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const InvokeCapParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getCb(self: Reader) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
+
+            pub fn resolveCb(self: Reader, peer: *rpc.peer.Peer, caps: *const rpc.caps.table.InboundCapTable) !CallSequence.Client {
+                const cap = try self._reader.readCapability(0);
+                var mutable_caps = caps.*;
+                try mutable_caps.retainCapability(cap);
+                const resolved = try caps.resolveCapability(cap);
+                switch (resolved) {
+                    .imported => |imported| return CallSequence.Client.init(peer, imported.id),
+                    else => return error.UnexpectedCapabilityType,
+                }
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 1);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn initCb(self: *Builder) !message.AnyPointerBuilder {
+                return try self._builder.getAnyPointer(0);
+            }
+
+            pub fn clearCb(self: *Builder) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setNull();
+            }
+
+            pub fn setCbCapability(self: *Builder, cap: message.Capability) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(cap);
+            }
+
+            pub fn setCbServer(self: *Builder, peer: *rpc.peer.Peer, server: *CallSequence.Server) !void {
+                const cap_id = try CallSequence.exportServer(peer, server);
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = cap_id });
+            }
+
+            pub fn setCbClient(self: *Builder, client: CallSequence.Client) !void {
+                var any = try self._builder.getAnyPointer(0);
+                try any.setCapability(.{ .id = client.cap_id });
+            }
+
+        };
+    };
+
+    pub const InvokeCapResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getObserved(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setObserved(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
+            }
+
+        };
+    };
+
+    pub const DisconnectNowParams = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(0, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+        };
+    };
+
+    pub const DisconnectNowResults = struct {
+        pub const Reader = struct {
+            _reader: message.StructReader,
+
+            pub fn init(msg: *const message.Message) !Reader {
+                const root = try msg.getRootStruct();
+                return .{ ._reader = root };
+            }
+
+            pub fn wrap(reader: message.StructReader) Reader {
+                return .{ ._reader = reader };
+            }
+
+            pub fn getUnused(self: Reader) !u32 {
+                return self._reader.readU32(0);
+            }
+
+        };
+
+        pub const Builder = struct {
+            _builder: message.StructBuilder,
+
+            pub fn init(msg: *message.MessageBuilder) !Builder {
+                const builder = try msg.allocateStruct(1, 0);
+                return .{ ._builder = builder };
+            }
+
+            pub fn wrap(builder: message.StructBuilder) Builder {
+                return .{ ._builder = builder };
+            }
+
+            pub fn setUnused(self: *Builder, value: u32) !void {
+                self._builder.writeU32(0, @bitCast(value));
             }
 
         };

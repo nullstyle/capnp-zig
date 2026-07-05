@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use capnp::capability::{FromClientHook, Promise};
@@ -1268,13 +1269,21 @@ struct ReflectorImpl {
     // and consumed (taken) in resolveNow(). Sending the retained target's
     // client hook resolves the promise to it.
     fulfiller: RefCell<Option<oneshot::Sender<Result<capnp::capability::Client, Error>>>>,
+    // The RpcSystem's disconnector, wired after the RpcSystem is created (see
+    // run()). disconnect_now() spawns it to abort all outstanding calls with a
+    // Disconnected error, so the caller's disconnectNow() call fails as a
+    // disconnect-class error.
+    disconnector: Rc<RefCell<Option<capnp_rpc::Disconnector<rpc_twoparty_capnp::Side>>>>,
 }
 
 impl ReflectorImpl {
-    fn new() -> Self {
+    fn new(
+        disconnector: Rc<RefCell<Option<capnp_rpc::Disconnector<rpc_twoparty_capnp::Side>>>>,
+    ) -> Self {
         Self {
             held: RefCell::new(None),
             fulfiller: RefCell::new(None),
+            disconnector,
         }
     }
 }
@@ -1331,6 +1340,47 @@ impl reflector::Server for ReflectorImpl {
         let _ = fulfiller.send(Ok(capnp::capability::Client::new(target.into_client_hook())));
         Promise::ok(())
     }
+
+    // invoke_cap: SERVER-invokes-caller-cap (cap-in-params, distinct from
+    // reflect). The caller hands us its OWN CallSequence as `cb`; we INVOKE it
+    // ourselves — cb.getNumber() — and return the observed counter value as
+    // `observed`. The async block defers our Return until the inbound getNumber
+    // resolves.
+    fn invoke_cap(
+        &mut self,
+        params: reflector::InvokeCapParams,
+        mut results: reflector::InvokeCapResults,
+    ) -> Promise<(), Error> {
+        let cb: call_sequence::Client = pry!(pry!(params.get()).get_cb());
+        Promise::from_future(async move {
+            let inner = cb.get_number_request().send().promise.await?;
+            let observed = inner.get()?.get_n();
+            results.get().set_observed(observed);
+            Ok(())
+        })
+    }
+
+    // disconnect_now: close our own transport so the caller's outstanding call
+    // fails with a disconnect-class error. Spawning the RpcSystem's disconnector
+    // aborts all outstanding calls (including this one) with a Disconnected
+    // error. We return a never-resolving promise so this call never sends a
+    // normal Return; the disconnect aborts it instead. The caller must call this
+    // LAST — the connection dies once the disconnector runs.
+    fn disconnect_now(
+        &mut self,
+        _params: reflector::DisconnectNowParams,
+        _results: reflector::DisconnectNowResults,
+    ) -> Promise<(), Error> {
+        if let Some(disconnector) = self.disconnector.borrow_mut().take() {
+            // Run the disconnector on the local task set; it aborts outstanding
+            // calls with a Disconnected error when polled.
+            tokio::task::spawn_local(async move {
+                let _ = disconnector.await;
+            });
+        }
+        // Never resolve: let the disconnect abort this call as Disconnected.
+        Promise::from_future(futures::future::pending())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,6 +1421,13 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                 Default::default(),
             );
 
+            // For resolve_disembargo, the ReflectorImpl needs the RpcSystem's
+            // disconnector (created below) so disconnect_now() can close the
+            // transport. Share it via a cell filled after the RpcSystem exists.
+            let disconnector_cell: Rc<
+                RefCell<Option<capnp_rpc::Disconnector<rpc_twoparty_capnp::Side>>>,
+            > = Rc::new(RefCell::new(None));
+
             let bootstrap_client: capnp::capability::Client = match schema_name.as_str() {
                 "game_world" => {
                     let client: game_world::Client = capnp_rpc::new_client(GameWorldImpl::new());
@@ -1392,7 +1449,8 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                     client.client
                 }
                 "resolve_disembargo" => {
-                    let client: reflector::Client = capnp_rpc::new_client(ReflectorImpl::new());
+                    let client: reflector::Client =
+                        capnp_rpc::new_client(ReflectorImpl::new(disconnector_cell.clone()));
                     client.client
                 }
                 other => {
@@ -1401,7 +1459,10 @@ pub async fn run(host: &str, port: u16, schema: &str) -> Result<(), Box<dyn std:
                 }
             };
 
-            let rpc_system = RpcSystem::new(Box::new(network), Some(bootstrap_client));
+            let mut rpc_system = RpcSystem::new(Box::new(network), Some(bootstrap_client));
+            // Fill the disconnector cell so disconnect_now() can close the
+            // transport for the resolve_disembargo scenario.
+            *disconnector_cell.borrow_mut() = Some(rpc_system.get_disconnector());
 
             if let Err(e) = rpc_system.await {
                 eprintln!("RPC error: {}", e);

@@ -91,6 +91,13 @@ const ClientApp = struct {
     rd_resolve_now_done: bool = false,
     // getNumber value observed by the DIRECT call (issued after resolution).
     rd_direct_n: ?u32 = null,
+    // A SEPARATE client-hosted CallSequence handed to invokeCap as `cb`, so the
+    // server invokes a distinct cap (not the reflected one). Its counter starts
+    // fresh, so the first (only) getNumber the server drives returns 0.
+    rd_invoke_cb: CallSequenceServer = .{},
+    rd_invoke_cb_target: ?resolve_disembargo.CallSequence.Client = null,
+    // The value the SERVER observed by invoking rd_invoke_cb.getNumber() itself.
+    rd_invoke_observed: ?u32 = null,
 };
 
 // Client-hosted CallSequence: getNumber() returns a per-connection monotonic
@@ -878,6 +885,14 @@ fn bootstrapResolveDisembargo(app: *ClientApp, peer: *rpc.peer.Peer) !void {
     // params builder can name it by cap id via setTargetClient.
     const cap_id = try resolve_disembargo.CallSequence.exportServer(peer, &app.rd_call_sequence.server);
     app.rd_target = resolve_disembargo.CallSequence.Client.init(peer, cap_id);
+
+    // Export a SECOND, distinct CallSequence for the invokeCap step. The server
+    // invokes THIS cap directly (not reflected), so we can prove a client-
+    // supplied cap was called server-side and compare the observed value.
+    app.rd_invoke_cb.bind();
+    const invoke_cap_id = try resolve_disembargo.CallSequence.exportServer(peer, &app.rd_invoke_cb.server);
+    app.rd_invoke_cb_target = resolve_disembargo.CallSequence.Client.init(peer, invoke_cap_id);
+
     _ = try resolve_disembargo.Reflector.Client.fromBootstrap(peer, app, onReflectorBootstrap);
 }
 
@@ -1028,6 +1043,85 @@ fn onDirectGetNumberReturn(
     const seq = &app.rd_call_sequence;
     const ordered = seq.call0_seq != null and seq.call1_seq != null and seq.call0_seq.? < seq.call1_seq.?;
     app.tap.ok(ordered, "pipelined getNumber reached CallSequence before the direct call");
+
+    // Item 1 (server-invokes-cap): hand the reflector our SEPARATE CallSequence
+    // as `cb`; the server invokes cb.getNumber() itself and returns the observed
+    // value. This runs AFTER the reflect/resolve assertions and BEFORE the
+    // disconnect (which kills the connection).
+    const reflector = app.rd_reflector orelse {
+        failAndFinish(app, peer, "reflector client available for invokeCap");
+        return;
+    };
+    _ = try reflector.callInvokeCap(app, buildInvokeCap, onInvokeCapReturn);
+}
+
+fn buildInvokeCap(ctx_ptr: *anyopaque, params: *resolve_disembargo.Reflector.InvokeCapParams.Builder) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+    // Name our already-exported invoke CallSequence as `cb`; only its cap id is
+    // needed here (no peer access from inside the params builder).
+    try params.setCbClient(app.rd_invoke_cb_target.?);
+}
+
+fn onInvokeCapReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: resolve_disembargo.Reflector.InvokeCap.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    const results = response.unwrap() catch {
+        failAndFinish(app, peer, "invokeCap returns results");
+        return;
+    };
+    app.rd_invoke_observed = try results.getObserved();
+
+    // The server invoked our cb exactly once, so it observed n==0 — matching the
+    // value our own CallSequence returned for that first (and only) call.
+    const cb_calls = app.rd_invoke_cb.calls_seen;
+    app.tap.ok(cb_calls == 1, "server invoked the client-supplied cap exactly once");
+    app.tap.ok(
+        app.rd_invoke_observed != null and app.rd_invoke_observed.? == 0 and app.rd_invoke_cb.call0_seq == 0,
+        "server-observed invokeCap value matches the client cap's returned value",
+    );
+
+    // Item 2 (disconnect-mid-call): issue disconnectNow LAST. The server closes
+    // its transport in the handler, so this outstanding call comes back as a
+    // DISCONNECT-class error rather than a normal result.
+    const reflector = app.rd_reflector orelse {
+        failAndFinish(app, peer, "reflector client available for disconnectNow");
+        return;
+    };
+    // Mark done BEFORE issuing the call: the server self-close makes the client's
+    // own in-flight writes fail (BrokenPipe/ConnectionReset) which fire the
+    // transport on_error callback. Those are the EXPECTED terminal here, so
+    // app.done must already be set to keep onSessionError from recording them as
+    // app.err (which would fail the run even though every TAP line passed). The
+    // outstanding disconnectNow question is still delivered to its callback by
+    // the peer's forceCancelAllQuestions(disconnected) path.
+    app.done = true;
+    _ = try reflector.callDisconnectNow(app, null, onDisconnectNowReturn);
+}
+
+fn onDisconnectNowReturn(
+    ctx_ptr: *anyopaque,
+    peer: *rpc.peer.Peer,
+    response: resolve_disembargo.Reflector.DisconnectNow.Response,
+    _: *const rpc.caps.table.InboundCapTable,
+) !void {
+    const app: *ClientApp = @ptrCast(@alignCast(ctx_ptr));
+
+    // The transport is now closing (the server self-closed). Mark done up front
+    // so the trailing on_error/on_close transport callbacks do not record a
+    // disconnect as app.err — this is the EXPECTED terminal for this scenario.
+    app.done = true;
+
+    // Assert we specifically observe a DISCONNECT-class error — not a blanket
+    // catch. unwrap() maps the locally synthesized "disconnected" reason to
+    // error.Disconnected; any other outcome (normal result, RemoteException,
+    // timeout) fails this assertion.
+    const outcome = response.unwrap();
+    app.tap.ok(outcome == error.Disconnected, "disconnectNow observes a disconnect-class error");
 
     finish(app, peer);
 }

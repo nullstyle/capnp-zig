@@ -57,6 +57,9 @@ func handleConn(c net.Conn, schema string) {
 	defer c.Close()
 
 	var bootstrap capnp.Client
+	// reflectorServer is non-nil only for resolve_disembargo; its disconnectNow
+	// handler needs the rpc.Conn (created below) to close the transport.
+	var reflectorServer *servers.ReflectorServer
 
 	switch schema {
 	case "gameworld":
@@ -68,10 +71,19 @@ func handleConn(c net.Conn, schema string) {
 	case "matchmaking":
 		bootstrap = capnp.Client(servers.NewMatchmakingServiceClient())
 	case "resolve_disembargo":
-		bootstrap = capnp.Client(servers.NewReflectorClient())
+		client, srv := servers.NewReflectorClientWithServer()
+		bootstrap = capnp.Client(client)
+		reflectorServer = srv
 	default:
 		log.Printf("unknown schema: %s", schema)
 		return
+	}
+
+	if reflectorServer != nil {
+		// Wire the raw socket so disconnectNow() can close the transport,
+		// making the caller's outstanding call fail with a disconnect-class
+		// error.
+		reflectorServer.SetConn(c)
 	}
 
 	rpcConn := rpc.NewConn(rpc.NewStreamTransport(c), &rpc.Options{

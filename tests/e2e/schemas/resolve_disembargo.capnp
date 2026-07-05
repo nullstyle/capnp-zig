@@ -33,4 +33,19 @@ interface Reflector {
   # target. Split from reflect() so the caller can guarantee its pipelined calls
   # are parked on the still-unresolved promise before resolution fires.
   resolveNow @1 () -> ();
+
+  # cap-in-params (SERVER-invokes-caller-cap direction). The caller hands the
+  # reflector one of its OWN CallSequence capabilities as `cb`. The reflector
+  # INVOKES it itself — cb.getNumber() — rather than reflecting it back, and
+  # returns the observed counter value as `observed`. The caller asserts the
+  # server-observed value matches what its own CallSequence returned, proving a
+  # distinct client-supplied cap was invoked server-side.
+  invokeCap @2 (cb :CallSequence) -> (observed :UInt32);
+
+  # disconnect-mid-call. The reflector's handler closes its OWN transport, so the
+  # caller's outstanding call to disconnectNow() returns a DISCONNECT-class error
+  # instead of a normal result. The caller must issue this LAST (the connection
+  # dies once the handler fires) and assert it specifically observes a
+  # disconnect-class error, not a blanket failure.
+  disconnectNow @3 () -> (unused :UInt32);
 }
