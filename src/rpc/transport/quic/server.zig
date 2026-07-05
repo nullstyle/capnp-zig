@@ -356,9 +356,7 @@ pub const Server = struct {
             return;
         }
 
-        if (!conn.handshakeDone()) {
-            try conn.advance();
-        }
+        try conn.advance();
         try server_session.serviceMode(conn, now_us);
         try self.listener.drainAcceptedSessionDatagrams(server_session.acceptedSession(), self.udp_tx_buf, now_us);
 

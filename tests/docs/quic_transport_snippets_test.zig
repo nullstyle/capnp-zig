@@ -42,6 +42,7 @@ fn initClientOptions(
     return .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .mode = .native,
         .native = .{
             .inline_frame_threshold = 64 * 1024,

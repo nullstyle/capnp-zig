@@ -33,6 +33,7 @@ const RawFaultClient = struct {
         var client = try quic_zig.Client.connect(.{
             .allocator = allocator,
             .server_name = "localhost",
+            .insecure_skip_verify = true,
             .alpn_protocols = &.{quic.alpn},
             .transport_params = quic.defaultTransportParams(),
         });
@@ -113,6 +114,10 @@ const RawFaultClient = struct {
 
     fn step(self: *RawFaultClient, receive_timeout: std.Io.Duration) !void {
         var now_us = self.nowUs();
+        try self.client.conn.advance();
+        try self.drainOutgoing(now_us);
+
+        now_us = self.nowUs();
         const msg = self.socket.receiveTimeout(self.io, self.rx_buf, .{
             .duration = .{
                 .raw = receive_timeout,

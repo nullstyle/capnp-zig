@@ -41,6 +41,7 @@ pub fn initClient(
         .alpn_protocols = options.alpn_protocols,
         .transport_params = options.transport_params,
         .ca_pem = options.ca_pem,
+        .insecure_skip_verify = options.insecure_skip_verify,
     });
     errdefer client.deinit();
 

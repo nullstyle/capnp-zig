@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **QUIC transport updated to `quic_zig` 0.7.0**: the dependency is repinned to
+  upstream `28f1d960`, and the transport loop now drives `Connection.advance()`
+  before polling datagrams and during post-handshake operation to match
+  upstream's current embedder contract. `ClientOptions` also exposes
+  `insecure_skip_verify` for loopback/self-signed test clients; the default
+  remains certificate verification via `quic_zig`'s system-trust client context.
+
 - **RPC forwarded-return intermediary translation now handles
   `takeFromOtherQuestion` / `resultsSentElsewhere` instead of degrading to a clean
   exception.** A peer acting as a forwarding intermediary now rewrites nested

@@ -127,6 +127,9 @@ pub const ClientOptions = struct {
     mode: TransportMode = .baseline,
     native: NativeOptions = .{},
     ca_pem: ?[]const u8 = null,
+    /// Skip server certificate verification. Off by default; enable only for
+    /// tests or controlled interop with self-signed peers.
+    insecure_skip_verify: bool = false,
     observer: ?events.Observer = null,
 };
 

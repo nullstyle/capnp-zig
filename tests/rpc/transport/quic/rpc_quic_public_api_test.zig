@@ -54,6 +54,7 @@ test "QUIC public API is discoverable from capnpc.rpc.transport.quic" {
     const native_options = quic.NativeOptions{};
 
     try std.testing.expectEqual(quic.TransportMode.baseline, client_options.mode);
+    try std.testing.expect(!client_options.insecure_skip_verify);
     try std.testing.expectEqual(quic.TransportMode.baseline, server_options.mode);
     try std.testing.expect(native_options.max_control_frame_bytes >= native_options.inline_frame_threshold);
 

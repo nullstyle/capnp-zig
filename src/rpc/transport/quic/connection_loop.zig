@@ -58,6 +58,7 @@ pub fn run(owner: Owner) void {
 pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
     const driver = owner.driver(owner.ptr);
     var now_us = driver.nowUs();
+    try advanceActive(driver);
     const next_deadline_us = nextTimerDeadlineUs(driver, now_us);
     const waited_for = scheduler.receiveWaitDuration(.{
         .mode = mode,
@@ -126,9 +127,7 @@ fn isTransportDrainedClosed(owner: Owner, driver: endpoint_mod.EndpointDriver) b
 
 fn advanceActive(driver: endpoint_mod.EndpointDriver) !void {
     const conn = driver.quicConnection() orelse return;
-    if (!conn.handshakeDone()) {
-        try conn.advance();
-    }
+    try conn.advance();
 }
 
 fn tickActive(driver: endpoint_mod.EndpointDriver, now_us: u64) !void {

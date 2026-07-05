@@ -62,6 +62,8 @@ Use the defaults unless you have a concrete reason to diverge:
   intentionally support the native QUIC wire shape.
 - Leave `alpn_protocols = &.{rpc.transport.quic.alpn}` unless you are integrating with a
   private deployment that has a documented ALPN policy.
+- Keep client certificate verification enabled. `ClientOptions.insecure_skip_verify`
+  exists for local tests and controlled interop with self-signed peers only.
 - Keep 0-RTT disabled for RPC servers unless every bootstrap operation and
   early call path is safe to replay.
 - Keep `reveal_close_reason_on_wire = false` outside local debugging.
@@ -102,6 +104,7 @@ fn initClient(
     return try quic.Connection.initClient(allocator, io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true, // local self-signed example certificate
         .mode = .native,
         .native = .{
             .inline_frame_threshold = 64 * 1024,

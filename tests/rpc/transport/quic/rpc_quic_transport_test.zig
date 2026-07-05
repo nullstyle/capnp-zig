@@ -336,6 +336,7 @@ test "quic localhost connection exchanges framed RPC bootstrap payload" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
     });
     defer client.deinit();
@@ -402,6 +403,7 @@ test "quic native localhost connection exchanges inline RPC bootstrap payload" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
     });
@@ -470,6 +472,7 @@ test "quic native localhost routes large RPC frame over data stream" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
         .native = native_options,
@@ -545,6 +548,7 @@ test "quic native localhost preserves E-order across data stream and inline fram
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
         .native = native_options,
@@ -625,6 +629,7 @@ test "quic native fanout server drives two sessions independently" {
     var client_a = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
         .native = native_options,
@@ -634,6 +639,7 @@ test "quic native fanout server drives two sessions independently" {
     var client_b = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
         .native = native_options,
@@ -718,6 +724,7 @@ test "quic fanout server run loop terminates on cross-thread requestClose" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
     });
     defer client.deinit();
@@ -773,6 +780,7 @@ test "quic fanout server fires on_close for a live session on deinit" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
         .native = native_options,
@@ -843,6 +851,7 @@ test "quic native localhost streams large RPC data payload" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
         .native = native_options,
@@ -908,6 +917,7 @@ test "quic native mode mismatch closes baseline peer cleanly" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .mode = .native,
     });
@@ -967,6 +977,7 @@ test "quic native mode mismatch closes native peer cleanly" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
     });
     defer client.deinit();
@@ -1052,6 +1063,7 @@ test "quic localhost oversized baseline frame terminates server" {
     var client = try quic.Connection.initClient(allocator, std.testing.io, .{
         .remote_addr = server_addr,
         .server_name = "localhost",
+        .insecure_skip_verify = true,
         .receive_timeout = std.Io.Duration.fromMilliseconds(1),
         .max_message_bytes = 128,
         .max_outbound_queue_bytes = quic.length_prefix_bytes + 128,
