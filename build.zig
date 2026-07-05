@@ -262,6 +262,25 @@ pub fn build(b: *std.Build) void {
     const bench_unpack_step = b.step("bench-unpacked", "Run unpacked (unpacking) benchmark");
     bench_unpack_step.dependOn(&run_unpack.step);
 
+    // RPC round-trip benchmark (loopback TCP, warmed steady-state client)
+    const rpc_round_trip_bench = b.addExecutable(.{
+        .name = "bench-rpc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/rpc_round_trip.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+            },
+        }),
+    });
+
+    const run_rpc_round_trip = b.addRunArtifact(rpc_round_trip_bench);
+    run_rpc_round_trip.addPassthruArgs();
+
+    const bench_rpc_step = b.step("bench-rpc", "Run RPC round-trip benchmark (use -- --mode pipelined --inflight K)");
+    bench_rpc_step.dependOn(&run_rpc_round_trip.step);
+
     // RPC soak harness (loopback TCP, chaos + deadline sessions)
     const soak_rpc = b.addExecutable(.{
         .name = "soak-rpc",
@@ -297,6 +316,7 @@ pub fn build(b: *std.Build) void {
     // them first — a fresh checkout (CI) has no zig-out.
     run_bench_check.step.dependOn(&b.addInstallArtifact(ping_pong_bench, .{}).step);
     run_bench_check.step.dependOn(&b.addInstallArtifact(pack_unpack_bench, .{}).step);
+    run_bench_check.step.dependOn(&b.addInstallArtifact(rpc_round_trip_bench, .{}).step);
 
     const bench_check_step = b.step("bench-check", "Run benchmark regression checks");
     bench_check_step.dependOn(&run_bench_check.step);

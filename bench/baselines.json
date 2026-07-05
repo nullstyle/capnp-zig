@@ -181,6 +181,74 @@
       "metric": "allocs_per_iter",
       "baseline": 13.0,
       "max_regression_pct": 30.0
+    },
+    {
+      "name": "rpc_round_trip_seq_p50",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": [
+        "--mode",
+        "sequential",
+        "--calls",
+        "10000",
+        "--warmup",
+        "2000",
+        "--json"
+      ],
+      "metric": "p50_ns",
+      "baseline": 50325.0,
+      "max_regression_pct": 50.0
+    },
+    {
+      "name": "rpc_round_trip_seq_p99",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": [
+        "--mode",
+        "sequential",
+        "--calls",
+        "10000",
+        "--warmup",
+        "2000",
+        "--json"
+      ],
+      "metric": "p99_ns",
+      "baseline": 64025.0,
+      "max_regression_pct": 60.0
+    },
+    {
+      "name": "rpc_round_trip_seq_calls_per_sec",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": [
+        "--mode",
+        "sequential",
+        "--calls",
+        "10000",
+        "--warmup",
+        "2000",
+        "--json"
+      ],
+      "metric": "calls_per_sec",
+      "baseline": 19513.0,
+      "max_regression_pct": 35.0,
+      "higher_is_better": true
+    },
+    {
+      "name": "rpc_round_trip_pipelined_calls_per_sec",
+      "binary": "./zig-out/bin/bench-rpc",
+      "args": [
+        "--mode",
+        "pipelined",
+        "--calls",
+        "20000",
+        "--warmup",
+        "2000",
+        "--inflight",
+        "32",
+        "--json"
+      ],
+      "metric": "calls_per_sec",
+      "baseline": 34649.0,
+      "max_regression_pct": 35.0,
+      "higher_is_better": true
     }
   ]
 }

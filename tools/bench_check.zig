@@ -7,6 +7,10 @@ const Case = struct {
     metric: []const u8 = "ns_per_iter",
     baseline: f64,
     max_regression_pct: ?f64 = null,
+    // Direction of "worse". Latency/alloc metrics regress when they grow
+    // (the default). Throughput metrics (e.g. calls_per_sec) regress when
+    // they shrink; set this true so the gate bounds the downside instead.
+    higher_is_better: bool = false,
 };
 
 const Baselines = struct {
@@ -98,6 +102,26 @@ fn runCase(
     const actual = try metricFromJson(parsed.value, case.metric);
 
     const max_pct = override_max_regression_pct orelse case.max_regression_pct orelse default_max_regression_pct;
+    if (case.higher_is_better) {
+        // Throughput: the regression is a drop below baseline, so the bound
+        // is a floor (baseline scaled down by the allowed percentage).
+        const allowed = case.baseline * (1.0 - (max_pct / 100.0));
+        const pass = actual >= allowed;
+        std.debug.print(
+            "[{s}] {s}: {s}={d:.2} baseline={d:.2} allowed>={d:.2} (-{d:.1}%)\n",
+            .{
+                if (pass) "PASS" else "FAIL",
+                case.name,
+                case.metric,
+                actual,
+                case.baseline,
+                allowed,
+                max_pct,
+            },
+        );
+        return pass;
+    }
+
     const allowed = case.baseline * (1.0 + (max_pct / 100.0));
     const pass = actual <= allowed;
 
