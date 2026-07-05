@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   impl performs spec-current three-party pickup), and one orthogonal gap remains:
   the introducer does not yet forward the *original* parked pipelined calls on the
   promise to the host (they hit the Level-1/2 rejecting vine) — tracked separately.
+  The redirected-return path is also originated (Phase 5): `Peer.sendThirdPartyAnswer`
+  lets a callee send its results straight to a third party (callee-allocated
+  answer-id in the [2^30, 2^31) range) when a Call arrived with
+  `sendResultsTo=thirdParty`, and `Peer.registerPendingThirdPartyAwait` primes the
+  third party to adopt it — proven end to end (results reach the third party via
+  `ThirdPartyAnswer`, never the caller, which settles with `awaitFromThirdParty`).
   Known constraint: the
   vine→Provide coupling borrows a raw peer pointer, so the app must tear down the
   recipient-facing peer (or release the vine) before/with the provided-cap peer —

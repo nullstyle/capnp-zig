@@ -189,6 +189,13 @@ const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const Question = state.Question(QuestionCallback);
 const PendingThirdPartyAwait = state.PendingThirdPartyAwait(Question);
 
+/// Low bound of the callee-allocated `ThirdPartyAnswer` answer-id range
+/// (rpc.capnp:936-941): bit 30 set. The high bound is 2^31 (bit 31 clear).
+/// Every id `Peer.sendThirdPartyAnswer` mints satisfies
+/// `third_party.isThirdPartyAnswerId`.
+const third_party_answer_id_base: u32 = 0x4000_0000;
+const third_party_answer_id_limit: u32 = 0x8000_0000;
+
 const ForwardCallContext = struct {
     peer: *Peer,
     payload: protocol.Payload,
@@ -531,6 +538,14 @@ pub const Peer = struct {
     /// numeric senderLoopback embargo namespace. Keeping them separate avoids
     /// cross-talk between the two ordering mechanisms.
     next_accept_embargo_id: u64 = 0,
+    /// Next callee-allocated answer id for an outbound `ThirdPartyAnswer`
+    /// (`Peer.sendThirdPartyAnswer`). Per rpc.capnp:936-941 the callee — not the
+    /// caller — chooses this id, and it MUST fall in the range [2^30, 2^31):
+    /// bit 30 set, bit 31 clear (see `third_party.isThirdPartyAnswerId`). The
+    /// counter starts at 2^30 and is masked back into range on wrap so it never
+    /// collides with the caller-allocated question-id space (low ids) or the
+    /// `onlyPromisePipeline` range [2^31, 2^32).
+    next_third_party_answer_id: u32 = third_party_answer_id_base,
     /// Export ID of the bootstrap capability, if set.
     bootstrap_export_id: ?u32 = null,
 
@@ -1519,6 +1534,130 @@ pub const Peer = struct {
 
         log.debug("sent accept question_id={}", .{question_id});
         return question_id;
+    }
+
+    /// Allocate the next callee-chosen answer id for an outbound
+    /// `ThirdPartyAnswer`. Per rpc.capnp:936-941 the value must have bit 30 set
+    /// and bit 31 clear ([2^30, 2^31)); this is enforced by masking the counter
+    /// back into range on every wrap, and asserted via
+    /// `peer_third_party.isThirdPartyAnswerId`. The chosen id is NOT recorded in
+    /// any local table on the callee: it names the answer on the *recipient's*
+    /// (VatA's) connection, and the callee only re-uses it as the `answerId` of
+    /// the follow-up `Return` (which is a plain outbound frame on the same
+    /// wire). Callee and recipient are different vats, so there is no collision
+    /// with the callee's own caller-allocated question ids.
+    fn allocateThirdPartyAnswerId(self: *Peer) u32 {
+        var id = self.next_third_party_answer_id;
+        // Keep bit 30 set / bit 31 clear even across a full-range wrap.
+        if (id < third_party_answer_id_base or id >= third_party_answer_id_limit) {
+            id = third_party_answer_id_base;
+        }
+        var next = id + 1;
+        if (next >= third_party_answer_id_limit) next = third_party_answer_id_base;
+        self.next_third_party_answer_id = next;
+        std.debug.assert(peer_third_party.isThirdPartyAnswerId(id));
+        return id;
+    }
+
+    /// Callee → third party: send a `ThirdPartyAnswer` on the connection to the
+    /// vat that will receive this call's results (VatA). This is the
+    /// redirected-return origination for a call that arrived with
+    /// `sendResultsTo = thirdParty` (rpc.capnp:494-505, 906-942): the callee
+    /// (VatC) connects to the third party and adopts the call into that
+    /// connection by announcing a callee-allocated `answerId`. The recipient
+    /// matches `completion` (the `ThirdPartyCompletion`) against the
+    /// `awaitFromThirdParty` bookkeeping it was primed with, adopts its parked
+    /// question under `answer_id`, and thereafter accepts the follow-up `Return`
+    /// (which the callee sends under the SAME `answer_id`) as that question's
+    /// results.
+    ///
+    /// `completion` must serialize to bytes byte-identical to the recipient's
+    /// awaited `ThirdPartyToAwait`/`ThirdPartyCompletion` — the recipient keys
+    /// its await table on those bytes (see `handleThirdPartyAnswer`).
+    ///
+    /// Returns the callee-allocated answer id, which the caller then re-uses as
+    /// the `answerId` of the follow-up results `Return` on this same peer.
+    pub fn sendThirdPartyAnswer(
+        self: *Peer,
+        completion: message.AnyPointerReader,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+
+        const answer_id = self.allocateThirdPartyAnswerId();
+
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildThirdPartyAnswer(answer_id, completion);
+        try self.sendBuilder(&builder);
+
+        log.debug("sent thirdPartyAnswer answer_id={}", .{answer_id});
+        return answer_id;
+    }
+
+    /// Third-party (recipient) side: park an outbound question that awaits a
+    /// `ThirdPartyAnswer` from the callee, keyed by the completion bytes it will
+    /// present. This is the recipient-side half of the `awaitFromThirdParty`
+    /// bookkeeping the receive path already reads: when the callee later sends a
+    /// `ThirdPartyAnswer` whose completion matches `completion`, `handleThirdPartyAnswer`
+    /// adopts this parked question under the callee-allocated answer id, and the
+    /// follow-up `Return` completes it via `on_return`.
+    ///
+    /// In the spec's canonical proxy topology this parking happens implicitly
+    /// when the recipient receives a `Return{awaitFromThirdParty}` for a call it
+    /// itself made (`handleReturnAcceptFromThirdParty`). In a first-class
+    /// origination the recipient (VatA) never made that call — the introducer
+    /// (VatB) did — so the recipient is primed explicitly here. `completion`
+    /// must serialize byte-identically to the completion the callee will send.
+    ///
+    /// The parked question is delivered exactly one `Return` (carrying the real
+    /// results) and needs no auto-Finish of its own; adoption inserts it into
+    /// the normal questions table under the adopted id, after which it follows
+    /// the standard Return lifecycle.
+    pub fn registerPendingThirdPartyAwait(
+        self: *Peer,
+        completion: message.AnyPointerReader,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+    ) !void {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+
+        const completion_key = (try captureAnyPointerPayload(self.allocator, completion)) orelse
+            return error.MissingThirdPartyPayload;
+        var owns_key = true;
+        errdefer if (owns_key) self.allocator.free(completion_key);
+
+        if (self.pending_third_party_awaits.contains(completion_key)) {
+            return error.DuplicateThirdPartyAwait;
+        }
+
+        // Reserve an answer-id slot's worth of question budget so the later
+        // adoption into `questions` cannot overflow silently. The parked
+        // question is a normal outbound question that has not yet been assigned
+        // a wire id (the callee chooses it), so it is NOT inserted into
+        // `questions` here — only into the await table.
+        try self.ensurePendingThirdPartyAwaitBudget(completion_key);
+
+        const question = Question{
+            .ctx = ctx,
+            .on_return = on_return,
+            // The adopted question follows the standard Return lifecycle: when
+            // the callee's follow-up results `Return` (under the callee-chosen
+            // answer id) arrives, the recipient sends a `Finish` for that id
+            // back to the callee, per rpc.capnp:924-926 ("the receiver ... must
+            // eventually send a Finish message"). That Finish clears the
+            // callee's answer-table entry for the redirected results, so
+            // auto-finish must NOT be suppressed here.
+        };
+
+        try peer_third_party.putPendingAwait(
+            PendingThirdPartyAwait,
+            &self.pending_third_party_awaits,
+            completion_key,
+            .{ .question_id = 0, .question = question },
+        );
+        owns_key = false;
     }
 
     /// Call handler installed on a vine export. A vine is a pure liveness/refcount
