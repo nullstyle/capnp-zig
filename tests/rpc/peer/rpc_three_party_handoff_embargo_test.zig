@@ -43,6 +43,7 @@ const cap_table = capnpc.rpc.caps.table;
 const vat_network = capnpc.rpc.vat.network;
 const message = capnpc.message;
 const Peer = peer_impl.Peer;
+const harness = @import("three_party_handoff_harness.zig");
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
@@ -465,7 +466,7 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     var promise_call = PromiseCall{};
     _ = try a_to_b.sendCall(introducer_import_id, 0x1234_5678_9abc_def0, 0, &promise_call, null, PromiseCall.onReturn);
     const promise_import_id = promise_call.promise_import_id orelse return error.PromiseNotImportedByA;
-    try std.testing.expect(a_to_b.caps.hasImport(promise_import_id));
+    try harness.expectImport(&a_to_b, promise_import_id);
 
     // Install A's auto-pickup handler.
     var pickup = PickupHandler{ .expected_promise_id = promise_import_id };
@@ -579,7 +580,7 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     // The pickup fired now (and only now): A has the direct cap.
     try std.testing.expect(pickup.fired);
     const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
-    try std.testing.expect(a_to_c.caps.hasImport(accepted_carol_id));
+    try harness.expectImport(&a_to_c, accepted_carol_id);
 
     // The Accept-pipelined ping reached Carol as part of releasing the embargo
     // (seq 2 — after the forwarded parked call, still before any direct call).
@@ -626,7 +627,6 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     _ = handle;
 
     // Every provision drained on C; no dangling third-party marks or imports.
-    try std.testing.expectEqual(@as(usize, 0), c.provides_by_question.count());
-    try std.testing.expectEqual(@as(usize, 0), c.provides_by_key.count());
+    try harness.expectNoProvideState(&c);
     try std.testing.expectEqual(@as(usize, 0), c.pending_accepts_by_embargo.count());
 }

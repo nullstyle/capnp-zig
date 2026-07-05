@@ -6390,6 +6390,10 @@ pub const Peer = struct {
             Peer.removeQuestion(self, question_id);
         }
 
+        pub fn releaseVineExport(self: *Peer, vine_id: u32) void {
+            Peer.releaseVineExport(self, vine_id);
+        }
+
         pub fn onConnectionError(self: *Peer, err: anyerror) void {
             Peer.onConnectionError(self, err);
         }

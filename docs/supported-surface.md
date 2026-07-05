@@ -139,8 +139,11 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   host in send order and strictly before any post-pickup direct call) and the
   vine refcount/liveness coupling. On main, this forwarding also remaps
   cap-bearing params/results by minting cross-peer proxy exports, so caller-hosted
-  param caps and host-returned result caps can be invoked through the relay. Do
-  not depend on the L3 surface for production interop.
+  param caps and host-returned result caps can be invoked through the relay. The
+  current mainline hardening evidence also covers loopback token duplicate/unknown
+  paths, `sendProvide` / `sendAccept` allocator rollback, vine/provide teardown
+  ordering, embargoed pickup ordering, and cross-peer proxy cleanup. Do not depend
+  on the L3 surface for production interop.
 
 ## Known limitations (v0.3.0)
 

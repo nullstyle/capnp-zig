@@ -7,6 +7,7 @@ const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.caps.table;
 const payload_remap = capnpc.rpc.testing.payload_remap;
 const peer_embargo_accepts = capnpc.rpc.testing.peer_embargo_accepts;
+const vat_network = capnpc.rpc.vat.network;
 const Connection = capnpc.rpc.transport.tcp.Connection;
 const Peer = peer_impl.Peer;
 const peer_test_hooks = Peer.test_hooks;
@@ -4667,6 +4668,147 @@ fn queuePromiseExportCallOomImpl(allocator: std.mem.Allocator) !void {
 
 test "peer queuePromiseExportCall path propagates OOM without leaks" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, queuePromiseExportCallOomImpl, .{});
+}
+
+fn loopbackVatNetworkIntroductionOomImpl(allocator: std.mem.Allocator) !void {
+    var third_vat_peer = Peer.initDetached(allocator);
+    defer third_vat_peer.deinit();
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    const nonce = "oom-loopback-introduction";
+    try net.register(nonce, &third_vat_peer);
+
+    const network = net.network();
+    var introduction = try network.mintIntroduction(&third_vat_peer, nonce);
+    defer introduction.deinit(allocator);
+
+    var contact_msg = try message.Message.initUnvalidated(allocator, introduction.to_contact);
+    defer contact_msg.deinit();
+    const contact = try contact_msg.getRootAnyPointer();
+
+    var introduced = try network.connectToIntroduced(contact);
+    defer introduced.deinit(allocator);
+    try std.testing.expectEqual(&third_vat_peer, introduced.peer);
+    try std.testing.expectEqualSlices(u8, introduction.to_await, introduced.completion);
+}
+
+test "loopback VatNetwork introduction path propagates OOM without leaks" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        loopbackVatNetworkIntroductionOomImpl,
+        .{},
+    );
+}
+
+test "loopback VatNetwork rejects duplicate and unknown introductions" {
+    const allocator = std.testing.allocator;
+
+    var third_vat_peer = Peer.initDetached(allocator);
+    defer third_vat_peer.deinit();
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    try net.register("known-nonce", &third_vat_peer);
+    try std.testing.expectError(error.DuplicateNonce, net.register("known-nonce", &third_vat_peer));
+    try std.testing.expectError(error.UnknownIntroduction, net.network().mintIntroduction(&third_vat_peer, "missing-nonce"));
+
+    const unknown_token = try vat_network.encodeNonceToken(allocator, "missing-nonce");
+    defer allocator.free(unknown_token);
+    var unknown_msg = try message.Message.initUnvalidated(allocator, unknown_token);
+    defer unknown_msg.deinit();
+    const unknown_contact = try unknown_msg.getRootAnyPointer();
+    try std.testing.expectError(error.UnknownIntroduction, net.network().connectToIntroduced(unknown_contact));
+}
+
+fn sendProvideOomImpl(allocator: std.mem.Allocator) !void {
+    const Sink = struct {
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+
+    var provide_peer = Peer.initDetached(allocator);
+    defer provide_peer.deinit();
+    var recipient_peer = Peer.initDetached(allocator);
+    defer recipient_peer.deinit();
+
+    var sink_ctx: u8 = 0;
+    provide_peer.setSendFrameOverride(&sink_ctx, Sink.onFrame);
+    recipient_peer.setSendFrameOverride(&sink_ctx, Sink.onFrame);
+
+    const await_payload = try vat_network.encodeNonceToken(allocator, "oom-send-provide-await");
+    defer allocator.free(await_payload);
+    var await_msg = try message.Message.initUnvalidated(allocator, await_payload);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const contact_payload = try vat_network.encodeNonceToken(allocator, "oom-send-provide-contact");
+    defer allocator.free(contact_payload);
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = 77,
+        .promised_answer = null,
+    };
+
+    const handle = try provide_peer.sendProvide(
+        provided_target,
+        recipient,
+        &recipient_peer,
+        contact_payload,
+    );
+
+    try std.testing.expect(provide_peer.questions.contains(handle.question_id));
+    try std.testing.expect(recipient_peer.exports.contains(handle.vine_id));
+    try std.testing.expect(recipient_peer.outbound_provides.contains(handle.vine_id));
+    try std.testing.expect(recipient_peer.caps.getThirdPartyHosted(handle.vine_id) != null);
+    try std.testing.expectEqual(@as(usize, 1), provide_peer.coupled_vines.items.len);
+
+    peer_test_hooks.removeQuestion(&provide_peer, handle.question_id);
+    _ = recipient_peer.outbound_provides.remove(handle.vine_id);
+    recipient_peer.caps.clearThirdPartyHosted(handle.vine_id);
+    peer_test_hooks.releaseVineExport(&recipient_peer, handle.vine_id);
+    provide_peer.coupled_vines.clearRetainingCapacity();
+}
+
+test "peer sendProvide origination path propagates OOM without stale handoff state" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendProvideOomImpl, .{});
+}
+
+fn sendAcceptOomImpl(allocator: std.mem.Allocator) !void {
+    const Sink = struct {
+        fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+    };
+    const Callback = struct {
+        fn onReturn(
+            _: *anyopaque,
+            _: *Peer,
+            _: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var sink_ctx: u8 = 0;
+    peer.setSendFrameOverride(&sink_ctx, Sink.onFrame);
+
+    const provision_payload = try vat_network.encodeNonceToken(allocator, "oom-send-accept");
+    defer allocator.free(provision_payload);
+    var provision_msg = try message.Message.initUnvalidated(allocator, provision_payload);
+    defer provision_msg.deinit();
+    const provision = try provision_msg.getRootAnyPointer();
+
+    var callback_ctx: u8 = 0;
+    const question_id = try peer.sendAccept(provision, "oom-accept-embargo", &callback_ctx, Callback.onReturn);
+    try std.testing.expect(peer.questions.contains(question_id));
+    peer_test_hooks.removeQuestion(&peer, question_id);
+}
+
+test "peer sendAccept origination path propagates OOM without stale question state" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendAcceptOomImpl, .{});
 }
 
 fn embargoAcceptQueueOomImpl(allocator: std.mem.Allocator) !void {

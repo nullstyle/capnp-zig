@@ -15,6 +15,10 @@ Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
 between peers, not the RPC protocol that `Peer` handles.
 
+The transport is pinned to `quic_zig` 0.7.x semantics: connection and server
+session loops drive `Connection.advance()` before waiting on datagrams and again
+during active service, then tick timers and drain outbound datagrams.
+
 The public API is intentionally close to the TCP transport while the QUIC layer
 is still maturing. Applications should treat `rpc.transport.quic.Connection` as the stable
 entry point for one client/server session. Servers that need one UDP listener to

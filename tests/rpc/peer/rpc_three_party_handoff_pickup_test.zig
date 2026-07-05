@@ -41,6 +41,7 @@ const cap_table = capnpc.rpc.caps.table;
 const vat_network = capnpc.rpc.vat.network;
 const message = capnpc.message;
 const Peer = peer_impl.Peer;
+const harness = @import("three_party_handoff_harness.zig");
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
@@ -435,7 +436,7 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     const promise_import_id = promise_call.promise_import_id orelse return error.PromiseNotImportedByA;
     // A's import id equals B's promise export id (senderPromise descriptor).
     try std.testing.expectEqual(promise_export_id, promise_import_id);
-    try std.testing.expect(a_to_b.caps.hasImport(promise_import_id));
+    try harness.expectImport(&a_to_b, promise_import_id);
 
     // -- Install A's AUTO-PICKUP handler on the promise-holding peer. ---------
     var pickup = PickupHandler{ .expected_promise_id = promise_import_id };
@@ -472,21 +473,20 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     // The pickup handler fired WITHOUT any manual sendAccept in this test.
     try std.testing.expect(pickup.fired);
     const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
-    try std.testing.expect(a_to_c.caps.hasImport(accepted_carol_id));
+    try harness.expectImport(&a_to_c, accepted_carol_id);
 
     // The vine was minted, handed to A, released by the runtime after pickup, and
     // its release Finished B's held-open Provide — so the vine export is gone and
     // C's provision tables have fully drained.
     try std.testing.expect(!b_to_a.exports.contains(handle.vine_id));
-    try std.testing.expect(!b_to_a.outbound_provides.contains(handle.vine_id));
+    try harness.expectNoOutboundProvide(&b_to_a, handle.vine_id);
     try std.testing.expect(!c.provides_by_question.contains(handle.question_id));
-    try std.testing.expectEqual(@as(usize, 0), c.provides_by_question.count());
-    try std.testing.expectEqual(@as(usize, 0), c.provides_by_key.count());
+    try harness.expectNoProvideState(&c);
     // A holds no resolved-import entry for the promise (it was fulfilled off-peer
     // via the direct pickup, not via the vine proxy fallback).
     try std.testing.expect(!a_to_b.resolved_imports.contains(promise_import_id));
     // The vine import A briefly held is gone (released to drive the Finish).
-    try std.testing.expect(!a_to_b.caps.hasImport(handle.vine_id));
+    try harness.expectNoImport(&a_to_b, handle.vine_id);
 
     // -- (5) A calls getNumber() on its DIRECT import of Carol -> 42. ---------
     var get_number = GetNumberCall{};
@@ -514,10 +514,10 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     try a_to_b.releaseImport(introducer_import_id, 1);
 
     // Everything drains: no vine, no provisions, no dangling imports.
-    try std.testing.expect(!a_to_c.caps.hasImport(accepted_carol_id));
-    try std.testing.expect(!a_to_b.caps.hasImport(promise_import_id));
-    try std.testing.expect(!b_to_c.caps.hasImport(carol_import_id));
-    try std.testing.expect(!a_to_b.caps.hasImport(introducer_import_id));
+    try harness.expectNoImport(&a_to_c, accepted_carol_id);
+    try harness.expectNoImport(&a_to_b, promise_import_id);
+    try harness.expectNoImport(&b_to_c, carol_import_id);
+    try harness.expectNoImport(&a_to_b, introducer_import_id);
     // C holds no lingering imports and no third-party-hosted marks.
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(c.caps.imports.count())));
 }
@@ -671,7 +671,7 @@ test "three-party handoff: recipient without vat_network falls back to the vine 
         .imported => |cap| try std.testing.expectEqual(handle.vine_id, cap.id),
         else => return error.ExpectedVineImport,
     }
-    try std.testing.expect(a_to_b.caps.hasImport(handle.vine_id));
+    try harness.expectImport(&a_to_b, handle.vine_id);
     // Provision still held open on C (no Accept, no Finish).
     try std.testing.expect(c.provides_by_question.contains(handle.question_id));
     // The vine export is still live on B (A has not released it).
@@ -685,6 +685,7 @@ test "three-party handoff: recipient without vat_network falls back to the vine 
     try a_to_b.releaseImport(handle.vine_id, 1);
     try std.testing.expect(!b_to_a.exports.contains(handle.vine_id));
     try std.testing.expect(!c.provides_by_question.contains(handle.question_id));
+    try harness.expectNoOutboundProvide(&b_to_a, handle.vine_id);
 
     // Teardown.
     try a_to_b.releaseImport(promise_import_id, 1);

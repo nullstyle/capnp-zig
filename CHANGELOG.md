@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC Level-3 loopback VatNetwork duplicate registration is ownership-safe.**
+  `LoopbackVatNetwork.register` no longer double-frees the copied nonce when a
+  duplicate registration is rejected. Focused allocator-failure regressions now
+  cover loopback introduction mint/connect, `sendProvide` rollback, and
+  `sendAccept` rollback so failed origination setup does not leave stale
+  questions, vines, provide couplings, or token allocations behind.
+
 - **QUIC transport updated to `quic_zig` 0.7.0**: the dependency is repinned to
   upstream `28f1d960`, and the transport loop now drives `Connection.advance()`
   before polling datagrams and during post-handshake operation to match
@@ -39,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a capability returned by the host through the relayed results.
 
 ### Added
+
+- **Reusable L3 handoff test invariants.** The three-party handoff peer tests now
+  share test-local assertions for import/export presence, drained Provide state,
+  outbound vine coupling, and cross-peer proxy backlink cleanup. This keeps the
+  Zig↔Zig L3 hardening matrix focused on lifecycle behavior instead of repeating
+  table-count checks in every scenario.
 
 - **RPC Level-3 three-party handoff — introducer now FORWARDS parked pipelined
   promise-calls to the capability host (Experimental; closes issue #56).** When a

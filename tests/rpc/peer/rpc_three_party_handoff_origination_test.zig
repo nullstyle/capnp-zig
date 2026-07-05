@@ -43,6 +43,7 @@ const cap_table = capnpc.rpc.caps.table;
 const vat_network = capnpc.rpc.vat.network;
 const message = capnpc.message;
 const Peer = peer_impl.Peer;
+const harness = @import("three_party_handoff_harness.zig");
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
     return @ptrCast(@alignCast(ctx));
@@ -548,8 +549,8 @@ test "three-party handoff origination: Provide+Accept hands C's cap to A directl
     try std.testing.expect(c.provides_by_question.contains(provide_question_id));
     try std.testing.expect(b_to_a.exports.contains(vine_id));
     try std.testing.expectEqual(@as(u32, 1), b_to_a.exports.get(vine_id).?.ref_count);
-    try std.testing.expect(b_to_a.outbound_provides.contains(vine_id));
-    try std.testing.expect(a_to_b.caps.hasImport(vine_import_id));
+    try harness.expectOutboundProvideCoupled(&b_to_a, &b_to_c, vine_id, provide_question_id, carol_import_id);
+    try harness.expectImport(&a_to_b, vine_import_id);
 
     // -- (4) A obtains the introduction from the vat network and Accepts. -----
     const contact_token = try vat_network.encodeNonceToken(allocator, recipient_nonce);
@@ -573,7 +574,7 @@ test "three-party handoff origination: Provide+Accept hands C's cap to A directl
 
     // A imported Carol DIRECTLY from C's Accept Return.
     const accepted_carol_id = accept_call.carol_import_id orelse return error.AcceptDidNotResolve;
-    try std.testing.expect(a_to_c.caps.hasImport(accepted_carol_id));
+    try harness.expectImport(&a_to_c, accepted_carol_id);
 
     // -- (5) A calls getNumber() on its direct import of Carol -> 42. ---------
     var get_number = GetNumberCall{};
@@ -595,11 +596,10 @@ test "three-party handoff origination: Provide+Accept hands C's cap to A directl
     // The vine export is destroyed on B, the coupling is cleared, and B's
     // Provide question is gone (Finished). C dropped the provision.
     try std.testing.expect(!b_to_a.exports.contains(vine_id));
-    try std.testing.expect(!b_to_a.outbound_provides.contains(vine_id));
+    try harness.expectNoOutboundProvide(&b_to_a, vine_id);
     try std.testing.expect(!c.provides_by_question.contains(provide_question_id));
     // The provision is fully unregistered on C (both lookup tables drained).
-    try std.testing.expectEqual(@as(usize, 0), c.provides_by_question.count());
-    try std.testing.expectEqual(@as(usize, 0), c.provides_by_key.count());
+    try harness.expectNoProvideState(&c);
 
     // -- Teardown: release every remaining import so all tables drain. --------
     // A's direct Carol import (retained in AcceptCall).
@@ -611,9 +611,9 @@ test "three-party handoff origination: Provide+Accept hands C's cap to A directl
     try a_to_b.releaseImport(introducer_import_id, 1);
 
     // Everything drains: no vine, no provisions, no dangling imports.
-    try std.testing.expect(!a_to_c.caps.hasImport(accepted_carol_id));
-    try std.testing.expect(!b_to_c.caps.hasImport(carol_import_id));
-    try std.testing.expect(!a_to_b.caps.hasImport(introducer_import_id));
+    try harness.expectNoImport(&a_to_c, accepted_carol_id);
+    try harness.expectNoImport(&b_to_c, carol_import_id);
+    try harness.expectNoImport(&a_to_b, introducer_import_id);
     // C holds no lingering imports and no third-party-hosted marks.
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(c.caps.imports.count())));
 }

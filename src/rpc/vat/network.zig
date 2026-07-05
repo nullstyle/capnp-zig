@@ -205,12 +205,13 @@ pub fn LoopbackVatNetwork(comptime PeerType: type) type {
         /// `recipient_hint` and that `connect_to_introduced` redeems.
         pub fn register(self: *Self, nonce: []const u8, third_vat_peer: *PeerType) !void {
             const key = try self.allocator.dupe(u8, nonce);
-            errdefer self.allocator.free(key);
+            var owns_key = true;
+            errdefer if (owns_key) self.allocator.free(key);
             const gop = try self.registry.getOrPut(key);
             if (gop.found_existing) {
-                self.allocator.free(key);
                 return error.DuplicateNonce;
             }
+            owns_key = false;
             gop.value_ptr.* = third_vat_peer;
         }
 
