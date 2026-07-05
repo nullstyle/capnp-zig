@@ -4223,6 +4223,7 @@ pub const Peer = struct {
                 Peer,
                 Peer.handleReturn,
             ),
+            peer_outbound_control.sendAbortForPeerFn(Peer, Peer.sendBuilderControl),
         );
     }
 
@@ -4765,14 +4766,20 @@ pub const Peer = struct {
     fn hasKnownDisembargoTarget(self: *Peer, target: protocol.MessageTarget) bool {
         return switch (target.tag) {
             .importedCap => blk: {
-                // Per the RPC spec, MessageTarget.importedCap names an entry
-                // in the *sender's* import table — i.e. one of our exports. A
-                // senderLoopback disembargo issued after we resolve a promise
-                // export targets that export, so validate against the export
-                // table. (Also accept a matching import id for robustness
-                // against either addressing convention.)
+                // Per the RPC spec, MessageTarget.importedCap names an entry in
+                // the *sender's* import table — i.e. one of OUR exports. This
+                // gate only runs on the senderLoopback path (see
+                // disembargo.zig:61), and the only senderLoopback disembargo a
+                // compliant peer originates targets the promise it imported from
+                // us as it resolves (resolve.zig:88-94 sets
+                // imported_cap = promise_id). On the wire that id is the promise
+                // we EXPORTED, so it is always an entry in our export table when
+                // the disembargo is legitimate — never an import. Validate
+                // against exports only; accepting an import id too would over-
+                // accept a target the spec never names here (supported-surface.md
+                // known limitation #2).
                 const cap_id = target.imported_cap orelse break :blk false;
-                break :blk self.exports.contains(cap_id) or self.caps.imports.contains(cap_id);
+                break :blk self.exports.contains(cap_id);
             },
             .promisedAnswer => blk: {
                 const promised = target.promised_answer orelse break :blk false;

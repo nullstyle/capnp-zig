@@ -18,6 +18,7 @@ pub const Lifecycle = error{
 pub const Routing = error{
     CapabilityUnavailable,
     DuplicateQuestionId,
+    EchoedDisembargoUnimplemented,
     MissingCallTarget,
     PromisedAnswerMissing,
     UnexpectedForwardedTailReturn,

@@ -3251,7 +3251,10 @@ test "unimplemented echoes of other tags and malformed resolves are safe no-ops"
         try expectStateUnchanged(&peer, concrete_export_id);
     }
 
-    // Echoed Release and Disembargo remain explicitly deferred no-ops.
+    // Echoed Release remains an explicit no-op: it carries no sender state
+    // that must be unwound on echo. (Echoed Disembargo is NOT a no-op — it is a
+    // protocol violation surfaced as a connection-level abort; see the
+    // dedicated W2 test below.)
     {
         var builder = protocol.MessageBuilder.init(allocator);
         defer builder.deinit();
@@ -3263,24 +3266,173 @@ test "unimplemented echoes of other tags and malformed resolves are safe no-ops"
         try peer.handleFrame(echo);
         try expectStateUnchanged(&peer, concrete_export_id);
     }
-    {
-        var builder = protocol.MessageBuilder.init(allocator);
-        defer builder.deinit();
-        try builder.buildDisembargoSenderLoopback(.{
-            .tag = .importedCap,
-            .imported_cap = 1,
-            .promised_answer = null,
-        }, 9);
-        const bytes = try builder.finish();
-        defer allocator.free(bytes);
-        const echo = try buildUnimplementedEcho(allocator, bytes);
-        defer allocator.free(echo);
-        try peer.handleFrame(echo);
-        try expectStateUnchanged(&peer, concrete_export_id);
-    }
 
     // None of the echoes provoked an outbound frame.
     try std.testing.expectEqual(frames_after_resolve, capture.frames.items.len);
+}
+
+// W2 (docs/supported-surface.md known limitation #1): a peer that echoes our
+// Disembargo back inside an Unimplemented cannot uphold e-order across the
+// resolve the Disembargo was protecting — the embargo can never be lifted by a
+// receiverLoopback. Previously this was silently dropped and the target import
+// stayed flagged `embargoed` with a retained `pending_embargoes` entry. It must
+// now surface as a connection-level error: an outbound Abort plus a returned
+// error that tears the connection down.
+test "echoed Unimplemented(Disembargo) aborts the connection instead of stranding the embargo" {
+    const allocator = std.testing.allocator;
+
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    // Build a Disembargo exactly as we would have sent one, then wrap it in an
+    // Unimplemented as a broken/hostile Level-0 peer would echo it back.
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildDisembargoSenderLoopback(.{
+        .tag = .importedCap,
+        .imported_cap = 1,
+        .promised_answer = null,
+    }, 9);
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+    const echo = try buildUnimplementedEcho(allocator, bytes);
+    defer allocator.free(echo);
+
+    // The connection-level error propagates out of handleFrame (the read loop
+    // tears the connection down on it), instead of being silently dropped.
+    try std.testing.expectError(error.EchoedDisembargoUnimplemented, peer.handleFrame(echo));
+
+    // Exactly one outbound frame: an Abort with a clear reason.
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+    var out_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+    defer out_decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.abort, out_decoded.tag);
+    const abort = try out_decoded.asAbort();
+    try std.testing.expectEqualStrings("peer echoed Disembargo as Unimplemented", abort.exception.reason);
+}
+
+// W3 (docs/supported-surface.md known limitation #2): the senderLoopback
+// disembargo-target gate (hasKnownDisembargoTarget for an importedCap target)
+// used to accept a cap id that matched EITHER an export OR an import. The spec
+// only ever names an export here: a compliant peer originates a senderLoopback
+// disembargo targeting the promise it imported from us as that promise resolves
+// (resolve.zig sets imported_cap = promise_id), and on the wire that id is the
+// promise WE exported. This test proves the previously over-accepted import-only
+// id is now rejected, while the spec-correct export-id path still validates and
+// echoes receiverLoopback.
+test "senderLoopback disembargo target is validated against exports only, not imports" {
+    const allocator = std.testing.allocator;
+
+    const Handlers = struct {
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.alloc(u8, frame.len);
+            std.mem.copyForwards(u8, copy, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+    const Build = struct {
+        fn senderLoopback(alloc: std.mem.Allocator, cap_id: u32, embargo_id: u32) ![]const u8 {
+            var builder = protocol.MessageBuilder.init(alloc);
+            defer builder.deinit();
+            try builder.buildDisembargoSenderLoopback(.{
+                .tag = .importedCap,
+                .imported_cap = cap_id,
+                .promised_answer = null,
+            }, embargo_id);
+            return builder.finish();
+        }
+    };
+
+    // `capture` is declared before `peer` so peer.deinit() (which runs its
+    // teardown Release for the un-released import through the send-frame
+    // override) fires while `capture` is still live; capture's own cleanup then
+    // frees every recorded frame, including any deinit-time Release.
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    // An id that exists ONLY as an import — never as an export. This is exactly
+    // the shape the old `exports.contains(id) or imports.contains(id)` gate
+    // over-accepted.
+    const import_only_id: u32 = 4001;
+    try peer.caps.noteImport(import_only_id);
+    try std.testing.expect(peer.caps.imports.contains(import_only_id));
+    try std.testing.expect(!peer.exports.contains(import_only_id));
+
+    // REJECT: a senderLoopback disembargo naming the import-only id is no longer
+    // a known target. It surfaces as a connection-level error rather than being
+    // silently echoed back as a receiverLoopback.
+    {
+        const frame = try Build.senderLoopback(allocator, import_only_id, 71);
+        defer allocator.free(frame);
+        try std.testing.expectError(error.UnknownDisembargoTarget, peer.handleFrame(frame));
+        // The rejected disembargo produced no receiverLoopback echo.
+        try std.testing.expectEqual(@as(usize, 0), capture.frames.items.len);
+    }
+
+    // ACCEPT: the spec-correct path — a senderLoopback disembargo naming one of
+    // OUR exports (the promise we exported and the remote resolved) still
+    // validates and echoes a receiverLoopback disembargo.
+    var handler_state: u8 = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &handler_state,
+        .on_call = Handlers.onCall,
+    });
+    try std.testing.expect(peer.exports.contains(export_id));
+    {
+        const frame = try Build.senderLoopback(allocator, export_id, 72);
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+        // Exactly one outbound frame: the echoed receiverLoopback disembargo.
+        try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+        var out_decoded = try protocol.DecodedMessage.init(allocator, capture.frames.items[0]);
+        defer out_decoded.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.disembargo, out_decoded.tag);
+        const echoed = try out_decoded.asDisembargo();
+        try std.testing.expectEqual(protocol.DisembargoContextTag.receiverLoopback, echoed.context_tag);
+        try std.testing.expectEqual(@as(?u32, 72), echoed.embargo_id);
+        try std.testing.expectEqual(protocol.MessageTargetTag.importedCap, echoed.target.tag);
+        try std.testing.expectEqual(@as(?u32, export_id), echoed.target.imported_cap);
+    }
 }
 
 test "resolved promise pins its target export against remote Release until the promise is dropped" {

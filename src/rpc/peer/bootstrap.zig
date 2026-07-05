@@ -6,6 +6,7 @@ pub fn handleUnimplemented(
     peer: *PeerType,
     unimplemented: protocol.Unimplemented,
     on_unimplemented_question: *const fn (*PeerType, u32) anyerror!void,
+    send_abort: *const fn (*PeerType, []const u8) anyerror!void,
 ) !void {
     const tag = unimplemented.message_tag orelse return;
     switch (tag) {
@@ -18,16 +19,25 @@ pub fn handleUnimplemented(
         // the connection lifetime (see Peer.handleUnimplementedResolve in
         // peer/mod.zig).
         .resolve => {},
-        // Deferred — Sprint 4 conformance push: an echoed Provide should
-        // release the provision state and fail the Provide question.
+        // Echoed Provide/Accept are unreachable in this two-party runtime: it
+        // never originates Provide/Accept (Level-3 origination is a separate,
+        // Experimental surface — see docs/supported-surface.md), so no peer can
+        // legitimately echo one back. They stay silent no-ops; there is no
+        // sender state to unwind and no live question to fail.
         .provide => {},
-        // Deferred — Sprint 4 conformance push: an echoed Accept should fail
-        // the Accept question.
         .accept => {},
-        // Deferred — Sprint 4 conformance push: a peer that echoes Disembargo
-        // cannot uphold e-order across resolves; this should surface as a
-        // connection-level error rather than a silent drop.
-        .disembargo => {},
+        // A peer that echoes our Disembargo as Unimplemented cannot uphold
+        // e-order across the resolve this Disembargo was protecting: the
+        // embargo can never be lifted by a receiverLoopback, so the target
+        // import would stay flagged `embargoed` with a `pending_embargoes`
+        // entry retained for the connection's life. That is a protocol
+        // violation, not a benign no-op — surface it as a connection-level
+        // error (abort + tear down) rather than a silent drop that strands the
+        // embargo. See docs/supported-surface.md known limitation #1.
+        .disembargo => {
+            try send_abort(peer, "peer echoed Disembargo as Unimplemented");
+            return error.EchoedDisembargoUnimplemented;
+        },
         // Remaining tags (return/finish/release/abort/...) carry no sender
         // state that must be unwound on echo; ignore them.
         else => {},

@@ -1098,7 +1098,7 @@ capnpc-zig.rpc.peer.VatNetwork: struct
 capnpc-zig.rpc.peer.bootstrap.buildBootstrapReturnFrame: fn (mem.Allocator, u32, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.buildBootstrapReturnFrame)).@"fn".return_type.?).error_union.error_set![]const u8
 capnpc-zig.rpc.peer.bootstrap.handleAbort: fn (mem.Allocator, *?[]u8, rpc.wire.protocol.Abort) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleAbort)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleBootstrap: fn (comptime type, anytype, mem.Allocator, rpc.wire.protocol.Bootstrap, ?u32, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleBootstrap)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.bootstrap.handleUnimplemented: fn (comptime type, anytype, rpc.wire.protocol.Unimplemented, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplemented)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.bootstrap.handleUnimplemented: fn (comptime type, anytype, rpc.wire.protocol.Unimplemented, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplemented)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestion: fn (comptime type, anytype, u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplementedQuestion)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestionForPeerFn: fn (comptime type, comptime anytype) anytype
 capnpc-zig.rpc.peer.bootstrap: struct
@@ -1119,12 +1119,12 @@ capnpc-zig.rpc.peer.dispatch: struct
 capnpc-zig.rpc.peer.errors.CallError: type = error{CallTimedOut,Canceled,Disconnected,RemoteException,UnexpectedReturn}
 capnpc-zig.rpc.peer.errors.Lifecycle: type = error{PeerShuttingDown,TransportNotAttached}
 capnpc-zig.rpc.peer.errors.Limits: type = error{EmbargoIdExhausted,PeerLimitExceeded,QuestionIdExhausted,RefCountOverflow}
-capnpc-zig.rpc.peer.errors.PeerError: type = error{CapabilityUnavailable,ConflictingThirdPartyAnswer,DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,DuplicateQuestionId,DuplicateResolve,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,EmbargoIdExhausted,ExportIsNotPromise,InvalidJoinKeyPart,InvalidThirdPartyAnswerId,MissingCallTarget,MissingJoinKeyPart,PeerLimitExceeded,PeerShuttingDown,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved,PromisedAnswerMissing,QuestionIdExhausted,RefCountOverflow,ReleaseCountExceeded,RemoteAbort,TransportNotAttached,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
+capnpc-zig.rpc.peer.errors.PeerError: type = error{CapabilityUnavailable,ConflictingThirdPartyAnswer,DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,DuplicateQuestionId,DuplicateResolve,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,EchoedDisembargoUnimplemented,EmbargoIdExhausted,ExportIsNotPromise,InvalidJoinKeyPart,InvalidThirdPartyAnswerId,MissingCallTarget,MissingJoinKeyPart,PeerLimitExceeded,PeerShuttingDown,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved,PromisedAnswerMissing,QuestionIdExhausted,RefCountOverflow,ReleaseCountExceeded,RemoteAbort,TransportNotAttached,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
 capnpc-zig.rpc.peer.errors.Promise: type = error{DuplicateResolve,ExportIsNotPromise,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved}
 capnpc-zig.rpc.peer.errors.ProvideAcceptJoin: type = error{DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,InvalidJoinKeyPart,MissingJoinKeyPart}
 capnpc-zig.rpc.peer.errors.Release: type = error{ReleaseCountExceeded}
 capnpc-zig.rpc.peer.errors.Remote: type = error{RemoteAbort}
-capnpc-zig.rpc.peer.errors.Routing: type = error{CapabilityUnavailable,DuplicateQuestionId,MissingCallTarget,PromisedAnswerMissing,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
+capnpc-zig.rpc.peer.errors.Routing: type = error{CapabilityUnavailable,DuplicateQuestionId,EchoedDisembargoUnimplemented,MissingCallTarget,PromisedAnswerMissing,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
 capnpc-zig.rpc.peer.errors.ThirdParty: type = error{ConflictingThirdPartyAnswer,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,InvalidThirdPartyAnswerId}
 capnpc-zig.rpc.peer.errors: struct
 capnpc-zig.rpc.peer.finish.FinishOps: fn (comptime type) type
