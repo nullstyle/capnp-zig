@@ -3,6 +3,25 @@
 /// The peer currently exposes inferred error unions from its entry points.
 /// These sets centralize the vocabulary used by the implementation and tests
 /// so future tranches can narrow APIs without hunting through `peer/mod.zig`.
+///
+/// ## F1 (v0.3.0 API freeze) outcome — leaked-error narrowing on the Stable
+/// two-party-core surface
+///
+/// Of the seven F1 targets, only the two transport entry points admit an
+/// honest narrowing; those sets live with the transport type they belong to
+/// (`connection.Connection.InitError` = `error{OutOfMemory}`,
+/// `connection.Connection.EnableWakeError` = `error{WakePipeCreateFailed}`)
+/// rather than here, to avoid a peer→transport layering inversion.
+///
+/// The five peer-side targets — `Peer.releaseImport` and the four `sendCall*`
+/// entry points — are intentionally LEFT OPEN (`anyerror`). Each synchronously
+/// invokes arbitrary user code whose `anyerror` propagates out: `releaseImport`
+/// funnels its Release through an installed `SendFrameOverride`, and every
+/// `sendCall*` invokes the caller's `CallBuildFn` (`try build_fn(ctx, &call)`).
+/// Narrowing either below `anyerror` would require changing a user-callback
+/// contract, which the freeze must not do — so they stay open for the same
+/// reason as the `CallBuildFn`/`QuestionCallback`/`CallHandler`/`SaveHandler`/
+/// `RestoreHandler` typedefs. See the per-function doc comments in `mod.zig`.
 pub const Limits = error{
     PeerLimitExceeded,
     QuestionIdExhausted,

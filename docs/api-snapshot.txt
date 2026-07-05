@@ -1439,14 +1439,16 @@ capnpc-zig.rpc.transport.tcp.client: struct
 capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.connect: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.client.ConnectOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.client.ClientSession.connect)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.client.ClientSession
 capnpc-zig.rpc.transport.tcp.connectHost: fn (mem.Allocator, Io, []const u8, u16, rpc.transport.tcp.client.ConnectOptions) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.client.ClientSession.connectHost)).@"fn".return_type.?).error_union.error_set!*rpc.transport.tcp.client.ClientSession
+capnpc-zig.rpc.transport.tcp.connection.Connection.EnableWakeError: type = error{WakePipeCreateFailed}
+capnpc-zig.rpc.transport.tcp.connection.Connection.InitError: type = error{OutOfMemory}
 capnpc-zig.rpc.transport.tcp.connection.Connection.Options: struct
 capnpc-zig.rpc.transport.tcp.connection.Connection.adoptOwnerThread: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.assertThreadAffinity: fn (*const rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.close: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.context: fn (*const rpc.transport.tcp.connection.Connection) ?*anyopaque
 capnpc-zig.rpc.transport.tcp.connection.Connection.deinit: fn (*rpc.transport.tcp.connection.Connection) void
-capnpc-zig.rpc.transport.tcp.connection.Connection.enableWake: fn (*rpc.transport.tcp.connection.Connection, *const fn (*rpc.transport.tcp.connection.Connection) void) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.connection.Connection.enableWake)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.transport.tcp.connection.Connection.init: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) @typeInfo(@typeInfo(@TypeOf(rpc.transport.tcp.connection.Connection.init)).@"fn".return_type.?).error_union.error_set!rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.connection.Connection.enableWake: fn (*rpc.transport.tcp.connection.Connection, *const fn (*rpc.transport.tcp.connection.Connection) void) error{WakePipeCreateFailed}!void
+capnpc-zig.rpc.transport.tcp.connection.Connection.init: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) error{OutOfMemory}!rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.connection.Connection.isClosing: fn (*const rpc.transport.tcp.connection.Connection) bool
 capnpc-zig.rpc.transport.tcp.connection.Connection.requestClose: fn (*rpc.transport.tcp.connection.Connection) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.run: fn (*rpc.transport.tcp.connection.Connection) void

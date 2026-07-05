@@ -2607,6 +2607,14 @@ pub const Peer = struct {
     }
 
     /// Send an RPC call to an imported capability, returning the question ID.
+    ///
+    /// Error set is intentionally left open (inferred/`anyerror`). Every send
+    /// path in this family synchronously invokes the caller-supplied `build`
+    /// closure (`CallBuildFn`, `try build_fn(ctx, &call)` in
+    /// `peer_call_sender`), whose `anyerror` propagates out. Narrowing below
+    /// `anyerror` would require changing the `CallBuildFn` contract, so — like
+    /// the user-callback typedefs above — this stays open. (Applies to all four
+    /// `sendCall*` entry points.)
     pub fn sendCall(
         self: *Peer,
         target_id: u32,
@@ -3490,6 +3498,14 @@ pub const Peer = struct {
 
     /// Release references to an imported capability, sending a Release message
     /// to the remote peer when the reference count drops to zero.
+    ///
+    /// Error set is intentionally left open (`anyerror`). The Release send path
+    /// funnels through `sendFrameControl` → `sendFrame`, which synchronously
+    /// invokes any installed `SendFrameOverride` (`cb(ctx, frame)` — arbitrary
+    /// user code, see `setSendFrameOverride`). That callback's `anyerror`
+    /// propagates out of this function, so no honest named set can be narrower
+    /// than `anyerror` without changing the `SendFrameOverride` contract. This
+    /// stays open for the same reason as the user-callback typedefs above.
     pub fn releaseImport(self: *Peer, import_id: u32, count: u32) anyerror!void {
         self.assertThreadAffinity();
         log.debug("releasing import id={} count={}", .{ import_id, count });

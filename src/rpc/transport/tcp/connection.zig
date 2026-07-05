@@ -175,12 +175,22 @@ pub const Connection = struct {
         max_buffered_frame_bytes: usize = framing.Framer.default_max_buffered_bytes,
     };
 
+    /// Reachable failures of `init`. The only fallible step is allocating the
+    /// underlying `Transport` read buffer, so this is exactly `OutOfMemory`.
+    /// (`Framer.initWithOptions` and the timestamp read are infallible.)
+    pub const InitError = error{OutOfMemory};
+
+    /// Reachable failures of `enableWake`. On POSIX the sole failure is the
+    /// `socketpair(2)` used to build the cross-thread wake channel; on Windows
+    /// and freestanding the function is infallible but shares this set.
+    pub const EnableWakeError = error{WakePipeCreateFailed};
+
     pub fn init(
         allocator: std.mem.Allocator,
         io: std.Io,
         socket: transport_mod.SocketFd,
         options: Options,
-    ) !Connection {
+    ) InitError!Connection {
         const conn = Connection{
             .allocator = allocator,
             .io = io,
@@ -218,7 +228,7 @@ pub const Connection = struct {
     pub fn enableWake(
         self: *Connection,
         on_wake: *const fn (conn: *Connection) void,
-    ) !void {
+    ) EnableWakeError!void {
         if (comptime builtin.target.os.tag == .freestanding) return;
         if (comptime builtin.target.os.tag != .windows) {
             var fds: [2]std.posix.fd_t = undefined;

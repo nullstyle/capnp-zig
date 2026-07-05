@@ -40,6 +40,73 @@ const NoopHandler = struct {
 };
 
 // ---------------------------------------------------------------------------
+// F1 (v0.3.0 API freeze) — frozen error-set contract for the Stable
+// two-party-core surface. These comptime assertions pin the narrowing decision
+// so a future widening (or an accidental re-narrowing of an intentionally-open
+// entry point) fails the build instead of silently reshaping the frozen
+// contract.
+// ---------------------------------------------------------------------------
+
+/// The declared error set of `func`'s return type (its `!T` error union).
+fn returnErrorSet(comptime func: anytype) type {
+    const ret = @typeInfo(@TypeOf(func)).@"fn".return_type.?;
+    return @typeInfo(ret).error_union.error_set;
+}
+
+/// True iff `E` is the global (open / `anyerror`) error set.
+/// `error_names == null` marks the unbounded global set.
+fn isGlobalErrorSet(comptime E: type) bool {
+    return @typeInfo(E).error_set.error_names == null;
+}
+
+/// True iff error sets `A` and `B` have exactly the same members.
+fn errorSetsEqual(comptime A: type, comptime B: type) bool {
+    return errorSetSubset(A, B) and errorSetSubset(B, A);
+}
+
+fn errorSetSubset(comptime Sub: type, comptime Super: type) bool {
+    const sub = @typeInfo(Sub).error_set.error_names orelse return false;
+    const super = @typeInfo(Super).error_set.error_names orelse return true; // anyerror superset
+    inline for (sub) |member| {
+        var found = false;
+        inline for (super) |candidate| {
+            if (std.mem.eql(u8, member, candidate)) found = true;
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+test "F1: Connection.init error set is exactly {OutOfMemory}" {
+    const InitSet = returnErrorSet(Connection.init);
+    try std.testing.expect(!isGlobalErrorSet(InitSet));
+    try std.testing.expect(errorSetsEqual(InitSet, error{OutOfMemory}));
+    try std.testing.expect(errorSetsEqual(InitSet, Connection.InitError));
+}
+
+test "F1: Connection.enableWake error set is exactly {WakePipeCreateFailed}" {
+    const WakeSet = returnErrorSet(Connection.enableWake);
+    try std.testing.expect(!isGlobalErrorSet(WakeSet));
+    try std.testing.expect(errorSetsEqual(WakeSet, error{WakePipeCreateFailed}));
+    try std.testing.expect(errorSetsEqual(WakeSet, Connection.EnableWakeError));
+}
+
+test "F1: releaseImport stays intentionally open (invokes SendFrameOverride)" {
+    // releaseImport funnels its Release through an installed SendFrameOverride
+    // (arbitrary user code, anyerror). It must NOT be narrowed below anyerror.
+    try std.testing.expect(isGlobalErrorSet(returnErrorSet(Peer.releaseImport)));
+}
+
+test "F1: sendCall family stays intentionally open (invokes CallBuildFn)" {
+    // Every sendCall* synchronously invokes the caller's CallBuildFn (anyerror),
+    // so each legitimately surfaces anyerror and must stay open.
+    try std.testing.expect(isGlobalErrorSet(returnErrorSet(Peer.sendCall)));
+    try std.testing.expect(isGlobalErrorSet(returnErrorSet(Peer.sendCallResolved)));
+    try std.testing.expect(isGlobalErrorSet(returnErrorSet(Peer.sendCallPromised)));
+    try std.testing.expect(isGlobalErrorSet(returnErrorSet(Peer.sendCallPromisedWithOps)));
+}
+
+// ---------------------------------------------------------------------------
 // Release semantics tests at the Peer level
 // ---------------------------------------------------------------------------
 
