@@ -28,6 +28,36 @@ fn addLibTest(
     return &b.addRunArtifact(t).step;
 }
 
+fn addPersistenceLibTest(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    lib_module: *std.Build.Module,
+) *std.Build.Step {
+    const harness_module = b.createModule(.{
+        .root_source_file = b.path("tests/rpc/support/persistence_harness.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig", .module = lib_module },
+        },
+    });
+    const t = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "persistence-test-harness", .module = harness_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
+    return &b.addRunArtifact(t).step;
+}
+
 /// Create a QUIC-only test step that imports capnpc-zig and quic_zig.
 fn addQuicLibTest(
     b: *std.Build,
@@ -610,8 +640,8 @@ pub fn build(b: *std.Build) void {
     const run_rpc_return_release_param_caps_tests = addLibTest(b, "tests/rpc/peer/rpc_return_release_param_caps_test.zig", target, optimize, lib_module);
     const run_rpc_concurrent_calls_tests = addLibTest(b, "tests/rpc/peer/rpc_concurrent_calls_test.zig", target, optimize, lib_module);
     const run_rpc_deadline_tests = addLibTest(b, "tests/rpc/peer/rpc_deadline_test.zig", target, optimize, lib_module);
-    const run_rpc_persistence_tests = addLibTest(b, "tests/rpc/peer/rpc_persistence_test.zig", target, optimize, lib_module);
-    const run_rpc_persistence_reconnect_tests = addLibTest(b, "tests/rpc/integration/rpc_persistence_reconnect_test.zig", target, optimize, lib_module);
+    const run_rpc_persistence_tests = addPersistenceLibTest(b, "tests/rpc/peer/rpc_persistence_test.zig", target, optimize, lib_module);
+    const run_rpc_persistence_reconnect_tests = addPersistenceLibTest(b, "tests/rpc/integration/rpc_persistence_reconnect_test.zig", target, optimize, lib_module);
 
     // Runtime probe for the generated typed-pipelining stubs: drives the
     // checked-in e2e generated modules (tests/e2e/zig/generated) end-to-end
@@ -851,6 +881,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(run_schema_validation_tests);
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
+    test_resource_budgets_step.dependOn(run_rpc_persistence_tests);
     if (run_rpc_quic_transport_tests) |step| test_resource_budgets_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
@@ -864,6 +895,7 @@ pub fn build(b: *std.Build) void {
     test_oom_step.dependOn(run_codegen_defaults_tests);
     test_oom_step.dependOn(run_rpc_framing_tests);
     test_oom_step.dependOn(run_rpc_connection_failure_tests);
+    test_oom_step.dependOn(run_rpc_persistence_tests);
     test_oom_step.dependOn(run_rpc_raw_frame_security_tests);
     test_oom_step.dependOn(&run_wasm_host_abi_tests.step);
 

@@ -102,7 +102,7 @@ no cross-implementation interop partner.
 | RPC QUIC Transport | `src/rpc/transport/quic` | Optional QUIC baseline/native transport, gated by `-Dquic=true`. |
 | RPC Host Peer | `src/rpc/integration/host_peer.zig` | Host-neutral detached frame-pump for wasm environments. |
 | RPC Payload Remap | `src/rpc/caps/payload_remap.zig` | Capability descriptor remapping for outbound messages. |
-| RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions documented in `rpc_runtime_design.md`; the vat-level restore interface may change. Not frozen. |
+| RPC Persistence | `src/rpc/peer/persistence.zig` | Sturdy-ref save/restore (level 2): persistent-export hooks, restorer hook, and `Peer.sendSave`/`sendRestore`. Realm conventions and consumer flow are documented in `rpc_runtime_design.md` and `rpc-persistence.md`; reconnect, malformed-frame, send-failure, callback-failure, hook lifecycle, and OOM rollback paths are regression covered. Not frozen. |
 | Forwarded / 3-party internals | `src/rpc/peer/forward/*`, `src/rpc/peer/third_party/*` | Proxy/intermediary forwarding and third-party transfer internals. Not part of the frozen surface. |
 
 ### Internal

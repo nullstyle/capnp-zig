@@ -131,6 +131,9 @@ Client side, the documented reconnect flow:
    callback receives the restored capability already retained; resume calling
    it via `sendCall`.
 
+See [`rpc-persistence.md`](rpc-persistence.md) for the consumer-facing flow and
+current Experimental evidence.
+
 Hardening follows the house pattern: the hook registry is budgeted by
 `PeerLimits.max_persistent_exports` with an 80% pressure-event crossing
 (`persistent_exports`), and single sturdy-ref payloads are bounded by

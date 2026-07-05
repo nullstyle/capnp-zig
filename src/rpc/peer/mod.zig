@@ -2448,6 +2448,7 @@ pub const Peer = struct {
             log.debug("restore handler failed: {}", .{err});
             return self.sendReturnException(call.question_id, @errorName(err));
         };
+        var hosted_export_id: ?u32 = null;
         const export_id: u32 = switch (outcome) {
             .unknown => return self.sendReturnException(call.question_id, "unknown sturdy ref"),
             .existing => |id| blk: {
@@ -2456,8 +2457,13 @@ pub const Peer = struct {
                 }
                 break :blk id;
             },
-            .host => |exported| try self.addExport(exported),
+            .host => |exported| blk: {
+                const id = try self.addExport(exported);
+                hosted_export_id = id;
+                break :blk id;
+            },
         };
+        errdefer if (hosted_export_id) |id| self.destroyUnreferencedExport(id);
         var build_ctx = persistence.CapabilityReturnContext{ .cap_id = export_id };
         try self.sendReturnResults(call.question_id, &build_ctx, persistence.buildCapabilityReturn);
         self.restores_served +%= 1;
@@ -2524,6 +2530,7 @@ pub const Peer = struct {
     ) anyerror!void {
         const ctx: *RestoreQuestionContext = castCtx(*RestoreQuestionContext, ctx_ptr);
         defer peer.allocator.destroy(ctx);
+        var retained_cap: ?cap_table.ResolvedCap = null;
         const response: RestoreResponse = switch (ret.tag) {
             .results => blk: {
                 const payload = ret.results orelse return error.MissingReturnPayload;
@@ -2533,12 +2540,22 @@ pub const Peer = struct {
                 const cap = field.getCapability() catch return error.MissingRestoredCapability;
                 var mutable_caps = inbound_caps.*;
                 try mutable_caps.retainCapability(cap);
-                break :blk .{ .cap = try inbound_caps.resolveCapability(cap) };
+                const resolved = try inbound_caps.resolveCapability(cap);
+                retained_cap = resolved;
+                break :blk .{ .cap = resolved };
             },
             .exception => .{ .exception = ret.exception orelse return error.MissingException },
             else => .{ .other = ret.tag },
         };
-        try ctx.callback(ctx.user_ctx, peer, response);
+        ctx.callback(ctx.user_ctx, peer, response) catch |err| {
+            if (retained_cap) |resolved| {
+                peer.releaseResolvedCap(resolved) catch |release_err| {
+                    if (release_err == error.OutOfMemory) return error.OutOfMemory;
+                    log.debug("failed to release restored cap after callback error: {}", .{release_err});
+                };
+            }
+            return err;
+        };
     }
 
     /// Begin a graceful shutdown: reject new outbound calls, wait for
@@ -3583,6 +3600,10 @@ pub const Peer = struct {
     }
 
     fn destroyUnreferencedProxyExport(self: *Peer, id: u32) void {
+        self.destroyUnreferencedExport(id);
+    }
+
+    fn destroyUnreferencedExport(self: *Peer, id: u32) void {
         const entry = self.exports.get(id) orelse return;
         if (entry.ref_count != 0 or entry.answer_ref_count != 0 or entry.promise_ref_count != 0) return;
 
@@ -6388,6 +6409,15 @@ pub const Peer = struct {
 
         pub fn removeQuestion(self: *Peer, question_id: u32) void {
             Peer.removeQuestion(self, question_id);
+        }
+
+        pub fn removeQuestionAndDeinit(self: *Peer, question_id: u32) void {
+            if (self.questions.fetchRemove(question_id)) |removed| {
+                if (removed.value.deinit_ctx) |deinit_ctx| {
+                    deinit_ctx(self.allocator, removed.value.ctx);
+                }
+                self.freeQuestionParamExports(question_id);
+            }
         }
 
         pub fn releaseVineExport(self: *Peer, vine_id: u32) void {

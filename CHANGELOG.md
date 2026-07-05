@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC Level-2 persistence rollback and callback ownership are hardened.**
+  Restore handlers that host a fresh export now roll that export back if the
+  Restore Return cannot be built or sent, so failed restores do not leave
+  unreachable exports behind. `Peer.sendRestore` also releases the retained
+  restored import when the user callback fails after receiving it, including the
+  `OutOfMemory` path. Focused regressions now cover malformed Save/Restore
+  results, malformed restore params, Return send failures, independent
+  save/restorer hook clearing, and allocator rollback for `setPersistentExport`,
+  `setRestorer`, `sendSave`, and `sendRestore`.
+
 - **RPC Level-3 loopback VatNetwork duplicate registration is ownership-safe.**
   `LoopbackVatNetwork.register` no longer double-frees the copied nonce when a
   duplicate registration is rejected. Focused allocator-failure regressions now
@@ -46,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a capability returned by the host through the relayed results.
 
 ### Added
+
+- **RPC persistence consumer guide and test harness.** A test-only persistence
+  harness now shares HostPeer pump helpers plus persistence/cap-table invariant
+  checks across peer and reconnect tests. The new persistence guide documents
+  the Experimental Save/Restore flow, retained-cap ownership, exact-pin advice,
+  and the generated-client path for callers that need `sealFor`.
 
 - **Reusable L3 handoff test invariants.** The three-party handoff peer tests now
   share test-local assertions for import/export presence, drained Provide state,

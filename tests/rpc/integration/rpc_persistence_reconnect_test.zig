@@ -8,24 +8,9 @@ const persistence = peer_impl.persistence;
 const Peer = peer_impl.Peer;
 const protocol = capnpc.rpc.wire.protocol;
 const rpc_time = capnpc.rpc.time;
+const persistence_harness = @import("persistence-test-harness");
 
-fn pumpAll(src: *HostPeer, dst: *HostPeer) !void {
-    while (src.popOutgoingFrame()) |frame| {
-        errdefer src.freeFrame(frame);
-        try dst.pushFrame(frame);
-        src.freeFrame(frame);
-    }
-}
-
-fn pumpBothWays(a: *HostPeer, b: *HostPeer) !void {
-    var rounds: usize = 0;
-    while (a.pendingOutgoingCount() > 0 or b.pendingOutgoingCount() > 0) {
-        try pumpAll(a, b);
-        try pumpAll(b, a);
-        rounds += 1;
-        if (rounds > 16) return error.PumpDidNotSettle;
-    }
-}
+const pumpBothWays = persistence_harness.pumpBothWays;
 
 /// The persistent capability: a service that survives connections. Answers
 /// `echo_interface_id` method 0 with an empty struct.

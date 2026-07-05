@@ -8,6 +8,8 @@ const events = capnpc.rpc.events;
 const rpc_time = capnpc.rpc.time;
 const persistence = peer_impl.persistence;
 const Peer = peer_impl.Peer;
+const peer_test_hooks = Peer.test_hooks;
+const persistence_harness = @import("persistence-test-harness");
 
 const Capture = struct {
     allocator: std.mem.Allocator,
@@ -45,6 +47,55 @@ const EventRecorder = struct {
 
     fn observer(self: *@This()) events.Observer {
         return events.Observer.init(self, onEvent);
+    }
+};
+
+const PeerErrorRecorder = struct {
+    count: usize = 0,
+    last: ?anyerror = null,
+
+    fn onError(ctx: ?*anyopaque, peer: *Peer, err: anyerror) void {
+        _ = peer;
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.count += 1;
+        self.last = err;
+    }
+};
+
+const FailingSend = struct {
+    calls: usize = 0,
+
+    fn onFrame(ctx: *anyopaque, frame: []const u8) anyerror!void {
+        _ = frame;
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        return error.TestSendFailed;
+    }
+};
+
+const NoopPersistenceCallbacks = struct {
+    fn onSave(_: *anyopaque, _: *Peer, _: peer_impl.SaveResponse) anyerror!void {}
+    fn onRestore(_: *anyopaque, _: *Peer, _: peer_impl.RestoreResponse) anyerror!void {}
+    fn onFrame(_: *anyopaque, _: []const u8) anyerror!void {}
+};
+
+const FailingRestoreCallback = struct {
+    fail_with: anyerror,
+    calls: usize = 0,
+    saw_import: ?u32 = null,
+
+    fn onResponse(ctx: *anyopaque, peer: *Peer, response: peer_impl.RestoreResponse) anyerror!void {
+        _ = peer;
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        switch (response) {
+            .cap => |resolved| switch (resolved) {
+                .imported => |imported| self.saw_import = imported.id,
+                else => {},
+            },
+            else => return error.TestUnexpectedResult,
+        }
+        return self.fail_with;
     }
 };
 
@@ -333,6 +384,44 @@ test "clearPersistentExport restores the original handler" {
     try std.testing.expectEqual(@as(usize, 0), registry.saves);
 }
 
+test "save and restorer hooks can be cleared independently" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var app = AppHandler{};
+    var restored = AppHandler{};
+    var registry = SaveRegistry{ .sturdy_ref = "ref:both" };
+    var restorer = Restorer{ .known_ref = "ref:both", .handler = &restored };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    const bootstrap_id = try peer.setBootstrap(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    try peer.setPersistentExport(bootstrap_id, &registry, SaveRegistry.onSave);
+    try peer.setRestorer(&restorer, Restorer.onRestore);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+
+    peer.clearPersistentExport(bootstrap_id);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+    const restore_frame = try buildRestoreCallFrame(allocator, 41, bootstrap_id, "ref:both");
+    defer allocator.free(restore_frame);
+    try peer.handleFrame(restore_frame);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 1);
+
+    peer.clearRestorer();
+    try persistence_harness.expectPersistenceStats(&peer, 0, 0, 1);
+    try peer.setPersistentExport(bootstrap_id, &registry, SaveRegistry.onSave);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 1);
+
+    const save_frame = try buildSaveCallFrame(allocator, 42, bootstrap_id);
+    defer allocator.free(save_frame);
+    try peer.handleFrame(save_frame);
+    try std.testing.expectEqual(@as(usize, 1), registry.saves);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 1, 1);
+}
+
 test "persistent export registry enforces its budget and emits pressure" {
     const allocator = std.testing.allocator;
 
@@ -467,6 +556,87 @@ test "unknown sturdy ref and oversized refs are rejected" {
     try std.testing.expectEqual(@as(u64, 0), peer.stats().restores_served);
 }
 
+test "malformed restore params are rejected without calling the restorer" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var app = AppHandler{};
+    var restored = AppHandler{};
+    var restorer = Restorer{ .known_ref = "ref:echo", .handler = &restored };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    const bootstrap_id = try peer.setBootstrap(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    try peer.setRestorer(&restorer, Restorer.onRestore);
+
+    const malformed_frame = try buildCallFrame(
+        allocator,
+        33,
+        bootstrap_id,
+        persistence.restorer_interface_id,
+        persistence.restore_method_id,
+    );
+    defer allocator.free(malformed_frame);
+    try peer.handleFrame(malformed_frame);
+
+    try expectExceptionReturn(&capture, 0, 33, "MissingSturdyRef");
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+    try std.testing.expectEqual(@as(usize, 0), restored.calls);
+}
+
+test "save Return send failure does not count as served or record an answer" {
+    const allocator = std.testing.allocator;
+
+    var failing = FailingSend{};
+    var app = AppHandler{};
+    var registry = SaveRegistry{ .sturdy_ref = "ref:send-fail" };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&failing, FailingSend.onFrame);
+
+    const export_id = try peer.setBootstrap(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+
+    const frame = try buildSaveCallFrame(allocator, 34, export_id);
+    defer allocator.free(frame);
+    try std.testing.expectError(error.TestSendFailed, peer.handleFrame(frame));
+
+    try std.testing.expect(failing.calls >= 1);
+    try std.testing.expectEqual(@as(usize, 1), registry.saves);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+    try std.testing.expectEqual(@as(u32, 0), peer.stats().resolved_answers);
+}
+
+test "restore host export is rolled back when the Return cannot be sent" {
+    const allocator = std.testing.allocator;
+
+    var failing = FailingSend{};
+    var app = AppHandler{};
+    var restored = AppHandler{};
+    var restorer = Restorer{ .known_ref = "ref:host", .handler = &restored };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&failing, FailingSend.onFrame);
+
+    const bootstrap_id = try peer.setBootstrap(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    const exports_before = peer.stats().exports;
+    try peer.setRestorer(&restorer, Restorer.onRestore);
+
+    const frame = try buildRestoreCallFrame(allocator, 35, bootstrap_id, "ref:host");
+    defer allocator.free(frame);
+    try std.testing.expectError(error.TestSendFailed, peer.handleFrame(frame));
+
+    try std.testing.expect(failing.calls >= 1);
+    try std.testing.expectEqual(exports_before, peer.stats().exports);
+    try persistence_harness.expectNoExport(&peer, bootstrap_id + 1);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+}
+
 const SaveResponseRecorder = struct {
     allocator: std.mem.Allocator,
     sturdy_ref: ?[]u8 = null,
@@ -542,6 +712,85 @@ fn buildExceptionReturnFrame(allocator: std.mem.Allocator, answer_id: u32, reaso
     return builder.finish();
 }
 
+fn buildMalformedResultsReturnFrame(allocator: std.mem.Allocator, answer_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .results);
+    var payload = try ret.payloadTyped();
+    const any = try payload.initContent();
+    _ = try any.initStruct(0, 1);
+    _ = try ret.initCapTableTyped(0);
+    return builder.finish();
+}
+
+fn setPersistentExportOomImpl(allocator: std.mem.Allocator) !void {
+    var app = AppHandler{};
+    var registry = SaveRegistry{ .sturdy_ref = "ref:oom" };
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const export_id = try peer.addExport(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    try peer.setPersistentExport(export_id, &registry, SaveRegistry.onSave);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+}
+
+fn setRestorerOomImpl(allocator: std.mem.Allocator) !void {
+    var app = AppHandler{};
+    var restorer = Restorer{ .known_ref = "ref:oom", .handler = &app };
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    _ = try peer.setBootstrap(.{ .ctx = &app, .on_call = AppHandler.onCall });
+    try peer.setRestorer(&restorer, Restorer.onRestore);
+    try persistence_harness.expectPersistenceStats(&peer, 1, 0, 0);
+}
+
+fn sendSaveOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, NoopPersistenceCallbacks.onFrame);
+
+    var ctx: u8 = 0;
+    const question_id = try peer.sendSave(77, &ctx, NoopPersistenceCallbacks.onSave);
+    peer_test_hooks.removeQuestionAndDeinit(&peer, question_id);
+}
+
+fn sendRestoreOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, NoopPersistenceCallbacks.onFrame);
+
+    var ctx: u8 = 0;
+    const question_id = try peer.sendRestore(3, "sturdy:oom", &ctx, NoopPersistenceCallbacks.onRestore);
+    peer_test_hooks.removeQuestionAndDeinit(&peer, question_id);
+}
+
+test "setPersistentExport rolls back cleanly under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, setPersistentExportOomImpl, .{});
+}
+
+test "setRestorer rolls back cleanly under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, setRestorerOomImpl, .{});
+}
+
+test "sendSave rolls back cleanly under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendSaveOomImpl, .{});
+}
+
+test "sendRestore rolls back cleanly under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendRestoreOomImpl, .{});
+}
+
 test "sendSave emits a Persistent.save call and surfaces the sturdy ref" {
     const allocator = std.testing.allocator;
 
@@ -594,6 +843,31 @@ test "sendSave surfaces an exception response" {
 
     const reason = recorder.exception_reason orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("not persistent", reason);
+}
+
+test "sendSave malformed results report nonfatal error and drain the question" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var errors = PeerErrorRecorder{};
+    var recorder = SaveResponseRecorder{ .allocator = allocator };
+    defer recorder.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.start(&errors, PeerErrorRecorder.onError, null);
+
+    const question_id = try peer.sendSave(5, &recorder, SaveResponseRecorder.onResponse);
+    const return_frame = try buildMalformedResultsReturnFrame(allocator, question_id);
+    defer allocator.free(return_frame);
+    try peer.handleFrame(return_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), errors.count);
+    try std.testing.expectEqual(error.MissingSturdyRef, errors.last.?);
+    try std.testing.expect(recorder.sturdy_ref == null);
+    try persistence_harness.expectPeerIdle(&peer);
 }
 
 test "sendSave deadline expiry delivers the exception via cancel machinery" {
@@ -669,7 +943,7 @@ test "sendRestore round-trips and retains the restored import" {
         else => return error.TestUnexpectedResult,
     }
     // The import was retained for the application.
-    try std.testing.expect(peer.caps.imports.contains(99));
+    try persistence_harness.expectImport(&peer, 99);
 }
 
 test "sendRestore surfaces an exception response" {
@@ -692,6 +966,79 @@ test "sendRestore surfaces an exception response" {
     const reason = recorder.exception_reason orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("unknown sturdy ref", reason);
     try std.testing.expectEqual(@as(?cap_table.ResolvedCap, null), recorder.cap);
+}
+
+test "sendRestore malformed results report nonfatal error and drain the question" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var errors = PeerErrorRecorder{};
+    var recorder = RestoreResponseRecorder{ .allocator = allocator };
+    defer recorder.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.start(&errors, PeerErrorRecorder.onError, null);
+
+    const question_id = try peer.sendRestore(4, "sturdy:bad", &recorder, RestoreResponseRecorder.onResponse);
+    const return_frame = try buildMalformedResultsReturnFrame(allocator, question_id);
+    defer allocator.free(return_frame);
+    try peer.handleFrame(return_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), errors.count);
+    try std.testing.expectEqual(error.MissingRestoredCapability, errors.last.?);
+    try std.testing.expectEqual(@as(?cap_table.ResolvedCap, null), recorder.cap);
+    try persistence_harness.expectPeerIdle(&peer);
+}
+
+test "sendRestore callback failure releases the retained restored import" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var errors = PeerErrorRecorder{};
+    var callback = FailingRestoreCallback{ .fail_with = error.TestCallbackFailed };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.start(&errors, PeerErrorRecorder.onError, null);
+
+    const question_id = try peer.sendRestore(3, "sturdy:echo", &callback, FailingRestoreCallback.onResponse);
+    const return_frame = try buildRestoreResultsReturnFrame(allocator, question_id, 99);
+    defer allocator.free(return_frame);
+    try peer.handleFrame(return_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), callback.calls);
+    try std.testing.expectEqual(@as(?u32, 99), callback.saw_import);
+    try std.testing.expectEqual(@as(usize, 1), errors.count);
+    try std.testing.expectEqual(error.TestCallbackFailed, errors.last.?);
+    try persistence_harness.expectNoImport(&peer, 99);
+    try persistence_harness.expectPeerIdle(&peer);
+}
+
+test "sendRestore OOM callback failure releases the retained restored import" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var callback = FailingRestoreCallback{ .fail_with = error.OutOfMemory };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    const question_id = try peer.sendRestore(3, "sturdy:echo", &callback, FailingRestoreCallback.onResponse);
+    const return_frame = try buildRestoreResultsReturnFrame(allocator, question_id, 99);
+    defer allocator.free(return_frame);
+    try std.testing.expectError(error.OutOfMemory, peer.handleFrame(return_frame));
+
+    try std.testing.expectEqual(@as(usize, 1), callback.calls);
+    try std.testing.expectEqual(@as(?u32, 99), callback.saw_import);
+    try persistence_harness.expectNoImport(&peer, 99);
+    try persistence_harness.expectPeerIdle(&peer);
 }
 
 test "released persistent export drops its persistence state" {

@@ -117,8 +117,12 @@ e2e (`zig build e2e-self`) does run in hosted CI on every push.
 Beyond Level 1 (all **Experimental**, outside the frozen contract):
 
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present
-  (`rpc.peer` persistence surface). Experimental; the vat-level restore interface
-  may change.
+  (`rpc.peer` persistence surface) and documented in
+  [`rpc-persistence.md`](rpc-persistence.md). Current mainline evidence covers
+  reconnect/resave, malformed params/results, Return send failures, callback
+  failure after restored-cap retention, independent hook clearing, and allocator
+  rollback for the persistence entry points. Experimental; the vat-level restore
+  interface and realm conventions may still change.
 - **Level 3 (three-party handoff):** a minimal **origination** slice has landed
   as of 0.3.0 (Experimental): `Peer.sendProvide` / `sendAccept`,
   `resolvePromiseExportToThirdParty`, `sendThirdPartyAnswer`,
