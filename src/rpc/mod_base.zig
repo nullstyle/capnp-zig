@@ -23,6 +23,10 @@ pub const events = @import("./events.zig");
 pub const time = @import("./time.zig");
 pub const peer = @import("./peer/mod.zig");
 
+pub const vat = struct {
+    pub const network = @import("./vat/network.zig");
+};
+
 pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
     return struct {
         pub const binding = @import("./transport/binding.zig");

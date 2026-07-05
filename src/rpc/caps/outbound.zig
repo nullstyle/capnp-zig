@@ -258,6 +258,30 @@ fn encodePayloadCaps(
 
     for (outbound.entries.items, 0..) |entry, idx| {
         var elem = try cap_list.get(@intCast(idx));
+
+        // ORIGINATION override: a cap marked for three-party handoff is emitted
+        // as `thirdPartyHosted{ id = ThirdPartyToContact, vineId }` instead of
+        // its two-party variant. The wire reference the recipient takes lands on
+        // the VINE export (which anchors the handoff), not on the provided cap,
+        // so the callback entry is rewritten to `(senderHosted, vine_id)`.
+        if (table.getThirdPartyHosted(entry.id)) |record| {
+            var contact_msg = try message.Message.initUnvalidated(table.allocator, record.contact_payload);
+            defer contact_msg.deinit();
+            const contact = try contact_msg.getRootAnyPointer();
+            try protocol.CapDescriptor.writeThirdPartyHosted(elem._builder, contact, record.vine_id);
+
+            if (on_entry) |cb| {
+                const context = effects.ctx orelse return error.MissingCallbackContext;
+                const vine_entry = OutboundEntry{ .tag = .senderHosted, .id = record.vine_id };
+                try effects.noteCallbackApplied(vine_entry);
+                cb(context, vine_entry.tag, vine_entry.id) catch |err| {
+                    effects.popCallbackApplied();
+                    return err;
+                };
+            }
+            continue;
+        }
+
         switch (entry.tag) {
             .senderHosted => try elem.setSenderHosted(entry.id),
             .senderPromise => try elem.setSenderPromise(entry.id),

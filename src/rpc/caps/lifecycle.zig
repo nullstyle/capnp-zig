@@ -12,12 +12,29 @@ const OwnedPromisedAnswer = descriptors.OwnedPromisedAnswer;
 /// `Peer` owns one `CapTable`.
 pub const max_table_size: u32 = 10_000;
 
+/// Out-of-band handoff record for a capability being ORIGINATED to a third
+/// party. A `thirdPartyHosted` descriptor needs both a `ThirdPartyToContact`
+/// (an AnyPointer, which cannot be squeezed into the bare cap id the outbound
+/// classifier works with) and the vine export id. `sendProvide` records one of
+/// these keyed by the provided cap id; the outbound emit loop consults the map
+/// and, when a cap is marked, writes `thirdPartyHosted{ id, vineId }` instead of
+/// a two-party descriptor.
+pub const ThirdPartyHostedRecord = struct {
+    /// Serialized `ThirdPartyToContact` AnyPointer message (owned by the table).
+    contact_payload: []u8,
+    /// Vine export id anchoring the handoff's refcount/liveness.
+    vine_id: u32,
+};
+
 pub const CapTable = struct {
     allocator: std.mem.Allocator,
     exports: std.AutoHashMap(u32, void),
     imports: std.AutoHashMap(u32, ImportEntry),
     promised_exports: std.AutoHashMap(u32, void),
     receiver_answers: std.AutoHashMap(u32, OwnedPromisedAnswer),
+    /// Caps being handed off to a third party (cap id -> handoff record). Owns
+    /// the contact payload bytes.
+    third_party_hosted: std.AutoHashMap(u32, ThirdPartyHostedRecord),
     next_export_id: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) CapTable {
@@ -27,6 +44,7 @@ pub const CapTable = struct {
             .imports = std.AutoHashMap(u32, ImportEntry).init(allocator),
             .promised_exports = std.AutoHashMap(u32, void).init(allocator),
             .receiver_answers = std.AutoHashMap(u32, OwnedPromisedAnswer).init(allocator),
+            .third_party_hosted = std.AutoHashMap(u32, ThirdPartyHostedRecord).init(allocator),
         };
     }
 
@@ -39,6 +57,34 @@ pub const CapTable = struct {
             answer.deinit(self.allocator);
         }
         self.receiver_answers.deinit();
+        var tph_it = self.third_party_hosted.valueIterator();
+        while (tph_it.next()) |record| self.allocator.free(record.contact_payload);
+        self.third_party_hosted.deinit();
+    }
+
+    /// Mark `cap_id` as being handed off to a third party. `contact_payload` is
+    /// the serialized `ThirdPartyToContact` AnyPointer; the table copies it. The
+    /// next outbound descriptor emitted for `cap_id` resolves to
+    /// `thirdPartyHosted{ id = contact, vineId }`. Replaces any prior mark.
+    pub fn markThirdPartyHosted(self: *CapTable, cap_id: u32, contact_payload: []const u8, vine_id: u32) !void {
+        const owned = try self.allocator.dupe(u8, contact_payload);
+        errdefer self.allocator.free(owned);
+        const gop = try self.third_party_hosted.getOrPut(cap_id);
+        if (gop.found_existing) self.allocator.free(gop.value_ptr.contact_payload);
+        gop.value_ptr.* = .{ .contact_payload = owned, .vine_id = vine_id };
+    }
+
+    /// Look up the handoff record for `cap_id`, or null if it is not being
+    /// handed off. The returned payload aliases table-owned memory.
+    pub fn getThirdPartyHosted(self: *const CapTable, cap_id: u32) ?ThirdPartyHostedRecord {
+        return self.third_party_hosted.get(cap_id);
+    }
+
+    /// Clear the handoff mark on `cap_id`, freeing its contact payload.
+    pub fn clearThirdPartyHosted(self: *CapTable, cap_id: u32) void {
+        if (self.third_party_hosted.fetchRemove(cap_id)) |removed| {
+            self.allocator.free(removed.value.contact_payload);
+        }
     }
 
     pub fn totalEntries(self: *const CapTable) u32 {

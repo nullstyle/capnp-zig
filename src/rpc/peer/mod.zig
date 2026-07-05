@@ -42,6 +42,7 @@ const peer_third_party_returns = peer_third_party.returns;
 const return_routing = @import("../promises/return_routing.zig");
 const return_send = @import("../promises/return_send.zig");
 const peer_transport = @import("./transport.zig");
+const vat_network = @import("../vat/network.zig");
 const peer_transport_callbacks = peer_transport.callbacks;
 const peer_transport_state = peer_transport.state;
 const peer_question_state = @import("./peer_question_state.zig");
@@ -302,6 +303,54 @@ pub const TransportSendFn = TransportBinding.SendFn;
 pub const TransportCloseFn = TransportBinding.CloseFn;
 pub const TransportIsClosingFn = TransportBinding.IsClosingFn;
 
+/// Level-3 three-party addressing seam (see `rpc.vat.network`). Application
+/// supplies one when originating `Provide`/`Accept` handoffs; the two-party core
+/// runs unchanged without it.
+pub const VatNetwork = vat_network.VatNetwork(Peer);
+pub const Introduction = vat_network.Introduction;
+pub const Introduced = vat_network.Introduced(Peer);
+
+/// Handle returned by `Peer.sendProvide`: the ids the caller needs to drive the
+/// paired `thirdPartyHosted` descriptor emission and to observe completion.
+pub const ProvideHandle = struct {
+    /// The held-open Provide question id (no Return; Finished when the recipient
+    /// releases the vine).
+    question_id: u32,
+    /// The vine export id minted for this handoff. Marked third-party-hosted, so
+    /// the next descriptor emitted for the provided cap resolves to
+    /// `thirdPartyHosted{ contact, vineId = this }`.
+    vine_id: u32,
+};
+
+/// Couples a vine export (minted on the host-of-recipient connection, VatB↔VatA)
+/// to the held-open `Provide` question it anchors (on the host-of-provided-cap
+/// connection, VatB↔VatC). When the recipient releases the vine — the wire
+/// signal that the `Accept` completed (or was abandoned) — VatB Finishes the
+/// paired Provide question, unregistering the provision on VatC.
+///
+/// The coupling deliberately spans two peers: the vine lives on THIS peer's cap
+/// table (the B↔A connection), while the Provide question lives on a DIFFERENT
+/// peer (the B↔C connection), which `provide_peer` points at.
+///
+/// LIFETIME CONSTRAINT (known limitation of this minimal slice): `provide_peer`
+/// is a borrowed raw pointer with no back-reference. If the host-of-provided-cap
+/// peer (B↔C) is destroyed while a coupled vine is still live on the
+/// host-of-recipient peer (B↔A) — e.g. the VatC connection drops, then VatA
+/// later Releases the vine — `finishOriginatedProvide` would dereference a freed
+/// peer. The app MUST therefore tear down the recipient-facing peer (or release
+/// the vine) before, or together with, the provided-cap peer. Making this
+/// resilient to arbitrary per-connection teardown needs cross-peer coupling
+/// liveness (a VatNetwork-owned registry) — tracked as an L3 hardening
+/// follow-up, out of scope for the P0–P2 origination slice.
+const OutboundProvide = struct {
+    /// The peer on which the held-open Provide question was sent (B↔C).
+    /// Borrowed; see the LIFETIME CONSTRAINT above — the app owns both peers'
+    /// lifetimes and must order teardown so this pointer never dangles.
+    provide_peer: *Peer,
+    /// The Provide question id to Finish when the vine is released.
+    provide_question_id: u32,
+};
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     limits: PeerLimits,
@@ -311,6 +360,11 @@ pub const Peer = struct {
     /// Attached transport callbacks. Set/cleared atomically by
     /// `attachTransportBinding` / `detachTransport`.
     transport: TransportBinding = .{},
+
+    /// Optional Level-3 three-party addressing seam. Null for a plain two-party
+    /// peer; set via `attachVatNetwork` before originating `Provide`/`Accept`
+    /// handoffs. Borrowed — its `ctx` must outlive the peer.
+    vat_network: ?VatNetwork = null,
 
     // -- Capability bookkeeping ---------------------------------------------
 
@@ -362,6 +416,12 @@ pub const Peer = struct {
     provides_by_question: std.AutoHashMap(u32, ProvideEntry),
     /// Active Provide operations keyed by serialized recipient for Accept lookup.
     provides_by_key: std.StringHashMap(u32),
+    /// ORIGINATION (mirror of the inbound provide tables): vine export id ->
+    /// the paired held-open Provide question this peer originated. Keyed by the
+    /// vine export minted on THIS connection; the Provide question it anchors
+    /// may live on a different peer (see `OutboundProvide`). Consulted from
+    /// `handleRelease` to Finish the Provide once the recipient drops the vine.
+    outbound_provides: std.AutoHashMap(u32, OutboundProvide),
     /// In-progress Join operations collecting parts.
     pending_joins: std.AutoHashMap(u32, JoinState),
     /// Maps a Join answer's question ID to its join ID + part number.
@@ -568,6 +628,7 @@ pub const Peer = struct {
             .forwarded_tail_questions = std.AutoHashMap(u32, u32).init(allocator),
             .provides_by_question = std.AutoHashMap(u32, ProvideEntry).init(allocator),
             .provides_by_key = std.StringHashMap(u32).init(allocator),
+            .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
             .pending_joins = std.AutoHashMap(u32, JoinState).init(allocator),
             .pending_join_questions = std.AutoHashMap(u32, PendingJoinQuestion).init(allocator),
             .pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)).init(allocator),
@@ -723,6 +784,21 @@ pub const Peer = struct {
         peer_transport_state.detachTransportForPeer(Peer, self);
     }
 
+    /// Attach the Level-3 three-party addressing seam. Required before
+    /// originating `Provide`/`Accept` handoffs (`sendProvide`/`sendAccept`); a
+    /// plain two-party peer never needs one. The network's `ctx` must outlive
+    /// the peer.
+    pub fn attachVatNetwork(self: *Peer, network: VatNetwork) void {
+        self.assertThreadAffinity();
+        self.vat_network = network;
+    }
+
+    /// Detach the vat network. Does not tear down any in-flight handoffs.
+    pub fn detachVatNetwork(self: *Peer) void {
+        self.assertThreadAffinity();
+        self.vat_network = null;
+    }
+
     /// Return whether a transport is currently attached to this peer.
     pub fn hasAttachedTransport(self: *const Peer) bool {
         self.assertThreadAffinity();
@@ -839,6 +915,11 @@ pub const Peer = struct {
             &self.provides_by_question,
         );
         self.provides_by_key.deinit();
+        // OutboundProvide entries own no heap memory (borrowed peer pointer +
+        // plain ids); a straight deinit suffices. A live entry at teardown means
+        // a handoff was still in flight — the paired Provide question is torn
+        // down with its own peer's `provides_by_question`.
+        self.outbound_provides.deinit();
 
         peer_cleanup.deinitJoinStateMap(
             @TypeOf(self.pending_joins),
@@ -1248,6 +1329,151 @@ pub const Peer = struct {
         try self.sendBuilder(&builder);
         log.debug("sent bootstrap question_id={}", .{question_id});
         return question_id;
+    }
+
+    // -- Three-party handoff ORIGINATION (Provide / Accept) -------------------
+
+    /// No-op Return callback for a held-open Provide question. A `Provide`
+    /// receives NO `Return` (rpc.capnp:834-847); the question is registered only
+    /// to reserve its id and to be Finished later (on vine release or teardown).
+    /// The single case that invokes this is the shutdown drain delivering a
+    /// synthetic local exception, which the held-open provision safely ignores.
+    fn onProvideNoReturn(
+        _: *anyopaque,
+        _: *Peer,
+        _: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {}
+
+    /// Originate a three-party handoff: hand the capability named by
+    /// `provided_target` (a `MessageTarget` local to the vat this peer is
+    /// connected to — the HOST of the provided cap, VatC in the spec) to a third
+    /// party (VatA), so VatA can pick it up directly with an `Accept`.
+    ///
+    /// Message direction follows rpc.capnp: the `Provide` goes to the HOST of
+    /// the provided cap (this `self` peer = the VatB↔VatC connection). The vine
+    /// export and the `thirdPartyHosted` descriptor, by contrast, belong on the
+    /// host-of-recipient connection (`host_of_recipient` = the VatB↔VatA
+    /// connection), since that is where VatA takes its wire reference and where
+    /// the vine's later `Release` arrives.
+    ///
+    /// Steps:
+    ///   1. Register a held-open Provide question on `self` (no Return; Finished
+    ///      when the recipient releases the vine — see `handleRelease`).
+    ///   2. Mint a vine export on `host_of_recipient` and mark it
+    ///      third-party-hosted with `contact_payload` (the `ThirdPartyToContact`)
+    ///      so the next descriptor emitted for the vine resolves to
+    ///      `thirdPartyHosted{ id = contact, vineId }`.
+    ///   3. Record the vine → Provide-question coupling on `host_of_recipient`.
+    ///   4. Send the `Provide` to `self` (VatC) with `recipient` = the
+    ///      `ThirdPartyToAwait`.
+    ///
+    /// Returns the vine id + Provide question id. The caller then drives the
+    /// `thirdPartyHosted` emission by sending `host_of_recipient` a payload that
+    /// carries the vine export (which is marked); the recipient picks it up and
+    /// eventually `sendAccept`s on its own connection to VatC.
+    pub fn sendProvide(
+        self: *Peer,
+        provided_target: protocol.MessageTarget,
+        recipient: message.AnyPointerReader,
+        host_of_recipient: *Peer,
+        contact_payload: []const u8,
+    ) !ProvideHandle {
+        self.assertThreadAffinity();
+        host_of_recipient.assertThreadAffinity();
+        if (self.is_shutting_down or host_of_recipient.is_shutting_down) return error.PeerShuttingDown;
+
+        // (1) Held-open Provide question on the host-of-provided-cap connection.
+        //     ctx is unused by onProvideNoReturn; pass a valid pointer (self)
+        //     rather than undefined so no dispatch path ever reads garbage.
+        const question_id = try self.allocateQuestion(self, onProvideNoReturn);
+        errdefer self.removeQuestion(question_id);
+
+        // (2) Vine export on the host-of-recipient connection. ctx is unused by
+        //     vineRejectingCall; pass host_of_recipient rather than undefined.
+        const vine_id = try host_of_recipient.addExport(.{
+            .ctx = host_of_recipient,
+            .on_call = vineRejectingCall,
+        });
+        errdefer host_of_recipient.releaseVineExport(vine_id);
+        try host_of_recipient.caps.markThirdPartyHosted(vine_id, contact_payload, vine_id);
+        errdefer host_of_recipient.caps.clearThirdPartyHosted(vine_id);
+
+        // (3) Couple the vine to the held-open Provide question so a later
+        //     vine Release (post-Accept) Finishes the provision on VatC.
+        try ensureCountLimit(
+            host_of_recipient.outbound_provides.contains(vine_id),
+            host_of_recipient.outbound_provides.count(),
+            host_of_recipient.limits.max_active_provides,
+        );
+        try host_of_recipient.outbound_provides.put(vine_id, .{
+            .provide_peer = self,
+            .provide_question_id = question_id,
+        });
+        errdefer _ = host_of_recipient.outbound_provides.remove(vine_id);
+
+        // (4) Send the Provide to the host of the provided cap (VatC).
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildProvide(question_id, provided_target, recipient);
+        try self.sendBuilder(&builder);
+
+        log.debug("sent provide question_id={} vine_id={}", .{ question_id, vine_id });
+        return .{ .question_id = question_id, .vine_id = vine_id };
+    }
+
+    /// Pick up a capability a third party provided to us: send `Accept` to the
+    /// HOST of the provided cap (this `self` peer = the VatA↔VatC connection).
+    /// `provision` is the `ThirdPartyCompletion` obtained from the VatNetwork,
+    /// matching the `ThirdPartyToAwait` VatB placed in its `Provide`. The
+    /// `on_return` callback receives the `Return` carrying the accepted cap
+    /// (standard import-from-return; see the host side `sendReturnProvidedTarget`).
+    ///
+    /// This slice sends `embargo = null` (no in-flight-promise ordering — that
+    /// is Phase 4). Returns the Accept question id.
+    pub fn sendAccept(
+        self: *Peer,
+        provision: message.AnyPointerReader,
+        embargo: ?[]const u8,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+
+        const question_id = try self.allocateQuestion(ctx, on_return);
+        errdefer self.removeQuestion(question_id);
+
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildAccept(question_id, provision, embargo);
+        try self.sendBuilder(&builder);
+
+        log.debug("sent accept question_id={}", .{question_id});
+        return question_id;
+    }
+
+    /// Call handler installed on a vine export. A vine is a pure liveness/refcount
+    /// anchor for a three-party handoff; it proxies no methods in this slice, so
+    /// any call routed to it is answered with an exception rather than silently
+    /// dropped. (The Level-1/2 proxy fallback — forwarding vine calls to the
+    /// provided cap — is out of scope here.)
+    fn vineRejectingCall(
+        _: *anyopaque,
+        peer: *Peer,
+        call: protocol.Call,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        try peer.sendReturnException(call.question_id, "vine capability is not directly callable");
+    }
+
+    /// Destroy a freshly-minted vine export on the origination error path,
+    /// before any `thirdPartyHosted` descriptor has been emitted (so it holds no
+    /// wire reference and no Release is owed). Removes the export table entry and
+    /// clears its cap-table identity directly — `releaseExport(_, 0)` is a no-op.
+    fn releaseVineExport(self: *Peer, vine_id: u32) void {
+        _ = self.exports.remove(vine_id);
+        self.caps.clearExport(vine_id);
     }
 
     // -- Persistence (sturdy refs, RPC level 2) -------------------------------
@@ -3737,7 +3963,37 @@ pub const Peer = struct {
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {
+        // ORIGINATION: is this Release dropping a vine we minted for a handoff?
+        // Snapshot the coupling BEFORE releasing the export, then check whether
+        // the release fully dropped the vine (destroyed the export). The vine's
+        // Release is the spec's signal that the Accept completed (or was
+        // abandoned); once the vine is gone we Finish the paired Provide on the
+        // host-of-provided-cap connection, unregistering the provision.
+        const coupled = self.outbound_provides.get(release.id);
+
         try peer_cap_lifecycle.handleRelease(Peer, self, release, releaseExport);
+
+        if (coupled) |entry| {
+            if (!self.exports.contains(release.id)) {
+                // Vine fully released. Drop the coupling and its handoff mark,
+                // then Finish the held-open Provide question on its own peer.
+                _ = self.outbound_provides.remove(release.id);
+                self.caps.clearThirdPartyHosted(release.id);
+                self.finishOriginatedProvide(entry.provide_peer, entry.provide_question_id);
+            }
+        }
+    }
+
+    /// Finish a Provide question this peer originated, on the peer that owns it
+    /// (the host-of-provided-cap connection). Removes the held-open question and
+    /// sends the wire `Finish` so the host unregisters the provision. Best
+    /// effort: a failed Finish is logged, not propagated — the vine is already
+    /// gone and the handoff is over on our side.
+    fn finishOriginatedProvide(_: *Peer, provide_peer: *Peer, provide_question_id: u32) void {
+        provide_peer.removeQuestion(provide_question_id);
+        provide_peer.sendFinishForHost(provide_question_id, false, false) catch |err| {
+            log.debug("provide finish send failed for question {}: {}", .{ provide_question_id, err });
+        };
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {

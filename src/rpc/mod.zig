@@ -7,6 +7,7 @@ pub const events = base.events;
 pub const time = base.time;
 pub const transport = base.transport;
 pub const peer = base.peer;
+pub const vat = base.vat;
 pub const integration = base.integration;
 pub const generated = base.generated;
 pub const testing = base.testing;

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **RPC Level-3 three-party handoff origination — minimal slice (Experimental).**
+  `Peer.sendProvide` / `Peer.sendAccept` originate a three-party capability
+  handoff, plus a `rpc.vat.network.VatNetwork` addressing seam (application
+  supplies how a peer names/reaches a third vat; a `LoopbackVatNetwork` drives
+  in-process tests) and `thirdPartyHosted` descriptor emission. Proven end to end
+  by a three-peer Zig↔Zig loopback `Provide`+`Accept` handoff test (leak-checked).
+  This is the P0–P2 slice: no in-flight-promise embargo during handoff (Phase 4)
+  and no resolve→handoff auto-trigger (Phase 3) yet, and it is Zig↔Zig-only (no
+  reference impl performs spec-current three-party pickup). Known constraint: the
+  vine→Provide coupling borrows a raw peer pointer, so the app must tear down the
+  recipient-facing peer (or release the vine) before/with the provided-cap peer —
+  cross-peer coupling liveness is a tracked hardening follow-up. Two-party peers
+  are unaffected (all additive behind an unset `vat_network`).
 - **Cross-impl `resolve_disembargo` e2e scenario** — a reflected-capability
   resolve/embargo scenario in the Docker interop matrix, exercising the full
   `senderLoopback`/`receiverLoopback` `Disembargo` handshake end to end against
