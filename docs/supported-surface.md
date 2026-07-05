@@ -49,7 +49,7 @@ earlier docs that mention only one name are being reconciled to point here.
 | Code generation (`codegen`, the `capnpc-zig` plugin) | **Stable** |
 | Reader convenience (`reader`) | **Stable** |
 | RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`, generated interface code) | **Stable** (frozen, CI-gated) |
-| RPC L3 three-party origination, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
+| RPC L3 three-party origination, L4 Join receive-side readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
 | WASM host ABI (`src/wasm`) | **Experimental** |
 
 The frozen Stable RPC surface is exactly the categorized set in
@@ -148,6 +148,13 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   paths, `sendProvide` / `sendAccept` allocator rollback, vine/provide teardown
   ordering, embargoed pickup ordering, and cross-peer proxy cleanup. Do not depend
   on the L3 surface for production interop.
+- **Level 4 (Join):** a guarded receive-side readiness slice is present and
+  documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
+  Inbound `Join` can collect local JoinKeyPart structs, compare resolved
+  targets, return provided caps when all parts match, send mismatch exceptions,
+  and drain state on Finish/send-failure/OOM paths. There is no public
+  `Peer.sendJoin`, no direct-connection JoinResult flow, no multi-hop relay, and
+  no cross-implementation L4 interop claim. Experimental; exact-pin only.
 
 ## Known limitations (v0.3.0)
 

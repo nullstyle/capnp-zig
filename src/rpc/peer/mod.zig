@@ -5897,6 +5897,7 @@ pub const Peer = struct {
             makeProvideTarget,
             ProvideTarget.deinit,
             JoinState.init,
+            JoinState.deinit,
             Peer.ensureJoinBudget,
             peer_join_state.completeJoinForPeerFn(
                 Peer,

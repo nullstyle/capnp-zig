@@ -634,6 +634,7 @@ pub fn build(b: *std.Build) void {
     const run_rpc_three_party_handoff_redirected_return_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_redirected_return_test.zig", target, optimize, lib_module);
     const run_rpc_reflected_direct_handler_tests = addLibTest(b, "tests/rpc/peer/rpc_reflected_direct_handler_test.zig", target, optimize, lib_module);
     const run_rpc_answer_lifecycle_tests = addLibTest(b, "tests/rpc/peer/rpc_answer_lifecycle_test.zig", target, optimize, lib_module);
+    const run_rpc_join_readiness_tests = addLibTest(b, "tests/rpc/peer/rpc_join_readiness_test.zig", target, optimize, lib_module);
     const run_rpc_peer_alloc_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_alloc_failure_test.zig", target, optimize, lib_module);
     const run_rpc_peer_semantic_helpers_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_semantic_helpers_test.zig", target, optimize, lib_module);
     const run_rpc_peer_release_and_failure_tests = addLibTest(b, "tests/rpc/peer/rpc_release_and_failure_test.zig", target, optimize, lib_module);
@@ -843,6 +844,7 @@ pub fn build(b: *std.Build) void {
     test_rpc_peer_step.dependOn(run_rpc_three_party_handoff_redirected_return_tests);
     test_rpc_peer_step.dependOn(run_rpc_reflected_direct_handler_tests);
     test_rpc_peer_step.dependOn(run_rpc_answer_lifecycle_tests);
+    test_rpc_peer_step.dependOn(run_rpc_join_readiness_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_alloc_failure_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_semantic_helpers_tests);
     test_rpc_peer_step.dependOn(run_rpc_peer_release_and_failure_tests);
@@ -881,6 +883,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(run_schema_validation_tests);
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
+    test_resource_budgets_step.dependOn(run_rpc_join_readiness_tests);
     test_resource_budgets_step.dependOn(run_rpc_persistence_tests);
     if (run_rpc_quic_transport_tests) |step| test_resource_budgets_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
@@ -895,6 +898,7 @@ pub fn build(b: *std.Build) void {
     test_oom_step.dependOn(run_codegen_defaults_tests);
     test_oom_step.dependOn(run_rpc_framing_tests);
     test_oom_step.dependOn(run_rpc_connection_failure_tests);
+    test_oom_step.dependOn(run_rpc_join_readiness_tests);
     test_oom_step.dependOn(run_rpc_persistence_tests);
     test_oom_step.dependOn(run_rpc_raw_frame_security_tests);
     test_oom_step.dependOn(&run_wasm_host_abi_tests.step);

@@ -16,6 +16,36 @@ pub fn expectNoProvideState(peer: *const Peer) !void {
     try std.testing.expectEqual(@as(usize, 0), peer.provides_by_key.count());
 }
 
+pub fn expectNoJoinState(peer: *const Peer) !void {
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_questions.count());
+}
+
+pub fn expectNoEmbargoedAcceptState(peer: *const Peer) !void {
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_accepts_by_embargo.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_accept_embargo_by_question.count());
+}
+
+pub fn expectNoThirdPartyState(peer: *const Peer) !void {
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_awaits.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_returns.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.adopted_third_party_answers.count());
+}
+
+pub fn expectNoParkedCalls(peer: *const Peer) !void {
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_export_promises.count());
+}
+
+pub fn expectNoL3L4TransientState(peer: *const Peer) !void {
+    try expectNoProvideState(peer);
+    try expectNoJoinState(peer);
+    try expectNoEmbargoedAcceptState(peer);
+    try expectNoThirdPartyState(peer);
+    try expectNoParkedCalls(peer);
+}
+
 pub fn expectOutboundProvideCoupled(
     recipient_peer: *const Peer,
     provide_peer: *const Peer,

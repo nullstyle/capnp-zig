@@ -177,6 +177,7 @@ pub fn handleJoin(
     make_target: *const fn (*PeerType, cap_table.ResolvedCap) anyerror!ProvideTargetType,
     deinit_target: *const fn (*ProvideTargetType, std.mem.Allocator) void,
     init_join_state: *const fn (std.mem.Allocator, u16) JoinStateType,
+    deinit_join_state: *const fn (*JoinStateType, std.mem.Allocator) void,
     ensure_join_budget: *const fn (*PeerType, JoinKeyPartType, u32) anyerror!void,
     complete_join: *const fn (*PeerType, u32) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
@@ -232,6 +233,7 @@ pub fn handleJoin(
         join.question_id,
         target,
         init_join_state,
+        deinit_join_state,
     ) catch |err| {
         deinit_target(&target, allocator);
         return err;
@@ -477,6 +479,10 @@ test "peer_provide_join_orchestration handleJoin rejects duplicate join question
             return JoinState.init(allocator, part_count);
         }
 
+        fn deinitJoinState(state: *JoinState, allocator: std.mem.Allocator) void {
+            state.deinit(allocator);
+        }
+
         fn ensureJoinBudget(_: *State, join_key_part: JoinKeyPart, question_id: u32) !void {
             _ = join_key_part;
             _ = question_id;
@@ -531,6 +537,7 @@ test "peer_provide_join_orchestration handleJoin rejects duplicate join question
             Hooks.makeTarget,
             Hooks.deinitTarget,
             Hooks.initJoinState,
+            Hooks.deinitJoinState,
             Hooks.ensureJoinBudget,
             Hooks.completeJoin,
             Hooks.sendReturnException,

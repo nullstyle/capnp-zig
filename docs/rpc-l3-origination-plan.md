@@ -1,7 +1,8 @@
 <!--
-Planned 2026-07-04. Status: PROPOSED design for Level-3 three-party handoff ORIGINATION.
-Receive-side handlers + wire builders already exist; this covers the missing Peer orchestration
-+ VatNetwork seam. Cross-impl is Zig<->Zig-only initially (see Part 4).
+Planned 2026-07-04. Status: HISTORICAL design note for Level-3 three-party handoff
+ORIGINATION. The L3 origination path has since landed as Experimental; see
+supported-surface.md for current status. For the current Level-4 Join readiness
+state, see rpc-l4-join-readiness.md.
 -->
 
 # Cap'n Proto RPC Level-3 Three-Party Handoff ORIGINATION — Implementation Plan

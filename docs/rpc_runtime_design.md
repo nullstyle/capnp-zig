@@ -142,6 +142,23 @@ inbound restore params), emitting a `sturdy_ref_bytes` resource rejection on
 violation. `PeerStats` gains `persistent_exports`, `saves_served`, and
 `restores_served`.
 
+## L4 Join Readiness
+
+Level 4 `Join` remains Experimental. The runtime has receive-side Join state
+machinery, not a public `Peer.sendJoin` entry point and not a complete
+direct-connection JoinResult flow. Inbound `Join` messages use the shared
+`ProvideTarget` representation: each part resolves its target, stores that
+target under `pending_joins`, and records a question-to-part back-link in
+`pending_join_questions`. When all parts for a join ID arrive, matching targets
+receive provided-cap results and mismatches receive exceptions.
+
+Cleanup follows the same question lifecycle as Provide/Accept: `Finish` clears
+the matching Join part, deinitializes its target, and removes the join bucket
+when it becomes empty. Fresh join-bucket insertion is rollback-safe under OOM,
+and completion drains `pending_joins` / `pending_join_questions` before fan-out.
+See [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md) for the current
+evidence and limitations.
+
 ## Call Flow
 Inbound call:
 1. `Call` message parsed with target capability ID and method.

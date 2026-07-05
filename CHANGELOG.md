@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
+  roll back if allocation fails before the first part is fully indexed, avoiding
+  stale empty `pending_joins` entries. New regressions cover matching Join
+  completion, target mismatch, duplicate parts, Finish-before-completion cleanup,
+  Return send-failure fallback, and OOM rollback for the insertion path. L4
+  remains Experimental and receive-side/readiness-only.
+
 - **RPC Level-2 persistence rollback and callback ownership are hardened.**
   Restore handlers that host a fresh export now roll that export back if the
   Restore Return cannot be built or sent, so failed restores do not leave
@@ -56,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a capability returned by the host through the relayed results.
 
 ### Added
+
+- **RPC L4 Join readiness note and shared L3/L4 invariants.** The new
+  `docs/rpc-l4-join-readiness.md` documents the current receive-side Join slice,
+  invariants, evidence, and non-goals. The three-party handoff test harness now
+  includes reusable assertions for drained Join, embargoed Accept, third-party,
+  and parked-call state.
 
 - **RPC persistence consumer guide and test harness.** A test-only persistence
   harness now shares HostPeer pump helpers plus persistence/cap-table invariant

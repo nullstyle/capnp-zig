@@ -1202,6 +1202,10 @@ test "peer join orchestration budget rejection frees no ProvideTarget" {
             return JoinState.init(allocator, part_count);
         }
 
+        fn deinitJoinState(state: *JoinState, allocator: std.mem.Allocator) void {
+            state.deinit(allocator);
+        }
+
         fn ensureJoinBudget(state: *State, join_key_part: JoinKeyPart, question_id: u32) !void {
             _ = join_key_part;
             _ = question_id;
@@ -1275,6 +1279,7 @@ test "peer join orchestration budget rejection frees no ProvideTarget" {
         Hooks.makeTarget,
         Hooks.deinitTarget,
         Hooks.initJoinState,
+        Hooks.deinitJoinState,
         Hooks.ensureJoinBudget,
         Hooks.completeJoin,
         Hooks.sendReturnException,

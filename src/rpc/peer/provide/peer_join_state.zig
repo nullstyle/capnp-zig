@@ -40,8 +40,18 @@ pub fn insertJoinPart(
     question_id: u32,
     target: ProvideTargetType,
     init_join_state: *const fn (std.mem.Allocator, u16) JoinStateType,
+    deinit_join_state: *const fn (*JoinStateType, std.mem.Allocator) void,
 ) !InsertOutcome {
     const join_entry = try pending_joins.getOrPut(join_key_part.join_id);
+    const created_join = !join_entry.found_existing;
+    var committed_part = false;
+    errdefer if (created_join and !committed_part) {
+        if (pending_joins.fetchRemove(join_key_part.join_id)) |removed| {
+            var state = removed.value;
+            deinit_join_state(&state, allocator);
+        }
+    };
+
     if (!join_entry.found_existing) {
         join_entry.value_ptr.* = init_join_state(allocator, join_key_part.part_count);
     } else if (join_entry.value_ptr.part_count != join_key_part.part_count) {
@@ -63,6 +73,7 @@ pub fn insertJoinPart(
         .target = target,
     });
     errdefer _ = join_entry.value_ptr.parts.fetchRemove(join_key_part.part_num);
+    committed_part = true;
 
     if (join_entry.value_ptr.parts.count() == join_key_part.part_count) {
         // Caller can immediately complete once all parts are present.
@@ -411,6 +422,7 @@ test "peer_join_state insertJoinPart handles duplicate and part-count mismatch o
         100,
         .{ .id = 7 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     try std.testing.expectEqual(InsertOutcome.inserted, first);
 
@@ -426,6 +438,7 @@ test "peer_join_state insertJoinPart handles duplicate and part-count mismatch o
         101,
         .{ .id = 7 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     try std.testing.expectEqual(InsertOutcome.duplicate_part, duplicate);
 
@@ -441,6 +454,7 @@ test "peer_join_state insertJoinPart handles duplicate and part-count mismatch o
         102,
         .{ .id = 7 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     try std.testing.expectEqual(InsertOutcome.inserted_ready, ready);
 
@@ -456,6 +470,7 @@ test "peer_join_state insertJoinPart handles duplicate and part-count mismatch o
         200,
         .{ .id = 9 },
         initTestJoinState,
+        deinitTestJoinState,
     );
 
     const mismatch = try insertJoinPart(
@@ -470,6 +485,7 @@ test "peer_join_state insertJoinPart handles duplicate and part-count mismatch o
         201,
         .{ .id = 9 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     try std.testing.expectEqual(InsertOutcome.part_count_mismatch, mismatch);
 }
@@ -491,6 +507,7 @@ test "peer_join_state clearPendingJoinQuestion removes join parts and empty join
         500,
         .{ .id = 11 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     _ = try insertJoinPart(
         TestJoinKeyPart,
@@ -504,6 +521,7 @@ test "peer_join_state clearPendingJoinQuestion removes join parts and empty join
         501,
         .{ .id = 11 },
         initTestJoinState,
+        deinitTestJoinState,
     );
 
     clearPendingJoinQuestion(
@@ -555,6 +573,7 @@ test "peer_join_state completeJoin fans out provided target when all parts match
         900,
         .{ .id = 22 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     _ = try insertJoinPart(
         TestJoinKeyPart,
@@ -568,6 +587,7 @@ test "peer_join_state completeJoin fans out provided target when all parts match
         901,
         .{ .id = 22 },
         initTestJoinState,
+        deinitTestJoinState,
     );
 
     var state = SendState.init(std.testing.allocator);
@@ -614,6 +634,7 @@ test "peer_join_state completeJoin sends mismatch exceptions for all join questi
         1000,
         .{ .id = 31 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     _ = try insertJoinPart(
         TestJoinKeyPart,
@@ -627,6 +648,7 @@ test "peer_join_state completeJoin sends mismatch exceptions for all join questi
         1001,
         .{ .id = 32 },
         initTestJoinState,
+        deinitTestJoinState,
     );
 
     var state = SendState.init(std.testing.allocator);
@@ -671,6 +693,7 @@ test "peer_join_state completeJoin converts send-target failures to return excep
         1100,
         .{ .id = 44 },
         initTestJoinState,
+        deinitTestJoinState,
     );
     _ = try insertJoinPart(
         TestJoinKeyPart,
@@ -684,6 +707,7 @@ test "peer_join_state completeJoin converts send-target failures to return excep
         1101,
         .{ .id = 44 },
         initTestJoinState,
+        deinitTestJoinState,
     );
 
     var state = SendState.init(std.testing.allocator);
