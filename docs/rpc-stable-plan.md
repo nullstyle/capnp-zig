@@ -1,147 +1,152 @@
 <!--
-Planned 2026-07-04. Status: PROPOSED, not started. Sequenced AFTER the L3 three-party
-origination feature (which was pulled ahead of this freeze so the freeze captures the L3
-surface). Generated via a draft(4)/judge(3)/synthesize planning pass over a scouted backlog.
+Proposed v0.3.0 sprint plan (post-L3, 2026-07-04). Supersedes the pre-L3 version of this file
+(git history has it). Reconciles the RPC-Stable freeze with the landed L3 origination surface +
+open defects. Generated via draft(3)/judge(3)/synthesize over the scouted state.
 -->
 
-# RPC Stable v0.3.0 — Final Sprint Plan
+# capnp-zig — Next Sprint Plan (post-L3): "Freeze the core, on proven ground"
 
-**Theme:** Sequence by irreversibility — land every wire-behavior change first, freeze the public surface as the keystone (api-snapshot CI gate hard-gated on the wire fixes being green), then tag Stable only once conformance and scale evidence are green. We promote exactly the surface we can stand behind, and no more.
-
----
-
-## Scope decision (settled before the sprint starts)
-
-**In:** the two irreversible surfaces — emitted wire bytes and the public API — plus the minimum evidence to defend a "production-worthy" claim.
-
-**Explicitly out, with reasons:**
-
-- **Level-3 three-party ORIGINATION** — pre-decided OUT. It is an L (~500–1000 LOC) *feature*, not a maturity gap; receive-only inbound handlers already exist. Including it would risk the freeze without making the frozen surface more trustworthy. Deferred to a future feature sprint.
-- **#3 forwarded `takeFromOtherQuestion`/`resultsSentElsewhere` intermediary degrade** (`peer_forwarded_return_logic.zig:90-100`) — proxy-topology-only, M-sized, off the default two-party critical path. It lives in a module that **stays Experimental**, so it is not covered by the freeze guarantee. Defer to v0.3.1.
-- **Cross-impl e2e as a hosted-CI lane** — ground truth: hosted runners **cannot** run the Linux-container matrix. This is an infra project, not a freeze task. We keep the local-Docker matrix as the conformance gate and **document the limitation honestly in stability.md** rather than sink sprint time on a known-infeasible spike.
-- **100/1000-peer and 100k-in-flight extreme scale** — the soak harness caps at 8 workers; lifting it to that extreme is its own scale-engineering effort. This sprint delivers a **≥100-peer baseline with percentiles + a memory-growth curve**, not a four-nines scale proof.
-- **Server-behavior knobs** (deadlines / idle-reaping / drain / backpressure / handler-abort) — already COMPLETE and wired with sensible defaults. At most a **docs/defaults-contract pass** (folded into D1), not engineering.
-- **Windows QUIC in CI** — platform-parity gap, not a Stable-blocking correctness gap. Separate track.
-- **Benchmark trend/history persistence** — V1/V2 produce committed baselines + regression gating; longitudinal dashboards are a v0.3.1 nicety.
+**Theme:** Ship the v0.3.0 Stable two-party pin that real consumers wait on — but gate the irreversible freeze keystone behind a killed-and-*proven* #55 UAF and a soaked new surface, so we freeze a sound core, not a 24-hour-old one behind a disclaimer.
 
 ---
 
-## Work items — lanes, sizes, and precedence
+## Resolved position on the fork: **FREEZE-NOW, hardened**
 
-Three lanes. **Lane V (evidence) runs in parallel from day 1** because it touches `tools/`, never the frozen surface — a scale overrun cannot squeeze the freeze. **Lane W (wire) must fully land before Lane F (freeze).** The api-snapshot gate (F4) is the point of no return and is hard-gated on W1–W3 being green.
+Two of three judges rank freeze-now first, and their core reasoning holds: serialization + the two-party Level-1 RPC core is the mature, interop-validated, soak-exercised surface **real users consume today**, and it does not depend on the fresh post-v0.2.0 pile. Holding a ready Stable pin hostage to soaking a loopback-only feature (harden-then-freeze) or perfecting a Zig↔Zig-only feature with no interop partner (complete-L3) optimizes the surface the ecosystem is *not* waiting on. Both losing forks admit their own central cost is "slip the Stable tag a full sprint."
 
-### Lane V — Evidence (parallel, starts Day 1, touches `tools/` only)
+**But Judge 3's dissent is not dismissed — it is absorbed as hard gates.** Judge 3 correctly flags that pure freeze-now stacks three irreversible-or-brand-new things in one sprint (W1's medium-blast-radius bytes, the F4 keystone, *and* a never-run allowlist-exclusion mechanism) and lets the #55 fix degrade to a band-aid. That is a real achievability-and-soundness risk. So this plan adopts freeze-now's **target** with harden-then-freeze's **irreversibility discipline**:
 
-| # | Item | Size | Notes |
-|---|------|------|-------|
-| **V1** | RPC round-trip benchmark (`bench-rpc`): p50/p99/max latency + calls/sec, wired into `bench-check` regression gating with a committed baseline | M | No RPC perf baseline exists today — benches are serialization-only (`bench-ping-pong`/`bench-packed`). **Prove the gate works by introducing an intentional local regression and confirming red** (grafted from scale-first S3). |
-| **V2** | Extend `tools/soak_rpc.zig`: emit p50/p99/max latency **and a periodic memory-growth curve** (RSS/allocator sampled over time, not just a final leak check); raise worker ceiling to **≥100 concurrent peers** + a high-in-flight mode via CLI flags | M | Today soak reports counts only, max 8 workers. **Define the pass criterion up front: "flat within allocator noise over run duration," asserted programmatically in the soak summary** (grafted from scale-first) — no eyeballing a slope. |
+1. **The #55 UAF gets a real liveness fix, proven by the exact forbidden ordering — not a fail-safe band-aid.** Judge 3's non-negotiable is right: a disclosure is not soak evidence, and error-on-freed-peer is a band-aid over a UAF, not a liveness fix. BUG55 is the first item and a hard gate on the tag.
+2. **The new surface that F4 will exclude gets *targeted* soak this sprint** (the L3/reflected/ServerSession scenarios from harden-then-freeze's H3), pointed only at proving BUG55 and exercising the excluded paths — not a full hardening detour. This buys down the "lightly-soaked pile inches from the frozen core" risk that Judge 3 called fatal, without slipping the tag.
+3. **F4 lands last and only after its allowlist exclusion is empirically proven** (throwaway-edit test green on an L3 symbol, red on a promoted symbol). The keystone never rides on an unproven boundary.
 
-### Lane W — Wire behavior (MUST land before the freeze; W1 first, alone)
-
-| # | Item | Size | File:line | Notes |
-|---|------|------|-----------|-------|
-| **W1** | **#4 reflected-loopback**: force forward mode to `yourself` when `target == .imported` in `forwardResolvedCall` (`forwardModeForSendResults`) | M | `peer_forward_orchestration.zig:37-42`; `mod.zig:2172-2229` | **Headline + single most irreversible change** — it alters emitted bytes (`takeFromOtherQuestion` → `yourself`/`resultsSentElsewhere`) and makes reflected-to direct handlers run inline. Medium blast radius (tail-call ordering). **Land first and alone**, run full soak (chaos+deadline) + local cross-impl matrix before anything stacks on it. |
-| **W2** | **#1**: echoed `Unimplemented(Disembargo)` surfaces a **connection-level error** instead of a stuck embargo | S | `bootstrap.zig:27-30`; `mod.zig:3574` | Silent hangs are exactly the wire behavior you must not freeze. |
-| **W3** | **#2**: `hasKnownDisembargoTarget` stops over-accepting export-OR-import id; accept only the correct id space | S | `mod.zig:3757` | Cheap, wire-adjacent; lands with W2 as the disembargo cluster. |
-
-### Lane F — The freeze (only after W1–W3 are green)
-
-| # | Item | Size | Notes |
-|---|------|------|-------|
-| **F1** | Narrow leaked public error sets to **named sets in `errors.zig`**: `releaseImport` (**`anyerror!void` at `mod.zig:2825`**), the `sendCall` family (inferred `!u32` at `mod.zig:1993`/`2036`/`2130`/`2175`), `Connection.init` (`connection.zig:178`) and `Connection.enableWake` (`connection.zig:218`) | M | **Pilot on single-site `releaseImport` first** to size blast radius before touching the `sendCall` family (which fans into `peer_call_sender` + callback dispatch). **KEEP `anyerror` (correct)** on user-callback typedefs: `CallBuildFn`/`QuestionCallback`/`CallHandler`/`SaveHandler`/`RestoreHandler`. |
-| **F2** | Public/test boundary: move `Peer.test_hooks` (24 methods, **`mod.zig:4429`**) and the ~104 `rpc.testing` internals **off the frozen public surface** behind an explicitly-Internal facade | M | Mechanical re-point of 38 rpc test files behind `rpc.testing`. Largest api-snapshot delta — do it first among F1–F3. CI leak-check confirms no Internal testing entry is reachable from `src/lib.zig`. |
-| **F3** | Canonicalize shape: **one** public Peer constructor + limits path (demote `initDetached`/`initDetachedWithLimits`, `mod.zig:538/548/553` — **deprecate, don't delete**); **one** primary transport-attach path (demote `attachTransport`/`attachTransportBinding`, `mod.zig:653/697/712`); give `Connection.Options` a documented `default()`/defaults contract; **wrap `SocketFd`** so raw POSIX `i32` (`runtime.zig:10`, `connection.zig:181`) is not baked into the frozen signature | M | `ClientSession.connect`/`ServerSession.accept` stay the primary consumer entry points and must compile unchanged. Downstream call-site churn (examples, e2e mains) is in-scope cleanup, **not** a surface change. |
-| **F4** | **KEYSTONE**: regenerate `docs/api-snapshot.txt`, review line-by-line, and gate CI on it — scoped to the promoted-module symbols, failing loudly only on frozen-contract deltas | S | The snapshot is **1781 lines** (small and diffable — no giant-file noise). This is the point of no return: after F4 lands, nothing in scope may alter the public surface. Turns "is it frozen?" into mechanical red/green. |
-
-### Lane E — Conformance evidence (needs W1)
-
-| # | Item | Size | Notes |
-|---|------|------|-------|
-| **E1** | Prove W1: **empirically verify go's and rust's actual failure modes in the local Docker matrix, THEN de-SKIP** the `.go` and `.rust` `resolveDisembargoSkip` arms (`e2e_runner.zig:104-105`) | M | **Critical nuance (verified in-repo):** go and rust fail *differently* — `SKIP(go-capnp-cannot-parse-takeFromOtherQuestion)` vs `SKIP(capnp-rpc-hangs-on-takeFromOtherQuestion)`. The fix must make go's direction **stop needing** `takeFromOtherQuestion`, not merely switch mode for rust. **Do not delete the skip arms on faith** — verify each direction goes green first, or document the exact remaining direction with its reason. |
-| **E2** | Add priority cross-impl scenarios to the local-Docker matrix: **basic cap-in-params both directions** + **disconnect-mid-call** | M | Named conformance-backlog gaps expressible with the existing scenario harness. Broadens what the local matrix proves before freeze. |
-
-### Lane D — Declare (strictly last)
-
-| # | Item | Size | Notes |
-|---|------|------|-------|
-| **D1** | Docs pass (server-behavior defaults contract) + flip `stability.md` RPC rows to Stable + CHANGELOG + **tag v0.3.0** | S | Only valid once F4 is frozen AND V1/V2/E1/E2 are green. Validate the tag with a real `zig fetch`. |
+**#56 is explicitly deferred.** It is L3 feature-completeness inside an Experimental, loopback-only surface — the freeze neither needs nor improves it, and all three judges agree it is the correct cut. It stays a disclosed known-limitation.
 
 ---
 
-## Sequence (with hard precedence)
+## Fate of the two L3 defects
 
-- **Phase 0 (Day 1, parallel):** Kick off **V1 + V2** in a background lane — they touch `tools/`, never the frozen surface, so they run the whole sprint without blocking. Front-loading the long-pole evidence means a bad baseline surfaces before the tag, not at it.
-- **Phase 1 — WIRE FIRST (must precede all freeze work):** **W1 → W2 → W3.** W1 is highest-risk; land it **first and alone** with full soak (chaos+deadline) + local cross-impl matrix before W2/W3 pile on. *Rationale: these three change emitted bytes; post-freeze they are breaking changes forever, so zero of them may slip past the freeze keystone.*
-- **Phase 2 — THE FREEZE (only after Phase 1 is green):** **F1 + F2 + F3** may proceed in parallel among themselves (pilot F1 on `releaseImport`; F2 goes first for the big snapshot delta), then converge into **F4**. F4 is hard-gated on W1/W2/W3 being green — this structurally prevents freezing a bug.
-- **Phase 3 — CONFORMANCE EVIDENCE:** **E1 → E2**, both after W1. E1 de-SKIPs only after empirical per-direction verification.
-- **Phase 4 — DECLARE:** **D1** strictly last, gated on F4 frozen + V1/V2/E1/E2 green.
-
-**One-line precedence rule:** *W1–W3 before F4; F4 before D1; V1/V2 parallel throughout; E1 needs W1.*
+| Defect | Fate this sprint | Why |
+|---|---|---|
+| **#55 cross-peer OutboundProvide UAF** (`mod.zig:360-395`, borrowed raw `*Peer`) | **FIXED — real liveness fix, proven.** Replace the borrowed pointer with a VatNetwork-owned coupling registry / generation-checked handle so B↔C teardown neutralizes every coupled vine on B↔A *before* any Release can dereference. Proven by a leak-checked chaos test driving the exact forbidden order (drop B↔C, then Release the vine). The `mod.zig:360-369` LIFETIME-CONSTRAINT doc is **deleted** (constraint removed, not reworded). | Project no-UAF ethos is tier-independent; a live UAF cannot sit beside a Stable tag. Judge 3's floor: the fix must be liveness, not error-on-freed-peer. Fail-safe (detect-and-error) is retained **only** as an in-sprint fallback of last resort if the registry overruns — and if invoked, the tag slips rather than shipping the band-aid as "done." |
+| **#56 introducer does not forward original parked pipelined calls** (hit rejecting vine, `rpc.capnp:898`) | **DEFERRED, disclosed.** Functional-completeness gap in Experimental L3. Stays in the CHANGELOG/known-limitations note (P4's embargo remains proven via the Accept-result pipeline, not the P-pipeline). | Freeze neither needs nor improves it; unanimous judge cut. Picked up in a future L3 feature sprint. |
 
 ---
 
-## Freeze mechanics
+## In-scope items (numbered, sized, sequenced)
 
-**Modules promoted to Stable this sprint** (in `docs/stability.md`), once F1–F4 land:
-- `wire/protocol.zig`, `wire/framing.zig`
-- `caps/table.zig`
-- `Peer` public entry points (narrowed), `Connection` (narrowed), and the `ClientSession.connect` / `ServerSession.accept` consumer surface
+Precedence notation: `→` means "must land before."
 
-**Modules that STAY Experimental** (one-line reason each in stability.md):
-- **QUIC transport** — platform-parity + Windows CI gap
-- **persistence vat-restore interface** — restore path still settling
-- **forwarded/three-party internals** — #3 proxy degrade + L3 origination out of scope; not covered by the freeze guarantee
-- **events** — names still growing
+### Phase 0 — Evidence lane (Day 1, parallel, `tools/` only)
+| # | Item | Size |
+|---|---|---|
+| **1. V1** | `bench-rpc`: p50/p99/max round-trip latency + calls/sec, wired into `bench-check` regression gating with a committed baseline. Prove the gate red on an intentional regression. | M |
+| **2. V2** | Extend `tools/soak_rpc.zig`: emit p50/p99/max latency + periodic RSS/allocator memory-growth curve asserted flat within noise; raise worker ceiling to ≥100 concurrent peers + high-in-flight mode via CLI flags. Soaks the **two-party core**. | M |
 
-**The gate:** `docs/api-snapshot.txt` (1781 lines) regenerated at F4, reviewed line-by-line, enforced by a CI diff gate scoped to promoted-module symbols. It fails on any unreviewed public-surface change to a Stable module. The error-set half of the gate: a grep of the promoted surface shows **zero `anyerror` and zero inferred error unions** except the five intentionally-kept user-callback typedefs.
+These run the whole sprint in the background so a bad baseline surfaces before the tag and never squeezes the freeze.
+
+### Phase 1 — Wire fixes + UAF (must precede ALL freeze work)
+| # | Item | Size | Precedence |
+|---|---|---|---|
+| **3. BUG55** | Kill #55 UAF with a liveness-safe coupling (registry / generation-checked handle). Delete the LIFETIME-CONSTRAINT doc. | M–L | First; gate on the tag |
+| **4. SOAK-NEW** | Point new soak scenarios at the excluded surface: L3 Provide+Accept handoff, reflected resolve/disembargo, ServerSession accept/teardown under churn — **including the exact #55 drop-B↔C-then-Release ordering**, leak-checked, to PROVE BUG55 rather than merely refactor it. (H3's mechanic, scoped to proving the excluded paths.) | M | BUG55 → SOAK-NEW |
+| **5. W1** (`#4`) | Force `forwardMode = yourself` when `target == .imported` in `forwardModeForSendResults` (`peer_forward_orchestration.zig:37-42`, `mod.zig:2172-2229`). Emits `yourself`/`resultsSentElsewhere` instead of `takeFromOtherQuestion`; unblocks go-capnp + capnp-rpc clients, retires 2 known-limitations. **Land FIRST and ALONE** in the wire lane under full soak (chaos+deadline) + local cross-impl matrix. | M | Before W2/W3 and before F4 |
+| **6. W2** (`#1`) | Echoed `Unimplemented(Disembargo)` surfaces a connection-level error instead of a stuck embargo (`bootstrap.zig:27-30`, `mod.zig:3574`). | S | With W3, before F4 |
+| **7. W3** (`#2`) | `hasKnownDisembargoTarget` accepts only the correct id space, not export-OR-import (`mod.zig:3757`). | S | With W2, before F4 |
+
+BUG55 runs in parallel with the wire lane (it touches Experimental L3, not the frozen surface). W1 lands alone because of its tail-call/ordering blast radius in `forwardResolvedCall`.
+
+### Phase 2 — The freeze (only after Phase 1 wire fixes are green)
+| # | Item | Size | Precedence |
+|---|---|---|---|
+| **8. F2** | Move `Peer.test_hooks` (24 methods, `mod.zig:4429`) + the ~104 `rpc.testing` internals off the frozen public surface behind an Internal facade. Re-point 38 rpc test files. CI leak-check confirms no Internal entry reachable from `src/lib.zig`. | M | First among F1–F3 (biggest snapshot delta) |
+| **9. F1** | Narrow leaked public error sets to named sets in `errors.zig`: `releaseImport` (`mod.zig:2825`), the four `sendCall*` entry points (`1993/2036/2130/2175`), `Connection.init` (`connection.zig:178`), `Connection.enableWake` (`connection.zig:218`). **KEEP `anyerror` on the five user-callback typedefs** (CallBuildFn/QuestionCallback/CallHandler/SaveHandler/RestoreHandler — `mod.zig:61-144`) — correctly open there. Pilot on single-site `releaseImport` to size blast radius before the `sendCall` family. | M | Parallel with F3 |
+| **10. F3** | Canonicalize shape: one public `Peer` ctor (demote `initDetached*`), one primary transport-attach (demote `attachTransport*`), `Connection.Options.default()` contract, opaque socket-handle wrapper so raw POSIX `i32`/`SocketFd` (`runtime.zig:10`, `connection.zig:181`) is not baked into the frozen signature. Deprecate-not-delete; `ClientSession.connect` / `ServerSession.accept` compile unchanged. | M | Parallel with F1 |
+| **11. F4** | **KEYSTONE — point of no return.** Regenerate `docs/api-snapshot.txt` and gate CI on it, scoped to a **promoted-symbol allowlist** (or Stable/Experimental snapshot split) that structurally EXCLUDES every fresh Experimental symbol. Because the current 1814-line snapshot interleaves the ~27–36 L3 symbol hits with the two-party core under `rpc.peer.Peer.*` and `rpc.transport.tcp.*`, a naive whole-file gate would freeze L3 by accident (forbidden). | M | Last; hard-gated on W1/W2/W3 green + BUG55 green + allowlist-exclusion proven |
+
+### Phase 3 — Conformance evidence (needs W1)
+| # | Item | Size | Precedence |
+|---|---|---|---|
+| **12. E1** | Empirically verify go's and rust's actual failure modes in the local Docker matrix after W1 (they fail *differently*: go-capnp-cannot-parse-`takeFromOtherQuestion` vs capnp-rpc-hangs), THEN de-SKIP the `.go` and `.rust` arms (`e2e_runner.zig:104-105`) per-direction-verified. Do not delete a skip arm on faith. | M | After W1 |
+| **13. E2** | Add cap-in-params (both directions) + disconnect-mid-call cross-impl scenarios to the local-Docker matrix. **First cut candidate under pressure.** | M | After E1 |
+
+### Phase 4 — Declare (strictly last)
+| # | Item | Size | Precedence |
+|---|---|---|---|
+| **14. D1** | Docs pass (server-behavior defaults contract) + flip `stability.md` two-party-core + serialization rows to **Stable**; keep L3/ServerSession/`resolvePromiseExportToImport`/VatNetwork/QUIC/persistence/forwarded-internals/events **Experimental** with one-line reasons + an explicit "lightly soaked" disclosure + hosted-CI conformance-gap disclosure. CHANGELOG + tag **v0.3.0**, validated by a real `zig fetch`. | S | After F4 frozen + V1/V2/E1 green + BUG55 green |
 
 ---
 
-## The "earn production" verification bar
+## Freeze scope (F4-enforced)
 
-The Stable/production-worthy claim is not defensible on a green compile. All three must exist and be green at tag time:
+**STABLE (frozen by the F4 api-snapshot gate):**
+- Serialization / wire already-Stable modules; `wire/protocol.zig`; `wire/framing.zig`; `caps/table.zig`
+- The **narrowed** `Peer` public two-party entry points (post-F1/F2/F3)
+- `Connection` (narrowed)
+- `ClientSession.connect` / `ServerSession.accept` **consumer entry points** — must compile unchanged
 
-1. **RPC-level performance evidence** — `bench-rpc` reports p50/p99/max round-trip latency + calls/sec against a **committed baseline**, and `bench-check` **demonstrably** fails on a regression (proven with an intentional local regression).
-2. **Scale evidence** — soak runs at **≥100 concurrent peers** + high-in-flight mode, completing **leak-clean** with the memory-growth curve **programmatically asserted flat** within allocator noise over the run.
-3. **Conformance evidence** — the local-Docker cross-impl matrix is green including **go-client AND rust-client `resolve_disembargo` de-SKIPped** (or the exact remaining direction documented with reason), plus the two new scenarios (cap-in-params both ways, disconnect-mid-call). The hosted-CI limitation is disclosed in stability.md, not papered over.
+**EXPERIMENTAL and OUTSIDE the frozen contract (F4's allowlist must exclude every one, even though several currently appear in `api-snapshot.txt`):**
+- The entire L3 origination arc: `sendProvide`, `sendAccept`, `resolvePromiseExportToThirdParty`, `sendThirdPartyAnswer`, `registerPendingThirdPartyAwait`, `setHandoffPickupHandler`, `attachVatNetwork`/`detachVatNetwork`, `ProvideHandle`, `thirdPartyHosted` emission
+- `VatNetwork` + `LoopbackVatNetwork`
+- `resolvePromiseExportToImport` (reflected-cap resolver — new, loopback + cross-impl-partial only)
+- `ServerSession` **as a type** (its `.accept` is a compiling consumer entry point; the struct/API is not frozen)
+- Pre-existing exclusions: QUIC, persistence vat-restore, forwarded/3-party internals, events
+
+**Critical F4 mechanic:** gate a promoted-symbol allowlist, not the whole file, so the excluded surface can keep evolving post-tag without a false-red gate or an accidental freeze. This re-scoping (S→M) is the one thing L3-landing genuinely forced and the deferred plan under-sized.
 
 ---
 
-## Definition of Done
+## Definition of Done (checklist)
 
-- [ ] **W1:** `forwardModeForSendResults` forces `yourself` when `target == .imported`; reflected-to direct handlers observably run inline; soak (normal+chaos+deadline) passes leak-checked with the new forward mode.
-- [ ] **W2:** an echoed `Unimplemented(Disembargo)` produces a connection-level error (asserted by a test), not a stuck/hung embargo.
-- [ ] **W3:** `hasKnownDisembargoTarget` accepts only the correct id space; a regression test proves the previously over-accepted id is now rejected.
-- [ ] **F1:** `releaseImport`, the four `sendCall*` entry points, `Connection.init`, and `Connection.enableWake` expose named (non-inferred, non-`anyerror`) error sets from `errors.zig`; the five user-callback typedefs intentionally KEEP `anyerror`; verified by api-snapshot diff.
-- [ ] **F2:** no `test_hooks` method and no `rpc.testing` internal appears in the frozen public api-snapshot; all 38 rpc test files compile/pass against the `rpc.testing` facade; CI leak-check confirms no Internal entry reachable from `src/lib.zig`.
-- [ ] **F3:** exactly one public Peer constructor and one primary transport-attach method remain non-deprecated (others are Internal/deprecated aliases, **not deleted**); `Connection.Options` has a documented `default()` contract; the frozen signature uses an opaque socket-handle wrapper, not raw `i32`/`SocketFd`; `ClientSession.connect`/`ServerSession.accept` compile unchanged.
-- [ ] **F4:** `docs/api-snapshot.txt` regenerated, reviewed, enforced by a CI diff gate that fails on any unreviewed Stable-module public-surface change.
-- [ ] **V1:** `zig build` exposes `bench-rpc` (p50/p99/max + calls/sec); committed baseline exists; `bench-check` demonstrated red on an intentional regression.
-- [ ] **V2:** `soak_rpc.zig` reports latency percentiles + a memory-growth curve; runs at ≥100 concurrent peers leak-clean; flat-memory pass criterion asserted programmatically.
-- [ ] **E1:** go-client AND rust-client `resolve_disembargo` directions de-SKIPped and green (or the exact remaining direction documented); cpp + python directions remain green (no regression).
-- [ ] **E2:** local-Docker matrix passes cap-in-params both directions + disconnect-mid-call.
-- [ ] **D1:** `stability.md` marks the promoted RPC modules Stable (with the four Experimental exclusions + one-line reasons + the hosted-CI conformance-gap disclosure); server-behavior defaults contract documented; CHANGELOG updated; **v0.3.0 tagged and validated by a real `zig fetch`**.
-- [ ] Whole sprint: `zig build test --summary all`, hardening/honesty gates, soak, bench-check, and the api-snapshot CI gate all green at the tagged commit on Linux+macOS+Windows tiers.
+- [ ] **BUG55**: `OutboundProvide` no longer holds a borrowed raw `*Peer`; coupling survives arbitrary per-connection teardown order; LIFETIME-CONSTRAINT doc deleted. Chaos test drives drop-B↔C-then-Release-vine and passes leak/UAF-clean under the sanitizer/GPA. L3 stays Experimental.
+- [ ] **SOAK-NEW**: soak scenarios exercise L3 handoff, reflected resolve/disembargo, ServerSession teardown under churn — including the #55 ordering — leak-clean.
+- [ ] **W1**: `forwardModeForSendResults` forces `yourself` when `target == .imported`; reflected-to-direct handlers observably run inline; soak (normal+chaos+deadline) passes leak-checked with the new mode.
+- [ ] **W2**: an echoed `Unimplemented(Disembargo)` produces a connection-level error (asserted), not a stuck embargo.
+- [ ] **W3**: `hasKnownDisembargoTarget` accepts only the correct id space; regression test proves the previously over-accepted id is now rejected.
+- [ ] **F1**: the six entry points expose named (non-inferred, non-`anyerror`) error sets; the five callback typedefs intentionally KEEP `anyerror`; verified by api-snapshot diff.
+- [ ] **F2**: no `test_hooks` method / `rpc.testing` internal in the frozen snapshot; all 38 rpc test files pass against the facade; CI leak-check confirms no Internal entry reachable from `src/lib.zig`.
+- [ ] **F3**: exactly one non-deprecated public `Peer` ctor + one primary transport-attach remain (others Internal/deprecated aliases, not deleted); `Connection.Options.default()` documented; frozen signature uses an opaque socket-handle wrapper, not raw `i32`/`SocketFd`; `ClientSession.connect`/`ServerSession.accept` compile unchanged.
+- [ ] **F4**: `api-snapshot.txt` regenerated; CI diff gate fails on any unreviewed Stable-module change; **exclusion PROVEN** — a throwaway param on an L3/`resolvePromiseExportToImport`/`ServerSession`-type/VatNetwork symbol keeps the gate GREEN, while a change to a promoted `Peer` entry point goes RED.
+- [ ] **V1**: `bench-rpc` exposes p50/p99/max + calls/sec; committed baseline; `bench-check` demonstrated red on an intentional regression.
+- [ ] **V2**: `soak_rpc.zig` reports latency percentiles + memory-growth curve; runs at ≥100 concurrent peers leak-clean; flat-memory pass criterion asserted programmatically.
+- [ ] **E1**: go-client AND rust-client `resolve_disembargo` directions de-SKIPped and green, or the exact remaining direction documented with reason; cpp + python remain green.
+- [ ] **E2** (if not cut): local-Docker matrix passes cap-in-params both directions + disconnect-mid-call.
+- [ ] **D1**: `stability.md` marks promoted two-party-core + serialization rows Stable, keeps the fresh surface Experimental with one-line reasons + lightly-soaked + conformance-gap disclosures; CHANGELOG updated; **v0.3.0 tagged and validated by a real `zig fetch`**.
+- [ ] **Whole sprint**: `zig build test --summary all`, hardening/honesty gates, soak, `bench-check`, and the api-snapshot CI gate all green at the tagged commit on Linux + macOS + Windows tiers; BUG55 fixed with a liveness fix (not the fail-safe floor) at that commit.
 
 ---
 
 ## Top 5 risks + mitigations
 
-1. **W1 medium blast radius** (tail-call/ordering assumptions in `forwardResolvedCall`) could regress currently-passing e2e directions. → Land it **first and alone**; gate on full soak (chaos+deadline) + the full local cross-impl matrix (cpp/go/python/rust) before any freeze work stacks on it. Better to discover instability while the surface is still unfrozen. The freeze does not structurally depend on W1 landing perfectly — if it destabilizes, scope it to the un-SKIP-critical path.
-2. **Freezing a bug** — if F4 lands before all wire fixes, W2/W3 become permanent breaking changes. → **Hard precedence: F4 is gated on W1/W2/W3 green.** The sequence enforces it; the api-snapshot gate makes it mechanical, not a judgment call.
-3. **The one #4 fix may not un-SKIP both go and rust** — they fail *differently* (`e2e_runner.zig:104-105`: go can't parse the return type at all; rust hangs). → **E1 empirically verifies each direction in Phase 3 before deleting either skip arm.** If go needs more than the mode flip, it's a scoped follow-up inside Phase 1/3, not a silent re-SKIP or a red matrix blocking the tag.
-4. **Scale-up (V2 ≥100 peers) surfaces latent bugs** (fd/thread exhaustion, contention, memory growth) as unbudgeted work right before the freeze. → Treat found bugs as **evidence wins**; time-box fixes; defer non-blocking ones to v0.3.1. V2 runs in the parallel lane from Day 1 so overrun cannot squeeze F1–F4.
-5. **13 items is a heavy sprint** → the explicit **cut order** below protects the non-negotiable core (W1 + F1–F4) and sacrifices only reversible evidence-breadth.
+1. **F4 re-scoping is the riskiest single item — the deferred plan under-sized it.** The snapshot interleaves L3 with the two-party core; a naive whole-file gate freezes L3 by accident or goes falsely red whenever L3 evolves. → **Mitigation:** build the promoted-symbol allowlist (or two-tier snapshot split) and PROVE the exclusion with the throwaway-edit test in F4's DoD before D1. F4 is the *last* keystone item, never stacked with unproven boundaries.
+
+2. **BUG55 could balloon into an invasive registry rework, and the band-aid is tempting under schedule pressure** (Judge 3's fatal-flaw vector). → **Mitigation:** BUG55 is the *first* item with the whole sprint to absorb it. The liveness fix is the DoD; the detect-and-error fail-safe is a last-resort in-sprint fallback only — **if it is invoked, the tag slips rather than shipping a UAF-band-aid as "Stable-adjacent done."** SOAK-NEW's forbidden-ordering test is the acceptance proof, not a refactor claim.
+
+3. **Freezing a Stable tag beside a lightly-soaked Experimental pile** (freeze-now's central downside; Judge 3 called it fatal). → **Mitigation:** two-pronged — (a) SOAK-NEW gives the excluded surface *targeted* soak this sprint (not just disclosure), buying down the "zero soak history" objection; (b) F4's allowlist structurally holds it out of the frozen contract and `stability.md` discloses it as lightly soaked. Residual: a consumer trusts the "v0.3.0 Stable" headline and leans on Experimental L3 anyway — accepted, because the core's trustworthiness does not depend on the pile.
+
+4. **W1's medium blast radius (tail-call/ordering in `forwardResolvedCall`) could regress passing e2e directions, and may not un-SKIP both go and rust** (they fail differently). → **Mitigation:** land W1 first and ALONE under full soak (chaos+deadline) + local cross-impl matrix before any freeze work stacks; E1 empirically verifies each direction before deleting a skip arm; the freeze does not structurally depend on W1 landing perfectly.
+
+5. **Freezing a bug: if F4 landed before W1–W3, W2/W3 become permanent breaking changes.** → **Mitigation:** hard precedence — F4 is gated on W1/W2/W3 green. The sequence makes it mechanical, not a judgment call. Heavy sprint (14 items) is the meta-risk; the cut order below protects the load-bearing set.
 
 ---
 
-## Cut order if the sprint tightens (honest triage)
+## Cut order (if it tightens)
 
-Cut in this order, top-first. **Never cut W1 or F1–F4** — the headline wire fix and the freeze surface are the sprint's reason to exist.
+Cut from the top down; **never** cut the protected set.
 
-1. **E2 disconnect-mid-call** (keep cap-in-params + the disembargo de-SKIP).
-2. **V2's ≥100-peer concurrency stretch** — keep percentiles + memory-growth curve at the current worker count; the subset still backs the claim honestly.
-3. **W3** — the smallest wire fix — **IF AND ONLY IF F4 has not yet cut.** Once the api-snapshot gate lands, W3 becomes a breaking change and **MUST stay in**. This conditional is the sharpest triage rule in the plan: reversibility flips the moment the freeze keystone lands.
+1. **E2** (disconnect-mid-call cross-impl scenarios) — first cut; broadens the matrix but not load-bearing for the freeze.
+2. **V2's ≥100-peer stretch** — keep percentiles + memory curve at the current worker count; drop only the ceiling raise.
+3. **W3** — ONLY IF F4 has not yet cut (dropping W3 after F4 freezes would strand an id-space bug behind the gate).
+4. **SOAK-NEW's breadth** — keep the #55 forbidden-ordering scenario (it proves BUG55); shed the ServerSession/reflected churn scenarios if truly cornered.
 
-Non-negotiable core that ships even under maximum pressure: **W1 + F1 + F2 + F3 + F4 + D1** — a real, if narrower, Stable cut, with any deferred evidence disclosed honestly in the release notes rather than papered over.
+**NEVER CUT:** W1, F1, F2, F3, F4, BUG55, D1. These are the freeze and its non-negotiable hygiene.
+
+---
+
+## If, despite this, the tag slips
+
+The only conditions that force a slip past v0.3.0: BUG55 lands only as the fail-safe band-aid (not a liveness fix), or F4's allowlist exclusion cannot be proven green. **What unblocks the next sprint:** a completed liveness fix for #55 with the forbidden-ordering test passing, plus a proven F4 allowlist. Everything else (W1–W3, F1–F3, V1/V2, E1) is designed to already be green by then — so a slip is a one-item finish, not a re-plan.
+
+---
+
+**Relevant files cited:** `src/rpc/peer/mod.zig` (`:360-395` #55, `:2172-2229`/`peer_forward_orchestration.zig:37-42` W1, `:3574` W2, `:3757` W3, `:2825`+`:1993/2036/2130/2175` F1, `:61-144` callback typedefs, `:4429` test_hooks), `src/rpc/transport/connection.zig` (`:178/:181/:218` F1/F3), `src/rpc/.../runtime.zig:10` (SocketFd F3), `tests/e2e/.../e2e_runner.zig:104-105` (E1), `tools/soak_rpc.zig` (V2/SOAK-NEW), `docs/api-snapshot.txt` (F4), `docs/stability.md` (D1), `docs/rpc-stable-plan.md` (the deferred plan this reconciles).
