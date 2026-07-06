@@ -1,16 +1,19 @@
 # RPC L4 Join Readiness
 
-Status: Experimental, Zig↔Zig JoinResult runtime pilot with addressed-registry
-TCP proof, transparent proxy relay, raw origination, and receive-side readiness.
+Status: Experimental, Zig↔Zig JoinResult runtime pilot with addressed
+registry/connector proof, transparent proxy relay, raw origination, and
+receive-side readiness.
 
 `capnp-zig` has a guarded slice of Cap'n Proto RPC Level 4 `Join`: inbound
 Join state handling, a low-level Experimental sender for raw Join parts, and a
 Zig-only `JoinResult` → direct `Accept` runtime path behind an Experimental
 `JoinNetwork` seam. Transparent cross-peer proxy exports can now relay Join
 requests to their source peer and hold the downstream JoinResult lifetime until
-the upstream caller sends Finish. This is not a complete L4 implementation and
-is not part of the Stable surface. It exists to keep the provide/join state
-model correct while L3 handoff grows toward cross-implementation use.
+the upstream caller sends Finish. The addressed pilot can resolve an already
+registered direct peer or call an application-supplied connector for the opaque
+address in the provision token. This is not a complete L4 implementation and is
+not part of the Stable surface. It exists to keep the provide/join state model
+correct while L3 handoff grows toward cross-implementation use.
 
 ## What Exists
 
@@ -27,9 +30,12 @@ model correct while L3 handoff grows toward cross-implementation use.
   joiner's direct peer and an opaque `Accept.provision` payload.
 - `rpc.vat.join.AddressedJoinNetwork` is an Experimental addressed-registry
   implementation for the Zig pilot. Callers register a host peer with an opaque
-  application address and an already-live direct peer. The generated provision
-  token carries that address plus a nonce; it is still a registry proof, not a
-  production dialer or stable address format.
+  application address and an already-live direct peer. Joiners can also install
+  `setAddressConnector()` so unknown addressed provisions are parsed, resolved
+  by the application connector, cached for the lifetime of returned `Joined`
+  handles, and drained when those handles are released. The generated provision
+  token carries that address plus a nonce; it is still a registry/connector
+  proof, not a bundled production dialer or stable address format.
 - `Peer.handleJoin` accepts inbound `Join` messages and resolves their
   `target` through the same target machinery used by `Provide`.
 - Join parts are collected in `pending_joins`, with question-to-part back-links
@@ -148,8 +154,10 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 
 Focused `rpc.vat.join` regressions cover the addressed registry itself:
 unknown direct peers, unknown/stale provisions, duplicate provision rollback,
-direct-peer removal, successful JoinResult resolution, and host-side OOM
-rollback.
+direct-peer removal, successful JoinResult resolution, connector resolution
+with shared-cache lease cleanup, malformed connector tokens that do not dial,
+network teardown before `Joined` release, connector-path allocation rollback
+before dialing, and host-side OOM rollback.
 
 The shared L3/L4 test harness now includes assertions for drained provide,
 join, Join relay, JoinResult accept-host back-link, pending direct-accept,
@@ -160,7 +168,8 @@ current addressed JoinResult→Accept path. The client obtains the server
 bootstrap cap over a real `ClientSession`/`ServerSession`, sends two Join parts,
 resolves two JoinResults through `AddressedJoinNetwork`, sends the direct
 Accept, calls the accepted cap, and verifies the addressed provision registry
-drains.
+drains. The e2e gate uses pre-registered direct peers; the connector path is
+covered by focused unit/OOM regressions.
 
 `just e2e-l3-cpp` adds cross-implementation recon checks for the `JoinKeyPart`
 and `JoinResult` shapes plus a source-backed C++ runtime-surface probe. The
@@ -180,20 +189,21 @@ dispatch for `Message_Which_join`.
 
 - No Stable or high-level `Peer.sendJoin` API.
 - No production Join addressing policy. `LoopbackJoinNetwork` is test-local and
-  `AddressedJoinNetwork` is an Experimental registry proof; applications still
-  need their own network-specific key/result policy and dialer.
-- No bundled multi-peer/direct transport dialer for Join. The current Zig proof
-  resolves to already-live peers registered with a JoinNetwork implementation.
+  `AddressedJoinNetwork` is an Experimental registry/connector proof;
+  applications still need their own network-specific key/result policy.
+- No bundled multi-peer/direct transport dialer for Join. The connector hook can
+  call application transport code, but capnp-zig does not own the dial,
+  authenticate the address, or define the address format.
 - No multi-hop Join relay beyond transparent cross-peer proxy exports.
 - No cross-implementation L4 runtime interop.
 
 ## Next Work
 
-The next L4 step is runtime expansion beyond the current addressed registry and
-transparent proxy relay: either a production Join addressing policy/direct
-connection dialer for Zig deployments, or a real `Join` exchange against an
-implementation with usable Join hooks. If the C++ reference stack grows callable
-generic Join hooks, `just e2e-l3-cpp` should fail its source probe and force this
-document to move from blocker recon to runtime interop work. Until that exists,
-keep L4 documented as an Experimental Zig↔Zig runtime pilot, not
-cross-implementation runtime interop.
+The next L4 step is runtime expansion beyond the current addressed
+registry/connector and transparent proxy relay: either a production Join
+addressing policy/direct connection dialer for Zig deployments, or a real
+`Join` exchange against an implementation with usable Join hooks. If the C++
+reference stack grows callable generic Join hooks, `just e2e-l3-cpp` should fail
+its source probe and force this document to move from blocker recon to runtime
+interop work. Until that exists, keep L4 documented as an Experimental Zig↔Zig
+runtime pilot, not cross-implementation runtime interop.

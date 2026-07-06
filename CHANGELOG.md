@@ -68,14 +68,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Experimental RPC Level-4 addressed Join pilot over real TCP.** The L4
   `JoinNetwork` seam now has an Experimental `AddressedJoinNetwork` registry
   that requires callers to associate each host peer with an opaque application
-  address and already-live direct peer. The generated provision token carries
-  that address plus a nonce, letting the Zig pilot exercise a non-loopback
-  addressing policy without claiming a production dialer. New regressions cover
-  unknown/stale provisions, duplicate provision rollback, direct-peer removal,
-  and OOM rollback. `just e2e-l4-zig` now runs a standalone Zig↔Zig loopback TCP
-  scenario that bootstraps a hosted Number cap, originates two Join parts,
-  consumes JoinResult payloads, sends the direct Accept, invokes the accepted
-  cap, and verifies the addressed registry drains.
+  address and direct-peer policy. Joiners first resolve already-live registry
+  entries and can now install an application connector that parses unknown
+  addressed provisions, dials/resolves the address out of band, caches the
+  direct peer for returned `Joined` handles, and drains that cache when the
+  handles are released. The generated provision token carries the app address
+  plus a nonce, letting the Zig pilot exercise a non-loopback addressing policy
+  without claiming a bundled production dialer or stable address format. New
+  regressions cover unknown/stale provisions, duplicate provision rollback,
+  direct-peer removal, connector malformed-token/no-dial handling, shared-cache
+  lease cleanup, network teardown before returned `Joined` release, and OOM
+  rollback before connector dialing. `just e2e-l4-zig` now runs a standalone
+  Zig↔Zig loopback TCP scenario that bootstraps a hosted Number cap, originates
+  two Join parts, consumes JoinResult payloads, sends the direct Accept, invokes
+  the accepted cap, and verifies the addressed registry drains.
 
 - **Experimental RPC Level-4 Go recon expanded.** `just e2e-l3-go` now also
   checks the vendored Go L4 source surface: generated `rpc.capnp` bindings expose

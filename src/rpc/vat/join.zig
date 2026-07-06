@@ -33,8 +33,16 @@ pub fn Joined(comptime PeerType: type) type {
         peer: *PeerType,
         /// Serialized AnyPointer message to present as `Accept.provision`.
         provision: []u8,
+        /// Optional network-owned cleanup for JoinResult resolution caches.
+        release_ctx: ?*anyopaque = null,
+        release_provision: ?*const fn (*anyopaque, []const u8) void = null,
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            if (self.release_provision) |release_fn| {
+                if (self.release_ctx) |ctx| release_fn(ctx, self.provision);
+                self.release_provision = null;
+                self.release_ctx = null;
+            }
             allocator.free(self.provision);
         }
     };
@@ -271,22 +279,29 @@ pub fn LoopbackJoinNetwork(comptime PeerType: type) type {
 /// Experimental app-supplied Join addressing registry.
 ///
 /// Unlike `LoopbackJoinNetwork`, this helper requires callers to associate each
-/// host peer with an opaque application address. The current Zig runtime still
-/// resolves `JoinResult` to already-live direct peers supplied by the app; the
-/// address is carried in the generated provision token so e2e tests can exercise
-/// a non-loopback addressing policy without claiming a production dialer.
+/// host peer with an opaque application address. Joiners resolve `JoinResult`
+/// payloads through already-live registry entries first, or through an optional
+/// application connector that turns the address into a direct peer. The helper
+/// still does not define a production address format or own a transport dialer.
 pub fn AddressedJoinNetwork(comptime PeerType: type) type {
     return struct {
         const Self = @This();
         pub const Net = JoinNetwork(PeerType);
         pub const JoinedType = Joined(PeerType);
+        pub const ConnectAddressFn = *const fn (
+            ctx: *anyopaque,
+            address: []const u8,
+        ) anyerror!*PeerType;
 
         allocator: std.mem.Allocator,
         next_nonce: u64 = 1,
         direct_peers: std.AutoHashMap(*PeerType, DirectPeer),
-        registry: std.StringHashMap(*PeerType),
+        registry: std.StringHashMap(RegistryEntry),
+        connect_ctx: ?*anyopaque = null,
+        connect_address: ?ConnectAddressFn = null,
 
         const provision_prefix = "capnp-zig:l4:join:";
+        const nonce_len = 16;
 
         const DirectPeer = struct {
             joiner_peer: *PeerType,
@@ -294,17 +309,35 @@ pub fn AddressedJoinNetwork(comptime PeerType: type) type {
             address: []u8,
         };
 
+        const RegistryEntry = struct {
+            peer: *PeerType,
+            source: enum { hosted_result, connected_result },
+            connected_state: ?*ConnectedProvisionState = null,
+        };
+
+        const ConnectedProvisionState = struct {
+            allocator: std.mem.Allocator,
+            network: ?*Self,
+            leases: usize,
+        };
+
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
                 .direct_peers = std.AutoHashMap(*PeerType, DirectPeer).init(allocator),
-                .registry = std.StringHashMap(*PeerType).init(allocator),
+                .registry = std.StringHashMap(RegistryEntry).init(allocator),
             };
         }
 
         pub fn deinit(self: *Self) void {
-            var registry_it = self.registry.keyIterator();
-            while (registry_it.next()) |key| self.allocator.free(key.*);
+            var registry_it = self.registry.iterator();
+            while (registry_it.next()) |entry| {
+                if (entry.value_ptr.connected_state) |state| {
+                    state.network = null;
+                    if (state.leases == 0) state.allocator.destroy(state);
+                }
+                self.allocator.free(entry.key_ptr.*);
+            }
             self.registry.deinit();
 
             var direct_it = self.direct_peers.valueIterator();
@@ -314,6 +347,24 @@ pub fn AddressedJoinNetwork(comptime PeerType: type) type {
 
         pub fn network(self: *Self) Net {
             return Net.init(self, hostJoinResult, connectJoined, cancelHostJoinResult);
+        }
+
+        /// Install an application connector used by `connectJoined()` when the
+        /// provision token names an address not already present in the local
+        /// registry. The connector owns the returned peer's lifetime and must
+        /// keep it live at least until the returned `Joined` is deinitialized.
+        pub fn setAddressConnector(
+            self: *Self,
+            ctx: *anyopaque,
+            connect_address: ConnectAddressFn,
+        ) void {
+            self.connect_ctx = ctx;
+            self.connect_address = connect_address;
+        }
+
+        pub fn clearAddressConnector(self: *Self) void {
+            self.connect_ctx = null;
+            self.connect_address = null;
         }
 
         pub fn registerDirectPeer(
@@ -373,7 +424,7 @@ pub fn AddressedJoinNetwork(comptime PeerType: type) type {
             const gop = try self.registry.getOrPut(registry_key);
             if (gop.found_existing) return error.DuplicateJoinProvision;
             registry_inserted = true;
-            gop.value_ptr.* = direct.joiner_peer;
+            gop.value_ptr.* = .{ .peer = direct.joiner_peer, .source = .hosted_result };
 
             const result = try encodeJoinResult(self.allocator, join_id, true, provision);
             errdefer self.allocator.free(result);
@@ -389,19 +440,106 @@ pub fn AddressedJoinNetwork(comptime PeerType: type) type {
             const self: *Self = @ptrCast(@alignCast(ctx));
             const decoded = try decodeJoinResult(result);
             if (!decoded.succeeded) return error.JoinResultFailed;
-            const direct_peer = self.registry.get(decoded.provision) orelse return error.UnknownJoinProvision;
-            const provision = try self.allocator.dupe(u8, decoded.provision);
+            if (self.registry.getPtr(decoded.provision)) |entry| {
+                const provision = try self.allocator.dupe(u8, decoded.provision);
+                var release_state: ?*ConnectedProvisionState = null;
+                if (entry.source == .connected_result) {
+                    release_state = entry.connected_state orelse return error.InvalidJoinProvision;
+                }
+                if (release_state) |state| state.leases += 1;
+                return .{
+                    .peer = entry.peer,
+                    .provision = provision,
+                    .release_ctx = if (release_state) |state| @ptrCast(state) else null,
+                    .release_provision = if (release_state != null) releaseJoinedProvision else null,
+                };
+            }
+            return try self.connectAddressedProvision(decoded.provision);
+        }
+
+        fn connectAddressedProvision(self: *Self, provision_bytes: []const u8) anyerror!JoinedType {
+            const connect = self.connect_address orelse return error.UnknownJoinProvision;
+            const connect_ctx = self.connect_ctx orelse return error.UnknownJoinProvision;
+
+            const registry_key = try self.allocator.dupe(u8, provision_bytes);
+            var registry_key_owned = true;
+            errdefer if (registry_key_owned) self.allocator.free(registry_key);
+            const joined_provision = try self.allocator.dupe(u8, provision_bytes);
+            errdefer self.allocator.free(joined_provision);
+            const connected_state = try self.allocator.create(ConnectedProvisionState);
+            var connected_state_owned = true;
+            errdefer if (connected_state_owned) self.allocator.destroy(connected_state);
+            connected_state.* = .{
+                .allocator = self.allocator,
+                .network = self,
+                .leases = 1,
+            };
+
+            try self.registry.ensureUnusedCapacity(1);
+
+            var provision_msg = try message.Message.init(self.allocator, provision_bytes, .{});
+            defer provision_msg.deinit();
+            const token = (try provision_msg.getRootAnyPointer()).getData() catch return error.InvalidJoinProvision;
+            const address = parseAddressedProvisionToken(token) catch return error.InvalidJoinProvision;
+
+            const peer = try connect(connect_ctx, address);
+            const gop = self.registry.getOrPutAssumeCapacity(registry_key);
+            var release_state: ?*ConnectedProvisionState = connected_state;
+            if (gop.found_existing) {
+                self.allocator.free(registry_key);
+                registry_key_owned = false;
+                self.allocator.destroy(connected_state);
+                connected_state_owned = false;
+                release_state = null;
+                if (gop.value_ptr.source == .connected_result) {
+                    release_state = gop.value_ptr.connected_state orelse return error.InvalidJoinProvision;
+                }
+                if (release_state) |state| state.leases += 1;
+            } else {
+                registry_key_owned = false;
+                connected_state_owned = false;
+                gop.value_ptr.* = .{
+                    .peer = peer,
+                    .source = .connected_result,
+                    .connected_state = connected_state,
+                };
+            }
+
             return .{
-                .peer = direct_peer,
-                .provision = provision,
+                .peer = gop.value_ptr.*.peer,
+                .provision = joined_provision,
+                .release_ctx = if (release_state) |state| @ptrCast(state) else null,
+                .release_provision = if (release_state != null) releaseJoinedProvision else null,
             };
         }
 
         fn cancelHostJoinResult(ctx: *anyopaque, provision: []const u8) void {
             const self: *Self = @ptrCast(@alignCast(ctx));
+            const entry = self.registry.get(provision) orelse return;
+            if (entry.source != .hosted_result) return;
             if (self.registry.fetchRemove(provision)) |removed| {
                 self.allocator.free(removed.key);
             }
+        }
+
+        fn releaseJoinedProvision(ctx: *anyopaque, provision: []const u8) void {
+            const state: *ConnectedProvisionState = @ptrCast(@alignCast(ctx));
+            std.debug.assert(state.leases > 0);
+            state.leases -= 1;
+            if (state.leases != 0) return;
+
+            if (state.network) |owner_network| {
+                if (owner_network.registry.get(provision)) |entry| {
+                    if (entry.connected_state == state) {
+                        if (owner_network.registry.fetchRemove(provision)) |removed| {
+                            owner_network.allocator.free(removed.key);
+                        }
+                    }
+                }
+            }
+
+            state.network = null;
+            state.allocator.destroy(state);
         }
 
         fn buildProvisionToken(self: *Self, address: []const u8, join_id: u32) ![]u8 {
@@ -417,6 +555,15 @@ pub fn AddressedJoinNetwork(comptime PeerType: type) type {
             self.next_nonce +%= 1;
             try token.appendSlice(self.allocator, &nonce_buf);
             return token.toOwnedSlice(self.allocator);
+        }
+
+        fn parseAddressedProvisionToken(token: []const u8) ![]const u8 {
+            if (!std.mem.startsWith(u8, token, provision_prefix)) return error.InvalidJoinProvision;
+            const rest = token[provision_prefix.len..];
+            const nul = std.mem.indexOfScalar(u8, rest, 0) orelse return error.InvalidJoinProvision;
+            if (nul == 0) return error.InvalidJoinProvision;
+            if (rest.len != nul + 1 + nonce_len) return error.InvalidJoinProvision;
+            return rest[0..nul];
         }
     };
 }
@@ -509,6 +656,123 @@ test "AddressedJoinNetwork detects duplicate provisions without losing the origi
     try std.testing.expectEqual(&joiner, joined.peer);
 }
 
+test "AddressedJoinNetwork connector resolves and drains JoinResult cache" {
+    const DummyPeer = struct {};
+    const DialCtx = struct {
+        peer: *DummyPeer,
+        calls: usize = 0,
+
+        fn connect(ctx_ptr: *anyopaque, address: []const u8) anyerror!*DummyPeer {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try std.testing.expectEqualStrings("tcp://127.0.0.1:4710", address);
+            self.calls += 1;
+            return self.peer;
+        }
+    };
+
+    var host = DummyPeer{};
+    var host_to_joiner = DummyPeer{};
+    var dialed_peer = DummyPeer{};
+
+    var host_net = AddressedJoinNetwork(DummyPeer).init(std.testing.allocator);
+    defer host_net.deinit();
+    try host_net.registerDirectPeer(&host, &host_to_joiner, "tcp://127.0.0.1:4710");
+    var hosted = try host_net.network().hostJoinResult(&host, 0x99);
+    defer hosted.deinit(std.testing.allocator);
+
+    var joiner_net = AddressedJoinNetwork(DummyPeer).init(std.testing.allocator);
+    defer joiner_net.deinit();
+    var dial = DialCtx{ .peer = &dialed_peer };
+    joiner_net.setAddressConnector(&dial, DialCtx.connect);
+
+    var result_msg = try message.Message.init(std.testing.allocator, hosted.result, .{});
+    defer result_msg.deinit();
+    const result = try result_msg.getRootAnyPointer();
+
+    var joined0 = try joiner_net.network().connectJoined(result);
+    var joined1 = try joiner_net.network().connectJoined(result);
+
+    try std.testing.expectEqual(@as(usize, 1), dial.calls);
+    try std.testing.expectEqual(&dialed_peer, joined0.peer);
+    try std.testing.expectEqual(&dialed_peer, joined1.peer);
+    try std.testing.expectEqual(@as(usize, 1), joiner_net.registry.count());
+
+    joined0.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), joiner_net.registry.count());
+    joined1.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), joiner_net.registry.count());
+}
+
+test "AddressedJoinNetwork connector lease survives network teardown" {
+    const DummyPeer = struct {};
+    const DialCtx = struct {
+        peer: *DummyPeer,
+
+        fn connect(ctx_ptr: *anyopaque, address: []const u8) anyerror!*DummyPeer {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try std.testing.expectEqualStrings("tcp://127.0.0.1:4712", address);
+            return self.peer;
+        }
+    };
+
+    var host = DummyPeer{};
+    var host_to_joiner = DummyPeer{};
+    var dialed_peer = DummyPeer{};
+
+    var host_net = AddressedJoinNetwork(DummyPeer).init(std.testing.allocator);
+    defer host_net.deinit();
+    try host_net.registerDirectPeer(&host, &host_to_joiner, "tcp://127.0.0.1:4712");
+    var hosted = try host_net.network().hostJoinResult(&host, 0xa2);
+    defer hosted.deinit(std.testing.allocator);
+
+    var result_msg = try message.Message.init(std.testing.allocator, hosted.result, .{});
+    defer result_msg.deinit();
+    const result = try result_msg.getRootAnyPointer();
+
+    var joined = joined: {
+        var joiner_net = AddressedJoinNetwork(DummyPeer).init(std.testing.allocator);
+        defer joiner_net.deinit();
+        var dial = DialCtx{ .peer = &dialed_peer };
+        joiner_net.setAddressConnector(&dial, DialCtx.connect);
+        const resolved = try joiner_net.network().connectJoined(result);
+        try std.testing.expectEqual(@as(usize, 1), joiner_net.registry.count());
+        break :joined resolved;
+    };
+    defer joined.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(&dialed_peer, joined.peer);
+}
+
+test "AddressedJoinNetwork connector rejects malformed provision tokens" {
+    const DummyPeer = struct {};
+    const DialCtx = struct {
+        calls: usize = 0,
+
+        fn connect(ctx_ptr: *anyopaque, _: []const u8) anyerror!*DummyPeer {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            self.calls += 1;
+            return error.UnexpectedConnect;
+        }
+    };
+
+    const bad_provision = try l3_network.encodeNonceToken(std.testing.allocator, "not-an-addressed-token");
+    defer std.testing.allocator.free(bad_provision);
+    const bad_result = try encodeJoinResult(std.testing.allocator, 0xa0, true, bad_provision);
+    defer std.testing.allocator.free(bad_result);
+
+    var result_msg = try message.Message.init(std.testing.allocator, bad_result, .{});
+    defer result_msg.deinit();
+
+    var network = AddressedJoinNetwork(DummyPeer).init(std.testing.allocator);
+    defer network.deinit();
+    var dial = DialCtx{};
+    network.setAddressConnector(&dial, DialCtx.connect);
+
+    try std.testing.expectError(error.InvalidJoinProvision, network.network().connectJoined(try result_msg.getRootAnyPointer()));
+    try std.testing.expectEqual(@as(usize, 0), dial.calls);
+    try std.testing.expectEqual(@as(usize, 0), network.registry.count());
+}
+
 fn addressedJoinResultOomImpl(allocator: std.mem.Allocator) !void {
     const DummyPeer = struct {};
 
@@ -529,4 +793,46 @@ fn addressedJoinResultOomImpl(allocator: std.mem.Allocator) !void {
 
 test "AddressedJoinNetwork hostJoinResult rolls back registry under OOM" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, addressedJoinResultOomImpl, .{});
+}
+
+fn addressedJoinConnectorOomImpl(allocator: std.mem.Allocator) !void {
+    const DummyPeer = struct {};
+    const DialCtx = struct {
+        peer: *DummyPeer,
+        calls: usize = 0,
+
+        fn connect(ctx_ptr: *anyopaque, address: []const u8) anyerror!*DummyPeer {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try std.testing.expectEqualStrings("tcp://127.0.0.1:4711", address);
+            self.calls += 1;
+            return self.peer;
+        }
+    };
+
+    var host = DummyPeer{};
+    var host_to_joiner = DummyPeer{};
+    var dialed_peer = DummyPeer{};
+
+    var host_net = AddressedJoinNetwork(DummyPeer).init(allocator);
+    defer host_net.deinit();
+    try host_net.registerDirectPeer(&host, &host_to_joiner, "tcp://127.0.0.1:4711");
+    var hosted = try host_net.network().hostJoinResult(&host, 0xa1);
+    defer hosted.deinit(allocator);
+
+    var joiner_net = AddressedJoinNetwork(DummyPeer).init(allocator);
+    defer joiner_net.deinit();
+    var dial = DialCtx{ .peer = &dialed_peer };
+    joiner_net.setAddressConnector(&dial, DialCtx.connect);
+
+    var result_msg = try message.Message.init(allocator, hosted.result, .{});
+    defer result_msg.deinit();
+
+    var joined = try joiner_net.network().connectJoined(try result_msg.getRootAnyPointer());
+    defer joined.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), dial.calls);
+    try std.testing.expectEqual(@as(usize, 1), joiner_net.registry.count());
+}
+
+test "AddressedJoinNetwork connector path does not dial before rollback-safe allocations" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, addressedJoinConnectorOomImpl, .{});
 }
