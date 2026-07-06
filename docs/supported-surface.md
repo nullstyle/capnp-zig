@@ -180,9 +180,10 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   affected question, treats mismatched successful JoinResults as terminal without
   retaining `Joined` leases while preserving retryable Finish state, and can
   cancel after JoinResults arrive, including a pending direct Accept whose Return
-  is lost. If the direct Accept returns an
-  exception, the coordinator still Finishes JoinResult lifetimes because the
-  host-side provision has already been consumed.
+  is lost. If the direct Accept returns an exception, malformed result, or other
+  terminal Return, the coordinator still Finishes JoinResult lifetimes and drops
+  retained `Joined` inputs because the host-side provision has already been
+  consumed.
   Dropping a coordinator best-effort cancels pending Join and Accept questions
   before freeing its callback context. Transparent cross-peer proxy exports can
   relay Join requests to their source peer, relay downstream JoinResult/exception
@@ -200,9 +201,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   Regressions cover Finish/send-failure/OOM paths, pending direct-Accept
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
-  partial-Finish retry without replaying successful Finishes, Accept-exception
-  JoinResult cleanup, malformed/exception JoinResult terminal cleanup including
-  mixed retained-result cleanup,
+  partial-Finish retry without replaying successful Finishes, terminal
+  direct-Accept JoinResult cleanup, malformed/exception JoinResult terminal
+  cleanup including mixed retained-result cleanup,
   mismatched successful JoinResult cleanup, sendPart OOM rollback,
   addressed unknown/stale/duplicate provision handling,
   connector malformed-token/no-dial,

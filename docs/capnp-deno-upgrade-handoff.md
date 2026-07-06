@@ -39,7 +39,8 @@ The relevant baseline includes:
   it sends key parts, collects matching JoinResults through a `JoinNetwork`,
   sends direct Accept, retains/releases the accepted cap, and Finishes each
   JoinResult question on the peer where that part originated with per-question
-  retry state; it also Finishes JoinResults after direct Accept exceptions. It
+  retry state; it also Finishes JoinResults after terminal direct Accept Returns
+  and releases retained `Joined` inputs after pickup/terminal failure. It
   rejects duplicate local part numbers before sending and can cancel after
   JoinResults arrive, after a direct Accept question is pending, or during deinit
   before freeing its callback context. Malformed or exception JoinResult Returns

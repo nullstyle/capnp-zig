@@ -976,6 +976,8 @@ test "JoinCoordinator drives JoinResult Accept and finishes remote lifetime" {
     _ = try coordinator.acceptFirst();
     try std.testing.expect(coordinator.acceptedCap() != null);
     try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
     try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
     try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
     try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
@@ -1337,10 +1339,69 @@ test "JoinCoordinator Accept exception still finishes JoinResults" {
     try std.testing.expectEqual(@as(usize, 1), fail_results.failed_results);
     try std.testing.expectEqual(@as(u32, 1), coordinator.accept_exceptions);
     try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
     try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
     try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
     try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
     try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
+test "JoinCoordinator malformed Accept Return still finishes JoinResults" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b12, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+
+    var discard = DiscardSend{};
+    server.setSendFrameOverride(&discard, DiscardSend.onFrame);
+
+    const accept_question_id = try coordinator.acceptFirst();
+    try std.testing.expect(client.questions.contains(accept_question_id));
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+
+    const malformed_accept = try buildReturnTextResultsFrame(allocator, accept_question_id, "not-a-cap");
+    defer allocator.free(malformed_accept);
+    try client.handleFrame(malformed_accept);
+
+    try std.testing.expect(!client.questions.contains(accept_question_id));
+    try std.testing.expect(coordinator.canceled);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.accept_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expect(coordinator.acceptedCap() == null);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try std.testing.expectError(error.JoinDidNotSucceed, coordinator.acceptFirst());
     try harness.expectNoJoinState(&client);
     try harness.expectNoJoinState(&server);
 }

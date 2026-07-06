@@ -169,10 +169,12 @@ already-sent Finishes. Malformed, exception, or unexpected JoinResult Returns
 are terminal: the coordinator records failure state, sends the affected
 question's Finish, and lets the generic Return dispatcher remove the question
 instead of restoring it or leaving cleanup to a later cancel path.
-If the direct Accept returns an exception, the coordinator still Finishes those
-JoinResult questions because the host-side pending provision has already been
-consumed. That releases the host-side pending Accept provision even when the
-JoinResults arrived through multiple proxy paths. Dropping the coordinator
+If the direct Accept returns an exception, malformed result, or other terminal
+Return, the coordinator still Finishes those JoinResult questions because the
+host-side pending provision has already been consumed. That releases the
+host-side pending Accept provision even when the JoinResults arrived through
+multiple proxy paths, and it drops the retained `Joined` inputs immediately.
+Dropping the coordinator
 best-effort cancels outstanding Join and direct Accept questions first, leaving
 cancelled question entries to absorb late Returns without calling back into
 freed coordinator state.

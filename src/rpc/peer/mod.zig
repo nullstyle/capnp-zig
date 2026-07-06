@@ -666,7 +666,11 @@ pub const JoinCoordinator = struct {
     pub fn acceptFirst(self: *@This()) !u32 {
         if (self.accept_question_id) |question_id| return question_id;
         if (self.expected_parts == 0) return error.InvalidJoinKeyPart;
-        if (self.mismatch_exceptions != 0 or self.cancel_exceptions != 0 or self.unexpected_exceptions != 0) {
+        if (self.mismatch_exceptions != 0 or
+            self.cancel_exceptions != 0 or
+            self.unexpected_exceptions != 0 or
+            self.accept_exceptions != 0)
+        {
             return error.JoinDidNotSucceed;
         }
         if (self.joined.items.len != self.expected_parts) return error.MissingJoinResults;
@@ -680,8 +684,7 @@ pub const JoinCoordinator = struct {
                     self.finish_failures += 1;
                     log.debug("failed to finish L4 JoinResult questions after mismatch: {}", .{err});
                 };
-                self.clearJoinedResults();
-                self.sent_parts.clearRetainingCapacity();
+                self.clearJoinInputs();
                 return error.JoinResultMismatch;
             }
         }
@@ -690,8 +693,10 @@ pub const JoinCoordinator = struct {
         defer provision_msg.deinit();
         const provision = try provision_msg.getRootAnyPointer();
         const question_id = try first.peer.sendAccept(provision, null, self, JoinCoordinator.onAcceptReturn);
-        self.accept_question_id = question_id;
-        self.accept_peer = first.peer;
+        if (self.accepted_cap == null and self.accept_exceptions == 0) {
+            self.accept_question_id = question_id;
+            self.accept_peer = first.peer;
+        }
         return question_id;
     }
 
@@ -724,6 +729,11 @@ pub const JoinCoordinator = struct {
     fn clearJoinedResults(self: *@This()) void {
         for (self.joined.items) |*joined| joined.deinit(self.allocator);
         self.joined.clearRetainingCapacity();
+    }
+
+    fn clearJoinInputs(self: *@This()) void {
+        self.clearJoinedResults();
+        self.sent_parts.clearRetainingCapacity();
     }
 
     /// Finish every JoinResult question without releasing result caps. This
@@ -789,8 +799,7 @@ pub const JoinCoordinator = struct {
         self.releaseAccepted() catch |err| {
             if (first_err == null) first_err = err;
         };
-        self.clearJoinedResults();
-        self.sent_parts.clearRetainingCapacity();
+        self.clearJoinInputs();
 
         if (first_err) |err| return err;
     }
@@ -821,6 +830,22 @@ pub const JoinCoordinator = struct {
             self.finish_failures += 1;
             log.debug("failed to cancel L4 JoinCoordinator after terminal JoinResult {}: {}", .{ question_id, err });
         };
+    }
+
+    fn finishJoinResultsAfterAccept(self: *@This(), context: []const u8) void {
+        self.finishJoinResults() catch |err| {
+            self.finish_failures += 1;
+            log.debug("failed to finish L4 JoinResult questions after {s}: {}", .{ context, err });
+        };
+        self.clearJoinInputs();
+    }
+
+    fn failTerminalAcceptReturn(self: *@This(), context: []const u8) void {
+        self.accept_exceptions += 1;
+        self.canceled = true;
+        self.accept_question_id = null;
+        self.accept_peer = null;
+        self.finishJoinResultsAfterAccept(context);
     }
 
     fn markQuestionFinished(self: *@This(), peer: *Peer, question_id: u32) void {
@@ -900,27 +925,39 @@ pub const JoinCoordinator = struct {
         const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
         switch (ret.tag) {
             .results => {
-                if (self.accepted_cap != null) return error.DuplicateAcceptedJoinCap;
-                const payload = ret.results orelse return error.MissingAcceptPayload;
-                const cap = try payload.content.getCapability();
-                const resolved = try caps.resolveCapability(cap);
+                if (self.accepted_cap != null) {
+                    self.failTerminalAcceptReturn("duplicate Accept result");
+                    return;
+                }
+                const payload = ret.results orelse {
+                    self.failTerminalAcceptReturn("malformed Accept result");
+                    return;
+                };
+                const cap = payload.content.getCapability() catch {
+                    self.failTerminalAcceptReturn("malformed Accept result");
+                    return;
+                };
+                const resolved = caps.resolveCapability(cap) catch {
+                    self.failTerminalAcceptReturn("unresolved Accept result");
+                    return;
+                };
                 var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
-                try mutable_caps.retainCapability(cap);
+                mutable_caps.retainCapability(cap) catch {
+                    self.failTerminalAcceptReturn("unretained Accept result");
+                    return;
+                };
                 self.accepted_peer = peer;
                 self.accepted_cap = resolved;
-                self.finishJoinResults() catch |err| {
-                    self.finish_failures += 1;
-                    log.debug("failed to finish L4 JoinResult questions after Accept: {}", .{err});
-                };
+                self.accept_question_id = null;
+                self.accept_peer = null;
+                self.finishJoinResultsAfterAccept("Accept");
             },
             .exception => {
-                self.accept_exceptions += 1;
-                self.finishJoinResults() catch |err| {
-                    self.finish_failures += 1;
-                    log.debug("failed to finish L4 JoinResult questions after Accept exception: {}", .{err});
-                };
+                self.failTerminalAcceptReturn("Accept exception");
             },
-            else => return error.UnexpectedAcceptReturn,
+            else => {
+                self.failTerminalAcceptReturn("unexpected Accept return");
+            },
         }
     }
 };

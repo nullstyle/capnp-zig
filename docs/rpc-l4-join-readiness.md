@@ -144,9 +144,11 @@ checks. This is not a full C++ L4 Join runtime.
   coordinator records the mismatch, attempts to Finish each held JoinResult
   lifetime, keeps failed Finish sends retryable, releases retained `Joined`
   leases, and does not send a direct Accept.
-- A direct Accept exception is terminal for the coordinator's JoinResults: the
-  coordinator records the Accept failure and still Finishes every JoinResult
-  lifetime because the host-side provision has already been consumed.
+- A terminal direct Accept Return is terminal for the coordinator's JoinResults:
+  the coordinator records the Accept failure, releases retained `Joined`
+  inputs, and still Finishes every JoinResult lifetime because the host-side
+  provision has already been consumed. This includes exception, malformed, and
+  unexpected Accept Returns.
 - Coordinator deinit cancels outstanding Join questions and pending direct
   Accept questions before freeing the coordinator, leaving only cancelled
   question entries that absorb the peer's required late Return.
@@ -198,6 +200,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   successful Finish is not resent while the failed peer is retried,
 - direct Accept results-send failure on the host, where the coordinator receives
   the fallback exception and still drains JoinResult answers/provisions,
+- malformed direct Accept Return after the server consumes the pending
+  provision, proving the coordinator still Finishes held JoinResults and drops
+  retained `Joined` inputs,
 - JoinResult Return send failure rollback, proving no stale
   `pending_join_accepts` entry remains when all JoinResult Returns fail, even if
   the fallback exception Return send also fails before any JoinResult is

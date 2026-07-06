@@ -27,7 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   successful JoinResults that release retained `Joined` leases and keep failed
   Finish sends retryable before returning
   `JoinResultMismatch`,
-  Accept-exception cleanup that still Finishes JoinResult lifetimes,
+  terminal direct-Accept cleanup (exception or malformed Return) that still
+  Finishes JoinResult lifetimes and releases retained `Joined` inputs,
   proxy-relay pickup through the real `JoinCoordinator`, and
   `releaseResultCaps` propagation when upstream Finish drains a relayed
   JoinResult lifetime after Return, including downstream Finish send retry.

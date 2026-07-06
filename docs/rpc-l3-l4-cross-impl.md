@@ -108,10 +108,11 @@ can also relay Join requests through transparent cross-peer proxy exports to the
 proxy source peer; the real `JoinCoordinator` now tracks the originating peer for
 each part, rejects duplicate local part sends, Finishes each JoinResult on the
 correct upstream connection after pickup, retries only unfinished JoinResult
-Finishes after a partial send failure, Finishes JoinResults after direct Accept
-exceptions, releases retained `Joined` leases when a later terminal JoinResult
-failure makes the aggregate impossible, and can cancel a pending direct Accept
-if its Return is lost or the coordinator is dropped. The transparent proxy relay
+Finishes after a partial send failure, Finishes JoinResults after terminal
+direct Accept Returns, releases retained `Joined` leases when a later terminal
+JoinResult failure makes the aggregate impossible, and can cancel a pending
+direct Accept if its Return is lost or the coordinator is dropped. The
+transparent proxy relay
 also keeps owner/source state when forwarding the downstream Finish fails, so a
 retry can drain the downstream JoinResult lifetime, rejects non-import source
 targets before allocating relay state, neutralizes the source question during
