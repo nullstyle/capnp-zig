@@ -2402,6 +2402,28 @@ pub const Peer = struct {
         return question_id;
     }
 
+    fn sendAcceptNoRestore(
+        self: *Peer,
+        provision: message.AnyPointerReader,
+        embargo: ?[]const u8,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+
+        const question_id = try self.allocateQuestionNoRestore(ctx, on_return);
+        errdefer self.removeQuestion(question_id);
+
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildAccept(question_id, provision, embargo);
+        try self.sendBuilder(&builder);
+
+        log.debug("sent accept question_id={}", .{question_id});
+        return question_id;
+    }
+
     /// Experimental Level-4 Join origination. This is a low-level/manual
     /// helper: callers provide the raw `Join.keyPart` AnyPointer and receive the
     /// ordinary `Return` callback for the Join question. It intentionally does
@@ -6124,10 +6146,13 @@ pub const Peer = struct {
         try peer_resolve.handleResolveWithOps(Peer, self, resolve_msg, ops);
     }
 
-    /// Heap context threaded through the auto-pickup `Accept` question. Owns no
-    /// heap besides itself; freed by `onHandoffAcceptReturn` on the normal path
-    /// or by its `deinit_ctx` if the accept peer tears down first.
+    /// Heap context threaded through the auto-pickup `Accept` question. Owns a
+    /// small deferred-release list for failed pickup callbacks; freed by
+    /// `onHandoffAcceptReturn` on the normal async path, by the synchronous
+    /// sender after nested delivery settles, or by its `deinit_ctx` if the
+    /// accept peer tears down first.
     const HandoffPickupContext = struct {
+        allocator: std.mem.Allocator,
         /// The peer holding the promise import (VatA↔VatB). Borrowed.
         promise_peer: *Peer,
         /// The promise import id being fulfilled by this handoff.
@@ -6138,10 +6163,57 @@ pub const Peer = struct {
         /// Application pickup handler + its ctx, copied from the promise peer.
         user_ctx: *anyopaque,
         user_cb: HandoffPickupCallback,
+        /// Stack flag owned by `tryAutoPickupThirdParty` while the Accept send
+        /// is in progress. The callback sets it if synchronous loopback has
+        /// already freed this ctx and released the vine before sendAccept
+        /// returns (or returns an error).
+        settled_flag: ?*bool = null,
+        /// Imports from a failed pickup callback that the app did not retain.
+        /// In synchronous loopback, these are released by the sender after the
+        /// host has committed the Return's export refs; in async delivery, the
+        /// callback releases them before freeing this ctx.
+        deferred_failed_imports: std.ArrayList(u32) = .empty,
 
         fn deinitCtx(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+            _ = allocator;
             const ctx: *HandoffPickupContext = @ptrCast(@alignCast(ctx_ptr));
-            allocator.destroy(ctx);
+            ctx.deinitSelf();
+        }
+
+        fn deinitSelf(ctx: *HandoffPickupContext) void {
+            ctx.deferred_failed_imports.deinit(ctx.allocator);
+            ctx.allocator.destroy(ctx);
+        }
+
+        fn retainFailedUnretainedImports(
+            ctx: *HandoffPickupContext,
+            accept_caps: *const cap_table.InboundCapTable,
+        ) !void {
+            var mutable_caps: *cap_table.InboundCapTable = @constCast(accept_caps);
+            var idx: u32 = 0;
+            while (idx < mutable_caps.len()) : (idx += 1) {
+                if (mutable_caps.isRetained(idx)) continue;
+                const entry = try mutable_caps.get(idx);
+                switch (entry) {
+                    .imported => |cap| {
+                        try ctx.deferred_failed_imports.append(ctx.allocator, cap.id);
+                        try mutable_caps.retainIndex(idx);
+                    },
+                    else => {},
+                }
+            }
+        }
+
+        fn releaseDeferredFailedImports(ctx: *HandoffPickupContext, accept_peer: *Peer) void {
+            for (ctx.deferred_failed_imports.items) |import_id| {
+                accept_peer.releaseImport(import_id, 1) catch |release_err| {
+                    log.debug("auto-pickup failed-handler cap release failed for promise {}: {}", .{
+                        ctx.promise_id,
+                        release_err,
+                    });
+                };
+            }
+            ctx.deferred_failed_imports.clearRetainingCapacity();
         }
     };
 
@@ -6194,6 +6266,7 @@ pub const Peer = struct {
 
         const heap = try self.allocator.create(HandoffPickupContext);
         heap.* = .{
+            .allocator = self.allocator,
             .promise_peer = self,
             .promise_id = promise_id,
             .vine_id = third.vine_id,
@@ -6201,7 +6274,9 @@ pub const Peer = struct {
             .user_cb = user_cb,
         };
         var heap_owned = true;
-        errdefer if (heap_owned) self.allocator.destroy(heap);
+        errdefer if (heap_owned) heap.deinitSelf();
+        var pickup_settled = false;
+        heap.settled_flag = &pickup_settled;
 
         // PHASE 4 — embargo/disembargo ordering during a live-promise handoff.
         //
@@ -6224,8 +6299,30 @@ pub const Peer = struct {
         else
             null;
 
-        // Send the Accept on the third-vat connection.
-        const question_id = try accept_peer.sendAccept(provision, embargo, heap, onHandoffAcceptReturn);
+        // Send the Accept on the third-vat connection. The pickup callback owns
+        // and frees `heap`, so allocate the question with no restore from the
+        // start: synchronous loopback can deliver the Accept Return before this
+        // send call returns, and a callback/post-callback error must not restore
+        // a question whose ctx has already been freed.
+        const question_id = accept_peer.sendAcceptNoRestore(provision, embargo, heap, onHandoffAcceptReturn) catch |err| {
+            if (pickup_settled) {
+                heap_owned = false;
+                vine_owned = false;
+                log.debug("auto-pickup Accept settled before send returned trailing error: {}", .{err});
+                heap.releaseDeferredFailedImports(accept_peer);
+                heap.deinitSelf();
+                return true;
+            }
+            return err;
+        };
+        if (pickup_settled) {
+            heap_owned = false;
+            vine_owned = false;
+            heap.releaseDeferredFailedImports(accept_peer);
+            heap.deinitSelf();
+            return true;
+        }
+        heap.settled_flag = null;
         heap_owned = false;
         vine_owned = false; // ownership transferred to the Accept flow.
         accept_peer.setQuestionDeinitCtx(question_id, HandoffPickupContext.deinitCtx);
@@ -6308,7 +6405,8 @@ pub const Peer = struct {
         accept_caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
         const ctx: *HandoffPickupContext = castCtx(*HandoffPickupContext, ctx_ptr);
-        defer accept_peer.allocator.destroy(ctx);
+        const defer_to_sender = ctx.settled_flag != null;
+        defer if (!defer_to_sender) ctx.deinitSelf();
         const promise_peer = ctx.promise_peer;
 
         // Deliver the direct cap to the app FIRST (so it retains the accepted
@@ -6326,7 +6424,18 @@ pub const Peer = struct {
             log.debug("auto-pickup vine release failed for promise {}: {}", .{ ctx.promise_id, err });
         };
 
-        if (handler_err) |err| return err;
+        if (ctx.settled_flag) |flag| flag.* = true;
+        if (handler_err) |err| {
+            ctx.retainFailedUnretainedImports(accept_caps) catch |retain_err| {
+                log.debug("auto-pickup failed-handler deferred release capture failed for promise {}: {}", .{
+                    ctx.promise_id,
+                    retain_err,
+                });
+                return retain_err;
+            };
+            log.debug("auto-pickup handler error cleaned up for promise {}: {}", .{ ctx.promise_id, err });
+            if (!defer_to_sender) ctx.releaseDeferredFailedImports(accept_peer);
+        }
     }
 
     fn hasKnownDisembargoTarget(self: *Peer, target: protocol.MessageTarget) bool {

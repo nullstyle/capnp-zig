@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Experimental RPC Level-3 auto-pickup cleanup is callback-failure safe.**
+  Automatic `thirdPartyHosted` pickup now sends its internal Accept question
+  with no restore-on-return-error from creation, avoiding restored questions
+  that point at a freed pickup context when synchronous delivery runs the
+  callback before `sendAccept` returns. Failed pickup callbacks now release the
+  handoff vine and defer unretained accepted-cap releases until the host has
+  committed the Return's export refs in synchronous loopback. A regression
+  covers callback failure after observing the direct cap and verifies the
+  Accept question, vine, Provide state, and accepted import all drain.
+
 - **Experimental RPC Level-4 JoinCoordinator now tracks split-peer Join
   lifetimes correctly.** The coordinator records the peer for every originated
   Join part and sends each post-pickup Finish or cancel on that same peer, so

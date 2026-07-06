@@ -254,6 +254,37 @@ const PickupHandler = struct {
     }
 };
 
+const FailingPickupHandler = struct {
+    expected_promise_id: u32,
+    accepted_import_id: ?u32 = null,
+    fired: bool = false,
+
+    fn onPickup(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        promise_id: u32,
+        accept_peer: *Peer,
+        ret: protocol.Return,
+        accept_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *FailingPickupHandler = castCtx(*FailingPickupHandler, ctx_ptr);
+        self.fired = true;
+        if (promise_id != self.expected_promise_id) return error.UnexpectedPromiseId;
+        if (ret.tag != .results) return error.UnexpectedAcceptReturn;
+        const payload = ret.results orelse return error.MissingAcceptPayload;
+        const cap = try payload.content.getCapability();
+        const resolved = try accept_caps.resolveCapability(cap);
+        self.accepted_import_id = switch (resolved) {
+            .imported => |imp| imp.id,
+            else => return error.AcceptedCarolNotImported,
+        };
+        try std.testing.expect(accept_peer.caps.hasImport(self.accepted_import_id.?));
+        // Deliberately do NOT retain the cap. The runtime must release this
+        // unretained Accept result even though the app callback fails.
+        return error.IntentionalPickupFailure;
+    }
+};
+
 // -- Three-connection synchronous wire ---------------------------------------
 //
 // Identical routing to the Provide+Accept proof: A<->B and B<->C forward to the
@@ -519,6 +550,130 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     try harness.expectNoImport(&b_to_c, carol_import_id);
     try harness.expectNoImport(&a_to_b, introducer_import_id);
     // C holds no lingering imports and no third-party-hosted marks.
+    try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(c.caps.imports.count())));
+}
+
+test "three-party handoff auto-pickup callback failure releases vine and accepted cap" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    defer b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-pickup-fail-nonce-1";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_b.attachVatNetwork(net.network());
+
+    var carol = Carol{};
+    _ = try c.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+
+    var carol_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&carol_probe, CarolImportProbe.onReturn);
+    const carol_import_id = carol_probe.carol_import_id orelse return error.CarolBootstrapFailed;
+
+    var introducer = Introducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse
+        return error.IntroducerBootstrapFailed;
+
+    var promise_call = PromiseCall{};
+    _ = try a_to_b.sendCall(
+        introducer_import_id,
+        0x1234_5678_9abc_def0,
+        0,
+        &promise_call,
+        null,
+        PromiseCall.onReturn,
+    );
+    const promise_import_id = promise_call.promise_import_id orelse return error.PromiseNotImportedByA;
+
+    var pickup = FailingPickupHandler{ .expected_promise_id = promise_import_id };
+    a_to_b.setHandoffPickupHandler(&pickup, FailingPickupHandler.onPickup);
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = carol_import_id,
+        .promised_answer = null,
+    };
+
+    const handle = try b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        provided_target,
+        recipient,
+        introduction.to_contact,
+    );
+
+    try std.testing.expect(pickup.fired);
+    const accepted_import_id = pickup.accepted_import_id orelse return error.PickupDidNotSeeAcceptedCap;
+
+    // The app callback failed after observing the Accept Return, but it did not
+    // retain the direct cap. The runtime must release that unretained import,
+    // release the vine, Finish the held-open Provide, and not restore the freed
+    // pickup ctx as a still-live question.
+    try harness.expectNoImport(&a_to_c, accepted_import_id);
+    try harness.expectNoImport(&a_to_b, handle.vine_id);
+    try std.testing.expect(!a_to_c.questions.contains(1000));
+    try std.testing.expect(!b_to_a.exports.contains(handle.vine_id));
+    try harness.expectNoOutboundProvide(&b_to_a, handle.vine_id);
+    try std.testing.expect(!b_to_c.questions.contains(handle.question_id));
+    try std.testing.expect(!c.provides_by_question.contains(handle.question_id));
+    try harness.expectNoProvideState(&c);
+
+    // Teardown of the long-lived imports that the test intentionally retained.
+    try a_to_b.releaseImport(promise_import_id, 1);
+    try b_to_c.releaseImport(carol_import_id, 1);
+    try a_to_b.releaseImport(introducer_import_id, 1);
+    try harness.expectNoImport(&a_to_b, promise_import_id);
+    try harness.expectNoImport(&b_to_c, carol_import_id);
+    try harness.expectNoImport(&a_to_b, introducer_import_id);
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(c.caps.imports.count())));
 }
 
