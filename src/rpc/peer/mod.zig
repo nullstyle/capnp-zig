@@ -787,7 +787,19 @@ pub const JoinCoordinator = struct {
         peer.sendFinishForHost(question_id, false, false) catch |err| {
             self.finish_failures += 1;
             log.debug("failed to finish L4 JoinResult question {}: {}", .{ question_id, err });
+            return;
         };
+        self.markQuestionFinished(peer, question_id);
+        self.noteAllJoinResultsFinished();
+    }
+
+    fn markQuestionFinished(self: *@This(), peer: *Peer, question_id: u32) void {
+        for (self.question_ids.items, self.question_peers.items, self.question_finished.items) |qid, qpeer, *finished| {
+            if (qid == question_id and qpeer == peer) {
+                finished.* = true;
+                return;
+            }
+        }
     }
 
     fn onJoinReturn(
@@ -800,42 +812,51 @@ pub const JoinCoordinator = struct {
         switch (ret.tag) {
             .results => {
                 const payload = ret.results orelse {
+                    self.unexpected_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
-                    return error.MissingJoinPayload;
+                    return;
                 };
                 if (self.expected_parts != 0 and self.joined.items.len >= self.expected_parts) {
+                    self.unexpected_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
-                    return error.TooManyJoinResults;
+                    return;
                 }
-                const decoded = join_network.decodeJoinResult(payload.content) catch |err| {
+                const decoded = join_network.decodeJoinResult(payload.content) catch {
+                    self.unexpected_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
-                    return err;
+                    return;
                 };
                 if (!decoded.succeeded or decoded.join_id != self.join_id) {
+                    self.mismatch_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
-                    return error.JoinResultMismatch;
+                    return;
                 }
-                var joined = self.join_network.connectJoined(payload.content) catch |err| {
+                var joined = self.join_network.connectJoined(payload.content) catch {
+                    self.unexpected_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
-                    return err;
+                    return;
                 };
-                errdefer joined.deinit(self.allocator);
-                self.joined.append(self.allocator, joined) catch |err| {
+                self.joined.append(self.allocator, joined) catch {
+                    joined.deinit(self.allocator);
+                    self.unexpected_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
-                    return err;
+                    return;
                 };
             },
             .exception => {
-                const exception = ret.exception orelse return error.MissingJoinException;
-                if (std.mem.eql(u8, exception.reason, "join target mismatch")) {
+                const reason = if (ret.exception) |exception| exception.reason else "";
+                if (std.mem.eql(u8, reason, "join target mismatch")) {
                     self.mismatch_exceptions += 1;
-                } else if (std.mem.eql(u8, exception.reason, "join canceled")) {
+                } else if (std.mem.eql(u8, reason, "join canceled")) {
                     self.cancel_exceptions += 1;
                 } else {
                     self.unexpected_exceptions += 1;
                 }
             },
-            else => return error.UnexpectedJoinReturn,
+            else => {
+                self.unexpected_exceptions += 1;
+                self.finishOneBestEffort(peer, ret.answer_id);
+            },
         }
     }
 

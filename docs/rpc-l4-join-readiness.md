@@ -127,6 +127,9 @@ checks. This is not a full C++ L4 Join runtime.
 - Coordinator Finish retries are per-question: if one peer's Finish send fails,
   later cleanup retries only the unfinished JoinResult questions instead of
   replaying already-sent Finishes.
+- Malformed JoinResult Returns are terminal for the affected coordinator
+  question: the coordinator records failure state, sends Finish, and does not
+  let the generic Return dispatcher restore the callback question.
 - A direct Accept exception is terminal for the coordinator's JoinResults: the
   coordinator records the Accept failure and still Finishes every JoinResult
   lifetime because the host-side provision has already been consumed.
@@ -161,6 +164,8 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   drain,
 - `JoinCoordinator` duplicate local part rejection before sending a second wire
   Join,
+- malformed `JoinCoordinator` JoinResult Return cleanup, proving the question is
+  removed and Finished instead of restored after callback failure,
 - `JoinCoordinator.cancelPending()` after direct Accept is sent but its Return is
   lost, proving the pending Accept question observes a local cancel exception
   while JoinResult lifetimes drain,

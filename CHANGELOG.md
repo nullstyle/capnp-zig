@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duplicate-part rejection without a second wire Join, lost-Accept-Return
   cancellation via explicit cancel and deinit, pending-Join deinit cancellation,
   partial Finish retry without resending already-finished JoinResult questions,
-  Accept-exception cleanup that still Finishes JoinResult lifetimes,
-  and proxy-relay pickup through the real `JoinCoordinator`.
+  malformed JoinResult cleanup that Finishes the affected question without
+  restoring it, Accept-exception cleanup that still Finishes JoinResult
+  lifetimes, and proxy-relay pickup through the real `JoinCoordinator`.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
   roll back if allocation fails before the first part is fully indexed, avoiding
@@ -137,10 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or after a direct Accept question is pending. New regressions cover the
   Zig↔Zig JoinResult→Accept happy path, coordinator accepted-cap release,
   duplicate-send rejection, post-JoinResult and post-Accept-send cancel cleanup,
-  coordinator sendPart OOM rollback, pending direct-Accept cleanup, and
-  JoinResult Return send-failure rollback. `just e2e-l4-zig` runs the focused
-  Zig runtime gate. L4 remains Experimental with no Stable `sendJoin` and no
-  cross-implementation L4 runtime claim.
+  malformed JoinResult terminal cleanup, coordinator sendPart OOM rollback,
+  pending direct-Accept cleanup, and JoinResult Return send-failure rollback.
+  `just e2e-l4-zig` runs the focused Zig runtime gate. L4 remains Experimental
+  with no Stable `sendJoin` and no cross-implementation L4 runtime claim.
 
 - **Experimental RPC Level-4 Join origination pilot.** `Peer.sendJoinExperimental`
   can now send raw `Join` messages with caller-supplied key parts and ordinary
