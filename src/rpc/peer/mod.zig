@@ -566,7 +566,9 @@ pub const JoinCoordinator = struct {
     sent_parts: std.AutoHashMap(u16, u32),
     joined: std.ArrayList(Joined) = .empty,
     accept_question_id: ?u32 = null,
-    last_accept_answer_id: ?u32 = null,
+    accept_answer_peer: ?*Peer = null,
+    accept_answer_id: ?u32 = null,
+    accept_answer_finished: bool = true,
     accept_send_in_progress: bool = false,
     accept_peer: ?*Peer = null,
     accepted_peer: ?*Peer = null,
@@ -700,15 +702,15 @@ pub const JoinCoordinator = struct {
         const question_id = direct_peer.sendAcceptNoRestore(provision, null, self, JoinCoordinator.onAcceptReturn, true) catch |err| {
             if (self.accepted_cap != null or self.accept_exceptions != 0) {
                 log.debug("L4 JoinCoordinator Accept settled before send returned trailing error: {}", .{err});
-                const answer_id = self.last_accept_answer_id orelse return err;
-                self.finishAcceptAnswer(direct_peer, answer_id, "trailing Accept send error");
+                const answer_id = self.accept_answer_id orelse return err;
+                _ = self.finishAcceptAnswer(direct_peer, answer_id, "trailing Accept send error");
                 return answer_id;
             }
             return err;
         };
-        self.last_accept_answer_id = question_id;
+        self.noteAcceptAnswerNeedsFinish(direct_peer, question_id);
         if (self.accepted_cap != null or self.accept_exceptions != 0) {
-            self.finishAcceptAnswer(direct_peer, question_id, "synchronous Accept");
+            _ = self.finishAcceptAnswer(direct_peer, question_id, "synchronous Accept");
         }
         if (self.accepted_cap == null and self.accept_exceptions == 0) {
             self.accept_question_id = question_id;
@@ -728,6 +730,9 @@ pub const JoinCoordinator = struct {
     /// Transfer ownership of the retained accepted cap to the caller. The
     /// caller must later release the returned cap on the returned peer.
     pub fn takeAccepted(self: *@This()) ?Accepted {
+        self.retryAcceptAnswerFinish("takeAccepted") catch |err| {
+            log.debug("failed to retry L4 JoinCoordinator Accept Finish before takeAccepted: {}", .{err});
+        };
         const cap = self.accepted_cap orelse return null;
         const peer = self.accepted_peer orelse return null;
         self.accepted_cap = null;
@@ -736,11 +741,25 @@ pub const JoinCoordinator = struct {
     }
 
     pub fn releaseAccepted(self: *@This()) !void {
-        const cap = self.accepted_cap orelse return;
-        const peer = self.accepted_peer orelse return error.MissingAcceptedPeer;
+        var first_err: ?anyerror = null;
+        self.retryAcceptAnswerFinish("releaseAccepted") catch |err| {
+            if (first_err == null) first_err = err;
+        };
+
+        const cap = self.accepted_cap orelse {
+            if (first_err) |err| return err;
+            return;
+        };
+        const peer = self.accepted_peer orelse {
+            if (first_err) |err| return err;
+            return error.MissingAcceptedPeer;
+        };
         self.accepted_cap = null;
         self.accepted_peer = null;
-        try peer.releaseResolvedCap(cap);
+        peer.releaseResolvedCap(cap) catch |err| {
+            if (first_err == null) first_err = err;
+        };
+        if (first_err) |err| return err;
     }
 
     fn clearJoinedResults(self: *@This()) void {
@@ -865,7 +884,21 @@ pub const JoinCoordinator = struct {
         self.finishJoinResultsAfterAccept(context);
     }
 
-    fn finishAcceptAnswer(self: *@This(), peer: *Peer, answer_id: u32, context: []const u8) void {
+    fn noteAcceptAnswerNeedsFinish(self: *@This(), peer: *Peer, answer_id: u32) void {
+        if (self.accept_answer_id == answer_id and self.accept_answer_finished) return;
+        self.accept_answer_peer = peer;
+        self.accept_answer_id = answer_id;
+        self.accept_answer_finished = false;
+    }
+
+    fn noteAcceptAnswerFinished(self: *@This(), peer: *Peer, answer_id: u32) void {
+        self.accept_answer_peer = peer;
+        self.accept_answer_id = answer_id;
+        self.accept_answer_finished = true;
+    }
+
+    fn finishAcceptAnswer(self: *@This(), peer: *Peer, answer_id: u32, context: []const u8) bool {
+        if (self.accept_answer_id == answer_id and self.accept_answer_finished) return true;
         var attempts: u8 = 0;
         while (attempts < 2) : (attempts += 1) {
             peer.sendFinishForHost(answer_id, false, false) catch |err| {
@@ -877,8 +910,17 @@ pub const JoinCoordinator = struct {
                 });
                 continue;
             };
-            return;
+            self.noteAcceptAnswerFinished(peer, answer_id);
+            return true;
         }
+        return false;
+    }
+
+    fn retryAcceptAnswerFinish(self: *@This(), context: []const u8) !void {
+        const answer_id = self.accept_answer_id orelse return;
+        if (self.accept_answer_finished) return;
+        const peer = self.accept_answer_peer orelse return error.MissingAcceptPeer;
+        if (!self.finishAcceptAnswer(peer, answer_id, context)) return error.AcceptFinishFailed;
     }
 
     fn markQuestionFinished(self: *@This(), peer: *Peer, question_id: u32) void {
@@ -956,9 +998,13 @@ pub const JoinCoordinator = struct {
         caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
         const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
-        self.last_accept_answer_id = ret.answer_id;
+        if (ret.no_finish_needed) {
+            self.noteAcceptAnswerFinished(peer, ret.answer_id);
+        } else {
+            self.noteAcceptAnswerNeedsFinish(peer, ret.answer_id);
+        }
         defer if (!self.accept_send_in_progress and !ret.no_finish_needed) {
-            self.finishAcceptAnswer(peer, ret.answer_id, "Accept Return");
+            _ = self.finishAcceptAnswer(peer, ret.answer_id, "Accept Return");
         };
         switch (ret.tag) {
             .results => {

@@ -115,7 +115,8 @@ direct Accept if its Return is lost or the coordinator is dropped. During
 synchronous direct-Accept pickup it also suppresses the generic Accept
 auto-Finish and sends that Finish after the callback unwinds, so a trailing
 Finish OOM cannot restore coordinator-owned callback state after the cap has
-been retained. The transparent proxy relay
+been retained; if all immediate Finish attempts fail, later accepted-cap cleanup
+retries the same host answer. The transparent proxy relay
 also keeps owner/source state when forwarding the downstream Finish fails, so a
 retry can drain the downstream JoinResult lifetime, rejects non-import source
 targets before allocating relay state, neutralizes the source question during

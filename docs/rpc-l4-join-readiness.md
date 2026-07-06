@@ -34,7 +34,9 @@ correct while L3 handoff grows toward cross-implementation use.
   state. For synchronous direct-Accept pickup it suppresses the internal Accept
   auto-Finish while the send is still unwinding, leaves return-error restoration
   disabled from question creation, and sends the Accept Finish after the
-  callback has retained or rejected the result. It is still not a Stable E-join
+  callback has retained or rejected the result. If that Finish keeps failing,
+  the coordinator records the Accept answer and retries from later accepted-cap
+  transfer, release, cancel, or deinit cleanup. It is still not a Stable E-join
   API or cross-implementation key/result format.
 - `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
   `LoopbackJoinNetwork` test implementation maps completed Join results to the
@@ -156,7 +158,9 @@ checks. This is not a full C++ L4 Join runtime.
   the coordinator suppresses that Finish while `sendAccept` is still unwinding
   and then sends the Accept Finish itself, so an initial Finish OOM cannot
   restore a question with coordinator-owned callback state or roll back a cap the
-  callback already retained.
+  callback already retained. If every immediate attempt fails, the Accept answer
+  remains marked unfinished and later cleanup retries the same host answer before
+  releasing or transferring the retained accepted cap.
 - Coordinator deinit cancels outstanding Join questions and pending direct
   Accept questions before freeing the coordinator, leaving only cancelled
   question entries that absorb the peer's required late Return.
@@ -212,6 +216,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   the callback retained the direct cap, proving the accepted cap remains callable
   and the Accept question, JoinResult answers, pending Accept state, resolved
   answer, and JoinNetwork registry drain,
+- repeated synchronous direct Accept Finish OOM where both immediate attempts
+  fail, proving the accepted cap remains callable and `releaseAccepted()` retries
+  the host answer Finish until the specific Accept answer id drains,
 - malformed direct Accept Return after the server consumes the pending
   provision, proving the coordinator still Finishes held JoinResults and drops
   retained `Joined` inputs,
