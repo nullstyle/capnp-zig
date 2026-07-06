@@ -227,6 +227,10 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - repeated synchronous direct Accept Finish OOM where both immediate attempts
   fail, proving the accepted cap remains callable and `releaseAccepted()` retries
   the host answer Finish until the specific Accept answer id drains,
+- `releaseAccepted()` returning `AcceptFinishFailed` after releasing the accepted
+  cap while the Accept answer Finish still fails, proving a later
+  `releaseAccepted()` call retries and drains the same host answer without
+  double-releasing the cap,
 - direct Accept peer teardown while a coordinator still holds an accepted cap and
   unfinished Accept answer, proving peer deinit Finishes the host answer,
   neutralizes the coordinator's accepted peer/cap pointers, and makes later

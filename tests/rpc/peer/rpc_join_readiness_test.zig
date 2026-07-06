@@ -1173,6 +1173,65 @@ test "JoinCoordinator retries repeatedly failed Accept Finish during release cle
     try harness.expectNoJoinState(&server);
 }
 
+test "JoinCoordinator releaseAccepted failure leaves Accept Finish retryable" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ClientFinishOomJoinLink{
+        .client = &client,
+        .server = &server,
+        .fail_question_id = 2,
+        .failures_remaining = 4,
+    };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ClientFinishOomJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ClientFinishOomJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    var number = NumberService{ .value = 6207 };
+    const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b16, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+    try std.testing.expectEqual(client.next_question_id, link.fail_question_id);
+
+    const accept_question_id = try coordinator.acceptFirst();
+    try std.testing.expectEqual(link.fail_question_id, accept_question_id);
+    try std.testing.expectEqual(@as(u32, 2), link.failures);
+    try std.testing.expect(coordinator.acceptedCap() != null);
+    try std.testing.expect(!coordinator.accept_answer_finished);
+    try std.testing.expect(server.resolved_answers.contains(accept_question_id));
+    try std.testing.expectEqual(@as(usize, 1), client.join_coordinator_accept_links.items.len);
+
+    try std.testing.expectError(error.AcceptFinishFailed, coordinator.releaseAccepted());
+    try std.testing.expectEqual(@as(u32, 4), link.failures);
+    try std.testing.expect(coordinator.acceptedCap() == null);
+    try std.testing.expect(coordinator.acceptedPeer() == null);
+    try std.testing.expect(!coordinator.accept_answer_finished);
+    try std.testing.expect(server.resolved_answers.contains(accept_question_id));
+    try std.testing.expectEqual(@as(usize, 1), client.join_coordinator_accept_links.items.len);
+
+    try coordinator.releaseAccepted();
+    try std.testing.expect(coordinator.accept_answer_finished);
+    try std.testing.expect(!server.resolved_answers.contains(accept_question_id));
+    try std.testing.expectEqual(@as(usize, 0), client.join_coordinator_accept_links.items.len);
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
 test "JoinCoordinator accepted cap is neutralized when direct peer deinits first" {
     const allocator = std.testing.allocator;
 
