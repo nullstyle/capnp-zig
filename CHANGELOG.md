@@ -101,38 +101,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relay setup all drain without stale pointers or duplicate Returns. The
   Zig-only happy path now proves A can join caps through B/C proxy exports,
   Accept directly on A↔D, and invoke the accepted cap without routing through
-  the proxy owners after pickup. L4 remains Experimental: no Stable/high-level
+  the proxy owners after pickup. L4 remains Experimental: no Stable
   `Peer.sendJoin`, no production Join addressing policy, no multi-hop relay
-  beyond transparent proxy exports, and no cross-implementation L4 runtime
-  claim.
+  beyond transparent proxy exports, and no cross-implementation L4 runtime claim.
 
 - **Experimental RPC Level-4 JoinResult runtime expansion.** Peers can now
   attach an Experimental `rpc.vat.join.JoinNetwork`; when present, completed
   inbound Join parts return compact Zig `JoinResult` payloads instead of the
   legacy direct provided-cap shortcut. The joiner resolves those results to a
   direct peer, sends `Accept`, receives the final cap, and invokes it on the
-  direct connection. New regressions cover the Zig↔Zig JoinResult→Accept happy
-  path, pending direct-Accept cleanup, and JoinResult Return send-failure
-  rollback. `just e2e-l4-zig` runs the focused Zig runtime gate. L4 remains
-  Experimental with no Stable/high-level `sendJoin` and no cross-implementation
-  L4 runtime claim.
+  direct connection. The new Experimental `rpc.peer.JoinCoordinator` wraps the
+  compact Zig flow above the raw sender: it emits key parts, collects matching
+  JoinResults, sends direct Accept, retains/releases the accepted cap, and
+  Finishes JoinResult questions after pickup; it can also cancel after
+  JoinResults arrive but before Accept. New regressions cover the Zig↔Zig
+  JoinResult→Accept happy path, coordinator accepted-cap release,
+  post-JoinResult cancel cleanup, coordinator sendPart OOM rollback, pending
+  direct-Accept cleanup, and JoinResult Return send-failure rollback. `just
+  e2e-l4-zig` runs the focused Zig runtime gate. L4 remains Experimental with no
+  Stable `sendJoin` and no cross-implementation L4 runtime claim.
 
 - **Experimental RPC Level-4 Join origination pilot.** `Peer.sendJoinExperimental`
   can now send raw `Join` messages with caller-supplied key parts and ordinary
   Return callbacks. New Zig↔Zig regressions originate a two-part Join, import
   the returned cap, invoke it successfully, verify mismatch exceptions drain
   state, and inject allocation failures through the sender rollback path. This
-  is a manual Experimental helper only: there is still no Stable/high-level
-  `Peer.sendJoin`, direct `JoinResult` connection flow, multi-hop relay, or
-  cross-implementation L4 runtime claim.
+  is a manual Experimental helper only: there is still no Stable
+  `Peer.sendJoin`, production addressing policy, multi-hop relay, or
+  cross-implementation L4 runtime claim. Use the Experimental
+  `JoinCoordinator` entry above for the compact Zig JoinResult connection flow.
 
-- **Experimental RPC Level-4 Join coordinator coverage.** A reusable test-local
-  coordinator now drives multi-part Zig↔Zig Join flows on top of
-  `Peer.sendJoinExperimental`, selects the joined cap, invokes it, releases
+- **Experimental RPC Level-4 legacy Join coordinator coverage.** The older
+  direct-cap pilot still has reusable test-local coverage on top of
+  `Peer.sendJoinExperimental`: it selects the joined cap, invokes it, releases
   retained result imports, verifies target mismatch does not retain caps, proves
   canceling a partial Join drains remote state, and covers callback failure after
-  joined-cap retention. This is regression evidence only: no high-level Join API
-  was added and the Stable surface is unchanged.
+  joined-cap retention. The public helper is the Zig-shape `JoinCoordinator`
+  above; the legacy direct-cap coordinator remains regression scaffolding only.
 
 - **Experimental RPC Level-4 C++ runtime blocker probe.** `just e2e-l3-cpp`
   now enforces the source-backed C++ L4 recon result in addition to the

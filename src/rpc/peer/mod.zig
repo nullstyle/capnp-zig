@@ -540,6 +540,281 @@ pub const ProvideHandle = struct {
     vine_id: u32,
 };
 
+/// Experimental Level-4 JoinResult coordinator for the compact Zig Join pilot.
+///
+/// This is the first high-level joiner-side helper above raw
+/// `sendJoinExperimental`: it originates local compact Join key parts, collects
+/// matching Zig `JoinResult` payloads through a `JoinNetwork`, sends the direct
+/// follow-up `Accept`, retains the accepted capability, and Finishes the
+/// JoinResult questions after the direct pickup succeeds. It remains
+/// Experimental and Zig-shape-only; it does not define a stable Join key/result
+/// format or a cross-implementation L4 contract.
+pub const JoinCoordinator = struct {
+    pub const Accepted = struct {
+        peer: *Peer,
+        cap: cap_table.ResolvedCap,
+    };
+
+    allocator: std.mem.Allocator,
+    origin_peer: *Peer,
+    join_network: JoinNetwork,
+    join_id: u32,
+    expected_parts: u16,
+    question_ids: std.ArrayList(u32) = .empty,
+    joined: std.ArrayList(Joined) = .empty,
+    accept_question_id: ?u32 = null,
+    accepted_peer: ?*Peer = null,
+    accepted_cap: ?cap_table.ResolvedCap = null,
+    join_results_finished: bool = false,
+    mismatch_exceptions: u32 = 0,
+    cancel_exceptions: u32 = 0,
+    unexpected_exceptions: u32 = 0,
+    accept_exceptions: u32 = 0,
+    finish_failures: u32 = 0,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        origin_peer: *Peer,
+        join_network_value: JoinNetwork,
+        join_id: u32,
+        expected_parts: u16,
+    ) JoinCoordinator {
+        return .{
+            .allocator = allocator,
+            .origin_peer = origin_peer,
+            .join_network = join_network_value,
+            .join_id = join_id,
+            .expected_parts = expected_parts,
+        };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        if (!self.join_results_finished and self.joined.items.len != 0) {
+            self.finishJoinResults() catch |err| {
+                log.debug("failed to finish L4 JoinResult questions during coordinator deinit: {}", .{err});
+            };
+        }
+        self.releaseAccepted() catch |err| {
+            log.debug("failed to release accepted L4 Join cap during coordinator deinit: {}", .{err});
+        };
+        for (self.joined.items) |*joined| joined.deinit(self.allocator);
+        self.joined.deinit(self.allocator);
+        self.question_ids.deinit(self.allocator);
+    }
+
+    /// Send one Join part to `peer`. The `target` must name the proxied
+    /// capability being joined on that peer.
+    pub fn sendPart(
+        self: *@This(),
+        peer: *Peer,
+        target: protocol.MessageTarget,
+        part_count: u16,
+        part_num: u16,
+    ) !u32 {
+        if (part_count == 0 or part_num >= part_count) return error.InvalidJoinKeyPart;
+        if (self.expected_parts != 0 and part_count != self.expected_parts) return error.JoinPartCountMismatch;
+        try self.question_ids.ensureUnusedCapacity(self.allocator, 1);
+
+        const key_bytes = try join_network.encodeJoinKeyPart(self.allocator, self.join_id, part_count, part_num);
+        defer self.allocator.free(key_bytes);
+        var key_msg = try message.Message.initUnvalidated(self.allocator, key_bytes);
+        defer key_msg.deinit();
+
+        const question_id = try Peer.sendJoinExperimentalWithAutoFinish(
+            peer,
+            target,
+            try key_msg.getRootAnyPointer(),
+            self,
+            JoinCoordinator.onJoinReturn,
+            true,
+        );
+        self.question_ids.appendAssumeCapacity(question_id);
+        return question_id;
+    }
+
+    pub fn sendImportedCapPart(
+        self: *@This(),
+        peer: *Peer,
+        target_import_id: u32,
+        part_count: u16,
+        part_num: u16,
+    ) !u32 {
+        return self.sendPart(
+            peer,
+            .{ .tag = .importedCap, .imported_cap = target_import_id, .promised_answer = null },
+            part_count,
+            part_num,
+        );
+    }
+
+    /// Send the direct `Accept` once all expected JoinResults have arrived.
+    /// The accepted capability is retained and can be read with `acceptedCap()`
+    /// or transferred out with `takeAccepted()`.
+    pub fn acceptFirst(self: *@This()) !u32 {
+        if (self.accept_question_id) |question_id| return question_id;
+        if (self.expected_parts == 0) return error.InvalidJoinKeyPart;
+        if (self.joined.items.len != self.expected_parts) return error.MissingJoinResults;
+        if (self.mismatch_exceptions != 0 or self.cancel_exceptions != 0 or self.unexpected_exceptions != 0) {
+            return error.JoinDidNotSucceed;
+        }
+
+        const first = &self.joined.items[0];
+        for (self.joined.items[1..]) |*joined| {
+            if (joined.peer != first.peer or !std.mem.eql(u8, joined.provision, first.provision)) {
+                return error.JoinResultMismatch;
+            }
+        }
+
+        var provision_msg = try message.Message.initUnvalidated(self.allocator, first.provision);
+        defer provision_msg.deinit();
+        const provision = try provision_msg.getRootAnyPointer();
+        const question_id = try first.peer.sendAccept(provision, null, self, JoinCoordinator.onAcceptReturn);
+        self.accept_question_id = question_id;
+        return question_id;
+    }
+
+    pub fn acceptedCap(self: *const @This()) ?cap_table.ResolvedCap {
+        return self.accepted_cap;
+    }
+
+    pub fn acceptedPeer(self: *const @This()) ?*Peer {
+        return self.accepted_peer;
+    }
+
+    /// Transfer ownership of the retained accepted cap to the caller. The
+    /// caller must later release the returned cap on the returned peer.
+    pub fn takeAccepted(self: *@This()) ?Accepted {
+        const cap = self.accepted_cap orelse return null;
+        const peer = self.accepted_peer orelse return null;
+        self.accepted_cap = null;
+        self.accepted_peer = null;
+        return .{ .peer = peer, .cap = cap };
+    }
+
+    pub fn releaseAccepted(self: *@This()) !void {
+        const cap = self.accepted_cap orelse return;
+        const peer = self.accepted_peer orelse return error.MissingAcceptedPeer;
+        self.accepted_cap = null;
+        self.accepted_peer = null;
+        try peer.releaseResolvedCap(cap);
+    }
+
+    /// Finish every JoinResult question without releasing result caps. This
+    /// releases the host-side JoinResult lifetime after direct Accept succeeds.
+    pub fn finishJoinResults(self: *@This()) !void {
+        if (self.join_results_finished) return;
+        for (self.question_ids.items) |question_id| {
+            try self.origin_peer.sendFinishForHost(question_id, false, false);
+        }
+        self.join_results_finished = true;
+    }
+
+    pub fn cancelPending(self: *@This(), reason: []const u8) !void {
+        var first_err: ?anyerror = null;
+        for (self.question_ids.items) |question_id| {
+            if (self.origin_peer.questions.contains(question_id)) {
+                self.origin_peer.cancelQuestion(question_id, reason) catch |err| {
+                    if (first_err == null) first_err = err;
+                };
+            } else if (!self.join_results_finished) {
+                self.origin_peer.sendFinishForHost(question_id, false, false) catch |err| {
+                    if (first_err == null) first_err = err;
+                };
+            }
+        }
+        if (first_err == null) self.join_results_finished = true;
+
+        self.releaseAccepted() catch |err| {
+            if (first_err == null) first_err = err;
+        };
+        for (self.joined.items) |*joined| joined.deinit(self.allocator);
+        self.joined.clearRetainingCapacity();
+
+        if (first_err) |err| return err;
+    }
+
+    fn finishOneBestEffort(self: *@This(), peer: *Peer, question_id: u32) void {
+        peer.sendFinishForHost(question_id, false, false) catch |err| {
+            self.finish_failures += 1;
+            log.debug("failed to finish L4 JoinResult question {}: {}", .{ question_id, err });
+        };
+    }
+
+    fn onJoinReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        switch (ret.tag) {
+            .results => {
+                const payload = ret.results orelse {
+                    self.finishOneBestEffort(peer, ret.answer_id);
+                    return error.MissingJoinPayload;
+                };
+                const decoded = join_network.decodeJoinResult(payload.content) catch |err| {
+                    self.finishOneBestEffort(peer, ret.answer_id);
+                    return err;
+                };
+                if (!decoded.succeeded or decoded.join_id != self.join_id) {
+                    self.finishOneBestEffort(peer, ret.answer_id);
+                    return error.JoinResultMismatch;
+                }
+                var joined = self.join_network.connectJoined(payload.content) catch |err| {
+                    self.finishOneBestEffort(peer, ret.answer_id);
+                    return err;
+                };
+                errdefer joined.deinit(self.allocator);
+                self.joined.append(self.allocator, joined) catch |err| {
+                    self.finishOneBestEffort(peer, ret.answer_id);
+                    return err;
+                };
+            },
+            .exception => {
+                const exception = ret.exception orelse return error.MissingJoinException;
+                if (std.mem.eql(u8, exception.reason, "join target mismatch")) {
+                    self.mismatch_exceptions += 1;
+                } else if (std.mem.eql(u8, exception.reason, "join canceled")) {
+                    self.cancel_exceptions += 1;
+                } else {
+                    self.unexpected_exceptions += 1;
+                }
+            },
+            else => return error.UnexpectedJoinReturn,
+        }
+    }
+
+    fn onAcceptReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        switch (ret.tag) {
+            .results => {
+                if (self.accepted_cap != null) return error.DuplicateAcceptedJoinCap;
+                const payload = ret.results orelse return error.MissingAcceptPayload;
+                const cap = try payload.content.getCapability();
+                const resolved = try caps.resolveCapability(cap);
+                var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
+                try mutable_caps.retainCapability(cap);
+                self.accepted_peer = peer;
+                self.accepted_cap = resolved;
+                self.finishJoinResults() catch |err| {
+                    self.finish_failures += 1;
+                    log.debug("failed to finish L4 JoinResult questions after Accept: {}", .{err});
+                };
+            },
+            .exception => {
+                self.accept_exceptions += 1;
+            },
+            else => return error.UnexpectedAcceptReturn,
+        }
+    }
+};
+
 /// Couples a vine export (minted on the host-of-recipient connection, VatB↔VatA)
 /// to the held-open `Provide` question it anchors (on the host-of-provided-cap
 /// connection, VatB↔VatC). When the recipient releases the vine — the wire

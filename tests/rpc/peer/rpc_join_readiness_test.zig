@@ -717,6 +717,115 @@ test "L4 JoinResult runtime resolves direct Accept and invokes joined cap" {
     try harness.expectNoJoinState(&server);
 }
 
+test "JoinCoordinator drives JoinResult Accept and finishes remote lifetime" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    var number = NumberService{ .value = 6102 };
+    const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
+
+    var bootstrap = BootstrapCapCallback{};
+    _ = try client.sendBootstrap(&bootstrap, BootstrapCapCallback.onReturn);
+    const target_import_id = bootstrap.import_id orelse return error.MissingBootstrapImport;
+    try std.testing.expectEqual(export_id, target_import_id);
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b05, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, target_import_id, 2, 0);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+
+    _ = try coordinator.sendImportedCapPart(&client, target_import_id, 2, 1);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+
+    _ = try coordinator.acceptFirst();
+    try std.testing.expect(coordinator.acceptedCap() != null);
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+
+    var number_call = NumberCallCallback{};
+    _ = try client.sendCallResolved(
+        coordinator.acceptedCap() orelse return error.MissingAcceptedJoinCap,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &number_call,
+        null,
+        NumberCallCallback.onReturn,
+    );
+    try std.testing.expectEqual(@as(u32, 6102), number_call.result orelse return error.MissingNumberResult);
+    try std.testing.expectEqual(@as(u32, 1), number.calls);
+
+    try coordinator.releaseAccepted();
+    try client.releaseImport(target_import_id, 1);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
+test "JoinCoordinator cancel after JoinResults drains pending direct Accept" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b06, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), join_net.registry.count());
+
+    try coordinator.cancelPending("join canceled");
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
 test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     const allocator = std.testing.allocator;
 
@@ -1324,6 +1433,38 @@ fn sendJoinExperimentalOomImpl(allocator: std.mem.Allocator) !void {
 
 test "sendJoinExperimental rolls back the outbound question under OOM injection" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendJoinExperimentalOomImpl, .{});
+}
+
+fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, join_net.network(), 0x4a14, 1);
+    defer coordinator.deinit();
+
+    const result = coordinator.sendImportedCapPart(&peer, 7, 1, 0);
+    if (result) |question_id| {
+        try std.testing.expectEqual(@as(usize, 1), coordinator.question_ids.items.len);
+        try std.testing.expect(peer.questions.contains(question_id));
+        peer_test_hooks.removeQuestion(&peer, question_id);
+        try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+    } else |err| {
+        try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+        try std.testing.expectEqual(@as(usize, 0), coordinator.question_ids.items.len);
+        return err;
+    }
+}
+
+test "JoinCoordinator sendPart rolls back local state under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, joinCoordinatorSendPartOomImpl, .{});
 }
 
 test "test-local JoinCoordinator selects a callable cap and releases retained imports" {

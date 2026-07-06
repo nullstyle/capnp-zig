@@ -145,17 +145,25 @@ violation. `PeerStats` gains `persistent_exports`, `saves_served`, and
 ## L4 Join Readiness
 
 Level 4 `Join` remains Experimental. The runtime has receive-side Join state
-machinery, not a public `Peer.sendJoin` entry point and not a complete
-direct-connection JoinResult flow. Inbound `Join` messages use the shared
+machinery, a raw `Peer.sendJoinExperimental` sender, an Experimental
+`JoinNetwork` seam for Zig `JoinResult` payloads, and an Experimental
+`JoinCoordinator` that drives the compact Zig JoinResult→Accept workflow. There
+is still no Stable `Peer.sendJoin`, no stable key/result format, and no
+cross-implementation L4 runtime claim. Inbound `Join` messages use the shared
 `ProvideTarget` representation: each part resolves its target, stores that
 target under `pending_joins`, and records a question-to-part back-link in
 `pending_join_questions`. When all parts for a join ID arrive, matching targets
-receive provided-cap results and mismatches receive exceptions.
+return either the legacy direct-cap pilot result or, with `JoinNetwork`
+attached, a compact Zig `JoinResult` that the coordinator can resolve into a
+direct `Accept`.
 
 Cleanup follows the same question lifecycle as Provide/Accept: `Finish` clears
 the matching Join part, deinitializes its target, and removes the join bucket
 when it becomes empty. Fresh join-bucket insertion is rollback-safe under OOM,
 and completion drains `pending_joins` / `pending_join_questions` before fan-out.
+For the JoinResult path, the coordinator Finishes the JoinResult questions after
+the direct Accept succeeds, which releases the host-side pending Accept
+provision.
 See [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md) for the current
 evidence and limitations.
 

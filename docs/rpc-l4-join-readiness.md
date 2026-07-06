@@ -21,10 +21,11 @@ correct while L3 handoff grows toward cross-implementation use.
 - `Peer.sendJoinExperimental` can originate a raw Join question with a caller
   supplied `Join.keyPart` AnyPointer and ordinary `Return` callback. It is a
   manual probe helper, not a high-level E-join API.
-- A test-local Join coordinator drives multi-part Zig↔Zig joins on top of
-  `sendJoinExperimental`, selects the agreed cap, retains/release-checks result
-  imports, and records per-part exception outcomes. This helper is not exposed
-  as a consumer API.
+- `rpc.peer.JoinCoordinator` is an Experimental Zig-shape coordinator above the
+  raw sender. It originates compact Join key parts, collects matching
+  `JoinResult`s through a `JoinNetwork`, sends the direct `Accept`, retains the
+  accepted cap, and Finishes the JoinResult questions after pickup. It is still
+  not a Stable E-join API or cross-implementation key/result format.
 - `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
   `LoopbackJoinNetwork` test implementation maps completed Join results to the
   joiner's direct peer and an opaque `Accept.provision` payload.
@@ -128,6 +129,12 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - Zig-originated two-part Join with `JoinNetwork` attached, where Join Returns
   carry compact Zig `JoinResult`s, the joiner resolves them to a direct peer,
   sends `Accept`, imports the accepted cap, and invokes it,
+- `JoinCoordinator` driving that JoinResult→Accept flow end to end, including
+  automatic JoinResult Finish after Accept, accepted-cap release, and sender OOM
+  rollback before recording stale question ids,
+- `JoinCoordinator.cancelPending()` after JoinResults have arrived but before
+  Accept, proving remote pending direct-Accept state and local joined leases
+  drain,
 - JoinResult Return send failure rollback, proving no stale
   `pending_join_accepts` entry remains when all JoinResult Returns fail,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports
@@ -187,7 +194,8 @@ dispatch for `Message_Which_join`.
 
 ## Not Implemented
 
-- No Stable or high-level `Peer.sendJoin` API.
+- No Stable `Peer.sendJoin` API. The Experimental `JoinCoordinator` is a
+  Zig-shape pilot helper, not a frozen E-join consumer contract.
 - No production Join addressing policy. `LoopbackJoinNetwork` is test-local and
   `AddressedJoinNetwork` is an Experimental registry/connector proof;
   applications still need their own network-specific key/result policy.

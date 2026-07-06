@@ -33,6 +33,12 @@ The relevant baseline includes:
   with rollback/lifecycle regressions for matching parts, mismatches, duplicate
   parts, Finish-before-completion cleanup, Return send failures, pending
   direct-Accept lifetime, and OOM insertion rollback.
+- Experimental `rpc.peer.JoinCoordinator` for the compact Zig JoinResult flow:
+  it sends key parts, collects matching JoinResults through a `JoinNetwork`,
+  sends direct Accept, retains/releases the accepted cap, and Finishes the
+  JoinResult questions after pickup; it can also cancel after JoinResults arrive
+  but before Accept. This is still Zig-shape-only and not a Stable downstream
+  API.
 - Experimental L4 transparent proxy Join relay: Join requests targeting
   cross-peer proxy exports can forward to the proxy source peer, relay
   downstream JoinResult/exception Returns upstream, and preserve downstream
@@ -72,9 +78,9 @@ The relevant baseline includes:
 8. Add downstream L2 tests if persistence is surfaced: save, reconnect, restore,
    resave, unknown ref, malformed/exception Return handling, and callback failure
    after restore.
-9. Do not surface L4 as a downstream API yet; use the readiness/relay/addressed
-   registry evidence only as context for future cross-implementation
-   reconnaissance or exact-pin Zig-only experiments.
+9. Do not surface L4 as a stable downstream API yet. For exact-pin Zig-only
+   experiments, wrap `JoinCoordinator` narrowly and keep the compact key/result
+   format private to the experiment.
 
 ## Caveats
 

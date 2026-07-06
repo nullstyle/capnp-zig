@@ -554,6 +554,19 @@ capnpc-zig.rpc.peer.HandoffPickupCallback: type = *const fn (*anyopaque, *rpc.pe
 capnpc-zig.rpc.peer.Introduced: struct
 capnpc-zig.rpc.peer.Introduction.deinit: fn (*rpc.vat.network.Introduction, mem.Allocator) void
 capnpc-zig.rpc.peer.Introduction: struct
+capnpc-zig.rpc.peer.JoinCoordinator.Accepted: struct
+capnpc-zig.rpc.peer.JoinCoordinator.acceptFirst: fn (*rpc.peer.mod.JoinCoordinator) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.JoinCoordinator.acceptFirst)).@"fn".return_type.?).error_union.error_set!u32
+capnpc-zig.rpc.peer.JoinCoordinator.acceptedCap: fn (*const rpc.peer.mod.JoinCoordinator) ?rpc.caps.descriptors.ResolvedCap
+capnpc-zig.rpc.peer.JoinCoordinator.acceptedPeer: fn (*const rpc.peer.mod.JoinCoordinator) ?*rpc.peer.mod.Peer
+capnpc-zig.rpc.peer.JoinCoordinator.cancelPending: fn (*rpc.peer.mod.JoinCoordinator, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.JoinCoordinator.cancelPending)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.JoinCoordinator.deinit: fn (*rpc.peer.mod.JoinCoordinator) void
+capnpc-zig.rpc.peer.JoinCoordinator.finishJoinResults: fn (*rpc.peer.mod.JoinCoordinator) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.JoinCoordinator.finishJoinResults)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.JoinCoordinator.init: fn (mem.Allocator, *rpc.peer.mod.Peer, rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer), u32, u16) rpc.peer.mod.JoinCoordinator
+capnpc-zig.rpc.peer.JoinCoordinator.releaseAccepted: fn (*rpc.peer.mod.JoinCoordinator) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.JoinCoordinator.releaseAccepted)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.JoinCoordinator.sendImportedCapPart: fn (*rpc.peer.mod.JoinCoordinator, *rpc.peer.mod.Peer, u32, u16, u16) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.JoinCoordinator.sendImportedCapPart)).@"fn".return_type.?).error_union.error_set!u32
+capnpc-zig.rpc.peer.JoinCoordinator.sendPart: fn (*rpc.peer.mod.JoinCoordinator, *rpc.peer.mod.Peer, rpc.wire.protocol.MessageTarget, u16, u16) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.JoinCoordinator.sendPart)).@"fn".return_type.?).error_union.error_set!u32
+capnpc-zig.rpc.peer.JoinCoordinator.takeAccepted: fn (*rpc.peer.mod.JoinCoordinator) ?rpc.peer.mod.JoinCoordinator.Accepted
+capnpc-zig.rpc.peer.JoinCoordinator: struct
 capnpc-zig.rpc.peer.JoinNetwork.CancelHostJoinResultFn: type = *const fn (*anyopaque, []const u8) void
 capnpc-zig.rpc.peer.JoinNetwork.ConnectJoinedFn: type = *const fn (*anyopaque, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!rpc.vat.join.Joined(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.JoinNetwork.HostJoinResultFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32) anyerror!rpc.vat.join.HostJoinResult(rpc.peer.mod.Peer)

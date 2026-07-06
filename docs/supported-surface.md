@@ -169,27 +169,33 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   can collect local JoinKeyPart structs, compare resolved targets, return
   provided caps on the legacy raw-helper path, or, with an Experimental
   `rpc.vat.join.JoinNetwork` attached, return compact Zig JoinResult payloads
-  that the joiner resolves into a direct `Accept` and callable cap. Transparent
-  cross-peer proxy exports can relay Join requests to their source peer, relay
-  downstream JoinResult/exception Returns upstream, and keep the downstream
-  JoinResult alive until the upstream Finish. `AddressedJoinNetwork` adds an
-  Experimental registry proof where application-supplied opaque addresses are
-  carried in provision tokens, resolved through already-live registry entries,
-  or resolved through an app-supplied connector for unknown addressed
-  provisions.
+  that the joiner resolves into a direct `Accept` and callable cap.
+  `JoinCoordinator` is the first Experimental Zig-shape helper above the raw
+  sender: it sends compact key parts, collects matching JoinResults, sends
+  direct Accept, retains/releases the accepted cap, and Finishes JoinResult
+  questions after pickup; it can also cancel after JoinResults arrive but before
+  Accept. Transparent cross-peer proxy exports can relay Join requests to their
+  source peer, relay downstream JoinResult/exception Returns upstream, and keep
+  the downstream JoinResult alive until the upstream Finish.
+  `AddressedJoinNetwork` adds an Experimental registry proof where
+  application-supplied opaque addresses are carried in provision tokens,
+  resolved through already-live registry entries, or resolved through an
+  app-supplied connector for unknown addressed provisions.
   Regressions cover Finish/send-failure/OOM paths, pending direct-Accept
+  rollback, coordinator post-JoinResult cancel cleanup and sendPart OOM
   rollback, addressed unknown/stale/duplicate provision handling, connector
   malformed-token/no-dial, network-teardown-before-release, and OOM-before-dial
   handling, retained result import release, mismatch/cancel cleanup, callback
-  failure after retention, proxy relay success, source unavailable, downstream
-  send failure, owner/source teardown, target mismatch through relay, and relay
-  setup OOM rollback. `just e2e-l4-zig` now runs a real Zig↔Zig TCP gate for
-  the addressed JoinResult→Accept path. There is no Stable/high-level
-  `Peer.sendJoin`, no production Join addressing policy or bundled dialer, no
-  multi-hop relay beyond transparent proxy relay, and no cross-implementation L4
-  interop claim. The C++ L3 e2e lane includes shape probes plus a source-backed
-  runtime-surface probe; it currently confirms that the C++ reference stack
-  exposes no callable generic `VatNetwork` Join hook for this TCP harness.
+  failure after retention,
+  proxy relay success, source unavailable, downstream send failure, owner/source
+  teardown, target mismatch through relay, and relay setup OOM rollback. `just
+  e2e-l4-zig` now runs a real Zig↔Zig TCP gate for the addressed
+  JoinResult→Accept path. There is no Stable `Peer.sendJoin`, no production Join
+  addressing policy or bundled dialer, no multi-hop relay beyond transparent
+  proxy relay, and no cross-implementation L4 interop claim. The C++ L3 e2e lane
+  includes shape probes plus a source-backed runtime-surface probe; it currently
+  confirms that the C++ reference stack exposes no callable generic
+  `VatNetwork` Join hook for this TCP harness.
   `just e2e-l3-go` confirms Go has generated Join/twoparty shapes but no
   runtime dispatch for `Message.join`. Experimental; exact-pin only.
 
