@@ -323,6 +323,62 @@ fn buildJoinFrame(
     return builder.finish();
 }
 
+fn buildJoinPromisedFrame(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    promised_answer_id: u32,
+    join_id: u32,
+    part_count: u16,
+    part_num: u16,
+) ![]const u8 {
+    var key_builder = message.MessageBuilder.init(allocator);
+    defer key_builder.deinit();
+    var key_root = try key_builder.initRootAnyPointer();
+    const key = try key_root.initStruct(1, 0);
+    key.writeU32(0, join_id);
+    key.writeU16(4, part_count);
+    key.writeU16(6, part_num);
+
+    const key_bytes = try key_builder.toBytes();
+    defer allocator.free(key_bytes);
+    var key_msg = try message.Message.initUnvalidated(allocator, key_bytes);
+    defer key_msg.deinit();
+    const key_ptr = try key_msg.getRootAnyPointer();
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildJoin(
+        question_id,
+        .{
+            .tag = .promisedAnswer,
+            .imported_cap = null,
+            .promised_answer = .{
+                .question_id = promised_answer_id,
+                .transform = .{ .list = null },
+            },
+        },
+        key_ptr,
+    );
+    return builder.finish();
+}
+
+fn storeResolvedReceiverAnswer(peer: *Peer, answer_id: u32, receiver_answer_id: u32) !void {
+    var builder = protocol.MessageBuilder.init(peer.allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .results);
+    var payload = try ret.payloadTyped();
+    const any = try payload.initContent();
+    try any.setCapability(.{ .id = 0 });
+    var cap_list = try ret.initCapTableTyped(1);
+    const entry = try cap_list.get(0);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry, receiver_answer_id, &.{});
+    const frame_const = try builder.finish();
+    defer peer.allocator.free(frame_const);
+    const frame = try peer.allocator.dupe(u8, frame_const);
+    errdefer peer.allocator.free(frame);
+    try peer.resolved_answers.put(answer_id, .{ .frame = frame });
+}
+
 fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32, release_result_caps: bool) ![]const u8 {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -703,7 +759,7 @@ const TestL4RuntimeCoordinator = struct {
                 const payload = ret.results orelse return error.MissingJoinPayload;
                 const decoded = try vat_join.decodeJoinResult(payload.content);
                 if (!decoded.succeeded or decoded.join_id != self.join_id) return error.JoinResultMismatch;
-                const joined = try self.join_network.connectJoined(payload.content);
+                const joined = try self.join_network.connectJoined(self.allocator, payload.content);
                 errdefer {
                     var rollback = joined;
                     rollback.deinit(self.allocator);
@@ -2423,6 +2479,73 @@ test "L4 JoinResult Finish before direct Accept drains pending provision" {
     try harness.expectNoJoinState(&server);
     try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
     try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+}
+
+test "L4 JoinResult pending Accept target uses accept peer allocator" {
+    const allocator = std.testing.allocator;
+
+    var host_gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(host_gpa.deinit() == .ok);
+    var accept_gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(accept_gpa.deinit() == .ok);
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var join_host = Peer.initDetached(host_gpa.allocator());
+    join_host.disableThreadAffinity();
+    defer join_host.deinit();
+    join_host.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var accept_host = Peer.initDetached(accept_gpa.allocator());
+    accept_host.disableThreadAffinity();
+    defer accept_host.deinit();
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeerWithAcceptHost(&join_host, &accept_host, &accept_host);
+    join_host.attachJoinNetwork(join_net.network());
+
+    const resolved_answer_id: u32 = 0x4b20;
+    const receiver_answer_id: u32 = 0x4b21;
+    try storeResolvedReceiverAnswer(&join_host, resolved_answer_id, receiver_answer_id);
+
+    const first = try buildJoinPromisedFrame(allocator, 180, resolved_answer_id, 0x4b22, 2, 0);
+    defer allocator.free(first);
+    try join_host.handleFrame(first);
+    try std.testing.expectEqual(@as(usize, 1), join_host.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), accept_host.pending_join_accepts.count());
+
+    const second = try buildJoinPromisedFrame(allocator, 181, resolved_answer_id, 0x4b22, 2, 1);
+    defer allocator.free(second);
+    try join_host.handleFrame(second);
+
+    try std.testing.expectEqual(@as(usize, 0), join_host.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 2), join_host.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), accept_host.pending_join_accepts.count());
+    {
+        var it = accept_host.pending_join_accepts.valueIterator();
+        const target = it.next() orelse return error.MissingPendingJoinAccept;
+        switch (target.*) {
+            .promised => |promised| try std.testing.expectEqual(receiver_answer_id, promised.question_id),
+            else => return error.ExpectedPromisedJoinTarget,
+        }
+    }
+
+    try peer_test_hooks.handleFinish(&join_host, .{
+        .question_id = 180,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try std.testing.expectEqual(@as(usize, 1), accept_host.pending_join_accepts.count());
+
+    try peer_test_hooks.handleFinish(&join_host, .{
+        .question_id = 181,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try harness.expectNoJoinState(&join_host);
+    try harness.expectNoJoinState(&accept_host);
 }
 
 test "L4 JoinResult peer deinit cancels pending direct Accept provision" {

@@ -33,7 +33,8 @@ The relevant baseline includes:
   with rollback/lifecycle regressions for matching parts, mismatches, duplicate
   parts, Finish-before-completion cleanup, Return send failures, pending
   direct-Accept lifetime, fallback exception send failures after JoinResult
-  Return failures, and OOM insertion rollback.
+  Return failures, distinct Join-host/Accept-host allocator ownership, and OOM
+  insertion rollback.
 - Experimental `rpc.peer.JoinCoordinator` for the compact Zig JoinResult flow:
   it sends key parts, collects matching JoinResults through a `JoinNetwork`,
   sends direct Accept, retains/releases the accepted cap, and Finishes each
@@ -68,6 +69,10 @@ The relevant baseline includes:
   malformed-token/no-dial, shared-cache lease cleanup,
   network-teardown-before-release, and OOM-before-dial behavior. This is still
   not a production Join dialer or stable address format.
+- Experimental `JoinNetwork` allocator contract changed: `hostJoinResult()` and
+  `connectJoined()` now take the allocator that will own returned provision and
+  result buffers. Downstreams wrapping these helpers should pass the allocator
+  they will later use for `HostJoinResult.deinit()` / `Joined.deinit()`.
 - L4 cross-implementation recon: C++ still has no callable generic Join hook for
   this harness, and the Go probe confirms generated Join/twoparty shapes but no
   runtime dispatch for `Message.join`.

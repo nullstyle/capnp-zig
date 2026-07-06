@@ -192,7 +192,11 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `AddressedJoinNetwork` adds an Experimental registry proof where
   application-supplied opaque addresses are carried in provision tokens,
   resolved through already-live registry entries, or resolved through an
-  app-supplied connector for unknown addressed provisions.
+  app-supplied connector for unknown addressed provisions. `JoinNetwork`
+  returned buffers are now caller-allocator owned: `hostJoinResult()` and
+  `connectJoined()` take the allocator used for returned provision/result
+  buffers, while network registry and connector lease internals remain owned by
+  the network.
   Regressions cover Finish/send-failure/OOM paths, pending direct-Accept
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
@@ -204,6 +208,7 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   network-teardown-before-release, and OOM-before-dial handling, retained result
   import release, mismatch/cancel cleanup, callback failure after retention,
   JoinResult fallback-exception send-failure rollback,
+  distinct Join-host/Accept-host allocator ownership for promised targets,
   proxy relay success through the real coordinator, source unavailable,
   unsupported source-target rejection, downstream Join send failure, downstream
   results/exception Return relay failure, unexpected downstream Return cleanup,

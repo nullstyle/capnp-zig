@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Host-side JoinResult rollback now also clears the pending direct-Accept
   provision if both the JoinResult Return and its fallback exception Return fail
   before any JoinResult was delivered.
+- **Experimental RPC Level-4 Join allocator ownership tightened.**
+  `JoinNetwork.hostJoinResult()` and `JoinNetwork.connectJoined()` now take an
+  explicit allocator for returned caller-owned buffers. Host-side JoinResult
+  completion clones the pending direct-Accept provision into the Accept peer's
+  allocator before transferring ownership, and regressions now cover distinct
+  Join-host / Accept-host allocators with promised targets.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
   roll back if allocation fails before the first part is fully indexed, avoiding

@@ -843,7 +843,7 @@ pub const JoinCoordinator = struct {
                     self.finishOneBestEffort(peer, ret.answer_id);
                     return;
                 }
-                var joined = self.join_network.connectJoined(payload.content) catch {
+                var joined = self.join_network.connectJoined(self.allocator, payload.content) catch {
                     self.unexpected_exceptions += 1;
                     self.finishOneBestEffort(peer, ret.answer_id);
                     return;
@@ -6906,17 +6906,7 @@ pub const Peer = struct {
         }
 
         const target = first_target orelse return;
-        var target_copy = self.cloneProvideTarget(target) catch |err| {
-            var err_it = join_state.parts.iterator();
-            while (err_it.next()) |entry| {
-                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
-            }
-            return;
-        };
-        var target_owned = true;
-        defer if (target_owned) target_copy.deinit(self.allocator);
-
-        const hosted = network.hostJoinResult(self, join_id) catch |err| {
+        const hosted = network.hostJoinResult(self.allocator, self, join_id) catch |err| {
             var err_it = join_state.parts.iterator();
             while (err_it.next()) |entry| {
                 try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
@@ -6925,19 +6915,32 @@ pub const Peer = struct {
         };
         const accept_peer = hosted.accept_peer;
         var provision_registered = true;
-        var provision_owned = true;
         defer if (provision_registered) network.cancelHostJoinResult(hosted.provision);
-        defer if (provision_owned) self.allocator.free(hosted.provision);
+        defer self.allocator.free(hosted.provision);
         defer self.allocator.free(hosted.result);
 
-        accept_peer.putPendingJoinAcceptOwned(hosted.provision, target_copy) catch |err| {
+        const accept_provision = try accept_peer.allocator.dupe(u8, hosted.provision);
+        var accept_provision_owned = true;
+        defer if (accept_provision_owned) accept_peer.allocator.free(accept_provision);
+
+        var target_copy = accept_peer.cloneProvideTarget(target) catch |err| {
             var err_it = join_state.parts.iterator();
             while (err_it.next()) |entry| {
                 try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
             }
             return;
         };
-        provision_owned = false;
+        var target_owned = true;
+        defer if (target_owned) target_copy.deinit(accept_peer.allocator);
+
+        accept_peer.putPendingJoinAcceptOwned(accept_provision, target_copy) catch |err| {
+            var err_it = join_state.parts.iterator();
+            while (err_it.next()) |entry| {
+                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
+            }
+            return;
+        };
+        accept_provision_owned = false;
         target_owned = false;
 
         var sent_results: usize = 0;

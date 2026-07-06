@@ -36,6 +36,11 @@ correct while L3 handoff grows toward cross-implementation use.
 - `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
   `LoopbackJoinNetwork` test implementation maps completed Join results to the
   joiner's direct peer and an opaque `Accept.provision` payload.
+- `JoinNetwork.hostJoinResult()` and `JoinNetwork.connectJoined()` take an
+  explicit allocator for returned caller-owned buffers. The network may keep
+  registry keys and connector lease state in its own allocator, but the returned
+  `HostJoinResult` and `Joined.provision` buffers are freed by the caller with
+  the allocator it supplied.
 - `rpc.vat.join.AddressedJoinNetwork` is an Experimental addressed-registry
   implementation for the Zig pilot. Callers register a host peer with an opaque
   application address and an already-live direct peer. Joiners can also install
@@ -117,6 +122,9 @@ checks. This is not a full C++ L4 Join runtime.
 - `pending_join_accepts` drains on direct Accept success, JoinResult send
   rollback when no result reached the joiner, fallback exception send failure
   before any JoinResult is delivered, and peer deinit.
+- Pending direct-Accept provisions are cloned into the Accept peer's allocator
+  before insertion, so a Join completed on one peer can safely transfer a
+  promised target to a different Accept-host peer.
 - `pending_join_relays` and `cross_peer_join_relay_links` drain together on
   upstream Finish, downstream exception, owner/source teardown, downstream send
   failure, and allocation rollback. If relaying the downstream Finish fails,
@@ -191,6 +199,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   `pending_join_accepts` entry remains when all JoinResult Returns fail, even if
   the fallback exception Return send also fails before any JoinResult is
   delivered,
+- distinct Join-host and Accept-host allocators for a promised target, proving
+  pending direct-Accept target/provision ownership follows the Accept peer and
+  caller-owned `JoinNetwork` results are freed with the supplied allocator,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports
   that forward to the same D-hosted cap, receives JoinResults through the real
   `JoinCoordinator`, sends direct Accept on A↔D, invokes the accepted cap

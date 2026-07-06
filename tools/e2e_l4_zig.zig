@@ -217,7 +217,7 @@ const ClientApp = struct {
         if (!decoded.succeeded or decoded.join_id != self.join_id) {
             return self.fail(error.JoinResultMismatch);
         }
-        const joined = try self.join_network.connectJoined(payload.content);
+        const joined = try self.join_network.connectJoined(self.allocator, payload.content);
         errdefer {
             var rollback = joined;
             rollback.deinit(self.allocator);
