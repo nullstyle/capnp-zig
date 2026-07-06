@@ -200,13 +200,14 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   import release, mismatch/cancel cleanup, callback failure after retention,
   proxy relay success through the real coordinator, source unavailable,
   downstream Join send failure, downstream results/exception Return relay
-  failure, downstream Finish retry, owner teardown, source teardown before and
-  after downstream Return, target mismatch through relay, and relay setup OOM
-  rollback. `just e2e-l4-zig` now runs a real Zig↔Zig TCP gate for the addressed
-  JoinResult→Accept path. There is no Stable `Peer.sendJoin`, no production Join
-  addressing policy or bundled dialer, no multi-hop relay beyond transparent
-  proxy relay, and no cross-implementation L4 interop claim. The C++ L3 e2e lane
-  includes shape probes plus a source-backed runtime-surface probe; it currently
+  failure, unexpected downstream Return cleanup, downstream Finish retry, owner
+  teardown, source teardown before and after downstream Return, target mismatch
+  through relay, and relay setup OOM rollback. `just e2e-l4-zig` now runs a real
+  Zig↔Zig TCP gate for the addressed JoinResult→Accept path. There is no Stable
+  `Peer.sendJoin`, no production Join addressing policy or bundled dialer, no
+  multi-hop relay beyond transparent proxy relay, and no cross-implementation L4
+  interop claim. The C++ L3 e2e lane includes shape probes plus a source-backed
+  runtime-surface probe; it currently
   confirms that the C++ reference stack exposes no callable generic
   `VatNetwork` Join hook for this TCP harness.
   `just e2e-l3-go` confirms Go has generated Join/twoparty shapes but no

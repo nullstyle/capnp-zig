@@ -178,9 +178,10 @@ source peer. The relay keeps an owner answer -> source question record plus a
 source-peer back-link until the upstream caller sends `Finish`; if forwarding
 that downstream Finish fails, both records stay live so a later retry can drain
 the downstream lifetime instead of silently losing the cancellation edge. If
-the downstream results or exception Return cannot be relayed upstream, the
-relay sends a downstream Finish/cancel and drains both records before reporting
-a fallback exception upstream.
+the downstream results or exception Return cannot be relayed upstream, or if
+the downstream peer sends an unexpected Return tag, the relay sends a downstream
+Finish/cancel and drains both records before reporting a fallback exception
+upstream.
 See [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md) for the current
 evidence and limitations.
 
