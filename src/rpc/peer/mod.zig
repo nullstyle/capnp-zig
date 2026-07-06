@@ -1720,6 +1720,7 @@ pub const Peer = struct {
                             entry.value_ptr.source_question_id,
                             err,
                         });
+                        source_peer.neutralizeJoinRelayQuestion(entry.value_ptr.source_question_id);
                     };
                 }
             }
@@ -3943,6 +3944,16 @@ pub const Peer = struct {
         _ = self.forwarded_questions.remove(tail_question_id);
     }
 
+    fn neutralizeJoinRelayQuestion(self: *Peer, question_id: u32) void {
+        if (self.questions.getPtr(question_id)) |question| {
+            if (question.deinit_ctx) |deinit_ctx| {
+                deinit_ctx(self.allocator, question.ctx);
+                question.deinit_ctx = null;
+            }
+            question.cancelled = true;
+        }
+    }
+
     fn sendJoinRelayFinishAndNeutralize(self: *Peer, question_id: u32, release_result_caps: bool) !void {
         try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
@@ -3952,13 +3963,7 @@ pub const Peer = struct {
             false,
             Peer.sendFrameControl,
         );
-        if (self.questions.getPtr(question_id)) |question| {
-            if (question.deinit_ctx) |deinit_ctx| {
-                deinit_ctx(self.allocator, question.ctx);
-                question.deinit_ctx = null;
-            }
-            question.cancelled = true;
-        }
+        self.neutralizeJoinRelayQuestion(question_id);
     }
 
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {

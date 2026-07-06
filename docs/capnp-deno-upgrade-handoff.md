@@ -49,9 +49,9 @@ The relevant baseline includes:
   downstream Finish fails. Regressions cover source unavailable, downstream send
   failure during Join forwarding, downstream results/exception Return relay
   failure, unexpected downstream Return cleanup, downstream Finish retry, owner
-  teardown, source teardown before/after downstream Return, target mismatch
-  through relay, Finish-before-Return, and OOM rollback. There is no public
-  Stable `sendJoin` convenience or
+  teardown including downstream Finish send failure, source teardown before/after
+  downstream Return, target mismatch through relay, Finish-before-Return, and
+  OOM rollback. There is no public Stable `sendJoin` convenience or
   cross-implementation L4 claim.
 - Experimental L4 addressed Join registry pilot: `AddressedJoinNetwork` carries
   opaque application addresses in provision tokens, resolves already-live

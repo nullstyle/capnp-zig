@@ -112,11 +112,12 @@ Finishes after a partial send failure, Finishes JoinResults after direct Accept
 exceptions, and can cancel a pending direct Accept if its Return is lost or the
 coordinator is dropped. The transparent proxy relay also keeps owner/source
 state when forwarding the downstream Finish fails, so a retry can drain the
-downstream JoinResult lifetime, and unexpected downstream Return tags degrade to
-a local exception while draining relay state. It still has no Stable
-`Peer.sendJoin`, no production Join addressing policy or bundled dialer, no
-multi-hop relay beyond that transparent proxy case, and no cross-implementation
-L4 runtime claim.
+downstream JoinResult lifetime, neutralizes the source question during
+owner-peer teardown even if that best-effort downstream Finish send fails, and
+degrades unexpected downstream Return tags to a local exception while draining
+relay state. It still has no Stable `Peer.sendJoin`, no production Join
+addressing policy or bundled dialer, no multi-hop relay beyond that transparent
+proxy case, and no cross-implementation L4 runtime claim.
 
 The current C++ blocker is source-backed and e2e-checked: vendored Cap'n Proto
 C++ exposes the generic Level-3 `VatNetwork` hooks used by this lane, while

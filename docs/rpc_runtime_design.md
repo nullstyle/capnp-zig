@@ -177,8 +177,11 @@ Transparent cross-peer proxy exports can relay inbound `Join` requests to their
 source peer. The relay keeps an owner answer -> source question record plus a
 source-peer back-link until the upstream caller sends `Finish`; if forwarding
 that downstream Finish fails, both records stay live so a later retry can drain
-the downstream lifetime instead of silently losing the cancellation edge. If
-the downstream results or exception Return cannot be relayed upstream, or if
+the downstream lifetime instead of silently losing the cancellation edge. During
+owner teardown there is no retrying owner left, so a failed best-effort
+downstream Finish still neutralizes the source question locally before the owner
+state is freed. If the downstream results or exception Return cannot be relayed
+upstream, or if
 the downstream peer sends an unexpected Return tag, the relay sends a downstream
 Finish/cancel and drains both records before reporting a fallback exception
 upstream.
