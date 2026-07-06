@@ -23,7 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial Finish retry without resending already-finished JoinResult questions,
   malformed/exception JoinResult cleanup that Finishes the affected question
   without restoring it, Accept-exception cleanup that still Finishes JoinResult
-  lifetimes, and proxy-relay pickup through the real `JoinCoordinator`.
+  lifetimes, proxy-relay pickup through the real `JoinCoordinator`, and
+  `releaseResultCaps` propagation when upstream Finish drains a relayed
+  JoinResult lifetime after Return.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
   roll back if allocation fails before the first part is fully indexed, avoiding

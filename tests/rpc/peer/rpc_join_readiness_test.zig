@@ -1904,6 +1904,58 @@ test "L4 Join proxy relay source teardown after Return drains on upstream Finish
     try harness.expectNoJoinState(&owner);
 }
 
+test "L4 Join proxy relay preserves releaseResultCaps on upstream Finish after Return" {
+    const allocator = std.testing.allocator;
+
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+    var source_capture = ReturnCapture{ .allocator = allocator };
+    defer source_capture.deinit();
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_capture, ReturnCapture.onFrame);
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 781 } },
+        null,
+    );
+
+    const join_frame = try buildJoinFrame(allocator, 59, proxy_export, 0x4c11, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+    const downstream_qid = (owner.pending_join_relays.get(59) orelse return error.MissingJoinRelay).source_question_id;
+    try std.testing.expect(source.questions.contains(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+
+    const downstream_return = try buildReturnResultsFrame(allocator, downstream_qid);
+    defer allocator.free(downstream_return);
+    try source.handleFrame(downstream_return);
+
+    try std.testing.expectEqual(@as(usize, 1), owner_capture.countReturns(59, .results));
+    try std.testing.expectEqual(@as(usize, 1), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expect(!source.questions.contains(downstream_qid));
+
+    const finish_frame = try buildFinishFrame(allocator, 59, true);
+    defer allocator.free(finish_frame);
+    try owner.handleFrame(finish_frame);
+
+    try source_capture.expectFinish(downstream_qid, true);
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&source);
+}
+
 test "L4 Join proxy relay propagates downstream target mismatch" {
     const allocator = std.testing.allocator;
 
