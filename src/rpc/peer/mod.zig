@@ -561,11 +561,15 @@ pub const JoinCoordinator = struct {
     join_id: u32,
     expected_parts: u16,
     question_ids: std.ArrayList(u32) = .empty,
+    question_peers: std.ArrayList(*Peer) = .empty,
+    sent_parts: std.AutoHashMap(u16, u32),
     joined: std.ArrayList(Joined) = .empty,
     accept_question_id: ?u32 = null,
+    accept_peer: ?*Peer = null,
     accepted_peer: ?*Peer = null,
     accepted_cap: ?cap_table.ResolvedCap = null,
     join_results_finished: bool = false,
+    canceled: bool = false,
     mismatch_exceptions: u32 = 0,
     cancel_exceptions: u32 = 0,
     unexpected_exceptions: u32 = 0,
@@ -585,6 +589,7 @@ pub const JoinCoordinator = struct {
             .join_network = join_network_value,
             .join_id = join_id,
             .expected_parts = expected_parts,
+            .sent_parts = std.AutoHashMap(u16, u32).init(allocator),
         };
     }
 
@@ -599,6 +604,8 @@ pub const JoinCoordinator = struct {
         };
         for (self.joined.items) |*joined| joined.deinit(self.allocator);
         self.joined.deinit(self.allocator);
+        self.sent_parts.deinit();
+        self.question_peers.deinit(self.allocator);
         self.question_ids.deinit(self.allocator);
     }
 
@@ -611,9 +618,14 @@ pub const JoinCoordinator = struct {
         part_count: u16,
         part_num: u16,
     ) !u32 {
+        if (self.canceled) return error.JoinCanceled;
+        if (self.accept_question_id != null or self.accepted_cap != null) return error.JoinAlreadyAccepting;
         if (part_count == 0 or part_num >= part_count) return error.InvalidJoinKeyPart;
         if (self.expected_parts != 0 and part_count != self.expected_parts) return error.JoinPartCountMismatch;
+        if (self.sent_parts.contains(part_num)) return error.DuplicateJoinPart;
         try self.question_ids.ensureUnusedCapacity(self.allocator, 1);
+        try self.question_peers.ensureUnusedCapacity(self.allocator, 1);
+        try self.sent_parts.ensureUnusedCapacity(1);
 
         const key_bytes = try join_network.encodeJoinKeyPart(self.allocator, self.join_id, part_count, part_num);
         defer self.allocator.free(key_bytes);
@@ -629,6 +641,8 @@ pub const JoinCoordinator = struct {
             true,
         );
         self.question_ids.appendAssumeCapacity(question_id);
+        self.question_peers.appendAssumeCapacity(peer);
+        self.sent_parts.putAssumeCapacityNoClobber(part_num, question_id);
         return question_id;
     }
 
@@ -670,6 +684,7 @@ pub const JoinCoordinator = struct {
         const provision = try provision_msg.getRootAnyPointer();
         const question_id = try first.peer.sendAccept(provision, null, self, JoinCoordinator.onAcceptReturn);
         self.accept_question_id = question_id;
+        self.accept_peer = first.peer;
         return question_id;
     }
 
@@ -703,32 +718,44 @@ pub const JoinCoordinator = struct {
     /// releases the host-side JoinResult lifetime after direct Accept succeeds.
     pub fn finishJoinResults(self: *@This()) !void {
         if (self.join_results_finished) return;
-        for (self.question_ids.items) |question_id| {
-            try self.origin_peer.sendFinishForHost(question_id, false, false);
+        for (self.question_ids.items, self.question_peers.items) |question_id, peer| {
+            try peer.sendFinishForHost(question_id, false, false);
         }
         self.join_results_finished = true;
     }
 
     pub fn cancelPending(self: *@This(), reason: []const u8) !void {
+        self.canceled = true;
         var first_err: ?anyerror = null;
-        for (self.question_ids.items) |question_id| {
-            if (self.origin_peer.questions.contains(question_id)) {
-                self.origin_peer.cancelQuestion(question_id, reason) catch |err| {
+        for (self.question_ids.items, self.question_peers.items) |question_id, peer| {
+            if (peer.questions.contains(question_id)) {
+                peer.cancelQuestion(question_id, reason) catch |err| {
                     if (first_err == null) first_err = err;
                 };
             } else if (!self.join_results_finished) {
-                self.origin_peer.sendFinishForHost(question_id, false, false) catch |err| {
+                peer.sendFinishForHost(question_id, false, false) catch |err| {
                     if (first_err == null) first_err = err;
                 };
             }
         }
         if (first_err == null) self.join_results_finished = true;
 
+        if (self.accept_question_id) |accept_question_id| {
+            if (self.accept_peer) |peer| {
+                if (peer.questions.contains(accept_question_id)) {
+                    peer.cancelQuestion(accept_question_id, reason) catch |err| {
+                        if (first_err == null) first_err = err;
+                    };
+                }
+            }
+        }
+
         self.releaseAccepted() catch |err| {
             if (first_err == null) first_err = err;
         };
         for (self.joined.items) |*joined| joined.deinit(self.allocator);
         self.joined.clearRetainingCapacity();
+        self.sent_parts.clearRetainingCapacity();
 
         if (first_err) |err| return err;
     }
@@ -753,6 +780,10 @@ pub const JoinCoordinator = struct {
                     self.finishOneBestEffort(peer, ret.answer_id);
                     return error.MissingJoinPayload;
                 };
+                if (self.expected_parts != 0 and self.joined.items.len >= self.expected_parts) {
+                    self.finishOneBestEffort(peer, ret.answer_id);
+                    return error.TooManyJoinResults;
+                }
                 const decoded = join_network.decodeJoinResult(payload.content) catch |err| {
                     self.finishOneBestEffort(peer, ret.answer_id);
                     return err;

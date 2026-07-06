@@ -826,6 +826,87 @@ test "JoinCoordinator cancel after JoinResults drains pending direct Accept" {
     try harness.expectNoJoinState(&server);
 }
 
+test "JoinCoordinator rejects duplicate local part numbers before sending" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, join_net.network(), 0x4b07, 2);
+    defer coordinator.deinit();
+
+    const question_id = try coordinator.sendImportedCapPart(&peer, 7, 2, 0);
+    try std.testing.expectError(error.DuplicateJoinPart, coordinator.sendImportedCapPart(&peer, 7, 2, 0));
+    try std.testing.expectEqual(@as(usize, 1), coordinator.question_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 1), coordinator.question_peers.items.len);
+    try std.testing.expectEqual(@as(u32, question_id), coordinator.sent_parts.get(0) orelse return error.MissingSentPart);
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.join));
+    try std.testing.expect(peer.questions.contains(question_id));
+
+    peer_test_hooks.removeQuestion(&peer, question_id);
+}
+
+test "JoinCoordinator cancel drains pending Accept question after lost Return" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b08, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+
+    var discard = DiscardSend{};
+    server.setSendFrameOverride(&discard, DiscardSend.onFrame);
+
+    const accept_question_id = try coordinator.acceptFirst();
+    try std.testing.expectEqual(accept_question_id, coordinator.accept_question_id orelse return error.MissingAcceptQuestion);
+    try std.testing.expect(client.questions.contains(accept_question_id));
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+
+    try coordinator.cancelPending("join canceled");
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.accept_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+
+    const cancelled = client.questions.get(accept_question_id) orelse return error.MissingCanceledAccept;
+    try std.testing.expect(cancelled.cancelled);
+    peer_test_hooks.removeQuestion(&client, accept_question_id);
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
 test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     const allocator = std.testing.allocator;
 
@@ -900,15 +981,15 @@ test "L4 Join relays through transparent proxy exports and accepts direct cap" {
         null,
     );
 
-    var coordinator = TestL4RuntimeCoordinator.init(allocator, join_net.network(), 0x4c01, 2);
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &a_to_b, join_net.network(), 0x4c01, 2);
     defer coordinator.deinit();
 
-    const q0 = try coordinator.sendPart(&a_to_b, b_proxy_export, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&a_to_b, b_proxy_export, 2, 0);
     try std.testing.expectEqual(@as(usize, 1), b_to_a.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 1), b_to_d.cross_peer_join_relay_links.items.len);
     try std.testing.expectEqual(@as(usize, 1), d_to_b.pending_joins.count());
 
-    const q1 = try coordinator.sendPart(&a_to_c, c_proxy_export, 2, 1);
+    _ = try coordinator.sendImportedCapPart(&a_to_c, c_proxy_export, 2, 1);
     try std.testing.expectEqual(@as(usize, 1), b_to_a.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 1), c_to_a.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 2), b_to_d.cross_peer_join_relay_links.items.len);
@@ -917,25 +998,32 @@ test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     try std.testing.expectEqual(@as(usize, 1), d_to_a.pending_join_accepts.count());
     try std.testing.expectEqual(@as(usize, 2), d_to_a.join_accept_host_links.items.len);
     try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 2), coordinator.question_peers.items.len);
+    try std.testing.expect(coordinator.question_peers.items[0] == &a_to_b);
+    try std.testing.expect(coordinator.question_peers.items[1] == &a_to_c);
 
-    try coordinator.acceptFirst();
+    _ = try coordinator.acceptFirst();
+    try std.testing.expect(coordinator.join_results_finished);
     try std.testing.expectEqual(@as(usize, 0), d_to_a.pending_join_accepts.count());
-    try std.testing.expectEqual(@as(usize, 2), d_to_b.pending_join_result_answers.count());
-    const accepted_import_id = coordinator.accept_import_id orelse return error.MissingAcceptedJoinCap;
+    try std.testing.expectEqual(@as(usize, 0), d_to_b.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), b_to_a.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), c_to_a.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), b_to_d.cross_peer_join_relay_links.items.len);
+    const accepted_cap = coordinator.acceptedCap() orelse return error.MissingAcceptedJoinCap;
 
     var number_call = NumberCallCallback{};
-    _ = try a_to_d.sendCall(accepted_import_id, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &number_call, null, NumberCallCallback.onReturn);
+    _ = try a_to_d.sendCallResolved(
+        accepted_cap,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &number_call,
+        null,
+        NumberCallCallback.onReturn,
+    );
     try std.testing.expectEqual(@as(u32, 0x4444), number_call.result orelse return error.MissingNumberResult);
     try std.testing.expectEqual(@as(u32, 1), number.calls);
 
-    try a_to_b.sendFinishForHost(q0, false, false);
-    try std.testing.expectEqual(@as(usize, 0), b_to_a.pending_join_relays.count());
-    try std.testing.expectEqual(@as(usize, 1), c_to_a.pending_join_relays.count());
-    try std.testing.expectEqual(@as(usize, 1), b_to_d.cross_peer_join_relay_links.items.len);
-    try std.testing.expectEqual(@as(usize, 1), d_to_b.pending_join_result_answers.count());
-
-    try a_to_c.sendFinishForHost(q1, false, false);
-    try coordinator.releaseAccepted(&a_to_d);
+    try coordinator.releaseAccepted();
     try harness.expectNoJoinState(&a_to_b);
     try harness.expectNoJoinState(&a_to_c);
     try harness.expectNoJoinState(&b_to_a);

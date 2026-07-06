@@ -24,8 +24,11 @@ correct while L3 handoff grows toward cross-implementation use.
 - `rpc.peer.JoinCoordinator` is an Experimental Zig-shape coordinator above the
   raw sender. It originates compact Join key parts, collects matching
   `JoinResult`s through a `JoinNetwork`, sends the direct `Accept`, retains the
-  accepted cap, and Finishes the JoinResult questions after pickup. It is still
-  not a Stable E-join API or cross-implementation key/result format.
+  accepted cap, and Finishes each JoinResult question on the peer where that
+  Join part was sent. It rejects duplicate local part numbers before sending,
+  rejects new parts after Accept/cancel begins, and can cancel both pending
+  JoinResult lifetimes and a pending direct Accept question. It is still not a
+  Stable E-join API or cross-implementation key/result format.
 - `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
   `LoopbackJoinNetwork` test implementation maps completed Join results to the
   joiner's direct peer and an opaque `Accept.provision` payload.
@@ -99,6 +102,9 @@ checks. This is not a full C++ L4 Join runtime.
   `Provide`, or existing pending Join question.
 - Duplicate parts and part-count mismatches do not replace already-recorded
   parts.
+- The Experimental `JoinCoordinator` records local part numbers before accepting
+  more work, so duplicate local sends do not put a second Join frame on the
+  wire.
 - A fresh join bucket is rollback-safe: if allocation fails after the bucket is
   created but before the first part is fully indexed, the empty bucket is removed.
 - `pending_joins` and `pending_join_questions` drain together on successful
@@ -109,6 +115,9 @@ checks. This is not a full C++ L4 Join runtime.
 - `pending_join_relays` and `cross_peer_join_relay_links` drain together on
   upstream Finish, downstream exception, owner/source teardown, downstream send
   failure, and allocation rollback.
+- Coordinator-originated joins split across multiple origin peers Finish or
+  cancel each JoinResult on the peer that originated that part, preserving relay
+  lifetime across A→B/A→C-style proxy paths.
 - `pending_join_result_answers` records the peer that hosts the final direct
   Accept provision. Cross-peer Accept-host back-links prevent stale pointers if
   the Accept host deinitializes before the JoinResult answers Finish.
@@ -135,12 +144,18 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - `JoinCoordinator.cancelPending()` after JoinResults have arrived but before
   Accept, proving remote pending direct-Accept state and local joined leases
   drain,
+- `JoinCoordinator` duplicate local part rejection before sending a second wire
+  Join,
+- `JoinCoordinator.cancelPending()` after direct Accept is sent but its Return is
+  lost, proving the pending Accept question observes a local cancel exception
+  while JoinResult lifetimes drain,
 - JoinResult Return send failure rollback, proving no stale
   `pending_join_accepts` entry remains when all JoinResult Returns fail,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports
-  that forward to the same D-hosted cap, receives JoinResults, sends direct
-  Accept on A↔D, invokes the accepted cap directly, and then drains relay state
-  only after upstream Finish,
+  that forward to the same D-hosted cap, receives JoinResults through the real
+  `JoinCoordinator`, sends direct Accept on A↔D, invokes the accepted cap
+  directly, and automatically drains relay state by Finishing each upstream
+  JoinResult on the correct A→B/A→C peer after pickup,
 - relay failure/lifecycle cases: upstream Finish before downstream Return,
   source unavailable, downstream Join send failure, owner-peer-first teardown,
   source-peer-first teardown, target mismatch through the relay, and OOM

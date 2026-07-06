@@ -161,9 +161,11 @@ Cleanup follows the same question lifecycle as Provide/Accept: `Finish` clears
 the matching Join part, deinitializes its target, and removes the join bucket
 when it becomes empty. Fresh join-bucket insertion is rollback-safe under OOM,
 and completion drains `pending_joins` / `pending_join_questions` before fan-out.
-For the JoinResult path, the coordinator Finishes the JoinResult questions after
-the direct Accept succeeds, which releases the host-side pending Accept
-provision.
+For the JoinResult path, the coordinator records the peer for every originated
+part, rejects duplicate local part numbers, and Finishes each JoinResult
+question on that same peer after the direct Accept succeeds. That releases the
+host-side pending Accept provision even when the JoinResults arrived through
+multiple proxy paths.
 See [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md) for the current
 evidence and limitations.
 

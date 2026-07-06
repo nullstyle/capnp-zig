@@ -35,10 +35,11 @@ The relevant baseline includes:
   direct-Accept lifetime, and OOM insertion rollback.
 - Experimental `rpc.peer.JoinCoordinator` for the compact Zig JoinResult flow:
   it sends key parts, collects matching JoinResults through a `JoinNetwork`,
-  sends direct Accept, retains/releases the accepted cap, and Finishes the
-  JoinResult questions after pickup; it can also cancel after JoinResults arrive
-  but before Accept. This is still Zig-shape-only and not a Stable downstream
-  API.
+  sends direct Accept, retains/releases the accepted cap, and Finishes each
+  JoinResult question on the peer where that part originated; it rejects
+  duplicate local part numbers before sending and can cancel after JoinResults
+  arrive or after a direct Accept question is pending. This is still
+  Zig-shape-only and not a Stable downstream API.
 - Experimental L4 transparent proxy Join relay: Join requests targeting
   cross-peer proxy exports can forward to the proxy source peer, relay
   downstream JoinResult/exception Returns upstream, and preserve downstream

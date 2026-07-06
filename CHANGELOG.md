@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Experimental RPC Level-4 JoinCoordinator now tracks split-peer Join
+  lifetimes correctly.** The coordinator records the peer for every originated
+  Join part and sends each post-pickup Finish or cancel on that same peer, so
+  joins split across transparent proxy paths such as A→B and A→C no longer rely
+  on a single origin connection. It also rejects duplicate local part numbers
+  before sending, rejects new parts once Accept/cancel has begun, and cancels a
+  pending direct Accept question if its Return is lost. Regressions now cover
+  duplicate-part rejection without a second wire Join, lost-Accept-Return
+  cancellation, and proxy-relay pickup through the real `JoinCoordinator`.
+
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
   roll back if allocation fails before the first part is fully indexed, avoiding
   stale empty `pending_joins` entries. New regressions cover matching Join
@@ -113,13 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct connection. The new Experimental `rpc.peer.JoinCoordinator` wraps the
   compact Zig flow above the raw sender: it emits key parts, collects matching
   JoinResults, sends direct Accept, retains/releases the accepted cap, and
-  Finishes JoinResult questions after pickup; it can also cancel after
-  JoinResults arrive but before Accept. New regressions cover the Zig↔Zig
-  JoinResult→Accept happy path, coordinator accepted-cap release,
-  post-JoinResult cancel cleanup, coordinator sendPart OOM rollback, pending
-  direct-Accept cleanup, and JoinResult Return send-failure rollback. `just
-  e2e-l4-zig` runs the focused Zig runtime gate. L4 remains Experimental with no
-  Stable `sendJoin` and no cross-implementation L4 runtime claim.
+  Finishes each JoinResult question on its originating peer after pickup; it can
+  also reject duplicate local part numbers and cancel after JoinResults arrive
+  or after a direct Accept question is pending. New regressions cover the
+  Zig↔Zig JoinResult→Accept happy path, coordinator accepted-cap release,
+  duplicate-send rejection, post-JoinResult and post-Accept-send cancel cleanup,
+  coordinator sendPart OOM rollback, pending direct-Accept cleanup, and
+  JoinResult Return send-failure rollback. `just e2e-l4-zig` runs the focused
+  Zig runtime gate. L4 remains Experimental with no Stable `sendJoin` and no
+  cross-implementation L4 runtime claim.
 
 - **Experimental RPC Level-4 Join origination pilot.** `Peer.sendJoinExperimental`
   can now send raw `Join` messages with caller-supplied key parts and ordinary
