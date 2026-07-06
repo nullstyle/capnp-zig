@@ -26,12 +26,13 @@ correct while L3 handoff grows toward cross-implementation use.
   `JoinResult`s through a `JoinNetwork`, sends the direct `Accept`, retains the
   accepted cap, and Finishes each JoinResult question on the peer where that
   Join part was sent. It rejects duplicate local part numbers before sending,
-  rejects new parts after Accept/cancel begins, and can cancel both pending
-  JoinResult lifetimes and a pending direct Accept question. Dropping the
-  coordinator is also a best-effort cancel path for pending Join and Accept
-  questions, so late Returns are absorbed by cancelled question entries instead
-  of targeting freed coordinator state. It is still not a Stable E-join API or
-  cross-implementation key/result format.
+  rejects new parts after Accept/cancel begins, tracks Finish state per
+  JoinResult question, and can cancel both pending JoinResult lifetimes and a
+  pending direct Accept question. Dropping the coordinator is also a best-effort
+  cancel path for pending Join and Accept questions, so late Returns are
+  absorbed by cancelled question entries instead of targeting freed coordinator
+  state. It is still not a Stable E-join API or cross-implementation key/result
+  format.
 - `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
   `LoopbackJoinNetwork` test implementation maps completed Join results to the
   joiner's direct peer and an opaque `Accept.provision` payload.
@@ -121,6 +122,9 @@ checks. This is not a full C++ L4 Join runtime.
 - Coordinator-originated joins split across multiple origin peers Finish or
   cancel each JoinResult on the peer that originated that part, preserving relay
   lifetime across A→B/A→C-style proxy paths.
+- Coordinator Finish retries are per-question: if one peer's Finish send fails,
+  later cleanup retries only the unfinished JoinResult questions instead of
+  replaying already-sent Finishes.
 - Coordinator deinit cancels outstanding Join questions and pending direct
   Accept questions before freeing the coordinator, leaving only cancelled
   question entries that absorb the peer's required late Return.
@@ -158,6 +162,8 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - `JoinCoordinator.deinit()` with an outstanding Join question and with a
   pending direct Accept whose Return is lost, proving drop-time cleanup
   neutralizes callbacks before the coordinator memory goes away,
+- partial `JoinCoordinator.finishJoinResults()` failure and retry, proving a
+  successful Finish is not resent while the failed peer is retried,
 - JoinResult Return send failure rollback, proving no stale
   `pending_join_accepts` entry remains when all JoinResult Returns fail,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports

@@ -68,6 +68,18 @@ const ReturnCapture = struct {
         return error.MissingFinish;
     }
 
+    fn countFinish(self: *@This(), question_id: u32) usize {
+        var count: usize = 0;
+        for (self.frames.items) |frame| {
+            var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch continue;
+            defer decoded.deinit();
+            if (decoded.tag != .finish) continue;
+            const finish = decoded.asFinish() catch continue;
+            if (finish.question_id == question_id) count += 1;
+        }
+        return count;
+    }
+
     fn countTag(self: *@This(), tag: protocol.MessageTag) usize {
         var count: usize = 0;
         for (self.frames.items) |frame| {
@@ -133,6 +145,36 @@ const FailingSend = struct {
         const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
         self.frames += 1;
         return error.TestExpectedError;
+    }
+};
+
+const FinishFailOnceCapture = struct {
+    capture: ReturnCapture,
+    fail_question_id: u32,
+    failed: bool = false,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(self.capture.allocator, frame) catch {
+            try ReturnCapture.onFrame(&self.capture, frame);
+            return;
+        };
+        defer decoded.deinit();
+        if (decoded.tag == .finish) {
+            const finish = decoded.asFinish() catch {
+                try ReturnCapture.onFrame(&self.capture, frame);
+                return;
+            };
+            if (finish.question_id == self.fail_question_id and !self.failed) {
+                self.failed = true;
+                return error.TestExpectedError;
+            }
+        }
+        try ReturnCapture.onFrame(&self.capture, frame);
+    }
+
+    fn deinit(self: *@This()) void {
+        self.capture.deinit();
     }
 };
 
@@ -987,6 +1029,55 @@ test "JoinCoordinator deinit cancels pending Accept question after lost Return" 
     try harness.expectNoJoinState(&server);
 }
 
+test "JoinCoordinator finish retry skips already finished JoinResults" {
+    const allocator = std.testing.allocator;
+
+    var ok_capture = ReturnCapture{ .allocator = allocator };
+    defer ok_capture.deinit();
+    var fail_once = FinishFailOnceCapture{
+        .capture = .{ .allocator = allocator },
+        .fail_question_id = 20,
+    };
+    defer fail_once.deinit();
+
+    var ok_peer = Peer.initDetached(allocator);
+    ok_peer.disableThreadAffinity();
+    defer ok_peer.deinit();
+    ok_peer.setSendFrameOverride(&ok_capture, ReturnCapture.onFrame);
+
+    var flaky_peer = Peer.initDetached(allocator);
+    flaky_peer.disableThreadAffinity();
+    defer flaky_peer.deinit();
+    flaky_peer.setSendFrameOverride(&fail_once, FinishFailOnceCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &ok_peer, join_net.network(), 0x4b0b, 2);
+    defer coordinator.deinit();
+
+    try coordinator.question_ids.append(allocator, 10);
+    try coordinator.question_peers.append(allocator, &ok_peer);
+    try coordinator.question_finished.append(allocator, false);
+    try coordinator.question_ids.append(allocator, 20);
+    try coordinator.question_peers.append(allocator, &flaky_peer);
+    try coordinator.question_finished.append(allocator, false);
+
+    try std.testing.expectError(error.TestExpectedError, coordinator.finishJoinResults());
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(!coordinator.question_finished.items[1]);
+    try std.testing.expect(!coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 1), ok_capture.countFinish(10));
+    try std.testing.expectEqual(@as(usize, 0), fail_once.capture.countFinish(20));
+
+    try coordinator.finishJoinResults();
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(coordinator.question_finished.items[1]);
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 1), ok_capture.countFinish(10));
+    try std.testing.expectEqual(@as(usize, 1), fail_once.capture.countFinish(20));
+}
+
 test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     const allocator = std.testing.allocator;
 
@@ -1621,16 +1712,21 @@ fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
     const result = coordinator.sendImportedCapPart(&peer, 7, 1, 0);
     if (result) |question_id| {
         try std.testing.expectEqual(@as(usize, 1), coordinator.question_ids.items.len);
+        try std.testing.expectEqual(@as(usize, 1), coordinator.question_peers.items.len);
+        try std.testing.expectEqual(@as(usize, 1), coordinator.question_finished.items.len);
         try std.testing.expect(peer.questions.contains(question_id));
         peer_test_hooks.removeQuestion(&peer, question_id);
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
         coordinator.question_ids.clearRetainingCapacity();
         coordinator.question_peers.clearRetainingCapacity();
+        coordinator.question_finished.clearRetainingCapacity();
         coordinator.sent_parts.clearRetainingCapacity();
         coordinator.join_results_finished = true;
     } else |err| {
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
         try std.testing.expectEqual(@as(usize, 0), coordinator.question_ids.items.len);
+        try std.testing.expectEqual(@as(usize, 0), coordinator.question_peers.items.len);
+        try std.testing.expectEqual(@as(usize, 0), coordinator.question_finished.items.len);
         return err;
     }
 }

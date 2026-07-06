@@ -173,13 +173,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `JoinCoordinator` is the first Experimental Zig-shape helper above the raw
   sender: it sends compact key parts, collects matching JoinResults, sends
   direct Accept, retains/releases the accepted cap, and Finishes JoinResult
-  questions on their originating peers after pickup; it rejects duplicate local
-  part numbers before sending and can cancel after JoinResults arrive, including
-  a pending direct Accept whose Return is lost. Dropping a coordinator
-  best-effort cancels pending Join and Accept questions before freeing its
-  callback context. Transparent cross-peer proxy exports can relay Join requests
-  to their source peer, relay downstream JoinResult/exception Returns upstream,
-  and keep the downstream JoinResult alive until the upstream Finish.
+  questions on their originating peers after pickup; it tracks Finish state per
+  JoinResult question so partial send failures retry only unfinished questions.
+  It rejects duplicate local part numbers before sending and can cancel after
+  JoinResults arrive, including a pending direct Accept whose Return is lost.
+  Dropping a coordinator best-effort cancels pending Join and Accept questions
+  before freeing its callback context. Transparent cross-peer proxy exports can
+  relay Join requests to their source peer, relay downstream JoinResult/exception
+  Returns upstream, and keep the downstream JoinResult alive until the upstream
+  Finish.
   `AddressedJoinNetwork` adds an Experimental registry proof where
   application-supplied opaque addresses are carried in provision tokens,
   resolved through already-live registry entries, or resolved through an
@@ -187,11 +189,12 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   Regressions cover Finish/send-failure/OOM paths, pending direct-Accept
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
-  sendPart OOM rollback, addressed unknown/stale/duplicate provision handling,
-  connector malformed-token/no-dial, network-teardown-before-release, and
-  OOM-before-dial handling, retained result import release, mismatch/cancel
-  cleanup, callback failure after retention, proxy relay success through the
-  real coordinator, source unavailable, downstream send failure, owner/source
+  partial-Finish retry without replaying successful Finishes, sendPart OOM
+  rollback, addressed unknown/stale/duplicate provision handling, connector
+  malformed-token/no-dial, network-teardown-before-release, and OOM-before-dial
+  handling, retained result import release, mismatch/cancel cleanup, callback
+  failure after retention, proxy relay success through the real coordinator,
+  source unavailable, downstream send failure, owner/source
   teardown, target mismatch through relay, and relay setup OOM rollback. `just
   e2e-l4-zig` now runs a real Zig↔Zig TCP gate for the addressed
   JoinResult→Accept path. There is no Stable `Peer.sendJoin`, no production Join

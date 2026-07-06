@@ -107,8 +107,9 @@ application-supplied connector, send `Accept`, and invoke the accepted cap. It
 can also relay Join requests through transparent cross-peer proxy exports to the
 proxy source peer; the real `JoinCoordinator` now tracks the originating peer for
 each part, rejects duplicate local part sends, Finishes each JoinResult on the
-correct upstream connection after pickup, and can cancel a pending direct Accept
-if its Return is lost or the coordinator is dropped. It still has no Stable
+correct upstream connection after pickup, retries only unfinished JoinResult
+Finishes after a partial send failure, and can cancel a pending direct Accept if
+its Return is lost or the coordinator is dropped. It still has no Stable
 `Peer.sendJoin`, no production Join addressing policy or bundled dialer, no
 multi-hop relay beyond that transparent proxy case, and no cross-implementation
 L4 runtime claim.

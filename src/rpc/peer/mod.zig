@@ -562,6 +562,7 @@ pub const JoinCoordinator = struct {
     expected_parts: u16,
     question_ids: std.ArrayList(u32) = .empty,
     question_peers: std.ArrayList(*Peer) = .empty,
+    question_finished: std.ArrayList(bool) = .empty,
     sent_parts: std.AutoHashMap(u16, u32),
     joined: std.ArrayList(Joined) = .empty,
     accept_question_id: ?u32 = null,
@@ -600,6 +601,7 @@ pub const JoinCoordinator = struct {
         for (self.joined.items) |*joined| joined.deinit(self.allocator);
         self.joined.deinit(self.allocator);
         self.sent_parts.deinit();
+        self.question_finished.deinit(self.allocator);
         self.question_peers.deinit(self.allocator);
         self.question_ids.deinit(self.allocator);
     }
@@ -620,6 +622,7 @@ pub const JoinCoordinator = struct {
         if (self.sent_parts.contains(part_num)) return error.DuplicateJoinPart;
         try self.question_ids.ensureUnusedCapacity(self.allocator, 1);
         try self.question_peers.ensureUnusedCapacity(self.allocator, 1);
+        try self.question_finished.ensureUnusedCapacity(self.allocator, 1);
         try self.sent_parts.ensureUnusedCapacity(1);
 
         const key_bytes = try join_network.encodeJoinKeyPart(self.allocator, self.join_id, part_count, part_num);
@@ -637,6 +640,7 @@ pub const JoinCoordinator = struct {
         );
         self.question_ids.appendAssumeCapacity(question_id);
         self.question_peers.appendAssumeCapacity(peer);
+        self.question_finished.appendAssumeCapacity(false);
         self.sent_parts.putAssumeCapacityNoClobber(part_num, question_id);
         return question_id;
     }
@@ -713,27 +717,51 @@ pub const JoinCoordinator = struct {
     /// releases the host-side JoinResult lifetime after direct Accept succeeds.
     pub fn finishJoinResults(self: *@This()) !void {
         if (self.join_results_finished) return;
-        for (self.question_ids.items, self.question_peers.items) |question_id, peer| {
-            try peer.sendFinishForHost(question_id, false, false);
+        var first_err: ?anyerror = null;
+        for (self.question_ids.items, self.question_peers.items, self.question_finished.items) |question_id, peer, *finished| {
+            if (finished.*) continue;
+            peer.sendFinishForHost(question_id, false, false) catch |err| {
+                if (first_err == null) first_err = err;
+                continue;
+            };
+            finished.* = true;
+        }
+        if (first_err) |err| return err;
+        self.join_results_finished = true;
+    }
+
+    fn noteAllJoinResultsFinished(self: *@This()) void {
+        for (self.question_finished.items) |finished| {
+            if (!finished) return;
         }
         self.join_results_finished = true;
+    }
+
+    fn cancelQuestionIndex(self: *@This(), index: usize, reason: []const u8) !void {
+        if (self.question_finished.items[index]) return;
+        const question_id = self.question_ids.items[index];
+        const peer = self.question_peers.items[index];
+        if (peer.questions.contains(question_id)) {
+            peer.cancelQuestion(question_id, reason) catch |err| {
+                self.question_finished.items[index] = true;
+                return err;
+            };
+            self.question_finished.items[index] = true;
+        } else if (!self.join_results_finished) {
+            try peer.sendFinishForHost(question_id, false, false);
+            self.question_finished.items[index] = true;
+        }
     }
 
     pub fn cancelPending(self: *@This(), reason: []const u8) !void {
         self.canceled = true;
         var first_err: ?anyerror = null;
-        for (self.question_ids.items, self.question_peers.items) |question_id, peer| {
-            if (peer.questions.contains(question_id)) {
-                peer.cancelQuestion(question_id, reason) catch |err| {
-                    if (first_err == null) first_err = err;
-                };
-            } else if (!self.join_results_finished) {
-                peer.sendFinishForHost(question_id, false, false) catch |err| {
-                    if (first_err == null) first_err = err;
-                };
-            }
+        for (0..self.question_ids.items.len) |index| {
+            self.cancelQuestionIndex(index, reason) catch |err| {
+                if (first_err == null) first_err = err;
+            };
         }
-        if (first_err == null) self.join_results_finished = true;
+        self.noteAllJoinResultsFinished();
 
         if (self.accept_question_id) |accept_question_id| {
             if (self.accept_peer) |peer| {

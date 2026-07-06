@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   questions before freeing the callback context. Regressions now cover
   duplicate-part rejection without a second wire Join, lost-Accept-Return
   cancellation via explicit cancel and deinit, pending-Join deinit cancellation,
+  partial Finish retry without resending already-finished JoinResult questions,
   and proxy-relay pickup through the real `JoinCoordinator`.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
