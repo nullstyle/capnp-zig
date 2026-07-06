@@ -154,8 +154,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   param caps and host-returned result caps can be invoked through the relay. The
   current mainline hardening evidence also covers loopback token duplicate/unknown
   paths, `sendProvide` / `sendAccept` allocator rollback, vine/provide teardown
-  ordering, embargoed pickup ordering, auto-pickup callback-failure cleanup, and
-  cross-peer proxy cleanup. The C++
+  ordering, embargoed pickup ordering, auto-pickup callback-failure cleanup,
+  auto-pickup internal Accept Finish retry after synchronous host-answer commit,
+  and cross-peer proxy cleanup. The C++
   interop lane is now a small failure matrix rather than only a happy-path proof:
   bad contact data falls back to the vine proxy, invalid/unknown completion tokens
   and await-side C++ rejection produce deterministic pickup exceptions, a C++

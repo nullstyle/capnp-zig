@@ -15,9 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that point at a freed pickup context when synchronous delivery runs the
   callback before `sendAccept` returns. Failed pickup callbacks now release the
   handoff vine and defer unretained accepted-cap releases until the host has
-  committed the Return's export refs in synchronous loopback. A regression
-  covers callback failure after observing the direct cap and verifies the
-  Accept question, vine, Provide state, and accepted import all drain.
+  committed the Return's export refs in synchronous loopback. Auto-pickup also
+  suppresses the generic internal Accept auto-Finish, records the Accept answer
+  id in the pickup context, and sends Finish only after synchronous `sendAccept`
+  unwinds so the host-side resolved answer has been committed; a bounded retry
+  covers transient Finish send failure. Regressions cover callback failure after
+  observing the direct cap and a first Accept Finish OOM, verifying the Accept
+  question, vine, Provide state, accepted import, and host resolved answer all
+  drain.
 
 - **Experimental RPC Level-4 JoinCoordinator direct Accept cleanup is
   Finish-failure safe.** The coordinator now sends its internal direct

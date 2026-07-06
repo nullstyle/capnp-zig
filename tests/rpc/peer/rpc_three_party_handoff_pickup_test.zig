@@ -304,12 +304,28 @@ const Link = struct {
     a_to_c: ?*Peer = null,
 
     c_question_origin: std.AutoHashMap(u32, Vat),
+    fail_finish_question_id: ?u32 = null,
+    finish_failures_remaining: u32 = 0,
+    finish_failures: u32 = 0,
 
     fn init(allocator: std.mem.Allocator) Link {
         return .{
             .allocator = allocator,
             .c_question_origin = std.AutoHashMap(u32, Vat).init(allocator),
         };
+    }
+
+    fn maybeFailFinish(self: *Link, frame: []const u8) !bool {
+        if (self.finish_failures_remaining == 0) return false;
+        const fail_question_id = self.fail_finish_question_id orelse return false;
+        var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch return false;
+        defer decoded.deinit();
+        if (decoded.tag != .finish) return false;
+        const finish = try decoded.asFinish();
+        if (finish.question_id != fail_question_id) return false;
+        self.finish_failures_remaining -= 1;
+        self.finish_failures += 1;
+        return true;
     }
 
     fn deinit(self: *Link) void {
@@ -349,6 +365,7 @@ const Link = struct {
 
     fn aToCSend(ctx: *anyopaque, frame: []const u8) anyerror!void {
         const self: *Link = castCtx(*Link, ctx);
+        if (try self.maybeFailFinish(frame)) return error.OutOfMemory;
         try self.recordCQuestion(frame, .a);
         if (!self.forwarding) return;
         if (self.c) |peer| try peer.handleFrame(frame);
@@ -411,6 +428,8 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     b_to_c.next_question_id = 0;
     a_to_c.next_question_id = 1000;
     a_to_b.next_question_id = 2000;
+    link.fail_finish_question_id = 1000;
+    link.finish_failures_remaining = 1;
 
     link.a_to_b = &a_to_b;
     link.b_to_a = &b_to_a;
@@ -505,6 +524,8 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     try std.testing.expect(pickup.fired);
     const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
     try harness.expectImport(&a_to_c, accepted_carol_id);
+    try std.testing.expectEqual(@as(u32, 1), link.finish_failures);
+    try std.testing.expect(!c.resolved_answers.contains(1000));
 
     // The vine was minted, handed to A, released by the runtime after pickup, and
     // its release Finished B's held-open Provide — so the vine export is gone and

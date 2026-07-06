@@ -6355,6 +6355,10 @@ pub const Peer = struct {
         /// already freed this ctx and released the vine before sendAccept
         /// returns (or returns an error).
         settled_flag: ?*bool = null,
+        /// Captured from the Accept Return so synchronous loopback can delay
+        /// the Finish until the host has committed the resolved answer.
+        accept_answer_id: ?u32 = null,
+        accept_no_finish_needed: bool = false,
         /// Imports from a failed pickup callback that the app did not retain.
         /// In synchronous loopback, these are released by the sender after the
         /// host has committed the Return's export refs; in async delivery, the
@@ -6401,6 +6405,22 @@ pub const Peer = struct {
                 };
             }
             ctx.deferred_failed_imports.clearRetainingCapacity();
+        }
+
+        fn finishAcceptAnswer(ctx: *HandoffPickupContext, accept_peer: *Peer, answer_id: u32, no_finish_needed: bool) void {
+            if (no_finish_needed) return;
+            var attempts: u8 = 0;
+            while (attempts < 2) : (attempts += 1) {
+                accept_peer.sendFinishForHost(answer_id, false, false) catch |err| {
+                    log.debug("auto-pickup Accept Finish failed for promise {} answer {}: {}", .{
+                        ctx.promise_id,
+                        answer_id,
+                        err,
+                    });
+                    continue;
+                };
+                return;
+            }
         }
     };
 
@@ -6490,12 +6510,18 @@ pub const Peer = struct {
         // and frees `heap`, so allocate the question with no restore from the
         // start: synchronous loopback can deliver the Accept Return before this
         // send call returns, and a callback/post-callback error must not restore
-        // a question whose ctx has already been freed.
-        const question_id = accept_peer.sendAcceptNoRestore(provision, embargo, heap, onHandoffAcceptReturn, false) catch |err| {
+        // a question whose ctx has already been freed. Auto-Finish is also
+        // suppressed so the callback can Finish the Accept answer after the
+        // handler/vine cleanup while the context is still valid, with a bounded
+        // retry for transient send failures.
+        const question_id = accept_peer.sendAcceptNoRestore(provision, embargo, heap, onHandoffAcceptReturn, true) catch |err| {
             if (pickup_settled) {
                 heap_owned = false;
                 vine_owned = false;
                 log.debug("auto-pickup Accept settled before send returned trailing error: {}", .{err});
+                if (heap.accept_answer_id) |answer_id| {
+                    heap.finishAcceptAnswer(accept_peer, answer_id, heap.accept_no_finish_needed);
+                }
                 heap.releaseDeferredFailedImports(accept_peer);
                 heap.deinitSelf();
                 return true;
@@ -6505,6 +6531,7 @@ pub const Peer = struct {
         if (pickup_settled) {
             heap_owned = false;
             vine_owned = false;
+            heap.finishAcceptAnswer(accept_peer, question_id, heap.accept_no_finish_needed);
             heap.releaseDeferredFailedImports(accept_peer);
             heap.deinitSelf();
             return true;
@@ -6593,7 +6620,10 @@ pub const Peer = struct {
     ) anyerror!void {
         const ctx: *HandoffPickupContext = castCtx(*HandoffPickupContext, ctx_ptr);
         const defer_to_sender = ctx.settled_flag != null;
+        ctx.accept_answer_id = ret.answer_id;
+        ctx.accept_no_finish_needed = ret.no_finish_needed;
         defer if (!defer_to_sender) ctx.deinitSelf();
+        defer if (!defer_to_sender) ctx.finishAcceptAnswer(accept_peer, ret.answer_id, ret.no_finish_needed);
         const promise_peer = ctx.promise_peer;
 
         // Deliver the direct cap to the app FIRST (so it retains the accepted
