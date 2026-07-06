@@ -8,6 +8,7 @@ const Peer = capnpc.rpc.peer.Peer;
 const peer_test_hooks = Peer.test_hooks;
 const join_state = capnpc.rpc.testing.peer_provide_accept_join.join_state;
 const vat_join = capnpc.rpc.vat.join;
+const vat_network = capnpc.rpc.vat.network;
 const harness = @import("three_party_handoff_harness.zig");
 
 const NUMBER_INTERFACE_ID: u64 = 0x4c34_4a4f_494e_0001;
@@ -212,6 +213,15 @@ const DiscardSend = struct {
     }
 };
 
+const StaticAddressConnector = struct {
+    peer: *Peer,
+
+    fn connect(ctx_ptr: *anyopaque, _: []const u8) anyerror!*Peer {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        return self.peer;
+    }
+};
+
 fn noopCall(_: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
     try peer.sendReturnEmptyStruct(call.question_id);
 }
@@ -304,6 +314,38 @@ fn buildReturnResultsFrame(allocator: std.mem.Allocator, answer_id: u32) ![]cons
     _ = try payload.initContent();
     _ = try ret.initCapTableTyped(0);
     return builder.finish();
+}
+
+fn buildReturnJoinResultFrame(allocator: std.mem.Allocator, answer_id: u32, result_payload: []const u8) ![]const u8 {
+    var result_msg = try message.Message.initUnvalidated(allocator, result_payload);
+    defer result_msg.deinit();
+    const result = try result_msg.getRootAnyPointer();
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .results);
+    var payload = try ret.payloadTyped();
+    const content = try payload.initContent();
+    try message.cloneAnyPointer(result, content);
+    _ = try ret.initCapTableTyped(0);
+    return builder.finish();
+}
+
+fn buildAddressedJoinResult(allocator: std.mem.Allocator, join_id: u32, address: []const u8, nonce: u64) ![]u8 {
+    var token = std.ArrayList(u8).empty;
+    defer token.deinit(allocator);
+    try token.appendSlice(allocator, "capnp-zig:l4:join:");
+    try token.appendSlice(allocator, address);
+    try token.append(allocator, 0);
+
+    var nonce_buf: [16]u8 = undefined;
+    std.mem.writeInt(u64, nonce_buf[0..8], join_id, .big);
+    std.mem.writeInt(u64, nonce_buf[8..16], nonce, .big);
+    try token.appendSlice(allocator, &nonce_buf);
+
+    const provision = try vat_network.encodeNonceToken(allocator, token.items);
+    defer allocator.free(provision);
+    return vat_join.encodeJoinResult(allocator, join_id, true, provision);
 }
 
 fn buildReturnTextResultsFrame(allocator: std.mem.Allocator, answer_id: u32, text: []const u8) ![]const u8 {
@@ -1017,6 +1059,59 @@ test "JoinCoordinator exception JoinResult Return finishes terminal question" {
     try harness.expectNoJoinState(&peer);
 }
 
+test "JoinCoordinator mismatched JoinResults are terminal and release retained joins" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var addressed = vat_join.AddressedJoinNetwork(Peer).init(allocator);
+    defer addressed.deinit();
+    var connector = StaticAddressConnector{ .peer = &peer };
+    addressed.setAddressConnector(&connector, StaticAddressConnector.connect);
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, addressed.network(), 0x4b0f, 2);
+    defer coordinator.deinit();
+
+    const first_qid = try coordinator.sendImportedCapPart(&peer, 910, 2, 0);
+    const second_qid = try coordinator.sendImportedCapPart(&peer, 911, 2, 1);
+    try std.testing.expect(peer.questions.contains(first_qid));
+    try std.testing.expect(peer.questions.contains(second_qid));
+
+    const first_result = try buildAddressedJoinResult(allocator, 0x4b0f, "direct-a", 1);
+    defer allocator.free(first_result);
+    const first_return = try buildReturnJoinResultFrame(allocator, first_qid, first_result);
+    defer allocator.free(first_return);
+    try peer.handleFrame(first_return);
+
+    const second_result = try buildAddressedJoinResult(allocator, 0x4b0f, "direct-b", 2);
+    defer allocator.free(second_result);
+    const second_return = try buildReturnJoinResultFrame(allocator, second_qid, second_result);
+    defer allocator.free(second_return);
+    try peer.handleFrame(second_return);
+
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 2), addressed.registry.count());
+    try std.testing.expectError(error.JoinResultMismatch, coordinator.acceptFirst());
+
+    try std.testing.expect(coordinator.canceled);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.mismatch_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), addressed.registry.count());
+    try capture.expectFinish(first_qid, false);
+    try capture.expectFinish(second_qid, false);
+    try std.testing.expect(!peer.questions.contains(first_qid));
+    try std.testing.expect(!peer.questions.contains(second_qid));
+    try harness.expectNoJoinState(&peer);
+}
+
 test "JoinCoordinator cancel drains pending Accept question after lost Return" {
     const allocator = std.testing.allocator;
 
@@ -1230,6 +1325,73 @@ test "JoinCoordinator finish retry skips already finished JoinResults" {
     try coordinator.question_finished.append(allocator, false);
 
     try std.testing.expectError(error.TestExpectedError, coordinator.finishJoinResults());
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(!coordinator.question_finished.items[1]);
+    try std.testing.expect(!coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 1), ok_capture.countFinish(10));
+    try std.testing.expectEqual(@as(usize, 0), fail_once.capture.countFinish(20));
+
+    try coordinator.finishJoinResults();
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(coordinator.question_finished.items[1]);
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 1), ok_capture.countFinish(10));
+    try std.testing.expectEqual(@as(usize, 1), fail_once.capture.countFinish(20));
+}
+
+test "JoinCoordinator mismatch Finish failure remains retryable" {
+    const allocator = std.testing.allocator;
+
+    var ok_capture = ReturnCapture{ .allocator = allocator };
+    defer ok_capture.deinit();
+    var fail_once = FinishFailOnceCapture{
+        .capture = .{ .allocator = allocator },
+        .fail_question_id = 20,
+    };
+    defer fail_once.deinit();
+
+    var ok_peer = Peer.initDetached(allocator);
+    ok_peer.disableThreadAffinity();
+    defer ok_peer.deinit();
+    ok_peer.setSendFrameOverride(&ok_capture, ReturnCapture.onFrame);
+
+    var flaky_peer = Peer.initDetached(allocator);
+    flaky_peer.disableThreadAffinity();
+    defer flaky_peer.deinit();
+    flaky_peer.setSendFrameOverride(&fail_once, FinishFailOnceCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &ok_peer, join_net.network(), 0x4b0c, 2);
+    defer coordinator.deinit();
+
+    try coordinator.question_ids.append(allocator, 10);
+    try coordinator.question_peers.append(allocator, &ok_peer);
+    try coordinator.question_finished.append(allocator, false);
+    try coordinator.question_ids.append(allocator, 20);
+    try coordinator.question_peers.append(allocator, &flaky_peer);
+    try coordinator.question_finished.append(allocator, false);
+    try coordinator.sent_parts.put(0, 10);
+    try coordinator.sent_parts.put(1, 20);
+
+    const first_provision = try allocator.dupe(u8, "direct-a");
+    coordinator.joined.append(allocator, .{ .peer = &ok_peer, .provision = first_provision }) catch |err| {
+        allocator.free(first_provision);
+        return err;
+    };
+    const second_provision = try allocator.dupe(u8, "direct-b");
+    coordinator.joined.append(allocator, .{ .peer = &flaky_peer, .provision = second_provision }) catch |err| {
+        allocator.free(second_provision);
+        return err;
+    };
+
+    try std.testing.expectError(error.JoinResultMismatch, coordinator.acceptFirst());
+    try std.testing.expect(coordinator.canceled);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.mismatch_exceptions);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.finish_failures);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
     try std.testing.expect(coordinator.question_finished.items[0]);
     try std.testing.expect(!coordinator.question_finished.items[1]);
     try std.testing.expect(!coordinator.join_results_finished);

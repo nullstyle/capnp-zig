@@ -131,6 +131,10 @@ checks. This is not a full C++ L4 Join runtime.
   coordinator question: the coordinator records failure state, sends Finish, and
   does not let the generic Return dispatcher restore or defer the callback
   question.
+- Mismatched successful JoinResults are terminal for the coordinator: the
+  coordinator records the mismatch, attempts to Finish each held JoinResult
+  lifetime, keeps failed Finish sends retryable, releases retained `Joined`
+  leases, and does not send a direct Accept.
 - A direct Accept exception is terminal for the coordinator's JoinResults: the
   coordinator records the Accept failure and still Finishes every JoinResult
   lifetime because the host-side provision has already been consumed.
@@ -168,6 +172,10 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - malformed/exception `JoinCoordinator` JoinResult Return cleanup, proving the
   question is removed and Finished instead of restored or deferred after
   callback handling,
+- mismatched successful `JoinCoordinator` JoinResults, proving `acceptFirst()`
+  releases retained addressed connector leases, sends Finish for held JoinResult
+  lifetimes, and keeps failed Finish sends retryable before returning
+  `JoinResultMismatch`,
 - `JoinCoordinator.cancelPending()` after direct Accept is sent but its Return is
   lost, proving the pending Accept question observes a local cancel exception
   while JoinResult lifetimes drain,

@@ -177,8 +177,10 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   JoinResult question so partial send failures retry only unfinished questions.
   It rejects duplicate local part numbers before sending, treats malformed or
   exception JoinResult Returns as terminal failed results that still Finish the
-  affected question, and can cancel after JoinResults arrive, including a
-  pending direct Accept whose Return is lost. If the direct Accept returns an
+  affected question, treats mismatched successful JoinResults as terminal without
+  retaining `Joined` leases while preserving retryable Finish state, and can
+  cancel after JoinResults arrive, including a pending direct Accept whose Return
+  is lost. If the direct Accept returns an
   exception, the coordinator still Finishes JoinResult lifetimes because the
   host-side provision has already been consumed.
   Dropping a coordinator best-effort cancels pending Join and Accept questions
@@ -195,8 +197,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
   partial-Finish retry without replaying successful Finishes, Accept-exception
-  JoinResult cleanup, malformed/exception JoinResult terminal cleanup, sendPart
-  OOM rollback, addressed unknown/stale/duplicate provision handling,
+  JoinResult cleanup, malformed/exception JoinResult terminal cleanup,
+  mismatched successful JoinResult cleanup, sendPart OOM rollback,
+  addressed unknown/stale/duplicate provision handling,
   connector malformed-token/no-dial,
   network-teardown-before-release, and OOM-before-dial handling, retained result
   import release, mismatch/cancel cleanup, callback failure after retention,

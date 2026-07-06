@@ -42,8 +42,11 @@ The relevant baseline includes:
   JoinResults arrive, after a direct Accept question is pending, or during deinit
   before freeing its callback context. Malformed or exception JoinResult Returns
   are terminal: the coordinator Finishes the affected question and records
-  failure state instead of restoring or deferring the callback question. This is
-  still Zig-shape-only and not a Stable downstream API.
+  failure state instead of restoring or deferring the callback question.
+  Mismatched successful JoinResults are also terminal: the coordinator attempts
+  to Finish the held JoinResult lifetimes, keeps failed Finish sends retryable,
+  and releases retained `Joined` leases before returning `JoinResultMismatch`.
+  This is still Zig-shape-only and not a Stable downstream API.
 - Experimental L4 transparent proxy Join relay: Join requests targeting
   cross-peer proxy exports can forward to the proxy source peer, relay
   downstream JoinResult/exception Returns upstream, and preserve downstream

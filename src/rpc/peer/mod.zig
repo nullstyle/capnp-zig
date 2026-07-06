@@ -674,6 +674,14 @@ pub const JoinCoordinator = struct {
         const first = &self.joined.items[0];
         for (self.joined.items[1..]) |*joined| {
             if (joined.peer != first.peer or !std.mem.eql(u8, joined.provision, first.provision)) {
+                self.mismatch_exceptions += 1;
+                self.canceled = true;
+                self.finishJoinResults() catch |err| {
+                    self.finish_failures += 1;
+                    log.debug("failed to finish L4 JoinResult questions after mismatch: {}", .{err});
+                };
+                self.clearJoinedResults();
+                self.sent_parts.clearRetainingCapacity();
                 return error.JoinResultMismatch;
             }
         }
@@ -711,6 +719,11 @@ pub const JoinCoordinator = struct {
         self.accepted_cap = null;
         self.accepted_peer = null;
         try peer.releaseResolvedCap(cap);
+    }
+
+    fn clearJoinedResults(self: *@This()) void {
+        for (self.joined.items) |*joined| joined.deinit(self.allocator);
+        self.joined.clearRetainingCapacity();
     }
 
     /// Finish every JoinResult question without releasing result caps. This
@@ -776,8 +789,7 @@ pub const JoinCoordinator = struct {
         self.releaseAccepted() catch |err| {
             if (first_err == null) first_err = err;
         };
-        for (self.joined.items) |*joined| joined.deinit(self.allocator);
-        self.joined.clearRetainingCapacity();
+        self.clearJoinedResults();
         self.sent_parts.clearRetainingCapacity();
 
         if (first_err) |err| return err;
