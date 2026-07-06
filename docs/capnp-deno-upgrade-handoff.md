@@ -40,10 +40,10 @@ The relevant baseline includes:
   retry state; it also Finishes JoinResults after direct Accept exceptions. It
   rejects duplicate local part numbers before sending and can cancel after
   JoinResults arrive, after a direct Accept question is pending, or during deinit
-  before freeing its callback context. Malformed JoinResult Returns are terminal:
-  the coordinator Finishes the affected question and records failure state
-  instead of restoring the callback question. This is still Zig-shape-only and
-  not a Stable downstream API.
+  before freeing its callback context. Malformed or exception JoinResult Returns
+  are terminal: the coordinator Finishes the affected question and records
+  failure state instead of restoring or deferring the callback question. This is
+  still Zig-shape-only and not a Stable downstream API.
 - Experimental L4 transparent proxy Join relay: Join requests targeting
   cross-peer proxy exports can forward to the proxy source peer, relay
   downstream JoinResult/exception Returns upstream, and preserve downstream

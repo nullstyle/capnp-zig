@@ -165,9 +165,10 @@ For the JoinResult path, the coordinator records the peer for every originated
 part, rejects duplicate local part numbers, and Finishes each JoinResult
 question on that same peer after the direct Accept succeeds. Finish state is
 tracked per question, so a partial send failure can be retried without replaying
-already-sent Finishes. Malformed or unexpected JoinResult Returns are terminal:
-the coordinator records failure state, sends the affected question's Finish, and
-lets the generic Return dispatcher remove the question instead of restoring it.
+already-sent Finishes. Malformed, exception, or unexpected JoinResult Returns
+are terminal: the coordinator records failure state, sends the affected
+question's Finish, and lets the generic Return dispatcher remove the question
+instead of restoring it or leaving cleanup to a later cancel path.
 If the direct Accept returns an exception, the coordinator still Finishes those
 JoinResult questions because the host-side pending provision has already been
 consumed. That releases the host-side pending Accept provision even when the

@@ -978,7 +978,42 @@ test "JoinCoordinator malformed JoinResult Return is terminal and finishes quest
     try std.testing.expect(coordinator.question_finished.items[0]);
     try std.testing.expect(coordinator.join_results_finished);
     try capture.expectFinish(question_id, false);
-    try std.testing.expectError(error.MissingJoinResults, coordinator.acceptFirst());
+    try std.testing.expectError(error.JoinDidNotSucceed, coordinator.acceptFirst());
+    try harness.expectNoJoinState(&peer);
+}
+
+test "JoinCoordinator exception JoinResult Return finishes terminal question" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, join_net.network(), 0x4b0e, 1);
+    defer coordinator.deinit();
+
+    const question_id = try coordinator.sendImportedCapPart(&peer, 902, 1, 0);
+    try std.testing.expect(peer.questions.contains(question_id));
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.join));
+
+    const exception_return = try buildReturnExceptionFrame(allocator, question_id, "join target mismatch");
+    defer allocator.free(exception_return);
+    try peer.handleFrame(exception_return);
+
+    try std.testing.expect(!peer.questions.contains(question_id));
+    try std.testing.expectEqual(@as(u32, 1), coordinator.mismatch_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(coordinator.join_results_finished);
+    try capture.expectFinish(question_id, false);
+    try std.testing.expectError(error.JoinDidNotSucceed, coordinator.acceptFirst());
     try harness.expectNoJoinState(&peer);
 }
 

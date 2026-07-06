@@ -666,10 +666,10 @@ pub const JoinCoordinator = struct {
     pub fn acceptFirst(self: *@This()) !u32 {
         if (self.accept_question_id) |question_id| return question_id;
         if (self.expected_parts == 0) return error.InvalidJoinKeyPart;
-        if (self.joined.items.len != self.expected_parts) return error.MissingJoinResults;
         if (self.mismatch_exceptions != 0 or self.cancel_exceptions != 0 or self.unexpected_exceptions != 0) {
             return error.JoinDidNotSucceed;
         }
+        if (self.joined.items.len != self.expected_parts) return error.MissingJoinResults;
 
         const first = &self.joined.items[0];
         for (self.joined.items[1..]) |*joined| {
@@ -852,6 +852,7 @@ pub const JoinCoordinator = struct {
                 } else {
                     self.unexpected_exceptions += 1;
                 }
+                self.finishOneBestEffort(peer, ret.answer_id);
             },
             else => {
                 self.unexpected_exceptions += 1;
