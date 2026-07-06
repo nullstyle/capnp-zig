@@ -180,8 +180,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   JoinResult on the correct A→B/A→C peer after pickup,
 - relay failure/lifecycle cases: upstream Finish before downstream Return,
   failed downstream Finish retry, source unavailable, downstream Join send
-  failure, owner-peer-first teardown, source-peer-first teardown, target
-  mismatch through the relay, and OOM rollback around relay setup,
+  failure, downstream Return relay failure, owner-peer-first teardown,
+  source-peer-first teardown, target mismatch through the relay, and OOM
+  rollback around relay setup,
 - test-local coordinator selection of a callable cap across two returned Join
   parts, including release of the retained result imports,
 - test-local coordinator mismatch handling with no retained joined caps,

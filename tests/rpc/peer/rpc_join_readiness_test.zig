@@ -1459,6 +1459,53 @@ test "L4 Join proxy relay downstream send failure drains relay state" {
     try harness.expectNoJoinState(&source);
 }
 
+test "L4 Join proxy relay downstream Return relay failure drains relay state" {
+    const allocator = std.testing.allocator;
+
+    var owner_send = FailingSend{};
+    var source_capture = ReturnCapture{ .allocator = allocator };
+    defer source_capture.deinit();
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_send, FailingSend.onFrame);
+
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_capture, ReturnCapture.onFrame);
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 445 } },
+        null,
+    );
+
+    const join_frame = try buildJoinFrame(allocator, 53, proxy_export, 0x4c0b, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+
+    const relay = owner.pending_join_relays.get(53) orelse return error.MissingJoinRelay;
+    const downstream_qid = relay.source_question_id;
+    try std.testing.expect(source.questions.contains(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expectEqual(@as(usize, 1), source_capture.countTag(.join));
+
+    const downstream_return = try buildReturnResultsFrame(allocator, downstream_qid);
+    defer allocator.free(downstream_return);
+    try source.handleFrame(downstream_return);
+
+    try std.testing.expectEqual(@as(usize, 2), owner_send.frames);
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expect(!source.questions.contains(downstream_qid));
+    try source_capture.expectFinish(downstream_qid, false);
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&source);
+}
+
 test "L4 Join proxy relay owner teardown finishes downstream question" {
     const allocator = std.testing.allocator;
 
