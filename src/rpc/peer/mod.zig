@@ -350,6 +350,17 @@ const CrossPeerProxyCallContext = struct {
     }
 };
 
+const CrossPeerJoinRelayContext = struct {
+    owner_peer: *Peer,
+    owner_answer_id: u32,
+    settled_flag: ?*bool = null,
+
+    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+        const ctx: *CrossPeerJoinRelayContext = @ptrCast(@alignCast(ctx_ptr));
+        allocator.destroy(ctx);
+    }
+};
+
 const CrossPeerCapMapContext = struct {
     inbound_peer: *Peer,
     outbound_peer: *Peer,
@@ -605,6 +616,26 @@ const CrossPeerProxyLink = struct {
     proxy_export_id: u32,
 };
 
+const CrossPeerJoinRelay = struct {
+    source_peer: ?*Peer,
+    source_question_id: u32,
+};
+
+const CrossPeerJoinRelayLink = struct {
+    owner_peer: *Peer,
+    owner_answer_id: u32,
+};
+
+const PendingJoinResultAnswer = struct {
+    accept_peer: ?*Peer,
+    provision: []u8,
+};
+
+const JoinAcceptHostLink = struct {
+    answer_peer: *Peer,
+    answer_id: u32,
+};
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     limits: PeerLimits,
@@ -707,18 +738,26 @@ pub const Peer = struct {
     /// their source. Walked at deinit to null those borrowed pointers before this
     /// peer's memory is freed.
     cross_peer_proxy_links: std.ArrayList(CrossPeerProxyLink),
+    /// Back-links for Join relay questions sent through this peer. Walked at
+    /// deinit to null owner-peer relay records before this peer is freed.
+    cross_peer_join_relay_links: std.ArrayList(CrossPeerJoinRelayLink),
     /// In-progress Join operations collecting parts.
     pending_joins: std.AutoHashMap(u32, JoinState),
     /// Maps a Join answer's question ID to its join ID + part number.
     pending_join_questions: std.AutoHashMap(u32, PendingJoinQuestion),
+    /// Cross-peer transparent-proxy Join relays keyed by upstream answer id.
+    pending_join_relays: std.AutoHashMap(u32, CrossPeerJoinRelay),
     /// Accept messages waiting for a disembargo.
     pending_accepts_by_embargo: std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)),
     /// Maps question IDs to embargo keys for cleanup on Finish.
     pending_accept_embargo_by_question: std.AutoHashMap(u32, []u8),
     /// Experimental L4 JoinResult provisions waiting for a direct Accept.
     pending_join_accepts: std.StringHashMap(ProvideTarget),
-    /// Experimental L4 JoinResult answer ids -> owned provision bytes.
-    pending_join_result_answers: std.AutoHashMap(u32, []u8),
+    /// Experimental L4 JoinResult answer ids -> accept host and owned provision.
+    pending_join_result_answers: std.AutoHashMap(u32, PendingJoinResultAnswer),
+    /// Back-links from JoinResult answer records on other peers that point at
+    /// this peer as the direct Accept host.
+    join_accept_host_links: std.ArrayList(JoinAcceptHostLink),
     /// Outbound third-party handoffs awaiting ThirdPartyAnswer.
     pending_third_party_awaits: std.StringHashMap(PendingThirdPartyAwait),
     /// Completed third-party answers awaiting adoption.
@@ -951,12 +990,15 @@ pub const Peer = struct {
             .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
             .coupled_vines = .empty,
             .cross_peer_proxy_links = .empty,
+            .cross_peer_join_relay_links = .empty,
             .pending_joins = std.AutoHashMap(u32, JoinState).init(allocator),
             .pending_join_questions = std.AutoHashMap(u32, PendingJoinQuestion).init(allocator),
+            .pending_join_relays = std.AutoHashMap(u32, CrossPeerJoinRelay).init(allocator),
             .pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)).init(allocator),
             .pending_accept_embargo_by_question = std.AutoHashMap(u32, []u8).init(allocator),
             .pending_join_accepts = std.StringHashMap(ProvideTarget).init(allocator),
-            .pending_join_result_answers = std.AutoHashMap(u32, []u8).init(allocator),
+            .pending_join_result_answers = std.AutoHashMap(u32, PendingJoinResultAnswer).init(allocator),
+            .join_accept_host_links = .empty,
             .pending_third_party_awaits = std.StringHashMap(PendingThirdPartyAwait).init(allocator),
             .pending_third_party_answers = std.StringHashMap(u32).init(allocator),
             .pending_third_party_returns = std.AutoHashMap(u32, []u8).init(allocator),
@@ -1234,6 +1276,8 @@ pub const Peer = struct {
         // it first keeps it independent of any error path below.
         self.neutralizeCoupledVinesOnProvidePeer();
         self.neutralizeCrossPeerProxiesOnSourcePeer();
+        self.neutralizeCrossPeerJoinRelaysOnSourcePeer();
+        self.neutralizeJoinAcceptHostLinks();
         _ = self.forceCancelAllQuestions(disconnected_reason);
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
@@ -1325,6 +1369,7 @@ pub const Peer = struct {
         // entries were neutralized at the top of deinit; free the backing store.
         self.coupled_vines.deinit(self.allocator);
         self.cross_peer_proxy_links.deinit(self.allocator);
+        self.cross_peer_join_relay_links.deinit(self.allocator);
 
         peer_cleanup.deinitJoinStateMap(
             @TypeOf(self.pending_joins),
@@ -1332,6 +1377,21 @@ pub const Peer = struct {
             &self.pending_joins,
         );
         self.pending_join_questions.deinit();
+        {
+            var relay_it = self.pending_join_relays.iterator();
+            while (relay_it.next()) |entry| {
+                if (entry.value_ptr.source_peer) |source_peer| {
+                    source_peer.deregisterCrossPeerJoinRelay(self, entry.key_ptr.*);
+                    source_peer.sendJoinRelayFinishAndNeutralize(entry.value_ptr.source_question_id, false) catch |err| {
+                        log.debug("cross-peer join relay: failed to finish downstream question {} during deinit: {}", .{
+                            entry.value_ptr.source_question_id,
+                            err,
+                        });
+                    };
+                }
+            }
+            self.pending_join_relays.deinit();
+        }
 
         peer_cleanup.deinitOwnedStringKeyListMap(
             @TypeOf(self.pending_accepts_by_embargo),
@@ -1351,10 +1411,16 @@ pub const Peer = struct {
             self.pending_join_accepts.deinit();
         }
         {
-            var it = self.pending_join_result_answers.valueIterator();
-            while (it.next()) |provision| self.allocator.free(provision.*);
+            var it = self.pending_join_result_answers.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.accept_peer) |accept_peer| {
+                    if (accept_peer != self) accept_peer.deregisterJoinAcceptHost(self, entry.key_ptr.*);
+                }
+                self.allocator.free(entry.value_ptr.provision);
+            }
             self.pending_join_result_answers.deinit();
         }
+        self.join_accept_host_links.deinit(self.allocator);
         peer_cleanup.deinitOwnedStringKeyMap(
             @TypeOf(self.pending_third_party_awaits),
             self.allocator,
@@ -1611,7 +1677,7 @@ pub const Peer = struct {
         var it = self.pending_join_result_answers.iterator();
         while (it.next()) |entry| {
             if (entry.key_ptr.* == answer_id) continue;
-            total = saturatingAdd(total, entry.value_ptr.*.len);
+            total = saturatingAdd(total, entry.value_ptr.provision.len);
         }
         return total;
     }
@@ -3544,6 +3610,24 @@ pub const Peer = struct {
         _ = self.forwarded_questions.remove(tail_question_id);
     }
 
+    fn sendJoinRelayFinishAndNeutralize(self: *Peer, question_id: u32, release_result_caps: bool) !void {
+        try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+            Peer,
+            self,
+            question_id,
+            release_result_caps,
+            false,
+            Peer.sendFrameControl,
+        );
+        if (self.questions.getPtr(question_id)) |question| {
+            if (question.deinit_ctx) |deinit_ctx| {
+                deinit_ctx(self.allocator, question.ctx);
+                question.deinit_ctx = null;
+            }
+            question.cancelled = true;
+        }
+    }
+
     fn buildForwardedCall(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
         const ctx: *const ForwardCallContext = castCtx(*const ForwardCallContext, ctx_ptr);
         try peer_third_party.applyForwardedCallSendResults(
@@ -4920,6 +5004,18 @@ pub const Peer = struct {
         }
     }
 
+    fn removeQuestionAndDeinit(self: *Peer, question_id: u32) void {
+        if (self.questions.fetchRemove(question_id)) |removed| {
+            if (removed.value.deinit_ctx) |deinit_ctx| {
+                deinit_ctx(self.allocator, removed.value.ctx);
+            }
+            self.freeQuestionParamExports(question_id);
+        }
+        if (self.is_shutting_down and !self.in_deinit and self.questions.count() == 0) {
+            self.completeShutdown();
+        }
+    }
+
     /// Record, under `question_id`, the wire refs an outbound Call's params
     /// just took on our exports (the senderHosted/senderPromise entries of
     /// `effects.callback_applied`, one ref per occurrence), so the inbound
@@ -5240,6 +5336,7 @@ pub const Peer = struct {
         const qid = finish_msg.question_id;
         const was_active = self.active_inbound_questions.remove(qid);
         self.clearPendingJoinResultAnswer(qid);
+        try self.clearPendingJoinRelay(qid, true, finish_msg.release_result_caps);
         // Cancellation race: a Finish for an in-flight inbound call (still
         // active, not yet resolved) means an async handler will answer later.
         // Tombstone the id so that late Return is not recorded in
@@ -5503,6 +5600,62 @@ pub const Peer = struct {
             }
         }
         self.cross_peer_proxy_links.clearRetainingCapacity();
+    }
+
+    fn registerCrossPeerJoinRelay(self: *Peer, owner_peer: *Peer, owner_answer_id: u32) !void {
+        try self.cross_peer_join_relay_links.append(self.allocator, .{
+            .owner_peer = owner_peer,
+            .owner_answer_id = owner_answer_id,
+        });
+    }
+
+    fn deregisterCrossPeerJoinRelay(self: *Peer, owner_peer: *Peer, owner_answer_id: u32) void {
+        var i: usize = 0;
+        while (i < self.cross_peer_join_relay_links.items.len) {
+            const link = self.cross_peer_join_relay_links.items[i];
+            if (link.owner_peer == owner_peer and link.owner_answer_id == owner_answer_id) {
+                _ = self.cross_peer_join_relay_links.swapRemove(i);
+                return;
+            }
+            i += 1;
+        }
+    }
+
+    fn neutralizeCrossPeerJoinRelaysOnSourcePeer(self: *Peer) void {
+        for (self.cross_peer_join_relay_links.items) |link| {
+            if (link.owner_peer.pending_join_relays.getPtr(link.owner_answer_id)) |relay| {
+                if (relay.source_peer == self) relay.source_peer = null;
+            }
+        }
+        self.cross_peer_join_relay_links.clearRetainingCapacity();
+    }
+
+    fn registerJoinAcceptHost(self: *Peer, answer_peer: *Peer, answer_id: u32) !void {
+        try self.join_accept_host_links.append(self.allocator, .{
+            .answer_peer = answer_peer,
+            .answer_id = answer_id,
+        });
+    }
+
+    fn deregisterJoinAcceptHost(self: *Peer, answer_peer: *Peer, answer_id: u32) void {
+        var i: usize = 0;
+        while (i < self.join_accept_host_links.items.len) {
+            const link = self.join_accept_host_links.items[i];
+            if (link.answer_peer == answer_peer and link.answer_id == answer_id) {
+                _ = self.join_accept_host_links.swapRemove(i);
+                return;
+            }
+            i += 1;
+        }
+    }
+
+    fn neutralizeJoinAcceptHostLinks(self: *Peer) void {
+        for (self.join_accept_host_links.items) |link| {
+            if (link.answer_peer.pending_join_result_answers.getPtr(link.answer_id)) |answer| {
+                if (answer.accept_peer == self) answer.accept_peer = null;
+            }
+        }
+        self.join_accept_host_links.clearRetainingCapacity();
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {
@@ -5929,7 +6082,12 @@ pub const Peer = struct {
         }
     }
 
-    fn rememberPendingJoinResultAnswer(self: *Peer, answer_id: u32, provision: []const u8) !void {
+    fn rememberPendingJoinResultAnswer(
+        self: *Peer,
+        answer_id: u32,
+        accept_peer: *Peer,
+        provision: []const u8,
+    ) !void {
         try ensureCountLimit(
             self.pending_join_result_answers.contains(answer_id),
             self.pending_join_result_answers.count(),
@@ -5945,30 +6103,49 @@ pub const Peer = struct {
         errdefer self.allocator.free(copy);
         const entry = try self.pending_join_result_answers.getOrPut(answer_id);
         if (entry.found_existing) return error.DuplicateJoinQuestionId;
-        entry.value_ptr.* = copy;
+        entry.value_ptr.* = .{
+            .accept_peer = accept_peer,
+            .provision = copy,
+        };
+        if (accept_peer != self) {
+            errdefer {
+                _ = self.pending_join_result_answers.remove(answer_id);
+            }
+            try accept_peer.registerJoinAcceptHost(self, answer_id);
+        }
     }
 
     fn clearPendingJoinResultAnswer(self: *Peer, answer_id: u32) void {
         const removed = self.pending_join_result_answers.fetchRemove(answer_id) orelse return;
-        defer self.allocator.free(removed.value);
+        defer self.allocator.free(removed.value.provision);
+        if (removed.value.accept_peer) |accept_peer| {
+            if (accept_peer != self) accept_peer.deregisterJoinAcceptHost(self, answer_id);
+        }
 
         var still_live = false;
         var it = self.pending_join_result_answers.valueIterator();
-        while (it.next()) |provision| {
-            if (std.mem.eql(u8, provision.*, removed.value)) {
+        while (it.next()) |answer| {
+            if (answer.accept_peer == removed.value.accept_peer and
+                std.mem.eql(u8, answer.provision, removed.value.provision))
+            {
                 still_live = true;
                 break;
             }
         }
 
         if (!still_live) {
-            self.clearPendingJoinAccept(removed.value);
+            if (removed.value.accept_peer) |accept_peer| {
+                accept_peer.clearPendingJoinAccept(removed.value.provision);
+            }
         }
     }
 
     fn forgetPendingJoinResultAnswer(self: *Peer, answer_id: u32) void {
         if (self.pending_join_result_answers.fetchRemove(answer_id)) |removed| {
-            self.allocator.free(removed.value);
+            if (removed.value.accept_peer) |accept_peer| {
+                if (accept_peer != self) accept_peer.deregisterJoinAcceptHost(self, answer_id);
+            }
+            self.allocator.free(removed.value.provision);
         }
     }
 
@@ -5995,6 +6172,210 @@ pub const Peer = struct {
             .result_payload = result_payload,
         };
         try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
+    }
+
+    fn crossPeerProxyContextForExport(self: *Peer, export_id: u32) ?*CrossPeerProxyContext {
+        const entry = self.exports.getPtr(export_id) orelse return null;
+        const handler = entry.handler orelse return null;
+        if (handler.on_call != CrossPeerProxyContext.onCall) return null;
+        return castCtx(*CrossPeerProxyContext, handler.ctx);
+    }
+
+    fn crossPeerJoinTargetForResolved(target: cap_table.ResolvedCap) !protocol.MessageTarget {
+        return switch (target) {
+            .imported => |cap| .{
+                .tag = .importedCap,
+                .imported_cap = cap.id,
+                .promised_answer = null,
+            },
+            .exported, .promised, .none => error.UnsupportedCrossPeerJoinTarget,
+        };
+    }
+
+    fn putPendingJoinRelay(
+        self: *Peer,
+        owner_answer_id: u32,
+        source_peer: *Peer,
+        source_question_id: u32,
+    ) !void {
+        try ensureCountLimit(
+            self.pending_join_relays.contains(owner_answer_id),
+            self.pending_join_relays.count(),
+            self.limits.max_pending_join_questions,
+        );
+        const entry = try self.pending_join_relays.getOrPut(owner_answer_id);
+        if (entry.found_existing) return error.DuplicateJoinQuestionId;
+        entry.value_ptr.* = .{
+            .source_peer = source_peer,
+            .source_question_id = source_question_id,
+        };
+        errdefer _ = self.pending_join_relays.remove(owner_answer_id);
+        try source_peer.registerCrossPeerJoinRelay(self, owner_answer_id);
+    }
+
+    fn clearPendingJoinRelay(
+        self: *Peer,
+        owner_answer_id: u32,
+        send_downstream_finish: bool,
+        release_result_caps: bool,
+    ) !void {
+        const removed = self.pending_join_relays.fetchRemove(owner_answer_id) orelse return;
+        if (removed.value.source_peer) |source_peer| {
+            source_peer.deregisterCrossPeerJoinRelay(self, owner_answer_id);
+            if (send_downstream_finish) {
+                try source_peer.sendJoinRelayFinishAndNeutralize(
+                    removed.value.source_question_id,
+                    release_result_caps,
+                );
+            }
+        }
+    }
+
+    fn tryHandleCrossPeerProxyJoin(self: *Peer, join: protocol.Join) !bool {
+        if (join.target.tag != .importedCap) return false;
+        const export_id = join.target.imported_cap orelse return false;
+        const proxy_ctx = self.crossPeerProxyContextForExport(export_id) orelse return false;
+        const source_peer = proxy_ctx.source_peer orelse {
+            try self.sendReturnException(join.question_id, "cross-peer proxy source disconnected");
+            return true;
+        };
+        if (source_peer.is_shutting_down) {
+            try self.sendReturnException(join.question_id, "cross-peer proxy source disconnected");
+            return true;
+        }
+        try self.forwardCrossPeerProxyJoin(join, source_peer, proxy_ctx.target);
+        return true;
+    }
+
+    fn forwardCrossPeerProxyJoin(
+        self: *Peer,
+        join: protocol.Join,
+        source_peer: *Peer,
+        source_target: cap_table.ResolvedCap,
+    ) !void {
+        const downstream_target = crossPeerJoinTargetForResolved(source_target) catch |err| {
+            try self.sendReturnException(join.question_id, @errorName(err));
+            return;
+        };
+
+        const relay = try source_peer.allocator.create(CrossPeerJoinRelayContext);
+        relay.* = .{
+            .owner_peer = self,
+            .owner_answer_id = join.question_id,
+        };
+        var relay_owned = true;
+        errdefer if (relay_owned) source_peer.allocator.destroy(relay);
+
+        const source_question_id = try source_peer.allocateQuestionNoRestore(relay, onCrossPeerJoinReturn);
+        var question_owned = true;
+        errdefer if (question_owned) source_peer.removeQuestionAndDeinit(source_question_id);
+
+        const source_question = source_peer.questions.getPtr(source_question_id) orelse return error.MissingAllocatedQuestion;
+        source_question.suppress_auto_finish = true;
+        source_question.deinit_ctx = CrossPeerJoinRelayContext.deinit;
+        relay_owned = false;
+
+        try self.putPendingJoinRelay(join.question_id, source_peer, source_question_id);
+        var relay_registered = true;
+        errdefer if (relay_registered) {
+            self.clearPendingJoinRelay(join.question_id, false, false) catch |err| {
+                log.debug("cross-peer join relay: failed to roll back relay {}: {}", .{ join.question_id, err });
+            };
+        };
+
+        var relay_settled = false;
+        relay.settled_flag = &relay_settled;
+
+        var builder = protocol.MessageBuilder.init(source_peer.allocator);
+        defer builder.deinit();
+        try builder.buildJoin(source_question_id, downstream_target, join.key_part);
+        source_peer.sendBuilder(&builder) catch |err| {
+            if (relay_settled) {
+                question_owned = false;
+                relay_registered = false;
+                return;
+            }
+            relay_registered = false;
+            self.clearPendingJoinRelay(join.question_id, false, false) catch |clear_err| {
+                log.debug("cross-peer join relay: failed to clear relay {} after send failure: {}", .{
+                    join.question_id,
+                    clear_err,
+                });
+            };
+            question_owned = false;
+            source_peer.removeQuestionAndDeinit(source_question_id);
+            try self.sendReturnException(join.question_id, @errorName(err));
+            return;
+        };
+
+        if (relay_settled) {
+            question_owned = false;
+            relay_registered = false;
+            return;
+        }
+        relay.settled_flag = null;
+        question_owned = false;
+        relay_registered = false;
+    }
+
+    fn onCrossPeerJoinReturn(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        ret: protocol.Return,
+        inbound_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const ctx: *CrossPeerJoinRelayContext = castCtx(*CrossPeerJoinRelayContext, ctx_ptr);
+        const owner_peer = ctx.owner_peer;
+        const owner_answer_id = ctx.owner_answer_id;
+        if (ctx.settled_flag) |flag| flag.* = true;
+        defer CrossPeerJoinRelayContext.deinit(peer.allocator, ctx);
+
+        if (!owner_peer.pending_join_relays.contains(owner_answer_id)) return;
+
+        switch (ret.tag) {
+            .results => {
+                relayReturnAcrossPeers(owner_peer, owner_answer_id, peer, ret, inbound_caps, true) catch |err| {
+                    owner_peer.clearPendingJoinRelay(owner_answer_id, true, false) catch |clear_err| {
+                        log.debug("cross-peer join relay: failed to finish downstream question after relay error: {}", .{clear_err});
+                    };
+                    owner_peer.sendReturnException(owner_answer_id, @errorName(err)) catch |send_err| {
+                        log.debug("cross-peer join relay: failed to fail upstream question {}: {}", .{
+                            owner_answer_id,
+                            send_err,
+                        });
+                    };
+                };
+            },
+            .exception => {
+                const reason = if (ret.exception) |exception| exception.reason else "cross-peer join failed";
+                owner_peer.sendReturnException(owner_answer_id, reason) catch |send_err| {
+                    log.debug("cross-peer join relay: failed to relay exception for question {}: {}", .{
+                        owner_answer_id,
+                        send_err,
+                    });
+                };
+                owner_peer.clearPendingJoinRelay(owner_answer_id, true, false) catch |clear_err| {
+                    log.debug("cross-peer join relay: failed to finish exception result {}: {}", .{
+                        owner_answer_id,
+                        clear_err,
+                    });
+                };
+            },
+            else => {
+                owner_peer.sendReturnException(owner_answer_id, "cross-peer join relay: unexpected return") catch |send_err| {
+                    log.debug("cross-peer join relay: failed to fail unexpected return for question {}: {}", .{
+                        owner_answer_id,
+                        send_err,
+                    });
+                };
+                owner_peer.clearPendingJoinRelay(owner_answer_id, true, false) catch |clear_err| {
+                    log.debug("cross-peer join relay: failed to finish unexpected result {}: {}", .{
+                        owner_answer_id,
+                        clear_err,
+                    });
+                };
+            },
+        }
     }
 
     fn queueEmbargoedAccept(
@@ -6167,13 +6548,14 @@ pub const Peer = struct {
             }
             return;
         };
+        const accept_peer = hosted.accept_peer;
         var provision_registered = true;
         var provision_owned = true;
         defer if (provision_registered) network.cancelHostJoinResult(hosted.provision);
         defer if (provision_owned) self.allocator.free(hosted.provision);
         defer self.allocator.free(hosted.result);
 
-        self.putPendingJoinAcceptOwned(hosted.provision, target_copy) catch |err| {
+        accept_peer.putPendingJoinAcceptOwned(hosted.provision, target_copy) catch |err| {
             var err_it = join_state.parts.iterator();
             while (err_it.next()) |entry| {
                 try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
@@ -6186,7 +6568,7 @@ pub const Peer = struct {
         var sent_results: usize = 0;
         var send_it = join_state.parts.iterator();
         while (send_it.next()) |entry| {
-            self.rememberPendingJoinResultAnswer(entry.value_ptr.question_id, hosted.provision) catch |err| {
+            self.rememberPendingJoinResultAnswer(entry.value_ptr.question_id, accept_peer, hosted.provision) catch |err| {
                 try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
                 continue;
             };
@@ -6201,7 +6583,7 @@ pub const Peer = struct {
 
         if (sent_results == 0) {
             provision_registered = false;
-            self.clearPendingJoinAccept(hosted.provision);
+            accept_peer.clearPendingJoinAccept(hosted.provision);
         }
     }
 
@@ -6215,6 +6597,7 @@ pub const Peer = struct {
         {
             return error.DuplicateQuestionId;
         }
+        if (try self.tryHandleCrossPeerProxyJoin(join)) return;
         try peer_provide_join_orchestration.handleJoin(
             Peer,
             JoinKeyPart,
@@ -6312,6 +6695,7 @@ pub const Peer = struct {
             self.send_results_to_third_party.contains(question_id) or
             self.forwarded_questions.contains(question_id) or
             self.forwarded_tail_questions.contains(question_id) or
+            self.pending_join_relays.contains(question_id) or
             self.hasQueuedPendingQuestionId(question_id);
     }
 
@@ -6323,7 +6707,8 @@ pub const Peer = struct {
     fn inboundQuestionIdInUse(self: *Peer, question_id: u32) !bool {
         return (try self.inboundAnswerQuestionIdInUse(question_id)) or
             self.provides_by_question.contains(question_id) or
-            self.pending_join_questions.contains(question_id);
+            self.pending_join_questions.contains(question_id) or
+            self.pending_join_relays.contains(question_id);
     }
 
     fn handleCall(self: *Peer, frame: []const u8, call: protocol.Call) !void {
@@ -6754,12 +7139,7 @@ pub const Peer = struct {
         }
 
         pub fn removeQuestionAndDeinit(self: *Peer, question_id: u32) void {
-            if (self.questions.fetchRemove(question_id)) |removed| {
-                if (removed.value.deinit_ctx) |deinit_ctx| {
-                    deinit_ctx(self.allocator, removed.value.ctx);
-                }
-                self.freeQuestionParamExports(question_id);
-            }
+            Peer.removeQuestionAndDeinit(self, question_id);
         }
 
         pub fn sendJoinExperimentalRetainedResult(
@@ -6770,6 +7150,15 @@ pub const Peer = struct {
             on_return: QuestionCallback,
         ) !u32 {
             return Peer.sendJoinExperimentalWithAutoFinish(self, target, key_part, ctx, on_return, true);
+        }
+
+        pub fn addCrossPeerProxyExport(
+            self: *Peer,
+            source_peer: *Peer,
+            target: cap_table.ResolvedCap,
+            release_source_import_id: ?u32,
+        ) !u32 {
+            return Peer.addCrossPeerProxyExport(self, source_peer, target, release_source_import_id);
         }
 
         pub fn releaseVineExport(self: *Peer, vine_id: u32) void {

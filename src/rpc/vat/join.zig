@@ -10,17 +10,21 @@ const message = @import("../../serialization/message.zig");
 const l3_network = @import("./network.zig");
 
 /// Host-side output for one completed Join. Both slices are owned by the caller.
-pub const HostJoinResult = struct {
-    /// Serialized AnyPointer message used as the future `Accept.provision`.
-    provision: []u8,
-    /// Serialized AnyPointer message whose root is the Zig `JoinResult` struct.
-    result: []u8,
+pub fn HostJoinResult(comptime PeerType: type) type {
+    return struct {
+        /// Host-side peer that should receive the future `Accept`.
+        accept_peer: *PeerType,
+        /// Serialized AnyPointer message used as the future `Accept.provision`.
+        provision: []u8,
+        /// Serialized AnyPointer message whose root is the Zig `JoinResult` struct.
+        result: []u8,
 
-    pub fn deinit(self: *HostJoinResult, allocator: std.mem.Allocator) void {
-        allocator.free(self.provision);
-        allocator.free(self.result);
-    }
-};
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.provision);
+            allocator.free(self.result);
+        }
+    };
+}
 
 /// Recipient-side resolution of a Zig `JoinResult`.
 pub fn Joined(comptime PeerType: type) type {
@@ -40,13 +44,14 @@ pub fn Joined(comptime PeerType: type) type {
 pub fn JoinNetwork(comptime PeerType: type) type {
     return struct {
         const Self = @This();
+        pub const HostJoinResultType = HostJoinResult(PeerType);
         pub const JoinedType = Joined(PeerType);
 
         pub const HostJoinResultFn = *const fn (
             ctx: *anyopaque,
             host_peer: *PeerType,
             join_id: u32,
-        ) anyerror!HostJoinResult;
+        ) anyerror!HostJoinResultType;
 
         pub const ConnectJoinedFn = *const fn (
             ctx: *anyopaque,
@@ -77,7 +82,7 @@ pub fn JoinNetwork(comptime PeerType: type) type {
             };
         }
 
-        pub fn hostJoinResult(self: Self, host_peer: *PeerType, join_id: u32) !HostJoinResult {
+        pub fn hostJoinResult(self: Self, host_peer: *PeerType, join_id: u32) !HostJoinResultType {
             return self.host_join_result(self.ctx, host_peer, join_id);
         }
 
@@ -157,14 +162,19 @@ pub fn LoopbackJoinNetwork(comptime PeerType: type) type {
         allocator: std.mem.Allocator,
         next_nonce: u64 = 1,
         /// host-side peer -> joiner-side direct peer (both borrowed).
-        direct_peers: std.AutoHashMap(*PeerType, *PeerType),
+        direct_peers: std.AutoHashMap(*PeerType, DirectPeer),
         /// provision bytes (owned) -> joiner-side direct peer (borrowed).
         registry: std.StringHashMap(*PeerType),
+
+        const DirectPeer = struct {
+            joiner_peer: *PeerType,
+            accept_peer: *PeerType,
+        };
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
-                .direct_peers = std.AutoHashMap(*PeerType, *PeerType).init(allocator),
+                .direct_peers = std.AutoHashMap(*PeerType, DirectPeer).init(allocator),
                 .registry = std.StringHashMap(*PeerType).init(allocator),
             };
         }
@@ -182,12 +192,27 @@ pub fn LoopbackJoinNetwork(comptime PeerType: type) type {
 
         /// Register the joiner-side direct peer that can reach `host_peer`.
         pub fn registerDirectPeer(self: *Self, host_peer: *PeerType, joiner_peer: *PeerType) !void {
-            try self.direct_peers.put(host_peer, joiner_peer);
+            try self.registerDirectPeerWithAcceptHost(host_peer, joiner_peer, host_peer);
         }
 
-        fn hostJoinResult(ctx: *anyopaque, host_peer: *PeerType, join_id: u32) anyerror!HostJoinResult {
+        /// Register a direct peer plus the host-side peer that will receive the
+        /// final `Accept`. Tests use this when Join reaches the host through a
+        /// relay connection but Accept should arrive on a separate direct link.
+        pub fn registerDirectPeerWithAcceptHost(
+            self: *Self,
+            host_peer: *PeerType,
+            joiner_peer: *PeerType,
+            accept_peer: *PeerType,
+        ) !void {
+            try self.direct_peers.put(host_peer, .{
+                .joiner_peer = joiner_peer,
+                .accept_peer = accept_peer,
+            });
+        }
+
+        fn hostJoinResult(ctx: *anyopaque, host_peer: *PeerType, join_id: u32) anyerror!HostJoinResult(PeerType) {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const joiner_peer = self.direct_peers.get(host_peer) orelse return error.UnknownDirectJoinPeer;
+            const direct = self.direct_peers.get(host_peer) orelse return error.UnknownDirectJoinPeer;
             var nonce_buf: [16]u8 = undefined;
             std.mem.writeInt(u64, nonce_buf[0..8], join_id, .big);
             std.mem.writeInt(u64, nonce_buf[8..16], self.next_nonce, .big);
@@ -210,12 +235,13 @@ pub fn LoopbackJoinNetwork(comptime PeerType: type) type {
             const gop = try self.registry.getOrPut(registry_key);
             if (gop.found_existing) return error.DuplicateJoinProvision;
             registry_inserted = true;
-            gop.value_ptr.* = joiner_peer;
+            gop.value_ptr.* = direct.joiner_peer;
 
             const result = try encodeJoinResult(self.allocator, join_id, true, provision);
             errdefer self.allocator.free(result);
 
             return .{
+                .accept_peer = direct.accept_peer,
                 .provision = provision,
                 .result = result,
             };

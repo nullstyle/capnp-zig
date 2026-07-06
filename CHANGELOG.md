@@ -65,6 +65,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Experimental RPC Level-4 transparent proxy Join relay.** Inbound `Join`
+  requests that target transparent cross-peer proxy exports now relay through the
+  proxy to the underlying source peer, relay downstream JoinResult/exception
+  Returns back upstream, and keep the downstream Join question alive until the
+  upstream caller sends Finish. Relay state has explicit source-peer back-links
+  and direct-Accept-host back-links so owner-peer-first teardown,
+  source-peer-first teardown, upstream Finish-before-Return, source unavailable,
+  downstream send failure, target mismatch through the relay, and OOM during
+  relay setup all drain without stale pointers or duplicate Returns. The
+  Zig-only happy path now proves A can join caps through B/C proxy exports,
+  Accept directly on A↔D, and invoke the accepted cap without routing through
+  the proxy owners after pickup. L4 remains Experimental: no Stable/high-level
+  `Peer.sendJoin`, no production Join addressing policy, no multi-hop relay
+  beyond transparent proxy exports, and no cross-implementation L4 runtime
+  claim.
+
 - **Experimental RPC Level-4 JoinResult runtime expansion.** Peers can now
   attach an Experimental `rpc.vat.join.JoinNetwork`; when present, completed
   inbound Join parts return compact Zig `JoinResult` payloads instead of the

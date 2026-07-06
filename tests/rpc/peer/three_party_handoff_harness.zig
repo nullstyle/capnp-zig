@@ -19,8 +19,11 @@ pub fn expectNoProvideState(peer: *const Peer) !void {
 pub fn expectNoJoinState(peer: *const Peer) !void {
     try std.testing.expectEqual(@as(usize, 0), peer.pending_joins.count());
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.cross_peer_join_relay_links.items.len);
+    try std.testing.expectEqual(@as(usize, 0), peer.join_accept_host_links.items.len);
 }
 
 pub fn expectNoEmbargoedAcceptState(peer: *const Peer) !void {
@@ -73,4 +76,5 @@ pub fn expectNoOutboundProvide(recipient_peer: *const Peer, vine_id: u32) !void 
 
 pub fn expectNoCrossPeerProxyLinks(peer: *const Peer) !void {
     try std.testing.expectEqual(@as(usize, 0), peer.cross_peer_proxy_links.items.len);
+    try std.testing.expectEqual(@as(usize, 0), peer.cross_peer_join_relay_links.items.len);
 }

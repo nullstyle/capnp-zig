@@ -169,15 +169,21 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   can collect local JoinKeyPart structs, compare resolved targets, return
   provided caps on the legacy raw-helper path, or, with an Experimental
   `rpc.vat.join.JoinNetwork` attached, return compact Zig JoinResult payloads
-  that the joiner resolves into a direct `Accept` and callable cap. Regressions
-  cover Finish/send-failure/OOM paths, pending direct-Accept rollback, retained
-  result import release, mismatch/cancel cleanup, and callback failure after
-  retention. `just e2e-l4-zig` runs the focused Zig gate. There is no
-  Stable/high-level `Peer.sendJoin`, no production Join addressing policy, no
-  multi-hop relay, and no cross-implementation L4 interop claim. The C++ L3 e2e
-  lane includes shape probes plus a source-backed runtime-surface probe; it
-  currently confirms that the C++ reference stack exposes no callable generic
-  `VatNetwork` Join hook for this TCP harness. Experimental; exact-pin only.
+  that the joiner resolves into a direct `Accept` and callable cap. Transparent
+  cross-peer proxy exports can relay Join requests to their source peer, relay
+  downstream JoinResult/exception Returns upstream, and keep the downstream
+  JoinResult alive until the upstream Finish. Regressions cover
+  Finish/send-failure/OOM paths, pending direct-Accept rollback, retained result
+  import release, mismatch/cancel cleanup, callback failure after retention,
+  proxy relay success, source unavailable, downstream send failure, owner/source
+  teardown, target mismatch through relay, and relay setup OOM rollback.
+  `just e2e-l4-zig` runs the focused Zig gate. There is no Stable/high-level
+  `Peer.sendJoin`, no production Join addressing policy, no multi-hop relay
+  beyond transparent proxy relay, and no cross-implementation L4 interop claim.
+  The C++ L3 e2e lane includes shape probes plus a source-backed runtime-surface
+  probe; it currently confirms that the C++ reference stack exposes no callable
+  generic `VatNetwork` Join hook for this TCP harness. Experimental; exact-pin
+  only.
 
 ## Known limitations (v0.3.0)
 

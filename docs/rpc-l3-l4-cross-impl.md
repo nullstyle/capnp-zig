@@ -96,9 +96,12 @@ This does not prove cross-implementation L4 runtime interop. capnp-zig now has a
 raw Experimental `Peer.sendJoinExperimental` helper, a Zig↔Zig JoinResult
 runtime pilot behind `rpc.vat.join.JoinNetwork`, and C++ source-surface recon.
 The Zig pilot can return compact Zig JoinResult payloads, resolve them to a
-direct peer, send `Accept`, and invoke the accepted cap. It still has no
-Stable/high-level `Peer.sendJoin`, no production Join addressing policy, and no
-multi-hop Join relay.
+direct peer, send `Accept`, and invoke the accepted cap. It can also relay Join
+requests through transparent cross-peer proxy exports to the proxy source peer
+and keep the downstream JoinResult alive until the upstream Finish. It still has
+no Stable/high-level `Peer.sendJoin`, no production Join addressing policy, no
+multi-hop relay beyond that transparent proxy case, and no cross-implementation
+L4 runtime claim.
 
 The current C++ blocker is source-backed and e2e-checked: vendored Cap'n Proto
 C++ exposes the generic Level-3 `VatNetwork` hooks used by this lane, while

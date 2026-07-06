@@ -1,14 +1,16 @@
 # RPC L4 Join Readiness
 
-Status: Experimental, Zig↔Zig JoinResult runtime pilot plus raw origination and
-receive-side readiness.
+Status: Experimental, Zig↔Zig JoinResult runtime pilot with transparent proxy
+relay plus raw origination and receive-side readiness.
 
 `capnp-zig` has a guarded slice of Cap'n Proto RPC Level 4 `Join`: inbound
 Join state handling, a low-level Experimental sender for raw Join parts, and a
 Zig-only `JoinResult` → direct `Accept` runtime path behind an Experimental
-`JoinNetwork` seam. This is not a complete L4 implementation and is not part of
-the Stable surface. It exists to keep the provide/join state model correct while
-L3 handoff grows toward cross-implementation use.
+`JoinNetwork` seam. Transparent cross-peer proxy exports can now relay Join
+requests to their source peer and hold the downstream JoinResult lifetime until
+the upstream caller sends Finish. This is not a complete L4 implementation and
+is not part of the Stable surface. It exists to keep the provide/join state
+model correct while L3 handoff grows toward cross-implementation use.
 
 ## What Exists
 
@@ -35,6 +37,14 @@ L3 handoff grows toward cross-implementation use.
 - A joiner can resolve every Zig `JoinResult`, validate that the results agree,
   send `Accept` on the direct peer, receive the accepted cap, and invoke it on
   that direct peer.
+- An inbound `Join` targeting an exported transparent `CrossPeerProxyContext`
+  relays to the proxy source peer using the same `keyPart`. Successful
+  downstream JoinResult Returns are relayed back upstream, while the downstream
+  Join question remains live until the upstream caller sends Finish.
+- Relay state is tracked by upstream answer id and paired with source-peer
+  back-links. Owner-peer-first teardown sends downstream Finish and neutralizes
+  late Returns; source-peer-first teardown nulls owner back-links before the
+  source peer is freed.
 - `Finish` for an outstanding Join question clears the matching part, releases
   its target payload, and drops the join bucket when it becomes empty.
 - Return send failure while completing either direct-cap Join Returns or
@@ -84,6 +94,12 @@ checks. This is not a full C++ L4 Join runtime.
   peer deinit.
 - `pending_join_accepts` drains on direct Accept success, JoinResult send
   rollback when no result reached the joiner, and peer deinit.
+- `pending_join_relays` and `cross_peer_join_relay_links` drain together on
+  upstream Finish, downstream exception, owner/source teardown, downstream send
+  failure, and allocation rollback.
+- `pending_join_result_answers` records the peer that hosts the final direct
+  Accept provision. Cross-peer Accept-host back-links prevent stale pointers if
+  the Accept host deinitializes before the JoinResult answers Finish.
 - Target ownership is single-owner: once a part is inserted, the Join state owns
   its `ProvideTarget`; rejected or failed inserts return ownership to the caller
   for cleanup. A completed JoinResult path clones the target into
@@ -103,6 +119,14 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   sends `Accept`, imports the accepted cap, and invokes it,
 - JoinResult Return send failure rollback, proving no stale
   `pending_join_accepts` entry remains when all JoinResult Returns fail,
+- transparent proxy Join relay where A joins two caps through B/C proxy exports
+  that forward to the same D-hosted cap, receives JoinResults, sends direct
+  Accept on A↔D, invokes the accepted cap directly, and then drains relay state
+  only after upstream Finish,
+- relay failure/lifecycle cases: upstream Finish before downstream Return,
+  source unavailable, downstream Join send failure, owner-peer-first teardown,
+  source-peer-first teardown, target mismatch through the relay, and OOM
+  rollback around relay setup,
 - test-local coordinator selection of a callable cap across two returned Join
   parts, including release of the retained result imports,
 - test-local coordinator mismatch handling with no retained joined caps,
@@ -118,8 +142,8 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - allocation-failure rollback for fresh join-bucket insertion.
 
 The shared L3/L4 test harness now includes assertions for drained provide,
-join, pending direct-accept, embargoed-accept, third-party, and parked-call
-state.
+join, Join relay, JoinResult accept-host back-link, pending direct-accept,
+embargoed-accept, third-party, and parked-call state.
 
 `just e2e-l4-zig` runs the focused Zig runtime gate for the current
 JoinResult→Accept path.
@@ -140,15 +164,16 @@ comments in `rpc.capnp`.
   applications still need their own network-specific key/result policy.
 - No bundled multi-peer/direct transport dialer for Join. The current Zig proof
   resolves to already-live peers registered with the loopback network.
-- No multi-hop Join relay semantics.
+- No multi-hop Join relay beyond transparent cross-peer proxy exports.
 - No cross-implementation L4 runtime interop.
 
 ## Next Work
 
-The next L4 step is to add transparent proxy relay semantics on top of the
-Zig-only JoinResult runtime path, then drive a real `Join` exchange against an
-implementation with usable Join hooks. If the C++ reference stack grows callable
-generic Join hooks, `just e2e-l3-cpp` should fail its source probe and force
-this document to move from blocker recon to runtime interop work. Until that
-exists, keep L4 documented as an Experimental Zig↔Zig runtime pilot, not
-cross-implementation runtime interop.
+The next L4 step is runtime expansion beyond the current transparent proxy
+relay: either a production Join addressing policy/direct-connection dialer for
+Zig deployments, or a real `Join` exchange against an implementation with usable
+Join hooks. If the C++ reference stack grows callable generic Join hooks,
+`just e2e-l3-cpp` should fail its source probe and force this document to move
+from blocker recon to runtime interop work. Until that exists, keep L4
+documented as an Experimental Zig↔Zig runtime pilot, not cross-implementation
+runtime interop.

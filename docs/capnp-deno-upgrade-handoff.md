@@ -5,9 +5,9 @@ This note is for the next `capnp-deno` session that updates its dependency on
 
 ## Target
 
-Pin `capnp-deno` to a `capnp-zig` commit at or after the L4 Join readiness
-sprint. In the implementation handoff for that sprint, use the final pushed
-commit SHA as the exact dependency target.
+Pin `capnp-deno` to a `capnp-zig` commit at or after the L4 transparent Join
+relay sprint. In the implementation handoff for that sprint, use the final
+pushed commit SHA as the exact dependency target.
 
 The relevant baseline includes:
 
@@ -29,11 +29,17 @@ The relevant baseline includes:
   `sendSave`, `sendRestore`) with rollback/lifecycle regressions for malformed
   payloads, Return send failures, callback failures after restored-cap retention,
   independent hook clearing, reconnect/resave, and OOM paths.
-- Experimental L4 receive-side Join readiness with rollback/lifecycle
-  regressions for matching parts, mismatches, duplicate parts,
-  Finish-before-completion cleanup, Return send failures, and OOM insertion
-  rollback. There is no public `sendJoin` convenience or cross-implementation
-  L4 claim.
+- Experimental L4 receive-side Join readiness and Zig-only JoinResult runtime
+  with rollback/lifecycle regressions for matching parts, mismatches, duplicate
+  parts, Finish-before-completion cleanup, Return send failures, pending
+  direct-Accept lifetime, and OOM insertion rollback.
+- Experimental L4 transparent proxy Join relay: Join requests targeting
+  cross-peer proxy exports can forward to the proxy source peer, relay
+  downstream JoinResult/exception Returns upstream, and preserve downstream
+  lifetime until upstream Finish. Regressions cover source unavailable,
+  downstream send failure, owner/source teardown, target mismatch through relay,
+  Finish-before-Return, and OOM rollback. There is no public Stable `sendJoin`
+  convenience or cross-implementation L4 claim.
 
 ## Integration Work
 
@@ -55,16 +61,18 @@ The relevant baseline includes:
 8. Add downstream L2 tests if persistence is surfaced: save, reconnect, restore,
    resave, unknown ref, malformed/exception Return handling, and callback failure
    after restore.
-9. Do not surface L4 as a downstream API yet; use the readiness evidence only as
-   context for future cross-implementation reconnaissance.
+9. Do not surface L4 as a downstream API yet; use the readiness/relay evidence
+   only as context for future cross-implementation reconnaissance or exact-pin
+   Zig-only experiments.
 
 ## Caveats
 
 - L2 persistence remains Experimental. Sturdy-ref bytes and restore semantics are
   realm/vat-specific; do not expose them as a stable cross-runtime contract yet.
 - L3 remains Zig-to-Zig only. Do not promise cross-implementation L3 pickup yet.
-- L4 Join remains receive-side/readiness-only in `capnp-zig`; do not promise
-  cross-implementation Join behavior yet.
+- L4 Join remains Experimental and Zig-only in `capnp-zig`; transparent proxy
+  relay is implemented only for capnp-zig peers and does not imply
+  cross-implementation Join behavior.
 - `LoopbackVatNetwork` is a test/in-process helper, not a production addressing
   policy.
 - QUIC remains Experimental and opt-in behind `-Dquic=true`.
