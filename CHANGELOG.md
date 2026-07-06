@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy-relay pickup through the real `JoinCoordinator`, and
   `releaseResultCaps` propagation when upstream Finish drains a relayed
   JoinResult lifetime after Return, including downstream Finish send retry.
+  Host-side JoinResult rollback now also clears the pending direct-Accept
+  provision if both the JoinResult Return and its fallback exception Return fail
+  before any JoinResult was delivered.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
   roll back if allocation fails before the first part is fully indexed, avoiding

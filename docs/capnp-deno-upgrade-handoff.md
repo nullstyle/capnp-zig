@@ -32,7 +32,8 @@ The relevant baseline includes:
 - Experimental L4 receive-side Join readiness and Zig-only JoinResult runtime
   with rollback/lifecycle regressions for matching parts, mismatches, duplicate
   parts, Finish-before-completion cleanup, Return send failures, pending
-  direct-Accept lifetime, and OOM insertion rollback.
+  direct-Accept lifetime, fallback exception send failures after JoinResult
+  Return failures, and OOM insertion rollback.
 - Experimental `rpc.peer.JoinCoordinator` for the compact Zig JoinResult flow:
   it sends key parts, collects matching JoinResults through a `JoinNetwork`,
   sends direct Accept, retains/releases the accepted cap, and Finishes each

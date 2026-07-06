@@ -115,7 +115,8 @@ checks. This is not a full C++ L4 Join runtime.
   completion, mismatch completion, Finish cleanup, send-failure fallback, and
   peer deinit.
 - `pending_join_accepts` drains on direct Accept success, JoinResult send
-  rollback when no result reached the joiner, and peer deinit.
+  rollback when no result reached the joiner, fallback exception send failure
+  before any JoinResult is delivered, and peer deinit.
 - `pending_join_relays` and `cross_peer_join_relay_links` drain together on
   upstream Finish, downstream exception, owner/source teardown, downstream send
   failure, and allocation rollback. If relaying the downstream Finish fails,
@@ -187,7 +188,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - direct Accept results-send failure on the host, where the coordinator receives
   the fallback exception and still drains JoinResult answers/provisions,
 - JoinResult Return send failure rollback, proving no stale
-  `pending_join_accepts` entry remains when all JoinResult Returns fail,
+  `pending_join_accepts` entry remains when all JoinResult Returns fail, even if
+  the fallback exception Return send also fails before any JoinResult is
+  delivered,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports
   that forward to the same D-hosted cap, receives JoinResults through the real
   `JoinCoordinator`, sends direct Accept on A↔D, invokes the accepted cap

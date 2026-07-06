@@ -139,6 +139,30 @@ const ResultsFailCapture = struct {
     }
 };
 
+const ResultsAndExceptionsFailCapture = struct {
+    failed_results: usize = 0,
+    failed_exceptions: usize = 0,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch return;
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") return;
+        const ret = decoded.asReturn() catch return;
+        switch (ret.tag) {
+            .results => {
+                self.failed_results += 1;
+                return error.TestExpectedError;
+            },
+            .exception => {
+                self.failed_exceptions += 1;
+                return error.TestExpectedError;
+            },
+            else => {},
+        }
+    }
+};
+
 const ResultsFailingServerLink = struct {
     client: *Peer,
     failed_results: usize = 0,
@@ -2320,6 +2344,41 @@ test "L4 JoinResult send failure drains pending direct Accept state" {
     try std.testing.expectEqual(@as(usize, 2), fail_capture.failed_results);
     try fail_capture.capture.expectException(150, "TestExpectedError");
     try fail_capture.capture.expectException(151, "TestExpectedError");
+}
+
+test "L4 JoinResult fallback exception send failure drains pending direct Accept state" {
+    const allocator = std.testing.allocator;
+
+    var fail_capture = ResultsAndExceptionsFailCapture{};
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&fail_capture, ResultsAndExceptionsFailCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&peer, &peer);
+    peer.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&peer);
+
+    const first = try buildJoinFrame(allocator, 152, export_id, 0x4b12, 2, 0);
+    defer allocator.free(first);
+    try peer.handleFrame(first);
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
+
+    const second = try buildJoinFrame(allocator, 153, export_id, 0x4b12, 2, 1);
+    defer allocator.free(second);
+    try std.testing.expectError(error.TestExpectedError, peer.handleFrame(second));
+
+    try harness.expectNoJoinState(&peer);
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try std.testing.expectEqual(@as(usize, 1), fail_capture.failed_results);
+    try std.testing.expectEqual(@as(usize, 1), fail_capture.failed_exceptions);
 }
 
 test "L4 JoinResult Finish before direct Accept drains pending provision" {

@@ -6941,6 +6941,10 @@ pub const Peer = struct {
         target_owned = false;
 
         var sent_results: usize = 0;
+        errdefer if (sent_results == 0) {
+            provision_registered = false;
+            accept_peer.clearPendingJoinAccept(hosted.provision);
+        };
         var send_it = join_state.parts.iterator();
         while (send_it.next()) |entry| {
             self.rememberPendingJoinResultAnswer(entry.value_ptr.question_id, accept_peer, hosted.provision) catch |err| {

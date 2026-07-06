@@ -203,6 +203,7 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   connector malformed-token/no-dial,
   network-teardown-before-release, and OOM-before-dial handling, retained result
   import release, mismatch/cancel cleanup, callback failure after retention,
+  JoinResult fallback-exception send-failure rollback,
   proxy relay success through the real coordinator, source unavailable,
   unsupported source-target rejection, downstream Join send failure, downstream
   results/exception Return relay failure, unexpected downstream Return cleanup,
