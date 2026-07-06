@@ -111,10 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Returns back upstream, and keep the downstream Join question alive until the
   upstream caller sends Finish. Relay state has explicit source-peer back-links
   and direct-Accept-host back-links so owner-peer-first teardown,
-  source-peer-first teardown, upstream Finish-before-Return, failed downstream
-  Finish retry, source unavailable, downstream Join send failure, downstream
-  Return relay failure, target mismatch through the relay, and OOM during relay
-  setup all drain without stale pointers or duplicate Returns. The
+  source-peer-first teardown before or after downstream Return,
+  upstream Finish-before-Return, failed downstream Finish retry, source
+  unavailable, downstream Join send failure, downstream Return relay failure,
+  target mismatch through the relay, and OOM during relay setup all drain
+  without stale pointers or duplicate Returns. The
   Zig-only happy path now proves A can join caps through B/C proxy exports,
   Accept directly on A↔D, and invoke the accepted cap without routing through
   the proxy owners after pickup. L4 remains Experimental: no Stable

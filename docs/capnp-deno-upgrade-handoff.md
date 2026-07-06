@@ -48,9 +48,9 @@ The relevant baseline includes:
   lifetime until upstream Finish, including retry state if forwarding that
   downstream Finish fails. Regressions cover source unavailable, downstream send
   failure during Join forwarding, downstream Return relay failure, downstream
-  Finish retry, owner/source teardown, target mismatch through relay,
-  Finish-before-Return, and OOM rollback. There is no public Stable `sendJoin`
-  convenience or cross-implementation L4 claim.
+  Finish retry, owner teardown, source teardown before/after downstream Return,
+  target mismatch through relay, Finish-before-Return, and OOM rollback. There
+  is no public Stable `sendJoin` convenience or cross-implementation L4 claim.
 - Experimental L4 addressed Join registry pilot: `AddressedJoinNetwork` carries
   opaque application addresses in provision tokens, resolves already-live
   registry entries, and can call an app-supplied connector for unknown addressed
