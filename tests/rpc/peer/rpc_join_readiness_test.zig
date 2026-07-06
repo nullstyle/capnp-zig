@@ -1474,6 +1474,40 @@ test "L4 Join proxy relay downstream send failure drains relay state" {
     try harness.expectNoJoinState(&source);
 }
 
+test "L4 Join proxy relay rejects unsupported source target without relay state" {
+    const allocator = std.testing.allocator;
+
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .exported = .{ .id = 448 } },
+        null,
+    );
+
+    const join_frame = try buildJoinFrame(allocator, 58, proxy_export, 0x4c10, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+
+    try owner_capture.expectException(58, "UnsupportedCrossPeerJoinTarget");
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expectEqual(@as(usize, 0), source.questions.count());
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&source);
+}
+
 test "L4 Join proxy relay downstream Return relay failure drains relay state" {
     const allocator = std.testing.allocator;
 
