@@ -5,12 +5,13 @@ zig_build := 'cache_dir="${E2E_ZIG_GLOBAL_CACHE_DIR:-./.zig-global-cache}"; E2E_
 
 build-client:
     cd {{repo_root}} && {{zig_build}} e2e-zig-client -- --help >/dev/null
+    cd {{repo_root}} && {{zig_build}} e2e-l3-cpp -- --help >/dev/null
 
 build-server:
     cd {{repo_root}} && {{zig_build}} e2e-zig-server -- --help >/dev/null
 
 client-hook host port schema backend="unknown":
-    cd {{repo_root}} && E2E_BACKEND={{backend}} {{zig_build}} e2e-zig-client -- --host {{host}} --port {{port}} --schema {{schema}}
+    cd {{repo_root}} && if [ "{{schema}}" = "l3_l4_interop" ]; then E2E_BACKEND={{backend}} {{zig_build}} e2e-l3-cpp -- --host {{host}} --port {{port}}; else E2E_BACKEND={{backend}} {{zig_build}} e2e-zig-client -- --host {{host}} --port {{port}} --schema {{schema}}; fi
 
 server-hook host port schema:
     cd {{repo_root}} && {{zig_build}} e2e-zig-server -- --host {{host}} --port {{port}} --schema {{schema}}

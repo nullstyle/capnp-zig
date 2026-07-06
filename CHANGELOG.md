@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **C++-first cross-implementation RPC Level-3 handoff e2e.** A new
+  `l3_l4_interop` e2e lane (`just e2e-l3-cpp`) runs a real TCP three-party
+  handoff with vats A/B in capnp-zig and the hosted Number capability in the
+  C++ reference stack built from the vendored Cap'n Proto 2.0 source. Vat B
+  receives the C++ `Number`, returns an unresolved promise to Vat A, resolves it
+  with `resolvePromiseExportToThirdParty`, and Vat A auto-picks up the
+  `thirdPartyHosted` descriptor by sending `Accept` on its direct A↔C++
+  connection. The accepted cap is then invoked directly over A↔C++ and returns
+  the C++ value. The lane also records the current L4 recon result: capnp-zig can
+  consume the C++-shape `JoinKeyPart` struct used by this probe, but C++'s
+  generic `VatNetwork` still marks Level 4 as TODO and capnp-zig still has no
+  public `Peer.sendJoin` or direct `JoinResult` flow. L3/L4 remain Experimental;
+  Stable API unchanged.
+
 - **RPC L4 Join readiness note and shared L3/L4 invariants.** The new
   `docs/rpc-l4-join-readiness.md` documents the current receive-side Join slice,
   invariants, evidence, and non-goals. The three-party handoff test harness now

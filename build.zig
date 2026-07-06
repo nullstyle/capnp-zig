@@ -507,6 +507,38 @@ pub fn build(b: *std.Build) void {
     const install_e2e_zig_client_step = b.step("e2e-zig-client-install", "Build Zig RPC e2e client (install only)");
     install_e2e_zig_client_step.dependOn(&b.addInstallArtifact(e2e_zig_client, .{}).step);
 
+    const e2e_l3_l4_module = b.createModule(.{
+        .root_source_file = b.path("tests/e2e/zig/generated/l3_l4_interop.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "capnpc-zig", .module = lib_module },
+        },
+    });
+
+    const e2e_l3_cpp = b.addExecutable(.{
+        .name = "e2e-l3-cpp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/e2e_l3_cpp.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "io_backend_options", .module = io_backend_options_module },
+                .{ .name = "l3_l4_interop", .module = e2e_l3_l4_module },
+            },
+        }),
+    });
+
+    const run_e2e_l3_cpp = b.addRunArtifact(e2e_l3_cpp);
+    run_e2e_l3_cpp.addPassthruArgs();
+
+    const e2e_l3_cpp_step = b.step("e2e-l3-cpp", "Run Zig/C++ L3 handoff e2e client hook");
+    e2e_l3_cpp_step.dependOn(&run_e2e_l3_cpp.step);
+
+    const install_e2e_l3_cpp_step = b.step("e2e-l3-cpp-install", "Build Zig/C++ L3 handoff e2e client (install only)");
+    install_e2e_l3_cpp_step.dependOn(&b.addInstallArtifact(e2e_l3_cpp, .{}).step);
+
     const e2e_zig_server = b.addExecutable(.{
         .name = "e2e-zig-server",
         .root_module = b.createModule(.{

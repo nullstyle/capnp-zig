@@ -131,10 +131,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   (+ `LoopbackVatNetwork`), and `thirdPartyHosted` descriptor emission — in
   addition to the inbound `Provide` / `Accept` / `Join` / `ThirdPartyAnswer`
   handling that was already present. This arc is **lightly soaked and
-  Zig↔Zig-only**: no reference implementation performs spec-current three-party
-  pickup, so it has no cross-implementation interop partner. The former gap —
-  the introducer not forwarding the *original* parked pipelined calls on a
-  promise to the host (they hit the Level-1/2 rejecting vine) — is now
+  Experimental**. Main now has one positive cross-implementation proof:
+  `just e2e-l3-cpp` runs a Zig↔C++ Level-3 handoff over real TCP against the
+  C++ reference stack built from vendored Cap'n Proto 2.0, with Vat A accepting
+  and invoking the hosted cap directly on its A↔C++ connection. This is
+  C++-first evidence, not a full reference matrix: Go has promising `Network3PH`
+  hooks but no TCP e2e harness in this repo yet, and the current Rust/Python e2e
+  adapters expose only the two-party path. The former gap — the introducer not
+  forwarding the *original* parked pipelined calls on a promise to the host (they
+  hit the Level-1/2 rejecting vine) — is now
   **RESOLVED**: when the handed-off promise resolves, the introducer forwards
   each parked pipelined call cross-peer to the capability host (targeting the
   provided cap on the introducer↔host connection) and relays the host's result
@@ -147,14 +152,16 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   current mainline hardening evidence also covers loopback token duplicate/unknown
   paths, `sendProvide` / `sendAccept` allocator rollback, vine/provide teardown
   ordering, embargoed pickup ordering, and cross-peer proxy cleanup. Do not depend
-  on the L3 surface for production interop.
+  on the L3 surface for production interop without exact pins.
 - **Level 4 (Join):** a guarded receive-side readiness slice is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
   Inbound `Join` can collect local JoinKeyPart structs, compare resolved
   targets, return provided caps when all parts match, send mismatch exceptions,
   and drain state on Finish/send-failure/OOM paths. There is no public
   `Peer.sendJoin`, no direct-connection JoinResult flow, no multi-hop relay, and
-  no cross-implementation L4 interop claim. Experimental; exact-pin only.
+  no cross-implementation L4 interop claim. The C++ L3 e2e lane includes a
+  receive-shape probe for the C++-convention `JoinKeyPart`, but C++ generic
+  `VatNetwork` still marks Level 4 as TODO. Experimental; exact-pin only.
 
 ## Known limitations (v0.3.0)
 

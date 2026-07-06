@@ -19,6 +19,12 @@ test-deno:
 test-skip-build:
     {{runner}} --skip-build
 
+test-l3-cpp:
+    {{runner}} --backend=cpp --schema=l3_l4_interop --direction=zig-client
+
+test-l3-cpp-skip-build:
+    {{runner}} --skip-build --backend=cpp --schema=l3_l4_interop --direction=zig-client
+
 test-scaffold:
     {{runner}} --allow-missing-hooks
 

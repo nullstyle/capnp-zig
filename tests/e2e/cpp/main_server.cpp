@@ -22,6 +22,7 @@
 #include "inventory.capnp.h"
 #include "matchmaking.capnp.h"
 #include "resolve_disembargo.capnp.h"
+#include "l3_l4_interop_server.h"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1123,9 +1124,11 @@ int main(int argc, char* argv[]) {
         // own shutdownWrite), then loop to accept the next one.
         network.onDisconnect().wait(io.waitScope);
       }
+    } else if (schema == "l3_l4_interop") {
+      runL3L4InteropServer(*listener, io.waitScope);
     } else {
       std::cerr << "Unknown schema: " << schema << std::endl;
-      std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking, resolve_disembargo" << std::endl;
+      std::cerr << "Valid schemas: game_world, chat, inventory, matchmaking, resolve_disembargo, l3_l4_interop" << std::endl;
       return 1;
     }
   } catch (kj::Exception& e) {

@@ -18,6 +18,7 @@ set(SCHEMA_FILES
   inventory.capnp
   matchmaking.capnp
   resolve_disembargo.capnp
+  l3_l4_interop.capnp
 )
 
 set(CAPNP_SRCS)
@@ -46,6 +47,7 @@ endforeach()
 # Server executable
 add_executable(e2e_server
   main_server.cpp
+  l3_l4_interop_server.cpp
   ${CAPNP_SRCS}
 )
 target_link_libraries(e2e_server CapnProto::capnp-rpc)

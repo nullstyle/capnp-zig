@@ -127,6 +127,10 @@ e2e-self:
 e2e-skip-build:
     just --justfile tests/e2e/Justfile test-skip-build
 
+# Run the C++-first L3 handoff / L4 recon e2e lane
+e2e-l3-cpp:
+    just --justfile tests/e2e/Justfile test-l3-cpp
+
 # Run e2e harness without requiring Zig hooks (scaffolding mode)
 e2e-scaffold:
     just --justfile tests/e2e/Justfile test-scaffold
@@ -167,7 +171,7 @@ ci:
 check-generated:
     zig build
     cd src/rpc && just gen-rpc
-    cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp
+    cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
     zig build api-snapshot
     just fmt
     git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt docs/api-snapshot-experimental.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }

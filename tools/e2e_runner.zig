@@ -24,6 +24,7 @@ const Schema = enum {
     inventory,
     matchmaking,
     resolve_disembargo,
+    l3_l4_interop,
 };
 
 const Direction = enum {
@@ -56,11 +57,7 @@ const Config = struct {
     verbose: bool = false,
     direction: Direction = .both,
     backend_selected: [4]bool = .{ false, false, false, false },
-    // Sized for every Schema enumerant (indexed by @intFromEnum). Only the
-    // backend-backed schemas in `all_schemas` are ever exercised by the docker
-    // matrix; resolve_disembargo has no reference backends yet, so it occupies
-    // a slot here (to keep @intFromEnum indexing in bounds) but is not iterated.
-    schema_selected: [5]bool = .{ false, false, false, false, false },
+    schema_selected: [6]bool = .{ false, false, false, false, false, false },
 
     fn isBackendSelected(self: Config, b: Backend) bool {
         return self.backend_selected[@intFromEnum(b)];
@@ -73,9 +70,10 @@ const Config = struct {
 
 const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
 // The docker interop matrix covers every (schema x backend x direction) case
-// EXCEPT the per-direction reference-impl gaps in resolve_disembargo (see
-// resolveDisembargoSkip below), which are recorded as SKIP rather than run.
-const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo };
+// except narrow scenario-specific reference gaps recorded as SKIP below:
+// resolve_disembargo has one pycapnp server gap, and l3_l4_interop is currently
+// the C++-first Zig-client lane only.
+const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop };
 
 /// resolve_disembargo is the only scenario with per-direction reference-impl
 /// gaps — all in the reference libraries, not capnp-zig. Returns a SKIP status
@@ -106,6 +104,19 @@ fn resolveDisembargoSkip(schema: Schema, backend: Backend, zig_is_client: bool) 
     }
     // Reference is the embargo-driving client; W1 made the relayed return
     // universally consumable, so all reference clients run.
+    return null;
+}
+
+fn l3L4InteropSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
+    if (schema != .l3_l4_interop) return null;
+    if (backend != .cpp) return "SKIP(l3-l4-cpp-only)";
+    if (!zig_is_client) return "SKIP(l3-l4-zig-client-only)";
+    return null;
+}
+
+fn caseSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
+    if (resolveDisembargoSkip(schema, backend, zig_is_client)) |reason| return reason;
+    if (l3L4InteropSkip(schema, backend, zig_is_client)) |reason| return reason;
     return null;
 }
 
@@ -145,7 +156,7 @@ fn usage() void {
         \\  --skip-build
         \\  --direction=both|zig-client|zig-server
         \\  --backend=cpp|go|python|rust (repeatable)
-        \\  --schema=game_world|chat|inventory|matchmaking (repeatable)
+        \\  --schema=game_world|chat|inventory|matchmaking|resolve_disembargo|l3_l4_interop (repeatable)
         \\  --allow-missing-hooks
         \\  --verbose
         \\  --help
@@ -195,6 +206,7 @@ fn schemaName(s: Schema) []const u8 {
         .inventory => "inventory",
         .matchmaking => "matchmaking",
         .resolve_disembargo => "resolve_disembargo",
+        .l3_l4_interop => "l3_l4_interop",
     };
 }
 
@@ -210,6 +222,7 @@ fn zigSchemaPort(s: Schema) u16 {
         .inventory => 4702,
         .matchmaking => 4703,
         .resolve_disembargo => 4705,
+        .l3_l4_interop => 4706,
     };
 }
 
@@ -396,6 +409,7 @@ fn parseSchema(text: []const u8) !Schema {
     if (std.mem.eql(u8, text, "inventory")) return .inventory;
     if (std.mem.eql(u8, text, "matchmaking")) return .matchmaking;
     if (std.mem.eql(u8, text, "resolve_disembargo")) return .resolve_disembargo;
+    if (std.mem.eql(u8, text, "l3_l4_interop")) return .l3_l4_interop;
     return error.InvalidSchema;
 }
 
@@ -1025,7 +1039,7 @@ fn runZigClientPhase(
 
             std.debug.print("    case {s}\n", .{key});
 
-            if (resolveDisembargoSkip(schema, backend, true)) |reason| {
+            if (caseSkip(schema, backend, true)) |reason| {
                 std.debug.print("      {s}\n", .{reason});
                 try appendResult(allocator, results, key, reason);
                 continue;
@@ -1093,7 +1107,7 @@ fn runZigServerPhase(
             const key = try std.fmt.allocPrint(allocator, "zig-server:{s}:{s}", .{ schemaName(schema), backendName(backend) });
             defer allocator.free(key);
 
-            if (resolveDisembargoSkip(schema, backend, false)) |reason| {
+            if (caseSkip(schema, backend, false)) |reason| {
                 std.debug.print("    case {s} — {s}\n", .{ key, reason });
                 try appendResult(allocator, results, key, reason);
                 continue;
