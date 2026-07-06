@@ -231,6 +231,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   cap while the Accept answer Finish still fails, proving a later
   `releaseAccepted()` call retries and drains the same host answer without
   double-releasing the cap,
+- `takeAccepted()` while the Accept answer Finish is still failing, proving the
+  retained cap transfers to caller ownership, coordinator deinit drains the
+  host answer later, and the caller-owned cap remains callable,
 - direct Accept peer teardown while a coordinator still holds an accepted cap and
   unfinished Accept answer, proving peer deinit Finishes the host answer,
   neutralizes the coordinator's accepted peer/cap pointers, and makes later

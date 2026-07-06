@@ -27,12 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Finish actually succeeds, so `takeAccepted`, `releaseAccepted`, cancel, and
   deinit cleanup can retry a still-held host answer later. Regressions cover both
   an initial OOM that succeeds on the bounded immediate retry and repeated OOM
-  that drains during accepted-cap release, including the case where
+  that drains during accepted-cap release/transfer, including the case where
   `releaseAccepted()` itself returns `AcceptFinishFailed` after releasing the cap
   and a later call drains the same Accept answer: the accepted cap remains
   retained and callable, no question is restored with coordinator-owned callback
   state, and the JoinResult, pending Accept, resolved-answer, and JoinNetwork
-  registry state all drain. The direct Accept peer now also records a back-link to live
+  registry state all drain. `takeAccepted()` is also covered while the Accept
+  Finish is still failing: it transfers the retained cap to the caller, leaves
+  the unfinished Accept answer retryable, and coordinator deinit drains that
+  host answer without releasing the caller-owned cap. The direct Accept peer now
+  also records a back-link to live
   coordinators; if that peer deinits first, it Finishes any unfinished Accept
   answer, neutralizes the coordinator's borrowed peer/cap pointers, and leaves
   later coordinator cleanup as a safe no-op.

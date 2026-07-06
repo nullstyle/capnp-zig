@@ -212,8 +212,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   direct-Accept JoinResult cleanup, malformed/exception JoinResult terminal
   cleanup including mixed retained-result cleanup,
   mismatched successful JoinResult cleanup, synchronous direct-Accept Finish OOM
-  retry plus later release-time drain including `releaseAccepted()` partial
-  failure retry, direct Accept peer teardown neutralization, sendPart OOM rollback,
+  retry plus later release-time/transfer drain including `releaseAccepted()`
+  partial failure retry and `takeAccepted()` transfer while Finish remains
+  retryable, direct Accept peer teardown neutralization, sendPart OOM rollback,
   addressed unknown/stale/duplicate provision handling,
   connector malformed-token/no-dial,
   network-teardown-before-release, and OOM-before-dial handling, retained result
