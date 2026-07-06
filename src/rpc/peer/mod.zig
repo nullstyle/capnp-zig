@@ -49,6 +49,7 @@ const peer_transport_state = peer_transport.state;
 const peer_question_state = @import("./peer_question_state.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
+const join_network = @import("../vat/join.zig");
 
 pub const errors = @import("./errors.zig");
 pub const state = @import("./state.zig");
@@ -513,6 +514,8 @@ pub const TransportIsClosingFn = TransportBinding.IsClosingFn;
 pub const VatNetwork = vat_network.VatNetwork(Peer);
 pub const Introduction = vat_network.Introduction;
 pub const Introduced = vat_network.Introduced(Peer);
+pub const JoinNetwork = join_network.JoinNetwork(Peer);
+pub const Joined = join_network.Joined(Peer);
 
 /// Handle returned by `Peer.sendProvide`: the ids the caller needs to drive the
 /// paired `thirdPartyHosted` descriptor emission and to observe completion.
@@ -617,6 +620,12 @@ pub const Peer = struct {
     /// handoffs. Borrowed — its `ctx` must outlive the peer.
     vat_network: ?VatNetwork = null,
 
+    /// Optional Experimental Level-4 Join addressing seam. When present, inbound
+    /// `Join` completion returns Zig `JoinResult` payloads and registers a
+    /// one-shot direct `Accept` provision instead of returning the cap directly.
+    /// Borrowed — its `ctx` must outlive the peer.
+    join_network: ?JoinNetwork = null,
+
     /// Optional Level-3 recipient auto-pickup handler. When this peer holds a
     /// promise import and receives a `thirdPartyHosted` Resolve for it AND a
     /// `vat_network` is attached, the runtime connects to the third vat, sends an
@@ -706,6 +715,10 @@ pub const Peer = struct {
     pending_accepts_by_embargo: std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)),
     /// Maps question IDs to embargo keys for cleanup on Finish.
     pending_accept_embargo_by_question: std.AutoHashMap(u32, []u8),
+    /// Experimental L4 JoinResult provisions waiting for a direct Accept.
+    pending_join_accepts: std.StringHashMap(ProvideTarget),
+    /// Experimental L4 JoinResult answer ids -> owned provision bytes.
+    pending_join_result_answers: std.AutoHashMap(u32, []u8),
     /// Outbound third-party handoffs awaiting ThirdPartyAnswer.
     pending_third_party_awaits: std.StringHashMap(PendingThirdPartyAwait),
     /// Completed third-party answers awaiting adoption.
@@ -942,6 +955,8 @@ pub const Peer = struct {
             .pending_join_questions = std.AutoHashMap(u32, PendingJoinQuestion).init(allocator),
             .pending_accepts_by_embargo = std.StringHashMap(std.ArrayList(PendingEmbargoedAccept)).init(allocator),
             .pending_accept_embargo_by_question = std.AutoHashMap(u32, []u8).init(allocator),
+            .pending_join_accepts = std.StringHashMap(ProvideTarget).init(allocator),
+            .pending_join_result_answers = std.AutoHashMap(u32, []u8).init(allocator),
             .pending_third_party_awaits = std.StringHashMap(PendingThirdPartyAwait).init(allocator),
             .pending_third_party_answers = std.StringHashMap(u32).init(allocator),
             .pending_third_party_returns = std.AutoHashMap(u32, []u8).init(allocator),
@@ -1118,6 +1133,21 @@ pub const Peer = struct {
     pub fn detachVatNetwork(self: *Peer) void {
         self.assertThreadAffinity();
         self.vat_network = null;
+    }
+
+    /// Attach the Experimental Level-4 Join network seam. When attached, inbound
+    /// Join completion uses Zig `JoinResult` payloads plus a direct follow-up
+    /// `Accept`; when absent, the legacy raw Join pilot returns the cap directly.
+    pub fn attachJoinNetwork(self: *Peer, network: JoinNetwork) void {
+        self.assertThreadAffinity();
+        self.join_network = network;
+    }
+
+    /// Detach the Experimental L4 Join network. Does not tear down in-flight
+    /// JoinResult provisions.
+    pub fn detachJoinNetwork(self: *Peer) void {
+        self.assertThreadAffinity();
+        self.join_network = null;
     }
 
     /// Install the Level-3 recipient auto-pickup handler. With both a
@@ -1311,6 +1341,20 @@ pub const Peer = struct {
         // Values in pending_accept_embargo_by_question are borrowed from
         // pending_accepts_by_embargo (already freed above), so just deinit.
         self.pending_accept_embargo_by_question.deinit();
+        {
+            var it = self.pending_join_accepts.iterator();
+            while (it.next()) |entry| {
+                if (self.join_network) |network| network.cancelHostJoinResult(entry.key_ptr.*);
+                self.allocator.free(entry.key_ptr.*);
+                entry.value_ptr.deinit(self.allocator);
+            }
+            self.pending_join_accepts.deinit();
+        }
+        {
+            var it = self.pending_join_result_answers.valueIterator();
+            while (it.next()) |provision| self.allocator.free(provision.*);
+            self.pending_join_result_answers.deinit();
+        }
         peer_cleanup.deinitOwnedStringKeyMap(
             @TypeOf(self.pending_third_party_awaits),
             self.allocator,
@@ -1549,6 +1593,25 @@ pub const Peer = struct {
         var it = self.pending_accepts_by_embargo.iterator();
         while (it.next()) |entry| {
             total = saturatingAdd(total, entry.key_ptr.*.len);
+        }
+        return total;
+    }
+
+    fn pendingJoinAcceptKeyBytes(self: *const Peer) usize {
+        var total: usize = 0;
+        var it = self.pending_join_accepts.iterator();
+        while (it.next()) |entry| {
+            total = saturatingAdd(total, entry.key_ptr.*.len);
+        }
+        return total;
+    }
+
+    fn pendingJoinResultAnswerBytesExcluding(self: *const Peer, answer_id: u32) usize {
+        var total: usize = 0;
+        var it = self.pending_join_result_answers.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* == answer_id) continue;
+            total = saturatingAdd(total, entry.value_ptr.*.len);
         }
         return total;
     }
@@ -1862,11 +1925,26 @@ pub const Peer = struct {
         ctx: *anyopaque,
         on_return: QuestionCallback,
     ) !u32 {
+        return self.sendJoinExperimentalWithAutoFinish(target, key_part, ctx, on_return, false);
+    }
+
+    fn sendJoinExperimentalWithAutoFinish(
+        self: *Peer,
+        target: protocol.MessageTarget,
+        key_part: ?message.AnyPointerReader,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+        suppress_auto_finish: bool,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
 
         const question_id = try self.allocateQuestion(ctx, on_return);
         errdefer self.removeQuestion(question_id);
+        if (suppress_auto_finish) {
+            const question = self.questions.getPtr(question_id) orelse return error.MissingAllocatedQuestion;
+            question.suppress_auto_finish = true;
+        }
 
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
@@ -5161,6 +5239,7 @@ pub const Peer = struct {
     fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
         const qid = finish_msg.question_id;
         const was_active = self.active_inbound_questions.remove(qid);
+        self.clearPendingJoinResultAnswer(qid);
         // Cancellation race: a Finish for an in-flight inbound call (still
         // active, not yet resolved) means an async handler will answer later.
         // Tombstone the id so that late Return is not recorded in
@@ -5804,6 +5883,120 @@ pub const Peer = struct {
         };
     }
 
+    fn cloneProvideTarget(self: *Peer, target: *const ProvideTarget) !ProvideTarget {
+        return switch (target.*) {
+            .local => |local| .{ .local = local },
+            .promised => |promised| .{
+                .promised = try cap_table.OwnedPromisedAnswer.fromQuestionAndOps(
+                    self.allocator,
+                    promised.question_id,
+                    promised.ops,
+                ),
+            },
+        };
+    }
+
+    fn putPendingJoinAcceptOwned(self: *Peer, provision: []u8, target: ProvideTarget) !void {
+        try ensureCountLimit(
+            self.pending_join_accepts.contains(provision),
+            self.pending_join_accepts.count(),
+            self.limits.max_pending_join_accepts,
+        );
+        try ensureByteLimit(
+            self.pendingJoinAcceptKeyBytes(),
+            provision.len,
+            self.limits.max_pending_join_accept_bytes,
+        );
+
+        const entry = try self.pending_join_accepts.getOrPut(provision);
+        if (entry.found_existing) return error.DuplicateJoinProvision;
+        entry.value_ptr.* = target;
+    }
+
+    fn takePendingJoinAccept(self: *Peer, provision: []const u8) ?ProvideTarget {
+        if (self.pending_join_accepts.fetchRemove(provision)) |removed| {
+            if (self.join_network) |network| network.cancelHostJoinResult(removed.key);
+            self.allocator.free(removed.key);
+            return removed.value;
+        }
+        return null;
+    }
+
+    fn clearPendingJoinAccept(self: *Peer, provision: []const u8) void {
+        if (self.takePendingJoinAccept(provision)) |target_value| {
+            var target = target_value;
+            target.deinit(self.allocator);
+        }
+    }
+
+    fn rememberPendingJoinResultAnswer(self: *Peer, answer_id: u32, provision: []const u8) !void {
+        try ensureCountLimit(
+            self.pending_join_result_answers.contains(answer_id),
+            self.pending_join_result_answers.count(),
+            self.limits.max_pending_join_questions,
+        );
+        try ensureByteLimit(
+            self.pendingJoinResultAnswerBytesExcluding(answer_id),
+            provision.len,
+            self.limits.max_pending_join_accept_bytes,
+        );
+
+        const copy = try self.allocator.dupe(u8, provision);
+        errdefer self.allocator.free(copy);
+        const entry = try self.pending_join_result_answers.getOrPut(answer_id);
+        if (entry.found_existing) return error.DuplicateJoinQuestionId;
+        entry.value_ptr.* = copy;
+    }
+
+    fn clearPendingJoinResultAnswer(self: *Peer, answer_id: u32) void {
+        const removed = self.pending_join_result_answers.fetchRemove(answer_id) orelse return;
+        defer self.allocator.free(removed.value);
+
+        var still_live = false;
+        var it = self.pending_join_result_answers.valueIterator();
+        while (it.next()) |provision| {
+            if (std.mem.eql(u8, provision.*, removed.value)) {
+                still_live = true;
+                break;
+            }
+        }
+
+        if (!still_live) {
+            self.clearPendingJoinAccept(removed.value);
+        }
+    }
+
+    fn forgetPendingJoinResultAnswer(self: *Peer, answer_id: u32) void {
+        if (self.pending_join_result_answers.fetchRemove(answer_id)) |removed| {
+            self.allocator.free(removed.value);
+        }
+    }
+
+    fn sendReturnJoinResultPayload(self: *Peer, answer_id: u32, result_payload: []const u8) !void {
+        const BuildCtx = struct {
+            allocator: std.mem.Allocator,
+            result_payload: []const u8,
+
+            fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+                const ctx: *const @This() = castCtx(*const @This(), ctx_ptr);
+                var result_msg = try message.Message.initUnvalidated(ctx.allocator, ctx.result_payload);
+                defer result_msg.deinit();
+                const result = try result_msg.getRootAnyPointer();
+
+                var payload = try ret.payloadTyped();
+                const content = try payload.initContent();
+                try message.cloneAnyPointer(result, content);
+                _ = try ret.initCapTableTyped(0);
+            }
+        };
+
+        var ctx = BuildCtx{
+            .allocator = self.allocator,
+            .result_payload = result_payload,
+        };
+        try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
+    }
+
     fn queueEmbargoedAccept(
         self: *Peer,
         answer_id: u32,
@@ -5875,6 +6068,7 @@ pub const Peer = struct {
     }
 
     fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
+        if (try self.tryHandleJoinAccept(accept)) return;
         try peer_provide_join_orchestration.handleAccept(
             Peer,
             ProvideEntry,
@@ -5892,6 +6086,123 @@ pub const Peer = struct {
             Peer.sendReturnProvidedTarget,
             Peer.sendReturnException,
         );
+    }
+
+    fn tryHandleJoinAccept(self: *Peer, accept: protocol.Accept) !bool {
+        const key = try peer_provide_join_orchestration.captureAcceptProvisionForPeer(
+            Peer,
+            self,
+            accept,
+            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+        );
+        defer if (key) |bytes| self.allocator.free(bytes);
+        const provision = key orelse return false;
+
+        var target = self.takePendingJoinAccept(provision) orelse return false;
+        defer target.deinit(self.allocator);
+
+        if (accept.embargo != null) {
+            try self.sendReturnException(accept.question_id, "l4 join accept embargo unsupported");
+            return true;
+        }
+
+        self.sendReturnProvidedTarget(accept.question_id, &target) catch |err| {
+            try self.sendReturnException(accept.question_id, @errorName(err));
+        };
+        return true;
+    }
+
+    fn completeJoinWithL4Runtime(self: *Peer, join_id: u32) !void {
+        const network = self.join_network orelse return error.NoJoinNetwork;
+        const removed = self.pending_joins.fetchRemove(join_id) orelse return;
+        var join_state = removed.value;
+        defer JoinState.deinit(&join_state, self.allocator);
+
+        if (join_state.parts.count() == 0) return;
+
+        var first_target: ?*const ProvideTarget = null;
+        var all_equal = true;
+        var check_it = join_state.parts.iterator();
+        while (check_it.next()) |entry| {
+            if (first_target) |target| {
+                if (!provideTargetsEqual(target, &entry.value_ptr.target)) {
+                    all_equal = false;
+                    break;
+                }
+            } else {
+                first_target = &entry.value_ptr.target;
+            }
+        }
+
+        defer {
+            var cleanup_it = join_state.parts.iterator();
+            while (cleanup_it.next()) |entry| {
+                _ = self.pending_join_questions.remove(entry.value_ptr.question_id);
+            }
+        }
+
+        if (!all_equal) {
+            var mismatch_it = join_state.parts.iterator();
+            while (mismatch_it.next()) |entry| {
+                try self.sendReturnException(entry.value_ptr.question_id, "join target mismatch");
+            }
+            return;
+        }
+
+        const target = first_target orelse return;
+        var target_copy = self.cloneProvideTarget(target) catch |err| {
+            var err_it = join_state.parts.iterator();
+            while (err_it.next()) |entry| {
+                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
+            }
+            return;
+        };
+        var target_owned = true;
+        defer if (target_owned) target_copy.deinit(self.allocator);
+
+        const hosted = network.hostJoinResult(self, join_id) catch |err| {
+            var err_it = join_state.parts.iterator();
+            while (err_it.next()) |entry| {
+                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
+            }
+            return;
+        };
+        var provision_registered = true;
+        var provision_owned = true;
+        defer if (provision_registered) network.cancelHostJoinResult(hosted.provision);
+        defer if (provision_owned) self.allocator.free(hosted.provision);
+        defer self.allocator.free(hosted.result);
+
+        self.putPendingJoinAcceptOwned(hosted.provision, target_copy) catch |err| {
+            var err_it = join_state.parts.iterator();
+            while (err_it.next()) |entry| {
+                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
+            }
+            return;
+        };
+        provision_owned = false;
+        target_owned = false;
+
+        var sent_results: usize = 0;
+        var send_it = join_state.parts.iterator();
+        while (send_it.next()) |entry| {
+            self.rememberPendingJoinResultAnswer(entry.value_ptr.question_id, hosted.provision) catch |err| {
+                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
+                continue;
+            };
+            self.sendReturnJoinResultPayload(entry.value_ptr.question_id, hosted.result) catch |err| {
+                self.forgetPendingJoinResultAnswer(entry.value_ptr.question_id);
+                try self.sendReturnException(entry.value_ptr.question_id, @errorName(err));
+                continue;
+            };
+            sent_results += 1;
+            provision_registered = false;
+        }
+
+        if (sent_results == 0) {
+            provision_registered = false;
+            self.clearPendingJoinAccept(hosted.provision);
+        }
     }
 
     fn handleJoin(self: *Peer, join: protocol.Join) !void {
@@ -5926,16 +6237,19 @@ pub const Peer = struct {
             JoinState.init,
             JoinState.deinit,
             Peer.ensureJoinBudget,
-            peer_join_state.completeJoinForPeerFn(
-                Peer,
-                JoinState,
-                PendingJoinQuestion,
-                ProvideTarget,
-                provideTargetsEqual,
-                Peer.sendReturnProvidedTarget,
-                Peer.sendReturnException,
-                JoinState.deinit,
-            ),
+            if (self.join_network != null)
+                Peer.completeJoinWithL4Runtime
+            else
+                peer_join_state.completeJoinForPeerFn(
+                    Peer,
+                    JoinState,
+                    PendingJoinQuestion,
+                    ProvideTarget,
+                    provideTargetsEqual,
+                    Peer.sendReturnProvidedTarget,
+                    Peer.sendReturnException,
+                    JoinState.deinit,
+                ),
             Peer.sendReturnException,
         );
     }
@@ -6446,6 +6760,16 @@ pub const Peer = struct {
                 }
                 self.freeQuestionParamExports(question_id);
             }
+        }
+
+        pub fn sendJoinExperimentalRetainedResult(
+            self: *Peer,
+            target: protocol.MessageTarget,
+            key_part: ?message.AnyPointerReader,
+            ctx: *anyopaque,
+            on_return: QuestionCallback,
+        ) !u32 {
+            return Peer.sendJoinExperimentalWithAutoFinish(self, target, key_part, ctx, on_return, true);
         }
 
         pub fn releaseVineExport(self: *Peer, vine_id: u32) void {

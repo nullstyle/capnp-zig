@@ -19,6 +19,8 @@ pub fn expectNoProvideState(peer: *const Peer) !void {
 pub fn expectNoJoinState(peer: *const Peer) !void {
     try std.testing.expectEqual(@as(usize, 0), peer.pending_joins.count());
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_result_answers.count());
 }
 
 pub fn expectNoEmbargoedAcceptState(peer: *const Peer) !void {

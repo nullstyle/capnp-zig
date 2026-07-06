@@ -65,6 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Experimental RPC Level-4 JoinResult runtime expansion.** Peers can now
+  attach an Experimental `rpc.vat.join.JoinNetwork`; when present, completed
+  inbound Join parts return compact Zig `JoinResult` payloads instead of the
+  legacy direct provided-cap shortcut. The joiner resolves those results to a
+  direct peer, sends `Accept`, receives the final cap, and invokes it on the
+  direct connection. New regressions cover the Zig↔Zig JoinResult→Accept happy
+  path, pending direct-Accept cleanup, and JoinResult Return send-failure
+  rollback. `just e2e-l4-zig` runs the focused Zig runtime gate. L4 remains
+  Experimental with no Stable/high-level `sendJoin` and no cross-implementation
+  L4 runtime claim.
+
 - **Experimental RPC Level-4 Join origination pilot.** `Peer.sendJoinExperimental`
   can now send raw `Join` messages with caller-supplied key parts and ordinary
   Return callbacks. New Zig↔Zig regressions originate a two-part Join, import

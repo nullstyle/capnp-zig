@@ -26,6 +26,7 @@ pub const peer = @import("./peer/mod.zig");
 
 pub const vat = struct {
     pub const network = @import("./vat/network.zig");
+    pub const join = @import("./vat/join.zig");
 };
 
 pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {

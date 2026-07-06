@@ -554,8 +554,20 @@ capnpc-zig.rpc.peer.HandoffPickupCallback: type = *const fn (*anyopaque, *rpc.pe
 capnpc-zig.rpc.peer.Introduced: struct
 capnpc-zig.rpc.peer.Introduction.deinit: fn (*rpc.vat.network.Introduction, mem.Allocator) void
 capnpc-zig.rpc.peer.Introduction: struct
+capnpc-zig.rpc.peer.JoinNetwork.CancelHostJoinResultFn: type = *const fn (*anyopaque, []const u8) void
+capnpc-zig.rpc.peer.JoinNetwork.ConnectJoinedFn: type = *const fn (*anyopaque, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!rpc.vat.join.Joined(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.JoinNetwork.HostJoinResultFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32) anyerror!rpc.vat.join.HostJoinResult
+capnpc-zig.rpc.peer.JoinNetwork.JoinedType.deinit: fn (*rpc.vat.join.Joined(rpc.peer.mod.Peer), mem.Allocator) void
+capnpc-zig.rpc.peer.JoinNetwork.JoinedType: struct
+capnpc-zig.rpc.peer.JoinNetwork.cancelHostJoinResult: fn (rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer), []const u8) void
+capnpc-zig.rpc.peer.JoinNetwork.connectJoined: fn (rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer), serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) @typeInfo(@typeInfo(@TypeOf(rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer).connectJoined)).@"fn".return_type.?).error_union.error_set!rpc.vat.join.Joined(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.JoinNetwork.hostJoinResult: fn (rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer), *rpc.peer.mod.Peer, u32) @typeInfo(@typeInfo(@TypeOf(rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer).hostJoinResult)).@"fn".return_type.?).error_union.error_set!rpc.vat.join.HostJoinResult
+capnpc-zig.rpc.peer.JoinNetwork.init: fn (*anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, u32) anyerror!rpc.vat.join.HostJoinResult, *const fn (*anyopaque, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!rpc.vat.join.Joined(rpc.peer.mod.Peer), *const fn (*anyopaque, []const u8) void) rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.JoinNetwork: struct
+capnpc-zig.rpc.peer.Joined: struct
 capnpc-zig.rpc.peer.Peer.PeerStats: struct
 capnpc-zig.rpc.peer.Peer.assertThreadAffinity: fn (*const rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.attachJoinNetwork: fn (*rpc.peer.mod.Peer, rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.Peer.attachTransport: fn (*rpc.peer.mod.Peer, *anyopaque, ?*const fn (*anyopaque, *rpc.peer.mod.Peer) void, ?*const fn (*anyopaque, []const u8) anyerror!void, ?*const fn (*anyopaque) void, ?*const fn (*anyopaque) bool) void
 capnpc-zig.rpc.peer.Peer.attachTransportBinding: fn (*rpc.peer.mod.Peer, rpc.transport.binding.Binding(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.Peer.attachVatNetwork: fn (*rpc.peer.mod.Peer, rpc.vat.network.VatNetwork(rpc.peer.mod.Peer)) void
@@ -568,6 +580,7 @@ capnpc-zig.rpc.peer.Peer.clearRestorer: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.closeAttachedTransport: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.completeShutdown: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.detachConnection: fn (*rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Peer.detachJoinNetwork: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.detachTransport: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.detachVatNetwork: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.disableThreadAffinity: fn (*rpc.peer.mod.Peer) void
@@ -1055,6 +1068,16 @@ capnpc-zig.rpc.transport.tcp.stream.Transport: struct
 capnpc-zig.rpc.transport.tcp.stream: struct
 capnpc-zig.rpc.transport.tcp: struct
 capnpc-zig.rpc.transport: struct
+capnpc-zig.rpc.vat.join.DecodedJoinResult: struct
+capnpc-zig.rpc.vat.join.HostJoinResult.deinit: fn (*rpc.vat.join.HostJoinResult, mem.Allocator) void
+capnpc-zig.rpc.vat.join.HostJoinResult: struct
+capnpc-zig.rpc.vat.join.JoinNetwork: fn (comptime type) type
+capnpc-zig.rpc.vat.join.Joined: fn (comptime type) type
+capnpc-zig.rpc.vat.join.LoopbackJoinNetwork: fn (comptime type) type
+capnpc-zig.rpc.vat.join.decodeJoinResult: fn (serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) @typeInfo(@typeInfo(@TypeOf(rpc.vat.join.decodeJoinResult)).@"fn".return_type.?).error_union.error_set!rpc.vat.join.DecodedJoinResult
+capnpc-zig.rpc.vat.join.encodeJoinKeyPart: fn (mem.Allocator, u32, u16, u16) @typeInfo(@typeInfo(@TypeOf(rpc.vat.join.encodeJoinKeyPart)).@"fn".return_type.?).error_union.error_set![]u8
+capnpc-zig.rpc.vat.join.encodeJoinResult: fn (mem.Allocator, u32, bool, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.vat.join.encodeJoinResult)).@"fn".return_type.?).error_union.error_set![]u8
+capnpc-zig.rpc.vat.join: struct
 capnpc-zig.rpc.vat.network.Introduced: fn (comptime type) type
 capnpc-zig.rpc.vat.network.Introduction: struct
 capnpc-zig.rpc.vat.network.LoopbackVatNetwork: fn (comptime type) type

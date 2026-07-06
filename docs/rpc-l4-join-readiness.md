@@ -1,14 +1,14 @@
 # RPC L4 Join Readiness
 
-Status: Experimental, raw origination pilot plus test-local Zig↔Zig coordinator
-coverage and receive-side readiness.
+Status: Experimental, Zig↔Zig JoinResult runtime pilot plus raw origination and
+receive-side readiness.
 
 `capnp-zig` has a guarded slice of Cap'n Proto RPC Level 4 `Join`: inbound
 Join state handling, a low-level Experimental sender for raw Join parts, and a
-test-local coordinator harness proving the current Zig↔Zig lifecycle. This is
-not a complete L4 implementation and is not part of the Stable surface. It
-exists to keep the provide/join state model correct while L3 handoff grows
-toward cross-implementation use.
+Zig-only `JoinResult` → direct `Accept` runtime path behind an Experimental
+`JoinNetwork` seam. This is not a complete L4 implementation and is not part of
+the Stable surface. It exists to keep the provide/join state model correct while
+L3 handoff grows toward cross-implementation use.
 
 ## What Exists
 
@@ -20,17 +20,27 @@ toward cross-implementation use.
   `sendJoinExperimental`, selects the agreed cap, retains/release-checks result
   imports, and records per-part exception outcomes. This helper is not exposed
   as a consumer API.
+- `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
+  `LoopbackJoinNetwork` test implementation maps completed Join results to the
+  joiner's direct peer and an opaque `Accept.provision` payload.
 - `Peer.handleJoin` accepts inbound `Join` messages and resolves their
   `target` through the same target machinery used by `Provide`.
 - Join parts are collected in `pending_joins`, with question-to-part back-links
   in `pending_join_questions`.
 - When all parts for a join ID arrive, the peer compares the resolved targets.
-  Matching targets receive a results Return carrying the provided target;
-  mismatched targets receive exception Returns.
+  Without a `JoinNetwork`, matching targets still receive the legacy raw-pilot
+  results Return carrying the provided target. With a `JoinNetwork`, matching
+  targets receive compact Zig `JoinResult` payloads, and the host stores a
+  one-shot pending direct Accept in `pending_join_accepts`.
+- A joiner can resolve every Zig `JoinResult`, validate that the results agree,
+  send `Accept` on the direct peer, receive the accepted cap, and invoke it on
+  that direct peer.
 - `Finish` for an outstanding Join question clears the matching part, releases
   its target payload, and drops the join bucket when it becomes empty.
-- Return send failure while completing a Join degrades each affected question to
-  an exception Return and drains the pending maps.
+- Return send failure while completing either direct-cap Join Returns or
+  JoinResult Returns degrades each affected question to an exception Return and
+  drains the pending maps. If no JoinResult Return is successfully sent, the
+  pending direct Accept provision is rolled back.
 
 The current local JoinKeyPart convention is an `AnyPointer` to a one-data-word
 struct:
@@ -42,6 +52,18 @@ struct:
 That convention is internal and Experimental. It is enough to prove state
 ordering, cleanup, and target equality behavior; it is not a frozen public key
 format.
+
+The current Zig JoinResult convention is an `AnyPointer` to a one-data-word,
+one-pointer struct:
+
+- bytes 0..3: `join_id : UInt32`
+- byte 4 bit 0: `succeeded : Bool`
+- pointer 0: `provision : Data`, a serialized `Accept.provision` AnyPointer
+  message
+
+That convention is also internal and Experimental. It proves the runtime shape:
+Join returns data needed to form the direct pickup, and the final capability
+arrives only after a follow-up `Accept`.
 
 The C++ L3 interop lane uses the same struct shape in its test schema
 (`JoinKeyPart { joinId :UInt32, partCount :UInt16, partNum :UInt16 }`) and a
@@ -60,9 +82,13 @@ checks. This is not a full C++ L4 Join runtime.
 - `pending_joins` and `pending_join_questions` drain together on successful
   completion, mismatch completion, Finish cleanup, send-failure fallback, and
   peer deinit.
+- `pending_join_accepts` drains on direct Accept success, JoinResult send
+  rollback when no result reached the joiner, and peer deinit.
 - Target ownership is single-owner: once a part is inserted, the Join state owns
   its `ProvideTarget`; rejected or failed inserts return ownership to the caller
-  for cleanup.
+  for cleanup. A completed JoinResult path clones the target into
+  `pending_join_accepts`, and the pending Accept state owns that clone until
+  Accept success or rollback.
 
 ## Current Evidence
 
@@ -72,6 +98,11 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   cap and successfully invoking it,
 - Zig-originated mismatch Returns delivered as exceptions,
 - allocation-failure rollback for `sendJoinExperimental`,
+- Zig-originated two-part Join with `JoinNetwork` attached, where Join Returns
+  carry compact Zig `JoinResult`s, the joiner resolves them to a direct peer,
+  sends `Accept`, imports the accepted cap, and invokes it,
+- JoinResult Return send failure rollback, proving no stale
+  `pending_join_accepts` entry remains when all JoinResult Returns fail,
 - test-local coordinator selection of a callable cap across two returned Join
   parts, including release of the retained result imports,
 - test-local coordinator mismatch handling with no retained joined caps,
@@ -87,7 +118,11 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - allocation-failure rollback for fresh join-bucket insertion.
 
 The shared L3/L4 test harness now includes assertions for drained provide,
-join, embargoed-accept, third-party, and parked-call state.
+join, pending direct-accept, embargoed-accept, third-party, and parked-call
+state.
+
+`just e2e-l4-zig` runs the focused Zig runtime gate for the current
+JoinResult→Accept path.
 
 `just e2e-l3-cpp` adds cross-implementation recon checks for the `JoinKeyPart`
 and `JoinResult` shapes plus a source-backed C++ runtime-surface probe. The
@@ -101,17 +136,19 @@ comments in `rpc.capnp`.
 ## Not Implemented
 
 - No Stable or high-level `Peer.sendJoin` API.
-- No JoinResult runtime flow beyond shape fixtures and treating current Join
-  success as ordinary provided-cap Returns.
-- No direct-connection establishment from Join results.
+- No production Join addressing policy. `LoopbackJoinNetwork` is test-local;
+  applications still need their own network-specific key/result policy.
+- No bundled multi-peer/direct transport dialer for Join. The current Zig proof
+  resolves to already-live peers registered with the loopback network.
 - No multi-hop Join relay semantics.
 - No cross-implementation L4 runtime interop.
 
 ## Next Work
 
-The next L4 step is to drive a real `Join` exchange against an implementation
-with usable Join hooks. If the C++ reference stack grows callable generic Join
-hooks, `just e2e-l3-cpp` should fail its source probe and force this document to
-move from blocker recon to runtime interop work. Until that exists, keep L4
-documented as an Experimental Zig↔Zig/raw-helper pilot, not
+The next L4 step is to add transparent proxy relay semantics on top of the
+Zig-only JoinResult runtime path, then drive a real `Join` exchange against an
+implementation with usable Join hooks. If the C++ reference stack grows callable
+generic Join hooks, `just e2e-l3-cpp` should fail its source probe and force
+this document to move from blocker recon to runtime interop work. Until that
+exists, keep L4 documented as an Experimental Zig↔Zig runtime pilot, not
 cross-implementation runtime interop.

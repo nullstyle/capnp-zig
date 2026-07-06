@@ -28,6 +28,9 @@ test-l3-cpp-skip-build:
 test-l3-go:
     cd ../.. && zig run tools/e2e_l3_go_probe.zig --
 
+test-l4-zig:
+    cd ../.. && zig build test-rpc-peer --summary all
+
 test-scaffold:
     {{runner}} --allow-missing-hooks
 

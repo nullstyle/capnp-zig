@@ -135,6 +135,10 @@ e2e-l3-cpp:
 e2e-l3-go:
     just --justfile tests/e2e/Justfile test-l3-go
 
+# Run the Experimental Zig L4 Join runtime expansion gate
+e2e-l4-zig:
+    just --justfile tests/e2e/Justfile test-l4-zig
+
 # Run e2e harness without requiring Zig hooks (scaffolding mode)
 e2e-scaffold:
     just --justfile tests/e2e/Justfile test-scaffold

@@ -7,6 +7,7 @@ const message = capnpc.message;
 const Peer = capnpc.rpc.peer.Peer;
 const peer_test_hooks = Peer.test_hooks;
 const join_state = capnpc.rpc.testing.peer_provide_accept_join.join_state;
+const vat_join = capnpc.rpc.vat.join;
 const harness = @import("three_party_handoff_harness.zig");
 
 const NUMBER_INTERFACE_ID: u64 = 0x4c34_4a4f_494e_0001;
@@ -406,6 +407,123 @@ const TestJoinCoordinator = struct {
     }
 };
 
+const TestL4RuntimeCoordinator = struct {
+    allocator: std.mem.Allocator,
+    join_network: capnpc.rpc.peer.JoinNetwork,
+    join_id: u32,
+    expected_results: usize,
+    joined: std.ArrayList(vat_join.Joined(Peer)) = .empty,
+    accept_import_id: ?u32 = null,
+    accept_sent: bool = false,
+    mismatch_exceptions: u32 = 0,
+    unexpected_exceptions: u32 = 0,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        join_network_value: capnpc.rpc.peer.JoinNetwork,
+        join_id: u32,
+        expected_results: usize,
+    ) TestL4RuntimeCoordinator {
+        return .{
+            .allocator = allocator,
+            .join_network = join_network_value,
+            .join_id = join_id,
+            .expected_results = expected_results,
+        };
+    }
+
+    fn deinit(self: *@This()) void {
+        for (self.joined.items) |*joined| joined.deinit(self.allocator);
+        self.joined.deinit(self.allocator);
+    }
+
+    fn sendPart(self: *@This(), peer: *Peer, target_import_id: u32, part_count: u16, part_num: u16) !u32 {
+        var key = try JoinKeyPartPointer.init(self.allocator, self.join_id, part_count, part_num);
+        defer key.deinit(self.allocator);
+        return try Peer.test_hooks.sendJoinExperimentalRetainedResult(
+            peer,
+            .{ .tag = .importedCap, .imported_cap = target_import_id, .promised_answer = null },
+            try key.any(),
+            self,
+            TestL4RuntimeCoordinator.onJoinReturn,
+        );
+    }
+
+    fn acceptFirst(self: *@This()) !void {
+        if (self.accept_sent) return;
+        if (self.joined.items.len != self.expected_results) return error.MissingJoinResults;
+        const first = &self.joined.items[0];
+        for (self.joined.items[1..]) |*joined| {
+            if (joined.peer != first.peer or !std.mem.eql(u8, joined.provision, first.provision)) {
+                return error.JoinResultMismatch;
+            }
+        }
+
+        var provision_msg = try message.Message.initUnvalidated(self.allocator, first.provision);
+        defer provision_msg.deinit();
+        const provision = try provision_msg.getRootAnyPointer();
+        _ = try first.peer.sendAccept(provision, null, self, TestL4RuntimeCoordinator.onAcceptReturn);
+        self.accept_sent = true;
+    }
+
+    fn releaseAccepted(self: *@This(), peer: *Peer) !void {
+        if (self.accept_import_id) |import_id| {
+            try peer.releaseImport(import_id, 1);
+            self.accept_import_id = null;
+        }
+    }
+
+    fn onJoinReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        switch (ret.tag) {
+            .results => {
+                const payload = ret.results orelse return error.MissingJoinPayload;
+                const decoded = try vat_join.decodeJoinResult(payload.content);
+                if (!decoded.succeeded or decoded.join_id != self.join_id) return error.JoinResultMismatch;
+                const joined = try self.join_network.connectJoined(payload.content);
+                errdefer {
+                    var rollback = joined;
+                    rollback.deinit(self.allocator);
+                }
+                try self.joined.append(self.allocator, joined);
+            },
+            .exception => {
+                const exception = ret.exception orelse return error.MissingJoinException;
+                if (std.mem.eql(u8, exception.reason, "join target mismatch")) {
+                    self.mismatch_exceptions += 1;
+                } else {
+                    self.unexpected_exceptions += 1;
+                }
+            },
+            else => return error.UnexpectedJoinReturn,
+        }
+    }
+
+    fn onAcceptReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        if (ret.tag != .results) return error.UnexpectedAcceptReturn;
+        const payload = ret.results orelse return error.MissingAcceptPayload;
+        var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
+        const cap = try payload.content.getCapability();
+        const resolved = try mutable_caps.resolveCapability(cap);
+        try mutable_caps.retainCapability(cap);
+        self.accept_import_id = switch (resolved) {
+            .imported => |imported| imported.id,
+            else => return error.ExpectedImportedCap,
+        };
+    }
+};
+
 test "sendJoinExperimental originates Zig-to-Zig Join and returned cap is callable" {
     const allocator = std.testing.allocator;
 
@@ -471,6 +589,188 @@ test "sendJoinExperimental originates Zig-to-Zig Join and returned cap is callab
     try client.releaseImport(target_import_id, 1);
     try std.testing.expectEqual(@as(usize, 0), client.questions.count());
     try harness.expectNoJoinState(&client);
+}
+
+test "L4 JoinResult runtime resolves direct Accept and invokes joined cap" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    var number = NumberService{ .value = 9001 };
+    const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
+
+    var bootstrap = BootstrapCapCallback{};
+    _ = try client.sendBootstrap(&bootstrap, BootstrapCapCallback.onReturn);
+    const target_import_id = bootstrap.import_id orelse return error.MissingBootstrapImport;
+    try std.testing.expectEqual(export_id, target_import_id);
+
+    var coordinator = TestL4RuntimeCoordinator.init(allocator, join_net.network(), 0x4b01, 2);
+    defer coordinator.deinit();
+
+    const q0 = try coordinator.sendPart(&client, target_import_id, 2, 0);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_questions.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+
+    const q1 = try coordinator.sendPart(&client, target_import_id, 2, 1);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_questions.count());
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), join_net.registry.count());
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expect(coordinator.accept_import_id == null);
+
+    try coordinator.acceptFirst();
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    const joined_import_id = coordinator.accept_import_id orelse return error.MissingAcceptedJoinCap;
+    try std.testing.expectEqual(target_import_id, joined_import_id);
+
+    var number_call = NumberCallCallback{};
+    _ = try client.sendCall(joined_import_id, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &number_call, null, NumberCallCallback.onReturn);
+    try std.testing.expectEqual(@as(u32, 9001), number_call.result orelse return error.MissingNumberResult);
+    try std.testing.expectEqual(@as(u32, 1), number.calls);
+
+    try client.sendFinishForHost(q0, false, false);
+    try client.sendFinishForHost(q1, false, false);
+
+    try coordinator.releaseAccepted(&client);
+    try client.releaseImport(target_import_id, 1);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
+test "L4 JoinResult send failure drains pending direct Accept state" {
+    const allocator = std.testing.allocator;
+
+    var fail_capture = ResultsFailCapture{
+        .capture = .{ .allocator = allocator },
+    };
+    defer fail_capture.capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&fail_capture, ResultsFailCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&peer, &peer);
+    peer.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&peer);
+
+    const first = try buildJoinFrame(allocator, 150, export_id, 0x4b02, 2, 0);
+    defer allocator.free(first);
+    try peer.handleFrame(first);
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
+
+    const second = try buildJoinFrame(allocator, 151, export_id, 0x4b02, 2, 1);
+    defer allocator.free(second);
+    try peer.handleFrame(second);
+
+    try harness.expectNoJoinState(&peer);
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try std.testing.expectEqual(@as(usize, 2), fail_capture.failed_results);
+    try fail_capture.capture.expectException(150, "TestExpectedError");
+    try fail_capture.capture.expectException(151, "TestExpectedError");
+}
+
+test "L4 JoinResult Finish before direct Accept drains pending provision" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = TestL4RuntimeCoordinator.init(allocator, join_net.network(), 0x4b03, 2);
+    defer coordinator.deinit();
+
+    const q0 = try coordinator.sendPart(&client, export_id, 2, 0);
+    const q1 = try coordinator.sendPart(&client, export_id, 2, 1);
+
+    try std.testing.expectEqual(@as(usize, 0), server.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_questions.count());
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), join_net.registry.count());
+
+    try client.sendFinishForHost(q0, false, false);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), join_net.registry.count());
+
+    try client.sendFinishForHost(q1, false, false);
+    try harness.expectNoJoinState(&server);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+}
+
+test "L4 JoinResult peer deinit cancels pending direct Accept provision" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.attachJoinNetwork(join_net.network());
+    try join_net.registerDirectPeer(&peer, &peer);
+
+    const export_id = try addNoopExport(&peer);
+
+    const first = try buildJoinFrame(allocator, 170, export_id, 0x4b04, 2, 0);
+    defer allocator.free(first);
+    try peer.handleFrame(first);
+
+    const second = try buildJoinFrame(allocator, 171, export_id, 0x4b04, 2, 1);
+    defer allocator.free(second);
+    try peer.handleFrame(second);
+
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), peer.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), join_net.registry.count());
+
+    peer.deinit();
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
 }
 
 test "sendJoinExperimental mismatch Return is delivered as exception and drains state" {

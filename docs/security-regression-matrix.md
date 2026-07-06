@@ -27,6 +27,7 @@ Status values:
 | Peer pending-map resource exhaustion | `src/rpc/peer/mod.zig` | `zig build test-rpc-peer`, `zig build test-resource-budgets`, `zig build test-oom` | Covered |
 | Return/resolve/embargo failure atomicity under OOM or callback failure | `src/rpc/peer/**` | `tests/rpc/peer/rpc_peer_from_peer_zig_test.zig`, `tests/rpc/peer/rpc_release_and_failure_test.zig` | Covered |
 | L4 Join state rollback, duplicate/mismatch handling, and cleanup ordering | `src/rpc/peer/provide/*`, `src/rpc/peer/mod.zig` | `tests/rpc/peer/rpc_join_readiness_test.zig`, `zig build test-rpc-peer`, `zig build test-oom`, `zig build test-resource-budgets` | Covered |
+| L4 JoinResult direct-Accept rollback and token lifetime | `src/rpc/peer/mod.zig`, `src/rpc/vat/join.zig` | `tests/rpc/peer/rpc_join_readiness_test.zig`, `just e2e-l4-zig` | Covered |
 | L3 Go cross-implementation runtime-claim drift | `tools/e2e_l3_go_probe.zig`, vendored go-capnp RPC source | `just e2e-l3-go` source-backed Go runtime-surface probe | Covered |
 | L4 cross-implementation runtime-claim drift | `tools/e2e_l3_cpp.zig`, vendored C++ RPC headers | `just e2e-l3-cpp` source-backed C++ runtime-surface probe | Covered |
 | Persistent Save/Restore rollback, malformed payloads, and callback ownership | `src/rpc/peer/persistence.zig`, `src/rpc/peer/mod.zig` | `tests/rpc/peer/rpc_persistence_test.zig`, `tests/rpc/integration/rpc_persistence_reconnect_test.zig`, `zig build test-oom`, `zig build test-resource-budgets` | Covered |

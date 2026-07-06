@@ -92,10 +92,13 @@ source probe also asserts the current C++ runtime blocker remains exact:
 - `capability.h` still exposes only TODO comments for client/server Join
   extension points.
 
-This does not prove L4 runtime interop. capnp-zig now has a raw Experimental
-`Peer.sendJoinExperimental` helper, Zig↔Zig Join pilot/coordinator coverage, and
-C++ source-surface recon, but it still has no Stable/high-level `Peer.sendJoin`,
-direct `JoinResult` connection flow, or multi-hop Join relay.
+This does not prove cross-implementation L4 runtime interop. capnp-zig now has a
+raw Experimental `Peer.sendJoinExperimental` helper, a Zig↔Zig JoinResult
+runtime pilot behind `rpc.vat.join.JoinNetwork`, and C++ source-surface recon.
+The Zig pilot can return compact Zig JoinResult payloads, resolve them to a
+direct peer, send `Accept`, and invoke the accepted cap. It still has no
+Stable/high-level `Peer.sendJoin`, no production Join addressing policy, and no
+multi-hop Join relay.
 
 The current C++ blocker is source-backed and e2e-checked: vendored Cap'n Proto
 C++ exposes the generic Level-3 `VatNetwork` hooks used by this lane, while

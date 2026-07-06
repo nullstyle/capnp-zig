@@ -49,7 +49,7 @@ earlier docs that mention only one name are being reconciled to point here.
 | Code generation (`codegen`, the `capnpc-zig` plugin) | **Stable** |
 | Reader convenience (`reader`) | **Stable** |
 | RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`, generated interface code) | **Stable** (frozen, CI-gated) |
-| RPC L3 three-party origination, L4 Join receive-side readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
+| RPC L3 three-party origination, L4 Join runtime pilot/readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, `JoinNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
 | WASM host ABI (`src/wasm`) | **Experimental** |
 
 The frozen Stable RPC surface is exactly the categorized set in
@@ -163,21 +163,21 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   A↔C++ path, and every case asserts local Provide/Accept/vine/embargo state
   drains. Do not depend on the L3 surface for production interop without exact
   pins.
-- **Level 4 (Join):** a guarded receive-side readiness slice is present and
+- **Level 4 (Join):** a guarded Zig↔Zig runtime pilot is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
   `Peer.sendJoinExperimental` can originate raw Join parts, and inbound `Join`
   can collect local JoinKeyPart structs, compare resolved targets, return
-  provided caps when all parts match, send mismatch exceptions, and drain state
-  on Finish/send-failure/OOM paths. Main also has a test-local Zig↔Zig
-  coordinator harness that selects and invokes the joined cap, releases retained
-  result imports, covers mismatch/cancel cleanup, and proves callback failure
-  after retention leaves no stale question or unreleasable import. There is no
-  Stable/high-level `Peer.sendJoin`, no direct-connection JoinResult flow, no
+  provided caps on the legacy raw-helper path, or, with an Experimental
+  `rpc.vat.join.JoinNetwork` attached, return compact Zig JoinResult payloads
+  that the joiner resolves into a direct `Accept` and callable cap. Regressions
+  cover Finish/send-failure/OOM paths, pending direct-Accept rollback, retained
+  result import release, mismatch/cancel cleanup, and callback failure after
+  retention. `just e2e-l4-zig` runs the focused Zig gate. There is no
+  Stable/high-level `Peer.sendJoin`, no production Join addressing policy, no
   multi-hop relay, and no cross-implementation L4 interop claim. The C++ L3 e2e
-  lane includes shape probes for the C++-convention `JoinKeyPart` and
-  `JoinResult` plus a source-backed runtime-surface probe; it currently confirms
-  that the C++ reference stack exposes no callable generic `VatNetwork` Join
-  hook for this TCP harness. Experimental; exact-pin only.
+  lane includes shape probes plus a source-backed runtime-surface probe; it
+  currently confirms that the C++ reference stack exposes no callable generic
+  `VatNetwork` Join hook for this TCP harness. Experimental; exact-pin only.
 
 ## Known limitations (v0.3.0)
 
