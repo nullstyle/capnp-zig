@@ -36,8 +36,11 @@ correct while L3 handoff grows toward cross-implementation use.
   disabled from question creation, and sends the Accept Finish after the
   callback has retained or rejected the result. If that Finish keeps failing,
   the coordinator records the Accept answer and retries from later accepted-cap
-  transfer, release, cancel, or deinit cleanup. It is still not a Stable E-join
-  API or cross-implementation key/result format.
+  transfer, release, cancel, or deinit cleanup. The direct Accept peer records a
+  back-link to live coordinators so peer-first teardown can Finish the unfinished
+  Accept answer when possible and neutralize the coordinator's borrowed
+  peer/cap pointers before the peer memory is freed. It is still not a Stable
+  E-join API or cross-implementation key/result format.
 - `rpc.vat.join.JoinNetwork` is an Experimental L4 addressing seam. The
   `LoopbackJoinNetwork` test implementation maps completed Join results to the
   joiner's direct peer and an opaque `Accept.provision` payload.
@@ -161,6 +164,11 @@ checks. This is not a full C++ L4 Join runtime.
   callback already retained. If every immediate attempt fails, the Accept answer
   remains marked unfinished and later cleanup retries the same host answer before
   releasing or transferring the retained accepted cap.
+- A peer hosting a coordinator's accepted cap or unfinished direct Accept answer
+  owns a back-link to the coordinator. If that peer deinits first, it attempts to
+  Finish the unfinished Accept answer, then clears the coordinator's accepted
+  cap/peer and Accept-answer peer pointers so later coordinator cleanup cannot
+  dereference freed peer memory.
 - Coordinator deinit cancels outstanding Join questions and pending direct
   Accept questions before freeing the coordinator, leaving only cancelled
   question entries that absorb the peer's required late Return.
@@ -219,6 +227,10 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - repeated synchronous direct Accept Finish OOM where both immediate attempts
   fail, proving the accepted cap remains callable and `releaseAccepted()` retries
   the host answer Finish until the specific Accept answer id drains,
+- direct Accept peer teardown while a coordinator still holds an accepted cap and
+  unfinished Accept answer, proving peer deinit Finishes the host answer,
+  neutralizes the coordinator's accepted peer/cap pointers, and makes later
+  coordinator cleanup safe,
 - malformed direct Accept Return after the server consumes the pending
   provision, proving the coordinator still Finishes held JoinResults and drops
   retained `Joined` inputs,

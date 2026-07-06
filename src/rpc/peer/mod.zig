@@ -569,6 +569,7 @@ pub const JoinCoordinator = struct {
     accept_answer_peer: ?*Peer = null,
     accept_answer_id: ?u32 = null,
     accept_answer_finished: bool = true,
+    accept_link_peer: ?*Peer = null,
     accept_send_in_progress: bool = false,
     accept_peer: ?*Peer = null,
     accepted_peer: ?*Peer = null,
@@ -602,6 +603,7 @@ pub const JoinCoordinator = struct {
         self.cancelPending("join coordinator deinit") catch |err| {
             log.debug("failed to fully cancel L4 JoinCoordinator during deinit: {}", .{err});
         };
+        self.clearAcceptPeerLink();
         for (self.joined.items) |*joined| joined.deinit(self.allocator);
         self.joined.deinit(self.allocator);
         self.sent_parts.deinit();
@@ -697,6 +699,7 @@ pub const JoinCoordinator = struct {
         defer provision_msg.deinit();
         const provision = try provision_msg.getRootAnyPointer();
         const direct_peer = first.peer;
+        try self.registerAcceptPeerLink(direct_peer);
         self.accept_send_in_progress = true;
         defer self.accept_send_in_progress = false;
         const question_id = direct_peer.sendAcceptNoRestore(provision, null, self, JoinCoordinator.onAcceptReturn, true) catch |err| {
@@ -706,6 +709,7 @@ pub const JoinCoordinator = struct {
                 _ = self.finishAcceptAnswer(direct_peer, answer_id, "trailing Accept send error");
                 return answer_id;
             }
+            self.clearAcceptPeerLink();
             return err;
         };
         self.noteAcceptAnswerNeedsFinish(direct_peer, question_id);
@@ -737,6 +741,7 @@ pub const JoinCoordinator = struct {
         const peer = self.accepted_peer orelse return null;
         self.accepted_cap = null;
         self.accepted_peer = null;
+        self.clearAcceptPeerLinkIfDrained();
         return .{ .peer = peer, .cap = cap };
     }
 
@@ -759,6 +764,7 @@ pub const JoinCoordinator = struct {
         peer.releaseResolvedCap(cap) catch |err| {
             if (first_err == null) first_err = err;
         };
+        self.clearAcceptPeerLinkIfDrained();
         if (first_err) |err| return err;
     }
 
@@ -836,6 +842,7 @@ pub const JoinCoordinator = struct {
             if (first_err == null) first_err = err;
         };
         self.clearJoinInputs();
+        self.clearAcceptPeerLinkIfDrained();
 
         if (first_err) |err| return err;
     }
@@ -882,6 +889,58 @@ pub const JoinCoordinator = struct {
         self.accept_question_id = null;
         self.accept_peer = null;
         self.finishJoinResultsAfterAccept(context);
+        self.clearAcceptPeerLinkIfDrained();
+    }
+
+    fn registerAcceptPeerLink(self: *@This(), peer: *Peer) !void {
+        if (self.accept_link_peer) |linked_peer| {
+            if (linked_peer == peer) return;
+            return error.ConflictingAcceptPeer;
+        }
+        try peer.registerJoinCoordinatorAccept(self);
+        self.accept_link_peer = peer;
+    }
+
+    fn clearAcceptPeerLink(self: *@This()) void {
+        if (self.accept_link_peer) |peer| {
+            peer.deregisterJoinCoordinatorAccept(self);
+            self.accept_link_peer = null;
+        }
+    }
+
+    fn clearAcceptPeerLinkIfDrained(self: *@This()) void {
+        if (self.accept_question_id != null) return;
+        if (self.accept_peer != null) return;
+        if (self.accepted_cap != null or self.accepted_peer != null) return;
+        if (!self.accept_answer_finished) return;
+        self.clearAcceptPeerLink();
+    }
+
+    fn neutralizeAcceptedPeer(self: *@This(), peer: *Peer) void {
+        if (self.accept_answer_peer == peer and !self.accept_answer_finished) {
+            if (self.accept_answer_id) |answer_id| {
+                peer.sendFinishForHost(answer_id, false, false) catch |err| {
+                    self.finish_failures += 1;
+                    log.debug("failed to finish L4 JoinCoordinator Accept answer {} during peer deinit: {}", .{
+                        answer_id,
+                        err,
+                    });
+                };
+            }
+        }
+        if (self.accept_link_peer == peer) self.accept_link_peer = null;
+        if (self.accept_peer == peer) {
+            self.accept_peer = null;
+            self.accept_question_id = null;
+        }
+        if (self.accept_answer_peer == peer) {
+            self.accept_answer_peer = null;
+            self.accept_answer_finished = true;
+        }
+        if (self.accepted_peer == peer) {
+            self.accepted_peer = null;
+            self.accepted_cap = null;
+        }
     }
 
     fn noteAcceptAnswerNeedsFinish(self: *@This(), peer: *Peer, answer_id: u32) void {
@@ -911,6 +970,7 @@ pub const JoinCoordinator = struct {
                 continue;
             };
             self.noteAcceptAnswerFinished(peer, answer_id);
+            self.clearAcceptPeerLinkIfDrained();
             return true;
         }
         return false;
@@ -1034,6 +1094,7 @@ pub const JoinCoordinator = struct {
                 self.accept_question_id = null;
                 self.accept_peer = null;
                 self.finishJoinResultsAfterAccept("Accept");
+                self.clearAcceptPeerLinkIfDrained();
             },
             .exception => {
                 self.failTerminalAcceptReturn("Accept exception");
@@ -1139,6 +1200,10 @@ const PendingJoinResultAnswer = struct {
 const JoinAcceptHostLink = struct {
     answer_peer: *Peer,
     answer_id: u32,
+};
+
+const JoinCoordinatorAcceptLink = struct {
+    coordinator: *JoinCoordinator,
 };
 
 pub const Peer = struct {
@@ -1263,6 +1328,9 @@ pub const Peer = struct {
     /// Back-links from JoinResult answer records on other peers that point at
     /// this peer as the direct Accept host.
     join_accept_host_links: std.ArrayList(JoinAcceptHostLink),
+    /// Back-links from Experimental JoinCoordinator instances holding an accepted
+    /// cap or unfinished Accept answer through this peer.
+    join_coordinator_accept_links: std.ArrayList(JoinCoordinatorAcceptLink),
     /// Outbound third-party handoffs awaiting ThirdPartyAnswer.
     pending_third_party_awaits: std.StringHashMap(PendingThirdPartyAwait),
     /// Completed third-party answers awaiting adoption.
@@ -1504,6 +1572,7 @@ pub const Peer = struct {
             .pending_join_accepts = std.StringHashMap(ProvideTarget).init(allocator),
             .pending_join_result_answers = std.AutoHashMap(u32, PendingJoinResultAnswer).init(allocator),
             .join_accept_host_links = .empty,
+            .join_coordinator_accept_links = .empty,
             .pending_third_party_awaits = std.StringHashMap(PendingThirdPartyAwait).init(allocator),
             .pending_third_party_answers = std.StringHashMap(u32).init(allocator),
             .pending_third_party_returns = std.AutoHashMap(u32, []u8).init(allocator),
@@ -1784,6 +1853,7 @@ pub const Peer = struct {
         self.neutralizeCrossPeerJoinRelaysOnSourcePeer();
         self.neutralizeJoinAcceptHostLinks();
         _ = self.forceCancelAllQuestions(disconnected_reason);
+        self.neutralizeJoinCoordinatorAcceptLinks();
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
             self.allocator,
@@ -1927,6 +1997,7 @@ pub const Peer = struct {
             self.pending_join_result_answers.deinit();
         }
         self.join_accept_host_links.deinit(self.allocator);
+        self.join_coordinator_accept_links.deinit(self.allocator);
         peer_cleanup.deinitOwnedStringKeyMap(
             @TypeOf(self.pending_third_party_awaits),
             self.allocator,
@@ -6193,6 +6264,34 @@ pub const Peer = struct {
             }
         }
         self.join_accept_host_links.clearRetainingCapacity();
+    }
+
+    fn registerJoinCoordinatorAccept(self: *Peer, coordinator: *JoinCoordinator) !void {
+        for (self.join_coordinator_accept_links.items) |link| {
+            if (link.coordinator == coordinator) return;
+        }
+        try self.join_coordinator_accept_links.append(self.allocator, .{
+            .coordinator = coordinator,
+        });
+    }
+
+    fn deregisterJoinCoordinatorAccept(self: *Peer, coordinator: *JoinCoordinator) void {
+        var i: usize = 0;
+        while (i < self.join_coordinator_accept_links.items.len) {
+            const link = self.join_coordinator_accept_links.items[i];
+            if (link.coordinator == coordinator) {
+                _ = self.join_coordinator_accept_links.swapRemove(i);
+                return;
+            }
+            i += 1;
+        }
+    }
+
+    fn neutralizeJoinCoordinatorAcceptLinks(self: *Peer) void {
+        for (self.join_coordinator_accept_links.items) |link| {
+            link.coordinator.neutralizeAcceptedPeer(self);
+        }
+        self.join_coordinator_accept_links.clearRetainingCapacity();
     }
 
     fn handleResolve(self: *Peer, resolve_msg: protocol.Resolve) !void {

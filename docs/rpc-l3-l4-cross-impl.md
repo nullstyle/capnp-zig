@@ -116,7 +116,9 @@ synchronous direct-Accept pickup it also suppresses the generic Accept
 auto-Finish and sends that Finish after the callback unwinds, so a trailing
 Finish OOM cannot restore coordinator-owned callback state after the cap has
 been retained; if all immediate Finish attempts fail, later accepted-cap cleanup
-retries the same host answer. The transparent proxy relay
+retries the same host answer. Direct Accept peers also keep coordinator
+back-links so peer-first teardown can Finish any unfinished Accept answer and
+neutralize borrowed coordinator pointers. The transparent proxy relay
 also keeps owner/source state when forwarding the downstream Finish fails, so a
 retry can drain the downstream JoinResult lifetime, rejects non-import source
 targets before allocating relay state, neutralizes the source question during

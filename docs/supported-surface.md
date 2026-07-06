@@ -179,7 +179,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   During synchronous direct-Accept pickup it suppresses the internal Accept
   auto-Finish, keeps return-error restoration disabled from question creation,
   sends the Accept Finish only after the callback unwinds, and records the
-  Accept answer until a later cleanup path successfully drains it.
+  Accept answer until a later cleanup path successfully drains it. The direct
+  Accept peer also keeps a teardown back-link to neutralize coordinator-owned
+  accepted caps and unfinished Accept answers if that peer deinits first.
   It rejects duplicate local part numbers before sending, treats malformed or
   exception JoinResult Returns as terminal failed results that still Finish the
   affected question, treats mismatched successful JoinResults as terminal without
@@ -210,7 +212,8 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   direct-Accept JoinResult cleanup, malformed/exception JoinResult terminal
   cleanup including mixed retained-result cleanup,
   mismatched successful JoinResult cleanup, synchronous direct-Accept Finish OOM
-  retry plus later release-time drain, sendPart OOM rollback,
+  retry plus later release-time drain, direct Accept peer teardown neutralization,
+  sendPart OOM rollback,
   addressed unknown/stale/duplicate provision handling,
   connector malformed-token/no-dial,
   network-teardown-before-release, and OOM-before-dial handling, retained result
