@@ -472,6 +472,43 @@ const ZigJoinLink = struct {
     }
 };
 
+const ClientFinishOomOnceJoinLink = struct {
+    client: *Peer,
+    server: *Peer,
+    fail_question_id: u32,
+    failed: bool = false,
+    forwarding: bool = true,
+
+    fn clientToServer(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch {
+            if (!self.forwarding) return;
+            try self.server.handleFrame(frame);
+            return;
+        };
+        defer decoded.deinit();
+        if (decoded.tag == .finish) {
+            const finish = decoded.asFinish() catch {
+                if (!self.forwarding) return;
+                try self.server.handleFrame(frame);
+                return;
+            };
+            if (finish.question_id == self.fail_question_id and !self.failed) {
+                self.failed = true;
+                return error.OutOfMemory;
+            }
+        }
+        if (!self.forwarding) return;
+        try self.server.handleFrame(frame);
+    }
+
+    fn serverToClient(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        if (!self.forwarding) return;
+        try self.client.handleFrame(frame);
+    }
+};
+
 const NumberService = struct {
     value: u32,
     calls: u32 = 0,
@@ -996,6 +1033,73 @@ test "JoinCoordinator drives JoinResult Accept and finishes remote lifetime" {
 
     try coordinator.releaseAccepted();
     try client.releaseImport(target_import_id, 1);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
+test "JoinCoordinator accepts cap when synchronous Accept auto-Finish initially OOMs" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ClientFinishOomOnceJoinLink{
+        .client = &client,
+        .server = &server,
+        .fail_question_id = 2,
+    };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ClientFinishOomOnceJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ClientFinishOomOnceJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    var number = NumberService{ .value = 6204 };
+    const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b13, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(client.next_question_id, link.fail_question_id);
+
+    const accept_question_id = try coordinator.acceptFirst();
+    try std.testing.expectEqual(link.fail_question_id, accept_question_id);
+    try std.testing.expect(link.failed);
+    try std.testing.expect(coordinator.acceptedCap() != null);
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.finish_failures);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), server.resolved_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+
+    var number_call = NumberCallCallback{};
+    _ = try client.sendCallResolved(
+        coordinator.acceptedCap() orelse return error.MissingAcceptedJoinCap,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &number_call,
+        null,
+        NumberCallCallback.onReturn,
+    );
+    try std.testing.expectEqual(@as(u32, 6204), number_call.result orelse return error.MissingNumberResult);
+    try std.testing.expectEqual(@as(u32, 1), number.calls);
+
+    try coordinator.releaseAccepted();
     try std.testing.expectEqual(@as(usize, 0), client.questions.count());
     try harness.expectNoJoinState(&client);
     try harness.expectNoJoinState(&server);

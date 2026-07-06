@@ -566,6 +566,8 @@ pub const JoinCoordinator = struct {
     sent_parts: std.AutoHashMap(u16, u32),
     joined: std.ArrayList(Joined) = .empty,
     accept_question_id: ?u32 = null,
+    last_accept_answer_id: ?u32 = null,
+    accept_send_in_progress: bool = false,
     accept_peer: ?*Peer = null,
     accepted_peer: ?*Peer = null,
     accepted_cap: ?cap_table.ResolvedCap = null,
@@ -692,10 +694,25 @@ pub const JoinCoordinator = struct {
         var provision_msg = try message.Message.initUnvalidated(self.allocator, first.provision);
         defer provision_msg.deinit();
         const provision = try provision_msg.getRootAnyPointer();
-        const question_id = try first.peer.sendAccept(provision, null, self, JoinCoordinator.onAcceptReturn);
+        const direct_peer = first.peer;
+        self.accept_send_in_progress = true;
+        defer self.accept_send_in_progress = false;
+        const question_id = direct_peer.sendAcceptNoRestore(provision, null, self, JoinCoordinator.onAcceptReturn, true) catch |err| {
+            if (self.accepted_cap != null or self.accept_exceptions != 0) {
+                log.debug("L4 JoinCoordinator Accept settled before send returned trailing error: {}", .{err});
+                const answer_id = self.last_accept_answer_id orelse return err;
+                self.finishAcceptAnswer(direct_peer, answer_id, "trailing Accept send error");
+                return answer_id;
+            }
+            return err;
+        };
+        self.last_accept_answer_id = question_id;
+        if (self.accepted_cap != null or self.accept_exceptions != 0) {
+            self.finishAcceptAnswer(direct_peer, question_id, "synchronous Accept");
+        }
         if (self.accepted_cap == null and self.accept_exceptions == 0) {
             self.accept_question_id = question_id;
-            self.accept_peer = first.peer;
+            self.accept_peer = direct_peer;
         }
         return question_id;
     }
@@ -848,6 +865,22 @@ pub const JoinCoordinator = struct {
         self.finishJoinResultsAfterAccept(context);
     }
 
+    fn finishAcceptAnswer(self: *@This(), peer: *Peer, answer_id: u32, context: []const u8) void {
+        var attempts: u8 = 0;
+        while (attempts < 2) : (attempts += 1) {
+            peer.sendFinishForHost(answer_id, false, false) catch |err| {
+                self.finish_failures += 1;
+                log.debug("failed to finish L4 JoinCoordinator Accept answer {} after {s}: {}", .{
+                    answer_id,
+                    context,
+                    err,
+                });
+                continue;
+            };
+            return;
+        }
+    }
+
     fn markQuestionFinished(self: *@This(), peer: *Peer, question_id: u32) void {
         for (self.question_ids.items, self.question_peers.items, self.question_finished.items) |qid, qpeer, *finished| {
             if (qid == question_id and qpeer == peer) {
@@ -923,6 +956,10 @@ pub const JoinCoordinator = struct {
         caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
         const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        self.last_accept_answer_id = ret.answer_id;
+        defer if (!self.accept_send_in_progress and !ret.no_finish_needed) {
+            self.finishAcceptAnswer(peer, ret.answer_id, "Accept Return");
+        };
         switch (ret.tag) {
             .results => {
                 if (self.accepted_cap != null) {
@@ -2408,12 +2445,17 @@ pub const Peer = struct {
         embargo: ?[]const u8,
         ctx: *anyopaque,
         on_return: QuestionCallback,
+        suppress_auto_finish: bool,
     ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
 
         const question_id = try self.allocateQuestionNoRestore(ctx, on_return);
         errdefer self.removeQuestion(question_id);
+        if (suppress_auto_finish) {
+            const question = self.questions.getPtr(question_id) orelse return error.MissingAllocatedQuestion;
+            question.suppress_auto_finish = true;
+        }
 
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
@@ -6304,7 +6346,7 @@ pub const Peer = struct {
         // start: synchronous loopback can deliver the Accept Return before this
         // send call returns, and a callback/post-callback error must not restore
         // a question whose ctx has already been freed.
-        const question_id = accept_peer.sendAcceptNoRestore(provision, embargo, heap, onHandoffAcceptReturn) catch |err| {
+        const question_id = accept_peer.sendAcceptNoRestore(provision, embargo, heap, onHandoffAcceptReturn, false) catch |err| {
             if (pickup_settled) {
                 heap_owned = false;
                 vine_owned = false;

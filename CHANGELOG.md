@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covers callback failure after observing the direct cap and verifies the
   Accept question, vine, Provide state, and accepted import all drain.
 
+- **Experimental RPC Level-4 JoinCoordinator direct Accept cleanup is
+  Finish-failure safe.** The coordinator now sends its internal direct
+  `Accept` with restore-on-return-error disabled and auto-Finish suppressed
+  while synchronous loopback delivery is in progress, then Finishes the Accept
+  answer after the callback unwinds. A regression covers an initial OOM while
+  sending that trailing Finish: the accepted cap remains retained and callable,
+  no question is restored with coordinator-owned callback state, and the
+  JoinResult, pending Accept, resolved-answer, and JoinNetwork registry state all
+  drain.
+
 - **Experimental RPC Level-4 JoinCoordinator now tracks split-peer Join
   lifetimes correctly.** The coordinator records the peer for every originated
   Join part and sends each post-pickup Finish or cancel on that same peer, so

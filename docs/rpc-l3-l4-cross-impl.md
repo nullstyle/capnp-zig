@@ -111,8 +111,11 @@ correct upstream connection after pickup, retries only unfinished JoinResult
 Finishes after a partial send failure, Finishes JoinResults after terminal
 direct Accept Returns, releases retained `Joined` leases when a later terminal
 JoinResult failure makes the aggregate impossible, and can cancel a pending
-direct Accept if its Return is lost or the coordinator is dropped. The
-transparent proxy relay
+direct Accept if its Return is lost or the coordinator is dropped. During
+synchronous direct-Accept pickup it also suppresses the generic Accept
+auto-Finish and sends that Finish after the callback unwinds, so a trailing
+Finish OOM cannot restore coordinator-owned callback state after the cap has
+been retained. The transparent proxy relay
 also keeps owner/source state when forwarding the downstream Finish fails, so a
 retry can drain the downstream JoinResult lifetime, rejects non-import source
 targets before allocating relay state, neutralizes the source question during

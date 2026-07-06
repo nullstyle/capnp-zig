@@ -176,6 +176,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   direct Accept, retains/releases the accepted cap, and Finishes JoinResult
   questions on their originating peers after pickup; it tracks Finish state per
   JoinResult question so partial send failures retry only unfinished questions.
+  During synchronous direct-Accept pickup it suppresses the internal Accept
+  auto-Finish, keeps return-error restoration disabled from question creation,
+  and sends the Accept Finish only after the callback unwinds.
   It rejects duplicate local part numbers before sending, treats malformed or
   exception JoinResult Returns as terminal failed results that still Finish the
   affected question, treats mismatched successful JoinResults as terminal without
@@ -205,7 +208,8 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   partial-Finish retry without replaying successful Finishes, terminal
   direct-Accept JoinResult cleanup, malformed/exception JoinResult terminal
   cleanup including mixed retained-result cleanup,
-  mismatched successful JoinResult cleanup, sendPart OOM rollback,
+  mismatched successful JoinResult cleanup, synchronous direct-Accept Finish OOM
+  retry, sendPart OOM rollback,
   addressed unknown/stale/duplicate provision handling,
   connector malformed-token/no-dial,
   network-teardown-before-release, and OOM-before-dial handling, retained result
