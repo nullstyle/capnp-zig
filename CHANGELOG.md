@@ -72,7 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `resolvePromiseExportToThirdParty`, and Vat A auto-picks up the
   `thirdPartyHosted` descriptor by sending `Accept` on its direct A↔C++
   connection. The accepted cap is then invoked directly over A↔C++ and returns
-  the C++ value. The lane also records the current L4 recon result: capnp-zig can
+  the C++ value. The lane now also runs a C++ failure matrix: bad contact data
+  falls back to the vine proxy, invalid/unknown completion tokens and await-side
+  C++ rejection produce deterministic pickup exceptions, a C++ disconnect after
+  `Provide` still permits direct pickup, duplicate/late `Accept` is rejected
+  without yielding a second cap, hosted-cap exceptions report over the direct
+  A↔C++ path, and every case checks local Provide/Accept/vine/embargo state
+  drains. The lane also records the current L4 recon result: capnp-zig can
   consume the C++-shape `JoinKeyPart` struct used by this probe, but C++'s
   generic `VatNetwork` still marks Level 4 as TODO and capnp-zig still has no
   public `Peer.sendJoin` or direct `JoinResult` flow. L3/L4 remain Experimental;

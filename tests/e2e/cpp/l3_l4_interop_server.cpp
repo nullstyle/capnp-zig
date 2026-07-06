@@ -23,12 +23,15 @@ using InteropVatNetworkBase =
 
 constexpr uint32_t NUMBER_VALUE = 4242;
 
-class NumberImpl final : public Number::Server {
-public:
-  kj::Promise<void> getNumber(GetNumberContext context) override {
-    context.getResults().setN(NUMBER_VALUE);
-    return kj::READY_NOW;
-  }
+enum class ScenarioMode: uint16_t {
+  HAPPY = 0,
+  BAD_CONTACT_FALLBACK = 1,
+  MALFORMED_COMPLETION = 2,
+  REJECTED_COMPLETION = 3,
+  REJECT_AWAIT = 4,
+  DROP_AFTER_PROVIDE = 5,
+  DUPLICATE_ACCEPT = 6,
+  NUMBER_EXCEPTION = 7,
 };
 
 class InteropVatNetwork final : public InteropVatNetworkBase {
@@ -59,15 +62,25 @@ public:
 
 private:
   friend class ConnectionImpl;
+  friend class NumberImpl;
 
   struct ThirdPartyExchange {
     kj::ForkedPromise<kj::Rc<kj::Refcounted>> promise;
     kj::Own<kj::PromiseFulfiller<kj::Rc<kj::Refcounted>>> fulfiller;
+    bool completed = false;
 
     ThirdPartyExchange(kj::PromiseFulfillerPair<kj::Rc<kj::Refcounted>> paf =
                        kj::newPromiseAndFulfiller<kj::Rc<kj::Refcounted>>())
         : promise(paf.promise.fork()), fulfiller(kj::mv(paf.fulfiller)) {}
   };
+
+  static ScenarioMode modeFromToken(uint64_t token) {
+    return static_cast<ScenarioMode>(token >> 48);
+  }
+
+  static kj::Promise<kj::Rc<kj::Refcounted>> rejectedThirdParty(kj::StringPtr reason) {
+    return kj::Promise<kj::Rc<kj::Refcounted>>(KJ_EXCEPTION(FAILED, reason));
+  }
 
   ThirdPartyExchange& getExchange(uint64_t token) {
     return exchanges.findOrCreate(token, [&]() -> decltype(exchanges)::Entry {
@@ -169,8 +182,20 @@ private:
         ThirdPartyToAwait::Reader party,
         kj::Rc<kj::Refcounted> value) override {
       uint64_t token = party.getToken();
+      auto mode = InteropVatNetwork::modeFromToken(token);
+      if (mode == ScenarioMode::REJECT_AWAIT) {
+        auto& exchange = network.getExchange(token);
+        (void)exchange;
+        return kj::heap(kj::defer([this, token]() {
+          network.exchanges.erase(token);
+        }));
+      }
+
       auto& exchange = network.getExchange(token);
       exchange.fulfiller->fulfill(kj::mv(value));
+      if (mode == ScenarioMode::DROP_AFTER_PROVIDE) {
+        ioStream->shutdownWrite();
+      }
 
       return kj::heap(kj::defer([this, token]() {
         network.exchanges.erase(token);
@@ -179,7 +204,29 @@ private:
 
     kj::Promise<kj::Rc<kj::Refcounted>> completeThirdParty(
         ThirdPartyCompletion::Reader completion) override {
-      auto& exchange = network.getExchange(completion.getToken());
+      uint64_t token = completion.getToken();
+      auto mode = InteropVatNetwork::modeFromToken(token);
+      if (token == 0 || mode == ScenarioMode::MALFORMED_COMPLETION ||
+          mode == ScenarioMode::REJECTED_COMPLETION ||
+          mode == ScenarioMode::REJECT_AWAIT) {
+        return InteropVatNetwork::rejectedThirdParty("l3_l4_interop rejected third-party completion");
+      }
+      KJ_IF_SOME(completed, network.completedTokens.find(token)) {
+        (void)completed;
+        return InteropVatNetwork::rejectedThirdParty("l3_l4_interop duplicate third-party completion");
+      }
+
+      auto& exchange = network.getExchange(token);
+      if (exchange.completed) {
+        return InteropVatNetwork::rejectedThirdParty("l3_l4_interop duplicate third-party completion");
+      }
+      exchange.completed = true;
+      network.completedTokens.findOrCreate(token, [&]() -> decltype(network.completedTokens)::Entry {
+        return {token, true};
+      });
+      if (mode == ScenarioMode::NUMBER_EXCEPTION) {
+        network.failNextNumberCall += 1;
+      }
       return exchange.promise.addBranch();
     }
 
@@ -251,7 +298,9 @@ private:
 
   kj::ProducerConsumerQueue<kj::Own<Connection>> acceptQueue;
   kj::HashMap<uint64_t, ThirdPartyExchange> exchanges;
+  kj::HashMap<uint64_t, bool> completedTokens;
   uint64_t tokenCounter = 0;
+  uint32_t failNextNumberCall = 0;
 };
 
 kj::Own<capnp::OutgoingRpcMessage> InteropVatNetwork::ConnectionImpl::newOutgoingMessage(
@@ -259,6 +308,23 @@ kj::Own<capnp::OutgoingRpcMessage> InteropVatNetwork::ConnectionImpl::newOutgoin
   return kj::Own<capnp::OutgoingRpcMessage>(
       kj::refcounted<OutgoingMessageImpl>(*this, firstSegmentWordSize));
 }
+
+class NumberImpl final : public Number::Server {
+public:
+  explicit NumberImpl(InteropVatNetwork& network): network(network) {}
+
+  kj::Promise<void> getNumber(GetNumberContext context) override {
+    if (network.failNextNumberCall > 0) {
+      network.failNextNumberCall -= 1;
+      return kj::Promise<void>(KJ_EXCEPTION(FAILED, "l3_l4_interop forced Number.getNumber failure"));
+    }
+    context.getResults().setN(NUMBER_VALUE);
+    return kj::READY_NOW;
+  }
+
+private:
+  InteropVatNetwork& network;
+};
 
 kj::Promise<void> acceptLoop(kj::ConnectionReceiver& listener, InteropVatNetwork& vatNetwork) {
   return listener.accept().then([&listener, &vatNetwork](kj::Own<kj::AsyncIoStream>&& connection) {
@@ -271,7 +337,7 @@ kj::Promise<void> acceptLoop(kj::ConnectionReceiver& listener, InteropVatNetwork
 
 void runL3L4InteropServer(kj::ConnectionReceiver& listener, kj::WaitScope& waitScope) {
   InteropVatNetwork vatNetwork;
-  Number::Client bootstrap = kj::heap<NumberImpl>();
+  Number::Client bootstrap = kj::heap<NumberImpl>(vatNetwork);
   auto rpcSystem = capnp::makeRpcServer(vatNetwork, kj::mv(bootstrap));
   auto acceptTask = acceptLoop(listener, vatNetwork).eagerlyEvaluate([](kj::Exception&& exception) {
     KJ_LOG(ERROR, exception);

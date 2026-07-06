@@ -84,8 +84,8 @@ Experimental surface evolves in `docs/api-snapshot-experimental.txt` (ungated).
 
 Everything below is outside the frozen contract and may break at any 0.x minor
 bump. The L3 three-party arc in particular is **lightly soaked and
-Experimental**: main has a first Zig↔C++ TCP proof, but not a full reference
-matrix or production interop contract.
+Experimental**: main has a Zig↔C++ TCP success/failure matrix, but not a full
+reference matrix or production interop contract.
 
 | Module | Path | Notes |
 |---|---|---|
@@ -93,9 +93,9 @@ matrix or production interop contract.
 | RPC Connection — demoted variants | `src/rpc/transport/tcp/connection.zig` | The `attachTransport*` / `initDetached*` (F3-demoted) constructors and any raw-socket-handle entry points. The narrowed `Connection` (`init`/`Options.default`/`enableWake`/lifecycle) is Stable — see above. |
 | RPC Peer — beyond the two-party core | `src/rpc/peer/mod.zig` | The Experimental parts of `Peer`: the F3-demoted ctor/attach variants, `test_hooks`, and everything under the L3 / reflected-cap surfaces below. The two-party entry points are Stable — see above. |
 | RPC Peer — reflected-cap resolve | `src/rpc/peer/mod.zig` (`resolvePromiseExportToImport`) | Resolve a promise export to a *caller-hosted* cap (drives the `senderLoopback`/`receiverLoopback` Disembargo). New in 0.3.0; verified in loopback + a partial cross-impl matrix (see supported-surface Known limitations). Not frozen. |
-| RPC Peer — L3 three-party origination | `src/rpc/peer/mod.zig`, `src/rpc/peer/provide/*`, `src/rpc/peer/third_party/*` | The full Level-3 arc: `sendProvide`, `sendAccept`, `resolvePromiseExportToThirdParty`, `sendThirdPartyAnswer`, `registerPendingThirdPartyAwait`, `setHandoffPickupHandler`, `ProvideHandle`, `thirdPartyHosted` emission. Focused allocator, teardown, embargo, and cross-peer proxy regressions cover Zig↔Zig; `just e2e-l3-cpp` adds the first Zig↔C++ TCP proof. Not frozen. |
+| RPC Peer — L3 three-party origination | `src/rpc/peer/mod.zig`, `src/rpc/peer/provide/*`, `src/rpc/peer/third_party/*` | The full Level-3 arc: `sendProvide`, `sendAccept`, `resolvePromiseExportToThirdParty`, `sendThirdPartyAnswer`, `registerPendingThirdPartyAwait`, `setHandoffPickupHandler`, `ProvideHandle`, `thirdPartyHosted` emission. Focused allocator, teardown, embargo, and cross-peer proxy regressions cover Zig↔Zig; `just e2e-l3-cpp` covers Zig↔C++ TCP success plus bad-contact fallback, invalid/unknown completion, await-side rejection, disconnect-after-Provide, duplicate Accept, hosted-cap exception, and drain checks. Not frozen. |
 | RPC Peer — L4 Join receive-side readiness | `src/rpc/peer/mod.zig`, `src/rpc/peer/provide/*` | Receive-side Join state accumulation, target equality, completion, Finish cleanup, send-failure fallback, and OOM rollback are regression covered. The C++ L3 lane includes a JoinKeyPart receive-shape probe, but there is no public `sendJoin`, no direct-connection JoinResult flow, and no cross-implementation L4 claim. See `rpc-l4-join-readiness.md`. Not frozen. |
-| RPC Vat Network | `src/rpc/vat/network.zig` | `VatNetwork` addressing seam + `LoopbackVatNetwork` for L3 origination. Experimental; the production addressing policy is application-defined. Duplicate-token, unknown-token, allocator-failure paths, and one Zig↔C++ TCP token rendezvous are covered. |
+| RPC Vat Network | `src/rpc/vat/network.zig` | `VatNetwork` addressing seam + `LoopbackVatNetwork` for L3 origination. Experimental; the production addressing policy is application-defined. Duplicate-token, unknown-token, allocator-failure paths, and Zig↔C++ TCP token success/failure rendezvous cases are covered. |
 | RPC `ServerSession` (as a type) | `src/rpc/transport/tcp/*` | The `ServerSession` struct/API *beyond* its `.accept` consumer entry point. `.accept` + its lifecycle are Stable (see above); the type itself is not frozen. |
 | RPC Transport | `src/rpc/transport/tcp/stream_transport.zig` | Concurrent read/write I/O. |
 | RPC Events | `src/rpc/events.zig` | Redacted transport-general observer events. Event names may grow while payloads stay redacted. |

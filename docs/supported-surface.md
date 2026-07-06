@@ -151,8 +151,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   param caps and host-returned result caps can be invoked through the relay. The
   current mainline hardening evidence also covers loopback token duplicate/unknown
   paths, `sendProvide` / `sendAccept` allocator rollback, vine/provide teardown
-  ordering, embargoed pickup ordering, and cross-peer proxy cleanup. Do not depend
-  on the L3 surface for production interop without exact pins.
+  ordering, embargoed pickup ordering, and cross-peer proxy cleanup. The C++
+  interop lane is now a small failure matrix rather than only a happy-path proof:
+  bad contact data falls back to the vine proxy, invalid/unknown completion tokens
+  and await-side C++ rejection produce deterministic pickup exceptions, a C++
+  disconnect after `Provide` still permits direct pickup, duplicate/late `Accept`
+  is rejected without a second cap, hosted-cap exceptions report over the direct
+  A↔C++ path, and every case asserts local Provide/Accept/vine/embargo state
+  drains. Do not depend on the L3 surface for production interop without exact
+  pins.
 - **Level 4 (Join):** a guarded receive-side readiness slice is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
   Inbound `Join` can collect local JoinKeyPart structs, compare resolved

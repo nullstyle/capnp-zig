@@ -6,9 +6,9 @@ This note records the first cross-implementation Level-3 result and the current
 Level-4 blocker. It is intentionally narrower than the stable two-party
 interop matrix.
 
-## Positive L3 Result
+## L3 Result
 
-`just e2e-l3-cpp` runs the `l3_l4_interop` scenario:
+`just e2e-l3-cpp` runs the `l3_l4_interop` matrix:
 
 - Vat A and Vat B are capnp-zig peers.
 - Vat C is a C++ reference host built in Docker from the vendored Cap'n Proto
@@ -23,6 +23,20 @@ interop matrix.
 The accepted cap is not invoked through the vine proxy. The TAP gate asserts
 direct A↔C++ invocation and local drain of the vine/pickup transient state.
 
+The same gate now also covers the major C++-interop failure contours:
+
+- bad `ThirdPartyToContact` host data falls back to the vine proxy without
+  attempting pickup;
+- invalid/malformed semantic completion tokens and unknown completion nonces
+  produce deterministic Accept exceptions;
+- a C++ await-side rejection produces one pickup exception and drains the vine;
+- a C++ disconnect after `Provide` does not prevent direct A↔C++ pickup;
+- duplicate/late `Accept` is rejected without yielding a second cap;
+- a hosted-cap exception after successful pickup is reported through the direct
+  A↔C++ call path;
+- every scenario checks local question/provide/vine/embargo state drains after
+  releases.
+
 ## C++ Notes
 
 The Docker C++ backend builds vendored Cap'n Proto 2.0, whose generic
@@ -30,6 +44,10 @@ The Docker C++ backend builds vendored Cap'n Proto 2.0, whose generic
 `awaitThirdParty`, `completeThirdParty`, and `generateEmbargoId`). The local
 Homebrew 1.4 headers do not expose those hooks, so the local C++ build compiles
 a guarded stub for this scenario; the real L3 proof is the Docker gate.
+
+The C++ harness is intentionally test-only. It uses the high bits of the nonce
+in the test schema's token structs to select failure-injection modes. That is
+not a production VatNetwork addressing policy.
 
 ## Other Implementations
 

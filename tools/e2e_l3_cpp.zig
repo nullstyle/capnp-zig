@@ -18,6 +18,45 @@ const introducer_interface_id: u64 = 0x6c33_6c34_696e_7472;
 const get_promise_method_id: u16 = 0;
 const pump_timeout_ms: i64 = 10_000;
 
+const Scenario = enum(u16) {
+    happy = 0,
+    bad_contact_fallback = 1,
+    malformed_completion = 2,
+    rejected_completion = 3,
+    reject_await = 4,
+    drop_after_provide = 5,
+    duplicate_accept = 6,
+    number_exception = 7,
+
+    fn name(self: Scenario) []const u8 {
+        return switch (self) {
+            .happy => "happy path",
+            .bad_contact_fallback => "bad contact fallback",
+            .malformed_completion => "malformed completion",
+            .rejected_completion => "rejected completion",
+            .reject_await => "rejected await",
+            .drop_after_provide => "drop after Provide",
+            .duplicate_accept => "duplicate Accept",
+            .number_exception => "accepted cap exception",
+        };
+    }
+
+    fn token(self: Scenario, ordinal: u64) u64 {
+        return (@as(u64, @intFromEnum(self)) << 48) | ordinal;
+    }
+};
+
+const scenarios = [_]Scenario{
+    .happy,
+    .bad_contact_fallback,
+    .malformed_completion,
+    .rejected_completion,
+    .reject_await,
+    .drop_after_provide,
+    .duplicate_accept,
+    .number_exception,
+};
+
 const CliArgs = struct {
     host: []const u8 = "127.0.0.1",
     port: u16 = 4000,
@@ -94,13 +133,14 @@ fn encodeCompletionToken(allocator: Allocator, token: u64) ![]u8 {
     return encodeAwaitToken(allocator, token);
 }
 
-fn encodeContactToken(allocator: Allocator, token: u64) ![]u8 {
+fn encodeContactToken(allocator: Allocator, token: u64, scenario: Scenario) ![]u8 {
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
     const root = try builder.initRootAnyPointer();
     const contact = try root.initStruct(1, 2);
     contact.writeU64(0, token);
-    try contact.writeText(0, "cpp-host");
+    const host = if (scenario == .bad_contact_fallback) "not-cpp-host" else "cpp-host";
+    try contact.writeText(0, host);
     try contact.writeText(1, "zig-orchestrator");
     const bytes = try builder.toBytes();
     return @constCast(bytes);
@@ -119,12 +159,15 @@ const InteropVatNetwork = struct {
 
     allocator: Allocator,
     a_to_c: *Peer,
+    scenario: Scenario,
     next_token: u64 = 1,
+    last_token: ?u64 = null,
 
-    fn init(allocator: Allocator, a_to_c: *Peer) InteropVatNetwork {
+    fn init(allocator: Allocator, a_to_c: *Peer, scenario: Scenario) InteropVatNetwork {
         return .{
             .allocator = allocator,
             .a_to_c = a_to_c,
+            .scenario = scenario,
         };
     }
 
@@ -140,8 +183,9 @@ const InteropVatNetwork = struct {
         _ = host_peer;
         _ = recipient_hint;
         const self: *InteropVatNetwork = castCtx(*InteropVatNetwork, ctx);
-        const token = self.next_token;
+        const token = self.scenario.token(self.next_token);
         self.next_token += 1;
+        self.last_token = token;
 
         const nonce = try self.allocator.alloc(u8, @sizeOf(u64));
         errdefer self.allocator.free(nonce);
@@ -149,7 +193,7 @@ const InteropVatNetwork = struct {
 
         const to_await = try encodeAwaitToken(self.allocator, token);
         errdefer self.allocator.free(to_await);
-        const to_contact = try encodeContactToken(self.allocator, token);
+        const to_contact = try encodeContactToken(self.allocator, token, self.scenario);
         errdefer self.allocator.free(to_contact);
 
         return .{
@@ -165,7 +209,11 @@ const InteropVatNetwork = struct {
     ) anyerror!Introduced {
         const self: *InteropVatNetwork = castCtx(*InteropVatNetwork, ctx);
         const token = try decodeContactToken(contact);
-        const completion = try encodeCompletionToken(self.allocator, token);
+        const completion = switch (self.scenario) {
+            .malformed_completion => try encodeCompletionToken(self.allocator, token),
+            .rejected_completion => try encodeCompletionToken(self.allocator, 0),
+            else => try encodeCompletionToken(self.allocator, token),
+        };
         return .{
             .peer = self.a_to_c,
             .completion = completion,
@@ -204,6 +252,7 @@ const TcpPeer = struct {
     }
 
     fn flush(self: *TcpPeer, io: std.Io) !bool {
+        if (self.closed) return false;
         var progressed = false;
         while (self.host.popOutgoingFrame()) |frame| {
             defer self.host.freeFrame(frame);
@@ -257,6 +306,8 @@ const Pump = struct {
     b_to_a: *HostPeer,
     a_to_c: *TcpPeer,
     b_to_c: *TcpPeer,
+    allow_a_to_c_disconnect: bool = false,
+    allow_b_to_c_disconnect: bool = false,
 
     fn drainLocal(src: *HostPeer, dst: *HostPeer) !bool {
         var progressed = false;
@@ -289,9 +340,18 @@ const Pump = struct {
         if (try self.drainQueued()) return true;
 
         var fds = [_]std.posix.pollfd{
-            .{ .fd = self.b_to_c.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
-            .{ .fd = self.a_to_c.socket.handle, .events = std.posix.POLL.IN, .revents = 0 },
+            .{
+                .fd = self.b_to_c.socket.handle,
+                .events = if (self.b_to_c.closed) 0 else std.posix.POLL.IN,
+                .revents = 0,
+            },
+            .{
+                .fd = self.a_to_c.socket.handle,
+                .events = if (self.a_to_c.closed) 0 else std.posix.POLL.IN,
+                .revents = 0,
+            },
         };
+        if (fds[0].events == 0 and fds[1].events == 0) return false;
         while (true) {
             const rc = std.posix.system.poll(&fds, fds.len, timeout_ms);
             switch (std.posix.errno(rc)) {
@@ -302,8 +362,18 @@ const Pump = struct {
         }
 
         var progressed = false;
-        if (fds[0].revents != 0) progressed = try self.b_to_c.readReady() or progressed;
-        if (fds[1].revents != 0) progressed = try self.a_to_c.readReady() or progressed;
+        if (fds[0].revents != 0) {
+            progressed = (self.b_to_c.readReady() catch |err| switch (err) {
+                error.PeerDisconnected => if (self.allow_b_to_c_disconnect) true else return err,
+                else => return err,
+            }) or progressed;
+        }
+        if (fds[1].revents != 0) {
+            progressed = (self.a_to_c.readReady() catch |err| switch (err) {
+                error.PeerDisconnected => if (self.allow_a_to_c_disconnect) true else return err,
+                else => return err,
+            }) or progressed;
+        }
         if (progressed) _ = try self.drainQueued();
         return progressed;
     }
@@ -407,8 +477,9 @@ const PickupHandler = struct {
     expected_promise_id: u32,
     expected_accept_peer: *Peer,
     accepted_id: ?u32 = null,
-    fired: bool = false,
+    return_count: usize = 0,
     accepted_on_third_peer: bool = false,
+    saw_exception: bool = false,
 
     fn onPickup(
         ctx_ptr: *anyopaque,
@@ -419,9 +490,13 @@ const PickupHandler = struct {
         accept_caps: *const InboundCapTable,
     ) anyerror!void {
         const self: *PickupHandler = castCtx(*PickupHandler, ctx_ptr);
-        self.fired = true;
+        self.return_count += 1;
         if (promise_id != self.expected_promise_id) return error.UnexpectedPromiseId;
         self.accepted_on_third_peer = accept_peer == self.expected_accept_peer;
+        if (ret.tag == .exception) {
+            self.saw_exception = true;
+            return;
+        }
         if (ret.tag != .results) return error.UnexpectedAcceptReturn;
         const payload = ret.results orelse return error.MissingAcceptPayload;
         var mutable_caps: *InboundCapTable = @constCast(accept_caps);
@@ -437,6 +512,10 @@ const PickupHandler = struct {
 
 const NumberCall = struct {
     result: ?u32 = null,
+    return_count: usize = 0,
+    saw_remote_exception: bool = false,
+    saw_disconnect: bool = false,
+    saw_unexpected: bool = false,
 
     fn onReturn(
         ctx_ptr: *anyopaque,
@@ -445,8 +524,52 @@ const NumberCall = struct {
         _: *const InboundCapTable,
     ) anyerror!void {
         const self: *NumberCall = castCtx(*NumberCall, ctx_ptr);
-        const results = try response.unwrap();
+        self.return_count += 1;
+        const results = response.unwrap() catch |err| switch (err) {
+            error.RemoteException => {
+                self.saw_remote_exception = true;
+                return;
+            },
+            error.Disconnected => {
+                self.saw_disconnect = true;
+                return;
+            },
+            else => {
+                self.saw_unexpected = true;
+                return;
+            },
+        };
         self.result = try results.getN();
+    }
+};
+
+const RawAcceptCall = struct {
+    return_count: usize = 0,
+    accepted_id: ?u32 = null,
+    saw_exception: bool = false,
+
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        caps: *const InboundCapTable,
+    ) anyerror!void {
+        const self: *RawAcceptCall = castCtx(*RawAcceptCall, ctx_ptr);
+        self.return_count += 1;
+        if (ret.tag == .exception) {
+            self.saw_exception = true;
+            return;
+        }
+        if (ret.tag != .results) return error.UnexpectedDuplicateAcceptReturn;
+        const payload = ret.results orelse return error.MissingDuplicateAcceptPayload;
+        var mutable_caps: *InboundCapTable = @constCast(caps);
+        const cap = try payload.content.getCapability();
+        const resolved = try mutable_caps.resolveCapability(cap);
+        try mutable_caps.retainCapability(cap);
+        self.accepted_id = switch (resolved) {
+            .imported => |imp| imp.id,
+            else => return error.DuplicateAcceptNotImported,
+        };
     }
 };
 
@@ -476,7 +599,7 @@ fn pumpUntilPromise(pump: *Pump, call: *PromiseCall, introducer: *Introducer) !v
 
 fn pumpUntilPickup(pump: *Pump, pickup: *PickupHandler) !void {
     const start = milliTimestamp(pump.io);
-    while (!pickup.fired or pickup.accepted_id == null) {
+    while (pickup.return_count == 0) {
         if (milliTimestamp(pump.io) - start > pump_timeout_ms) return error.Timeout;
         _ = try pump.step(25);
     }
@@ -492,7 +615,15 @@ fn pumpUntilNoOutboundProvide(pump: *Pump, peer: *Peer, vine_id: u32) !void {
 
 fn pumpUntilNumberResult(pump: *Pump, call: *NumberCall) !void {
     const start = milliTimestamp(pump.io);
-    while (call.result == null) {
+    while (call.return_count == 0) {
+        if (milliTimestamp(pump.io) - start > pump_timeout_ms) return error.Timeout;
+        _ = try pump.step(25);
+    }
+}
+
+fn pumpUntilRawAccept(pump: *Pump, call: *RawAcceptCall) !void {
+    const start = milliTimestamp(pump.io);
+    while (call.return_count == 0) {
         if (milliTimestamp(pump.io) - start > pump_timeout_ms) return error.Timeout;
         _ = try pump.step(25);
     }
@@ -518,53 +649,101 @@ fn buildJoinProbe(allocator: Allocator) !u32 {
     return try reader.getJoinId();
 }
 
-pub fn main(init: std.process.Init) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    defer std.debug.assert(gpa.deinit() == .ok);
-    const allocator = gpa.allocator();
+fn expectTransientDrain(
+    tap: *Tap,
+    scenario: Scenario,
+    a_to_b: *HostPeer,
+    b_to_a: *HostPeer,
+    a_to_c: *TcpPeer,
+    b_to_c: *TcpPeer,
+    promise_import_id: u32,
+) void {
+    const promise_peer_drained =
+        !a_to_b.peer.resolved_imports.contains(promise_import_id) and
+        a_to_b.peer.pending_embargoes.count() == 0 and
+        a_to_b.peer.pending_accepts_by_embargo.count() == 0 and
+        a_to_b.peer.pending_accept_embargo_by_question.count() == 0;
+    const introducer_drained =
+        b_to_a.peer.outbound_provides.count() == 0 and
+        b_to_a.peer.pending_third_party_awaits.count() == 0;
+    const accept_peer_drained =
+        a_to_c.host.peer.pending_accepts_by_embargo.count() == 0 and
+        a_to_c.host.peer.pending_accept_embargo_by_question.count() == 0 and
+        a_to_c.host.peer.questions.count() == 0;
+    const provide_peer_drained =
+        scenario == .drop_after_provide or b_to_c.host.peer.questions.count() == 0;
 
-    const backend_kind = capnpc.io_backend.parseKind(io_backend_options.kind) orelse {
-        std.debug.print("invalid -Dio-backend selector: {s}\n", .{io_backend_options.kind});
-        return error.InvalidIoBackend;
-    };
-    var backend = try capnpc.io_backend.Backend.init(backend_kind, init.gpa, init.io);
-    defer backend.deinit();
-    const io = backend.io();
+    tap.ok(
+        promise_peer_drained and introducer_drained and accept_peer_drained and provide_peer_drained,
+        "Provide/Accept/vine/embargo transient state drains",
+    );
+}
 
-    const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
-        error.HelpRequested => {
-            usage();
-            return;
-        },
-        error.InvalidOption,
-        error.InvalidCharacter,
-        error.Overflow,
-        error.MissingArgValue,
-        => {
-            usage();
-            return err;
-        },
-        else => return err,
-    };
-    defer allocator.free(args.host);
+fn invokeDirectNumber(
+    pump: *Pump,
+    client: l3.Number.Client,
+    expect_exception: bool,
+    success_desc: []const u8,
+    tap: *Tap,
+) !void {
+    var number_call = NumberCall{};
+    _ = try client.callGetNumber(&number_call, null, NumberCall.onReturn);
+    try pumpUntilNumberResult(pump, &number_call);
+    if (expect_exception) {
+        tap.ok(
+            number_call.return_count == 1 and number_call.saw_remote_exception and number_call.result == null,
+            "direct A-C Number.getNumber reports the expected C++ exception",
+        );
+    } else {
+        tap.ok(
+            number_call.return_count == 1 and number_call.result == cxx_number_value,
+            success_desc,
+        );
+    }
+}
 
-    var tap = Tap{};
+fn sendDuplicateAccept(
+    allocator: Allocator,
+    pump: *Pump,
+    token: u64,
+    tap: *Tap,
+) !void {
+    const completion = try encodeCompletionToken(allocator, token);
+    defer allocator.free(completion);
+    var completion_msg = try message.Message.initUnvalidated(allocator, completion);
+    defer completion_msg.deinit();
+    const provision = try completion_msg.getRootAnyPointer();
+
+    var duplicate = RawAcceptCall{};
+    _ = try pump.a_to_c.host.peer.sendAccept(provision, null, &duplicate, RawAcceptCall.onReturn);
+    try pumpUntilRawAccept(pump, &duplicate);
+    if (duplicate.accepted_id) |id| {
+        l3.Number.Client.init(&pump.a_to_c.host.peer, id).release();
+    }
+    tap.ok(
+        duplicate.return_count == 1 and duplicate.saw_exception and duplicate.accepted_id == null,
+        "duplicate Accept is rejected without yielding a second cap",
+    );
+}
+
+fn runScenario(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap, scenario: Scenario) !void {
+    std.debug.print("# scenario: {s}\n", .{scenario.name()});
 
     var b_to_c = try TcpPeer.connect(allocator, io, args.host, args.port);
-    defer b_to_c.deinit(io);
     b_to_c.host.start(null, null, null);
     var a_to_c = try TcpPeer.connect(allocator, io, args.host, args.port);
-    defer a_to_c.deinit(io);
     a_to_c.host.start(null, null, null);
 
     var a_to_b = HostPeer.init(allocator);
-    defer a_to_b.deinit();
     a_to_b.start(null, null, null);
     var b_to_a = HostPeer.init(allocator);
+    defer b_to_c.deinit(io);
+    defer a_to_b.deinit();
     defer b_to_a.deinit();
+    defer a_to_c.deinit(io);
     b_to_a.start(null, null, null);
 
-    var vat_network = InteropVatNetwork.init(allocator, &a_to_c.host.peer);
+    var vat_network = InteropVatNetwork.init(allocator, &a_to_c.host.peer, scenario);
     b_to_a.peer.attachVatNetwork(vat_network.network());
     a_to_b.peer.attachVatNetwork(vat_network.network());
 
@@ -574,13 +753,15 @@ pub fn main(init: std.process.Init) !void {
         .b_to_a = &b_to_a,
         .a_to_c = &a_to_c,
         .b_to_c = &b_to_c,
+        .allow_b_to_c_disconnect = scenario == .drop_after_provide,
     };
 
     var number_probe = NumberBootstrapProbe{};
     _ = try l3.Number.Client.fromBootstrap(&b_to_c.host.peer, &number_probe, NumberBootstrapProbe.onBootstrap);
     try pumpUntilNumberClient(&pump, &number_probe);
     var cxx_number = number_probe.client orelse return error.CxxNumberBootstrapFailed;
-    defer cxx_number.release();
+    var cxx_number_owned = true;
+    defer if (cxx_number_owned) cxx_number.release();
     tap.ok(true, "B bootstraps the C++ Number capability");
 
     var introducer = Introducer{};
@@ -634,33 +815,117 @@ pub fn main(init: std.process.Init) !void {
         introduction.to_contact,
     );
 
-    try pumpUntilPickup(&pump, &pickup);
-    const accepted_id = pickup.accepted_id orelse return error.AutoPickupFailed;
-    tap.ok(pickup.accepted_on_third_peer and a_to_c.host.peer.caps.hasImport(accepted_id), "A auto-picks up a direct A-C cap");
+    var accepted_number: ?l3.Number.Client = null;
 
-    try pumpUntilNoOutboundProvide(&pump, &b_to_a.peer, handle.vine_id);
-    tap.ok(!b_to_a.peer.exports.contains(handle.vine_id), "handoff vine drains after pickup");
+    switch (scenario) {
+        .bad_contact_fallback => {
+            const fallback_number = l3.Number.Client.init(&a_to_b.peer, promise_import_id);
+            try invokeDirectNumber(&pump, fallback_number, false, "vine-proxy Number.getNumber returns the C++ value exactly once", tap);
+            tap.ok(pickup.return_count == 0 and pickup.accepted_id == null, "bad contact falls back to the vine proxy without auto-pickup");
+        },
+        .malformed_completion, .rejected_completion, .reject_await => {
+            try pumpUntilPickup(&pump, &pickup);
+            tap.ok(
+                pickup.return_count == 1 and pickup.saw_exception and pickup.accepted_id == null,
+                "failed C++ pickup returns one deterministic exception",
+            );
+            try pumpUntilNoOutboundProvide(&pump, &b_to_a.peer, handle.vine_id);
+            tap.ok(!b_to_a.peer.exports.contains(handle.vine_id), "handoff vine drains after failed pickup");
+        },
+        .number_exception => {
+            try pumpUntilPickup(&pump, &pickup);
+            const accepted_id = pickup.accepted_id orelse return error.AutoPickupFailed;
+            accepted_number = l3.Number.Client.init(&a_to_c.host.peer, accepted_id);
+            tap.ok(
+                pickup.return_count == 1 and pickup.accepted_on_third_peer and a_to_c.host.peer.caps.hasImport(accepted_id),
+                "A auto-picks up a direct A-C cap",
+            );
+            try pumpUntilNoOutboundProvide(&pump, &b_to_a.peer, handle.vine_id);
+            tap.ok(!b_to_a.peer.exports.contains(handle.vine_id), "handoff vine drains after pickup");
+            try invokeDirectNumber(&pump, accepted_number.?, true, "unused success path", tap);
+        },
+        .duplicate_accept => {
+            try pumpUntilPickup(&pump, &pickup);
+            const accepted_id = pickup.accepted_id orelse return error.AutoPickupFailed;
+            accepted_number = l3.Number.Client.init(&a_to_c.host.peer, accepted_id);
+            tap.ok(
+                pickup.return_count == 1 and pickup.accepted_on_third_peer and a_to_c.host.peer.caps.hasImport(accepted_id),
+                "A auto-picks up a direct A-C cap",
+            );
+            try sendDuplicateAccept(allocator, &pump, vat_network.last_token orelse return error.MissingL3Token, tap);
+            try pumpUntilNoOutboundProvide(&pump, &b_to_a.peer, handle.vine_id);
+            tap.ok(!b_to_a.peer.exports.contains(handle.vine_id), "handoff vine drains after duplicate Accept rejection");
+            try invokeDirectNumber(&pump, accepted_number.?, false, "direct A-C Number.getNumber returns the C++ value exactly once", tap);
+        },
+        .happy, .drop_after_provide => {
+            try pumpUntilPickup(&pump, &pickup);
+            const accepted_id = pickup.accepted_id orelse return error.AutoPickupFailed;
+            accepted_number = l3.Number.Client.init(&a_to_c.host.peer, accepted_id);
+            tap.ok(
+                pickup.return_count == 1 and pickup.accepted_on_third_peer and a_to_c.host.peer.caps.hasImport(accepted_id),
+                "A auto-picks up a direct A-C cap",
+            );
+            try pumpUntilNoOutboundProvide(&pump, &b_to_a.peer, handle.vine_id);
+            tap.ok(!b_to_a.peer.exports.contains(handle.vine_id), "handoff vine drains after pickup");
+            try invokeDirectNumber(&pump, accepted_number.?, false, "direct A-C Number.getNumber returns the C++ value exactly once", tap);
+        },
+    }
 
-    var accepted_number = l3.Number.Client.init(&a_to_c.host.peer, accepted_id);
-    var number_call = NumberCall{};
-    _ = try accepted_number.callGetNumber(&number_call, null, NumberCall.onReturn);
-    try pumpUntilNumberResult(&pump, &number_call);
-    tap.ok(number_call.result == cxx_number_value, "direct A-C Number.getNumber returns the C++ value");
-
-    const join_probe_id = try buildJoinProbe(allocator);
-    tap.ok(join_probe_id == 0x1020_3040, "L4 JoinKeyPart shape is consumable on the Zig receive-side path");
-
-    accepted_number.release();
+    if (accepted_number) |client| client.release();
     try a_to_b.peer.releaseImport(promise_import_id, 1);
     try a_to_b.peer.releaseImport(introducer_import_id, 1);
-    try pump.runFor(100);
+    if (cxx_number_owned) {
+        cxx_number.release();
+        cxx_number_owned = false;
+    }
+    try pump.runFor(150);
+    if (scenario == .bad_contact_fallback) {
+        try pumpUntilNoOutboundProvide(&pump, &b_to_a.peer, handle.vine_id);
+    }
 
-    tap.ok(
-        a_to_c.host.peer.pending_accepts_by_embargo.count() == 0 and
-            a_to_c.host.peer.pending_accept_embargo_by_question.count() == 0 and
-            !a_to_b.peer.resolved_imports.contains(promise_import_id),
-        "pickup transient state drains locally",
-    );
+    expectTransientDrain(tap, scenario, &a_to_b, &b_to_a, &a_to_c, &b_to_c, promise_import_id);
+}
+
+pub fn main(init: std.process.Init) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    defer std.debug.assert(gpa.deinit() == .ok);
+    const allocator = gpa.allocator();
+
+    const backend_kind = capnpc.io_backend.parseKind(io_backend_options.kind) orelse {
+        std.debug.print("invalid -Dio-backend selector: {s}\n", .{io_backend_options.kind});
+        return error.InvalidIoBackend;
+    };
+    var backend = try capnpc.io_backend.Backend.init(backend_kind, init.gpa, init.io);
+    defer backend.deinit();
+    const io = backend.io();
+
+    const args = parseArgs(allocator, init.minimal.args) catch |err| switch (err) {
+        error.HelpRequested => {
+            usage();
+            return;
+        },
+        error.InvalidOption,
+        error.InvalidCharacter,
+        error.Overflow,
+        error.MissingArgValue,
+        => {
+            usage();
+            return err;
+        },
+        else => return err,
+    };
+    defer allocator.free(args.host);
+
+    var tap = Tap{};
+    for (scenarios) |scenario| {
+        runScenario(allocator, io, args, &tap, scenario) catch |err| {
+            std.debug.print("# scenario failed: {s}: {}\n", .{ scenario.name(), err });
+            tap.ok(false, "scenario completes without harness error");
+        };
+    }
+
+    const join_probe_id = try buildJoinProbe(allocator);
+    tap.ok(join_probe_id == 0x1020_3040, "L4 JoinKeyPart shape remains consumable on the Zig receive-side path");
 
     std.debug.print("1..{d}\n", .{tap.test_num});
     if (tap.failures > 0) return error.TestFailed;
