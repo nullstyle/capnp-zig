@@ -907,6 +907,86 @@ test "JoinCoordinator cancel drains pending Accept question after lost Return" {
     try harness.expectNoJoinState(&server);
 }
 
+test "JoinCoordinator deinit cancels pending Join question" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+
+    var question_id: u32 = undefined;
+    {
+        var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, join_net.network(), 0x4b09, 2);
+        defer coordinator.deinit();
+
+        question_id = try coordinator.sendImportedCapPart(&peer, 7, 2, 0);
+        try std.testing.expect(peer.questions.contains(question_id));
+        try std.testing.expectEqual(@as(usize, 1), coordinator.question_ids.items.len);
+    }
+
+    const cancelled = peer.questions.get(question_id) orelse return error.MissingCanceledJoinQuestion;
+    try std.testing.expect(cancelled.cancelled);
+    try capture.expectFinish(question_id, true);
+    peer_test_hooks.removeQuestion(&peer, question_id);
+    try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+}
+
+test "JoinCoordinator deinit cancels pending Accept question after lost Return" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&server);
+    var accept_question_id: u32 = undefined;
+    {
+        var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b0a, 2);
+        defer coordinator.deinit();
+
+        _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+        _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+        try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+        try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+        try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+
+        var discard = DiscardSend{};
+        server.setSendFrameOverride(&discard, DiscardSend.onFrame);
+
+        accept_question_id = try coordinator.acceptFirst();
+        try std.testing.expect(client.questions.contains(accept_question_id));
+        try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    }
+
+    const cancelled = client.questions.get(accept_question_id) orelse return error.MissingCanceledAccept;
+    try std.testing.expect(cancelled.cancelled);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    peer_test_hooks.removeQuestion(&client, accept_question_id);
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
 test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     const allocator = std.testing.allocator;
 
@@ -1544,6 +1624,10 @@ fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
         try std.testing.expect(peer.questions.contains(question_id));
         peer_test_hooks.removeQuestion(&peer, question_id);
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
+        coordinator.question_ids.clearRetainingCapacity();
+        coordinator.question_peers.clearRetainingCapacity();
+        coordinator.sent_parts.clearRetainingCapacity();
+        coordinator.join_results_finished = true;
     } else |err| {
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
         try std.testing.expectEqual(@as(usize, 0), coordinator.question_ids.items.len);

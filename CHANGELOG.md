@@ -15,9 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   joins split across transparent proxy paths such as A→B and A→C no longer rely
   on a single origin connection. It also rejects duplicate local part numbers
   before sending, rejects new parts once Accept/cancel has begun, and cancels a
-  pending direct Accept question if its Return is lost. Regressions now cover
+  pending direct Accept question if its Return is lost. Dropping the coordinator
+  now best-effort cancels pending Join questions and pending direct Accept
+  questions before freeing the callback context. Regressions now cover
   duplicate-part rejection without a second wire Join, lost-Accept-Return
-  cancellation, and proxy-relay pickup through the real `JoinCoordinator`.
+  cancellation via explicit cancel and deinit, pending-Join deinit cancellation,
+  and proxy-relay pickup through the real `JoinCoordinator`.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
   roll back if allocation fails before the first part is fully indexed, avoiding

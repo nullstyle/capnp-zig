@@ -594,13 +594,8 @@ pub const JoinCoordinator = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        if (!self.join_results_finished and self.joined.items.len != 0) {
-            self.finishJoinResults() catch |err| {
-                log.debug("failed to finish L4 JoinResult questions during coordinator deinit: {}", .{err});
-            };
-        }
-        self.releaseAccepted() catch |err| {
-            log.debug("failed to release accepted L4 Join cap during coordinator deinit: {}", .{err});
+        self.cancelPending("join coordinator deinit") catch |err| {
+            log.debug("failed to fully cancel L4 JoinCoordinator during deinit: {}", .{err});
         };
         for (self.joined.items) |*joined| joined.deinit(self.allocator);
         self.joined.deinit(self.allocator);

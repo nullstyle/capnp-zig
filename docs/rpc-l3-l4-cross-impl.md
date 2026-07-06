@@ -108,9 +108,10 @@ can also relay Join requests through transparent cross-peer proxy exports to the
 proxy source peer; the real `JoinCoordinator` now tracks the originating peer for
 each part, rejects duplicate local part sends, Finishes each JoinResult on the
 correct upstream connection after pickup, and can cancel a pending direct Accept
-if its Return is lost. It still has no Stable `Peer.sendJoin`, no production
-Join addressing policy or bundled dialer, no multi-hop relay beyond that
-transparent proxy case, and no cross-implementation L4 runtime claim.
+if its Return is lost or the coordinator is dropped. It still has no Stable
+`Peer.sendJoin`, no production Join addressing policy or bundled dialer, no
+multi-hop relay beyond that transparent proxy case, and no cross-implementation
+L4 runtime claim.
 
 The current C++ blocker is source-backed and e2e-checked: vendored Cap'n Proto
 C++ exposes the generic Level-3 `VatNetwork` hooks used by this lane, while

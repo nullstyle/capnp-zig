@@ -38,8 +38,9 @@ The relevant baseline includes:
   sends direct Accept, retains/releases the accepted cap, and Finishes each
   JoinResult question on the peer where that part originated; it rejects
   duplicate local part numbers before sending and can cancel after JoinResults
-  arrive or after a direct Accept question is pending. This is still
-  Zig-shape-only and not a Stable downstream API.
+  arrive, after a direct Accept question is pending, or during deinit before
+  freeing its callback context. This is still Zig-shape-only and not a Stable
+  downstream API.
 - Experimental L4 transparent proxy Join relay: Join requests targeting
   cross-peer proxy exports can forward to the proxy source peer, relay
   downstream JoinResult/exception Returns upstream, and preserve downstream
