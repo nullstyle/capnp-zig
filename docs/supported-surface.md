@@ -165,12 +165,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `Peer.sendJoinExperimental` can originate raw Join parts, and inbound `Join`
   can collect local JoinKeyPart structs, compare resolved targets, return
   provided caps when all parts match, send mismatch exceptions, and drain state
-  on Finish/send-failure/OOM paths. There is no Stable/high-level
-  `Peer.sendJoin`, no direct-connection JoinResult flow, no multi-hop relay, and
-  no cross-implementation L4 interop claim. The C++ L3 e2e lane includes shape
-  probes for the C++-convention `JoinKeyPart` and `JoinResult`, but the C++
-  reference stack exposes no callable generic `VatNetwork` Join hook for this
-  TCP harness. Experimental; exact-pin only.
+  on Finish/send-failure/OOM paths. Main also has a test-local Zig↔Zig
+  coordinator harness that selects and invokes the joined cap, releases retained
+  result imports, covers mismatch/cancel cleanup, and proves callback failure
+  after retention leaves no stale question or unreleasable import. There is no
+  Stable/high-level `Peer.sendJoin`, no direct-connection JoinResult flow, no
+  multi-hop relay, and no cross-implementation L4 interop claim. The C++ L3 e2e
+  lane includes shape probes for the C++-convention `JoinKeyPart` and
+  `JoinResult`, but the C++ reference stack exposes no callable generic
+  `VatNetwork` Join hook for this TCP harness. Experimental; exact-pin only.
 
 ## Known limitations (v0.3.0)
 

@@ -1,11 +1,13 @@
 # RPC L4 Join Readiness
 
-Status: Experimental, raw origination pilot plus receive-side readiness.
+Status: Experimental, raw origination pilot plus test-local Zig↔Zig coordinator
+coverage and receive-side readiness.
 
 `capnp-zig` has a guarded slice of Cap'n Proto RPC Level 4 `Join`: inbound
-Join state handling plus a low-level Experimental sender for raw Join parts.
-This is not a complete L4 implementation and is not part of the Stable surface.
-It exists to keep the provide/join state model correct while L3 handoff grows
+Join state handling, a low-level Experimental sender for raw Join parts, and a
+test-local coordinator harness proving the current Zig↔Zig lifecycle. This is
+not a complete L4 implementation and is not part of the Stable surface. It
+exists to keep the provide/join state model correct while L3 handoff grows
 toward cross-implementation use.
 
 ## What Exists
@@ -14,6 +16,10 @@ toward cross-implementation use.
 - `Peer.sendJoinExperimental` can originate a raw Join question with a caller
   supplied `Join.keyPart` AnyPointer and ordinary `Return` callback. It is a
   manual probe helper, not a high-level E-join API.
+- A test-local Join coordinator drives multi-part Zig↔Zig joins on top of
+  `sendJoinExperimental`, selects the agreed cap, retains/release-checks result
+  imports, and records per-part exception outcomes. This helper is not exposed
+  as a consumer API.
 - `Peer.handleJoin` accepts inbound `Join` messages and resolves their
   `target` through the same target machinery used by `Provide`.
 - Join parts are collected in `pending_joins`, with question-to-part back-links
@@ -66,6 +72,13 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   cap and successfully invoking it,
 - Zig-originated mismatch Returns delivered as exceptions,
 - allocation-failure rollback for `sendJoinExperimental`,
+- test-local coordinator selection of a callable cap across two returned Join
+  parts, including release of the retained result imports,
+- test-local coordinator mismatch handling with no retained joined caps,
+- canceling a partial coordinator Join, which sends Finish and drains remote
+  pending Join state while the local canceled question absorbs the late Return,
+- callback failure after joined-cap retention, proving the retained import is
+  still visible and releasable while the question table drains,
 - matching two-part Join completion,
 - mismatched target exceptions,
 - Finish-before-completion cleanup,

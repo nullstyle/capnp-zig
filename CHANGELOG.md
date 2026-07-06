@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stale empty `pending_joins` entries. New regressions cover matching Join
   completion, target mismatch, duplicate parts, Finish-before-completion cleanup,
   Return send-failure fallback, and OOM rollback for the insertion path. L4
-  remains Experimental and receive-side/readiness-only.
+  remains Experimental; the public surface is still the raw helper plus
+  receive-side readiness.
 
 - **RPC Level-2 persistence rollback and callback ownership are hardened.**
   Restore handlers that host a fresh export now roll that export back if the
@@ -72,6 +73,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a manual Experimental helper only: there is still no Stable/high-level
   `Peer.sendJoin`, direct `JoinResult` connection flow, multi-hop relay, or
   cross-implementation L4 runtime claim.
+
+- **Experimental RPC Level-4 Join coordinator coverage.** A reusable test-local
+  coordinator now drives multi-part Zig↔Zig Join flows on top of
+  `Peer.sendJoinExperimental`, selects the joined cap, invokes it, releases
+  retained result imports, verifies target mismatch does not retain caps, proves
+  canceling a partial Join drains remote state, and covers callback failure after
+  joined-cap retention. This is regression evidence only: no high-level Join API
+  was added and the Stable surface is unchanged.
 
 - **C++-first cross-implementation RPC Level-3 handoff e2e.** A new
   `l3_l4_interop` e2e lane (`just e2e-l3-cpp`) runs a real TCP three-party

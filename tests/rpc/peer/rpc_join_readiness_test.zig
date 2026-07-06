@@ -301,6 +301,111 @@ const NumberCallCallback = struct {
     }
 };
 
+const TestJoinCoordinator = struct {
+    allocator: std.mem.Allocator,
+    peer: *Peer,
+    join_id: u32,
+    result_imports: std.ArrayList(u32) = .empty,
+    question_ids: std.ArrayList(u32) = .empty,
+    mismatch_exceptions: u32 = 0,
+    cancel_exceptions: u32 = 0,
+    unexpected_exceptions: u32 = 0,
+    callback_failures: u32 = 0,
+    fail_after_next_retain: bool = false,
+
+    fn init(allocator: std.mem.Allocator, peer: *Peer, join_id: u32) TestJoinCoordinator {
+        return .{
+            .allocator = allocator,
+            .peer = peer,
+            .join_id = join_id,
+        };
+    }
+
+    fn deinit(self: *@This()) void {
+        self.result_imports.deinit(self.allocator);
+        self.question_ids.deinit(self.allocator);
+    }
+
+    fn sendPart(
+        self: *@This(),
+        target_import_id: u32,
+        part_count: u16,
+        part_num: u16,
+    ) !u32 {
+        try self.question_ids.ensureUnusedCapacity(self.allocator, 1);
+        var key = try JoinKeyPartPointer.init(self.allocator, self.join_id, part_count, part_num);
+        defer key.deinit(self.allocator);
+
+        const question_id = try self.peer.sendJoinExperimental(
+            .{ .tag = .importedCap, .imported_cap = target_import_id, .promised_answer = null },
+            try key.any(),
+            self,
+            TestJoinCoordinator.onReturn,
+        );
+        self.question_ids.appendAssumeCapacity(question_id);
+        return question_id;
+    }
+
+    fn selectedCap(self: *const @This()) !u32 {
+        if (self.result_imports.items.len == 0) return error.MissingJoinedCap;
+        if (self.mismatch_exceptions != 0 or self.cancel_exceptions != 0 or self.unexpected_exceptions != 0) {
+            return error.JoinDidNotSucceed;
+        }
+        const selected = self.result_imports.items[0];
+        for (self.result_imports.items[1..]) |import_id| {
+            if (import_id != selected) return error.JoinResultMismatch;
+        }
+        return selected;
+    }
+
+    fn releaseRetained(self: *@This()) !void {
+        for (self.result_imports.items) |import_id| {
+            try self.peer.releaseImport(import_id, 1);
+        }
+        self.result_imports.clearRetainingCapacity();
+    }
+
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        switch (ret.tag) {
+            .results => {
+                const payload = ret.results orelse return error.MissingJoinPayload;
+                var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
+                const cap = try payload.content.getCapability();
+                const resolved = try mutable_caps.resolveCapability(cap);
+                const import_id = switch (resolved) {
+                    .imported => |imported| imported.id,
+                    else => return error.ExpectedImportedCap,
+                };
+                try self.result_imports.ensureUnusedCapacity(self.allocator, 1);
+                try mutable_caps.retainCapability(cap);
+                self.result_imports.appendAssumeCapacity(import_id);
+                if (self.fail_after_next_retain) {
+                    self.fail_after_next_retain = false;
+                    self.callback_failures += 1;
+                    return error.TestExpectedError;
+                }
+            },
+            .exception => {
+                const exception = ret.exception orelse return error.MissingJoinException;
+                if (std.mem.eql(u8, exception.reason, "join target mismatch")) {
+                    self.mismatch_exceptions += 1;
+                } else if (std.mem.eql(u8, exception.reason, "join canceled")) {
+                    self.cancel_exceptions += 1;
+                } else {
+                    self.unexpected_exceptions += 1;
+                }
+            },
+            else => return error.UnexpectedJoinReturn,
+        }
+    }
+};
+
 test "sendJoinExperimental originates Zig-to-Zig Join and returned cap is callable" {
     const allocator = std.testing.allocator;
 
@@ -444,6 +549,148 @@ fn sendJoinExperimentalOomImpl(allocator: std.mem.Allocator) !void {
 
 test "sendJoinExperimental rolls back the outbound question under OOM injection" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendJoinExperimentalOomImpl, .{});
+}
+
+test "test-local JoinCoordinator selects a callable cap and releases retained imports" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var number = NumberService{ .value = 5150 };
+    const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
+
+    var bootstrap = BootstrapCapCallback{};
+    _ = try client.sendBootstrap(&bootstrap, BootstrapCapCallback.onReturn);
+    const target_import_id = bootstrap.import_id orelse return error.MissingBootstrapImport;
+    try std.testing.expectEqual(export_id, target_import_id);
+
+    var coordinator = TestJoinCoordinator.init(allocator, &client, 0x4a10);
+    defer coordinator.deinit();
+    _ = try coordinator.sendPart(target_import_id, 2, 0);
+    _ = try coordinator.sendPart(target_import_id, 2, 1);
+
+    try harness.expectNoJoinState(&server);
+    try std.testing.expectEqual(@as(usize, 2), coordinator.result_imports.items.len);
+    const selected = try coordinator.selectedCap();
+    try std.testing.expectEqual(target_import_id, selected);
+    try std.testing.expect(client.caps.hasImport(selected));
+
+    var number_call = NumberCallCallback{};
+    _ = try client.sendCall(selected, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &number_call, null, NumberCallCallback.onReturn);
+    try std.testing.expectEqual(@as(u32, 5150), number_call.result orelse return error.MissingNumberResult);
+    try std.testing.expectEqual(@as(u32, 1), number.calls);
+
+    try coordinator.releaseRetained();
+    try std.testing.expect(client.caps.hasImport(target_import_id));
+    try client.releaseImport(target_import_id, 1);
+    try std.testing.expect(!client.caps.hasImport(target_import_id));
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+}
+
+test "test-local JoinCoordinator records mismatch without retaining joined caps" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    const export_a = try addNoopExport(&server);
+    const export_b = try addNoopExport(&server);
+
+    var coordinator = TestJoinCoordinator.init(allocator, &client, 0x4a11);
+    defer coordinator.deinit();
+    _ = try coordinator.sendPart(export_a, 2, 0);
+    _ = try coordinator.sendPart(export_b, 2, 1);
+
+    try harness.expectNoJoinState(&server);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.result_imports.items.len);
+    try std.testing.expectEqual(@as(u32, 2), coordinator.mismatch_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+}
+
+test "test-local JoinCoordinator cancel drains remote partial Join state" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = TestJoinCoordinator.init(allocator, &client, 0x4a12);
+    defer coordinator.deinit();
+    const question_id = try coordinator.sendPart(export_id, 2, 0);
+
+    try std.testing.expectEqual(@as(usize, 1), server.pending_joins.count());
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_questions.count());
+
+    try client.cancelQuestion(question_id, "join canceled");
+
+    try harness.expectNoJoinState(&server);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.cancel_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.result_imports.items.len);
+    const canceled = client.questions.get(question_id) orelse return error.MissingCanceledQuestion;
+    try std.testing.expect(canceled.cancelled);
+    peer_test_hooks.removeQuestion(&client, question_id);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+}
+
+test "test-local JoinCoordinator callback failure after retention leaves retained cap releasable" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = TestJoinCoordinator.init(allocator, &client, 0x4a13);
+    defer coordinator.deinit();
+    coordinator.fail_after_next_retain = true;
+
+    _ = try coordinator.sendPart(export_id, 1, 0);
+
+    try harness.expectNoJoinState(&server);
+    try std.testing.expectEqual(@as(usize, 1), coordinator.result_imports.items.len);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.callback_failures);
+    try std.testing.expectEqual(@as(u32, 0), coordinator.unexpected_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    const retained = coordinator.result_imports.items[0];
+    try std.testing.expect(client.caps.hasImport(retained));
+    try coordinator.releaseRetained();
+    try std.testing.expect(!client.caps.hasImport(retained));
 }
 
 test "L4 Join waits for all matching parts, returns provided targets, and drains state" {
