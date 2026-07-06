@@ -199,10 +199,10 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   network-teardown-before-release, and OOM-before-dial handling, retained result
   import release, mismatch/cancel cleanup, callback failure after retention,
   proxy relay success through the real coordinator, source unavailable,
-  downstream Join send failure, downstream Return relay failure, downstream
-  Finish retry, owner teardown, source teardown before and after downstream
-  Return, target mismatch through relay, and relay setup OOM rollback. `just
-  e2e-l4-zig` now runs a real Zig↔Zig TCP gate for the addressed
+  downstream Join send failure, downstream results/exception Return relay
+  failure, downstream Finish retry, owner teardown, source teardown before and
+  after downstream Return, target mismatch through relay, and relay setup OOM
+  rollback. `just e2e-l4-zig` now runs a real Zig↔Zig TCP gate for the addressed
   JoinResult→Accept path. There is no Stable `Peer.sendJoin`, no production Join
   addressing policy or bundled dialer, no multi-hop relay beyond transparent
   proxy relay, and no cross-implementation L4 interop claim. The C++ L3 e2e lane

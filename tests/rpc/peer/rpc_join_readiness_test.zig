@@ -306,6 +306,14 @@ fn buildReturnResultsFrame(allocator: std.mem.Allocator, answer_id: u32) ![]cons
     return builder.finish();
 }
 
+fn buildReturnExceptionFrame(allocator: std.mem.Allocator, answer_id: u32, reason: []const u8) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .exception);
+    try ret.setException(reason);
+    return builder.finish();
+}
+
 const ZigJoinLink = struct {
     client: *Peer,
     server: *Peer,
@@ -1498,6 +1506,53 @@ test "L4 Join proxy relay downstream Return relay failure drains relay state" {
     try source.handleFrame(downstream_return);
 
     try std.testing.expectEqual(@as(usize, 2), owner_send.frames);
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expect(!source.questions.contains(downstream_qid));
+    try source_capture.expectFinish(downstream_qid, false);
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&source);
+}
+
+test "L4 Join proxy relay downstream exception relay failure drains relay state" {
+    const allocator = std.testing.allocator;
+
+    var owner_send = FailingSend{};
+    var source_capture = ReturnCapture{ .allocator = allocator };
+    defer source_capture.deinit();
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_send, FailingSend.onFrame);
+
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_capture, ReturnCapture.onFrame);
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 446 } },
+        null,
+    );
+
+    const join_frame = try buildJoinFrame(allocator, 55, proxy_export, 0x4c0d, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+
+    const relay = owner.pending_join_relays.get(55) orelse return error.MissingJoinRelay;
+    const downstream_qid = relay.source_question_id;
+    try std.testing.expect(source.questions.contains(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expectEqual(@as(usize, 1), source_capture.countTag(.join));
+
+    const downstream_return = try buildReturnExceptionFrame(allocator, downstream_qid, "downstream join failed");
+    defer allocator.free(downstream_return);
+    try source.handleFrame(downstream_return);
+
+    try std.testing.expectEqual(@as(usize, 1), owner_send.frames);
     try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
     try std.testing.expect(!source.questions.contains(downstream_qid));
