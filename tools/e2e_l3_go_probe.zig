@@ -48,6 +48,10 @@ fn probeGoL3RuntimeSurface(allocator: Allocator, io: std.Io, tap: *Tap) !void {
     defer allocator.free(network_go);
     const rpc_go = try readRepoFile(allocator, io, "vendor/ext/go-capnp/rpc/rpc.go");
     defer allocator.free(rpc_go);
+    const generated_rpc_go = try readRepoFile(allocator, io, "vendor/ext/go-capnp/std/capnp/rpc/rpc.capnp.go");
+    defer allocator.free(generated_rpc_go);
+    const twoparty_capnp = try readRepoFile(allocator, io, "vendor/ext/go-capnp/std/capnp/rpc-twoparty.capnp");
+    defer allocator.free(twoparty_capnp);
 
     tap.ok(
         containsAll(network_go, &.{
@@ -111,6 +115,38 @@ fn probeGoL3RuntimeSurface(allocator: Allocator, io: std.Io, tap: *Tap) !void {
             "panic(\"TODO: 3PH\")",
         }),
         "Go same-network embargo/locality logic still has 3PH TODO guards",
+    );
+
+    tap.ok(
+        containsAll(generated_rpc_go, &.{
+            "Message_Which_join",
+            "func (s Message) Join() (Join, error)",
+            "func NewJoin(s *capnp.Segment) (Join, error)",
+        }),
+        "Go generated rpc.capnp bindings expose the Level-4 Join wire message",
+    );
+
+    tap.ok(
+        containsAll(twoparty_capnp, &.{
+            "struct JoinKeyPart",
+            "joinId @0 :UInt32",
+            "partCount @1 :UInt16",
+            "partNum @2 :UInt16",
+            "struct JoinResult",
+            "succeeded @1 :Bool",
+            "cap @2 :Capability",
+        }),
+        "Go vendored twoparty schema carries JoinKeyPart and JoinResult shapes",
+    );
+
+    const receive_dispatch = try sliceBetween(
+        rpc_go,
+        "switch in.Message().Which() {",
+        "case rpccp.Message_Which_accept, rpccp.Message_Which_provide:",
+    );
+    tap.ok(
+        std.mem.indexOf(u8, receive_dispatch, "Message_Which_join") == null,
+        "Go receive loop still has no runtime dispatch for Level-4 Join messages",
     );
 }
 

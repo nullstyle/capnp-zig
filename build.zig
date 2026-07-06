@@ -539,6 +539,28 @@ pub fn build(b: *std.Build) void {
     const install_e2e_l3_cpp_step = b.step("e2e-l3-cpp-install", "Build Zig/C++ L3 handoff e2e client (install only)");
     install_e2e_l3_cpp_step.dependOn(&b.addInstallArtifact(e2e_l3_cpp, .{}).step);
 
+    const e2e_l4_zig = b.addExecutable(.{
+        .name = "e2e-l4-zig",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/e2e_l4_zig.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "io_backend_options", .module = io_backend_options_module },
+            },
+        }),
+    });
+
+    const run_e2e_l4_zig = b.addRunArtifact(e2e_l4_zig);
+    run_e2e_l4_zig.addPassthruArgs();
+
+    const e2e_l4_zig_step = b.step("e2e-l4-zig", "Run Zig/Zig Experimental L4 Join e2e over loopback TCP");
+    e2e_l4_zig_step.dependOn(&run_e2e_l4_zig.step);
+
+    const install_e2e_l4_zig_step = b.step("e2e-l4-zig-install", "Build Zig/Zig Experimental L4 Join e2e (install only)");
+    install_e2e_l4_zig_step.dependOn(&b.addInstallArtifact(e2e_l4_zig, .{}).step);
+
     const e2e_zig_server = b.addExecutable(.{
         .name = "e2e-zig-server",
         .root_module = b.createModule(.{

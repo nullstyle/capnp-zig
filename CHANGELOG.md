@@ -65,6 +65,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Experimental RPC Level-4 addressed Join pilot over real TCP.** The L4
+  `JoinNetwork` seam now has an Experimental `AddressedJoinNetwork` registry
+  that requires callers to associate each host peer with an opaque application
+  address and already-live direct peer. The generated provision token carries
+  that address plus a nonce, letting the Zig pilot exercise a non-loopback
+  addressing policy without claiming a production dialer. New regressions cover
+  unknown/stale provisions, duplicate provision rollback, direct-peer removal,
+  and OOM rollback. `just e2e-l4-zig` now runs a standalone Zig↔Zig loopback TCP
+  scenario that bootstraps a hosted Number cap, originates two Join parts,
+  consumes JoinResult payloads, sends the direct Accept, invokes the accepted
+  cap, and verifies the addressed registry drains.
+
+- **Experimental RPC Level-4 Go recon expanded.** `just e2e-l3-go` now also
+  checks the vendored Go L4 source surface: generated `rpc.capnp` bindings expose
+  `Message.join`, the vendored twoparty schema carries `JoinKeyPart` and
+  `JoinResult`, but the Go receive loop still has no runtime dispatch for
+  `Message_Which_join`. This keeps the Go L4 status source-backed without
+  claiming runtime interop.
+
 - **Experimental RPC Level-4 transparent proxy Join relay.** Inbound `Join`
   requests that target transparent cross-peer proxy exports now relay through the
   proxy to the underlying source peer, relay downstream JoinResult/exception

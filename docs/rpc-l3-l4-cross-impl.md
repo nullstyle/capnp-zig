@@ -56,8 +56,12 @@ not a production VatNetwork addressing policy.
   ready for a TCP L3 proof: inbound `Accept`/`Provide`, `thirdPartyHosted`
   pickup with a network, `awaitFromThirdParty`, accept-context `Disembargo`, and
   same-network embargo/locality handling still hit `TODO: 3PH` guards or TODO
-  comments in vendored `rpc.go`. Treat Go L3 as source-recon only until those
-  paths are implemented upstream or locally vendored.
+  comments in vendored `rpc.go`. The same probe now checks L4 source shape:
+  generated Go `rpc.capnp` bindings expose `Message.join`, and the vendored
+  twoparty schema carries `JoinKeyPart` / `JoinResult`, but the receive loop
+  still has no `Message_Which_join` runtime dispatch. Treat Go L3/L4 as
+  source-recon only until those paths are implemented upstream or locally
+  vendored.
 - Rust: the current repo e2e adapter uses `twoparty::VatNetwork`; no ready L3
   TCP hook was integrated this sprint.
 - Python: the current pycapnp e2e adapter exposes only the two-party path for
@@ -94,14 +98,15 @@ source probe also asserts the current C++ runtime blocker remains exact:
 
 This does not prove cross-implementation L4 runtime interop. capnp-zig now has a
 raw Experimental `Peer.sendJoinExperimental` helper, a Zig↔Zig JoinResult
-runtime pilot behind `rpc.vat.join.JoinNetwork`, and C++ source-surface recon.
-The Zig pilot can return compact Zig JoinResult payloads, resolve them to a
-direct peer, send `Accept`, and invoke the accepted cap. It can also relay Join
-requests through transparent cross-peer proxy exports to the proxy source peer
-and keep the downstream JoinResult alive until the upstream Finish. It still has
-no Stable/high-level `Peer.sendJoin`, no production Join addressing policy, no
-multi-hop relay beyond that transparent proxy case, and no cross-implementation
-L4 runtime claim.
+runtime pilot behind `rpc.vat.join.JoinNetwork`, an Experimental
+`AddressedJoinNetwork` registry proof over real Zig↔Zig TCP, and C++/Go
+source-surface recon. The Zig pilot can return compact Zig JoinResult payloads,
+resolve them to an already-live direct peer, send `Accept`, and invoke the
+accepted cap. It can also relay Join requests through transparent cross-peer
+proxy exports to the proxy source peer and keep the downstream JoinResult alive
+until the upstream Finish. It still has no Stable/high-level `Peer.sendJoin`, no
+production Join addressing policy or dialer, no multi-hop relay beyond that
+transparent proxy case, and no cross-implementation L4 runtime claim.
 
 The current C++ blocker is source-backed and e2e-checked: vendored Cap'n Proto
 C++ exposes the generic Level-3 `VatNetwork` hooks used by this lane, while

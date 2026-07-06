@@ -5,9 +5,9 @@ This note is for the next `capnp-deno` session that updates its dependency on
 
 ## Target
 
-Pin `capnp-deno` to a `capnp-zig` commit at or after the L4 transparent Join
-relay sprint. In the implementation handoff for that sprint, use the final
-pushed commit SHA as the exact dependency target.
+Pin `capnp-deno` to a `capnp-zig` commit at or after the L4 addressed Join
+registry/TCP pilot sprint. In the implementation handoff for that sprint, use
+the final pushed commit SHA as the exact dependency target.
 
 The relevant baseline includes:
 
@@ -40,6 +40,14 @@ The relevant baseline includes:
   downstream send failure, owner/source teardown, target mismatch through relay,
   Finish-before-Return, and OOM rollback. There is no public Stable `sendJoin`
   convenience or cross-implementation L4 claim.
+- Experimental L4 addressed Join registry pilot: `AddressedJoinNetwork` carries
+  opaque application addresses in provision tokens and resolves them to
+  already-live direct peers. `just e2e-l4-zig` now proves the JoinResult→Accept
+  path over real Zig↔Zig loopback TCP. This is still not a production Join
+  dialer or stable address format.
+- L4 cross-implementation recon: C++ still has no callable generic Join hook for
+  this harness, and the Go probe confirms generated Join/twoparty shapes but no
+  runtime dispatch for `Message.join`.
 
 ## Integration Work
 
@@ -61,9 +69,9 @@ The relevant baseline includes:
 8. Add downstream L2 tests if persistence is surfaced: save, reconnect, restore,
    resave, unknown ref, malformed/exception Return handling, and callback failure
    after restore.
-9. Do not surface L4 as a downstream API yet; use the readiness/relay evidence
-   only as context for future cross-implementation reconnaissance or exact-pin
-   Zig-only experiments.
+9. Do not surface L4 as a downstream API yet; use the readiness/relay/addressed
+   registry evidence only as context for future cross-implementation
+   reconnaissance or exact-pin Zig-only experiments.
 
 ## Caveats
 
@@ -71,8 +79,8 @@ The relevant baseline includes:
   realm/vat-specific; do not expose them as a stable cross-runtime contract yet.
 - L3 remains Zig-to-Zig only. Do not promise cross-implementation L3 pickup yet.
 - L4 Join remains Experimental and Zig-only in `capnp-zig`; transparent proxy
-  relay is implemented only for capnp-zig peers and does not imply
-  cross-implementation Join behavior.
+  relay and addressed registry proofs are implemented only for capnp-zig peers
+  and do not imply cross-implementation Join behavior.
 - `LoopbackVatNetwork` is a test/in-process helper, not a production addressing
   policy.
 - QUIC remains Experimental and opt-in behind `-Dquic=true`.

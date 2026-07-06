@@ -1070,6 +1070,7 @@ capnpc-zig.rpc.transport.tcp.stream.Transport: struct
 capnpc-zig.rpc.transport.tcp.stream: struct
 capnpc-zig.rpc.transport.tcp: struct
 capnpc-zig.rpc.transport: struct
+capnpc-zig.rpc.vat.join.AddressedJoinNetwork: fn (comptime type) type
 capnpc-zig.rpc.vat.join.DecodedJoinResult: struct
 capnpc-zig.rpc.vat.join.HostJoinResult: fn (comptime type) type
 capnpc-zig.rpc.vat.join.JoinNetwork: fn (comptime type) type
