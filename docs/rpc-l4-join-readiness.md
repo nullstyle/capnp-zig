@@ -90,8 +90,11 @@ The shared L3/L4 test harness now includes assertions for drained provide,
 join, embargoed-accept, third-party, and parked-call state.
 
 `just e2e-l3-cpp` adds cross-implementation recon checks for the `JoinKeyPart`
-and `JoinResult` shapes while also documenting the blocker: vendored Cap'n Proto
-C++ 2.0 exposes generic Level-3 `VatNetwork` hooks, but the Level-4 joiner and
+and `JoinResult` shapes plus a source-backed C++ runtime-surface probe. The
+probe asserts that vendored Cap'n Proto C++ 2.0 exposes the generic Level-3
+`VatNetworkBase` hooks used by the lane, exposes no callable generic L4 Join
+hook, leaves typed `VatNetwork` Level-4 support TODO-only, and still has only
+Capability client/server Join TODO comments. The Level-4 joiner and
 connection-acceptance hooks are still only described as TODO pseudo-interface
 comments in `rpc.capnp`.
 
@@ -106,7 +109,9 @@ comments in `rpc.capnp`.
 
 ## Next Work
 
-The next L4 step is a reference-backed partner-runtime probe. It should either
-drive a real `Join` exchange against an implementation with usable Join hooks or
-pin down the exact missing hook. Until that exists, keep L4 documented as an
-Experimental Zig↔Zig/raw-helper pilot, not cross-implementation runtime interop.
+The next L4 step is to drive a real `Join` exchange against an implementation
+with usable Join hooks. If the C++ reference stack grows callable generic Join
+hooks, `just e2e-l3-cpp` should fail its source probe and force this document to
+move from blocker recon to runtime interop work. Until that exists, keep L4
+documented as an Experimental Zig↔Zig/raw-helper pilot, not
+cross-implementation runtime interop.

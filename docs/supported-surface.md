@@ -172,8 +172,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   Stable/high-level `Peer.sendJoin`, no direct-connection JoinResult flow, no
   multi-hop relay, and no cross-implementation L4 interop claim. The C++ L3 e2e
   lane includes shape probes for the C++-convention `JoinKeyPart` and
-  `JoinResult`, but the C++ reference stack exposes no callable generic
-  `VatNetwork` Join hook for this TCP harness. Experimental; exact-pin only.
+  `JoinResult` plus a source-backed runtime-surface probe; it currently confirms
+  that the C++ reference stack exposes no callable generic `VatNetwork` Join
+  hook for this TCP harness. Experimental; exact-pin only.
 
 ## Known limitations (v0.3.0)
 

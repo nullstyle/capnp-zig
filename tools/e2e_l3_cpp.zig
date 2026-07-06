@@ -17,6 +17,7 @@ const cxx_number_value: u32 = 4242;
 const introducer_interface_id: u64 = 0x6c33_6c34_696e_7472;
 const get_promise_method_id: u16 = 0;
 const pump_timeout_ms: i64 = 10_000;
+const cxx_probe_max_file_bytes = 512 * 1024;
 
 const Scenario = enum(u16) {
     happy = 0,
@@ -680,6 +681,87 @@ fn buildJoinResultProbe(allocator: Allocator) !JoinResultProbe {
     };
 }
 
+fn readRepoFile(allocator: Allocator, io: std.Io, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(cxx_probe_max_file_bytes));
+}
+
+fn containsAll(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.mem.indexOf(u8, haystack, needle) == null) return false;
+    }
+    return true;
+}
+
+fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.mem.indexOf(u8, haystack, needle) != null) return true;
+    }
+    return false;
+}
+
+fn sliceBetween(haystack: []const u8, start_marker: []const u8, end_marker: []const u8) ![]const u8 {
+    const start = std.mem.indexOf(u8, haystack, start_marker) orelse return error.MissingStartMarker;
+    const after_start = haystack[start + start_marker.len ..];
+    const end = std.mem.indexOf(u8, after_start, end_marker) orelse return error.MissingEndMarker;
+    return after_start[0..end];
+}
+
+fn probeCppL4RuntimeSurface(allocator: Allocator, io: std.Io, tap: *Tap) !void {
+    const rpc_prelude = try readRepoFile(
+        allocator,
+        io,
+        "vendor/ext/capnproto/c++/src/capnp/rpc-prelude.h",
+    );
+    defer allocator.free(rpc_prelude);
+    const rpc_h = try readRepoFile(
+        allocator,
+        io,
+        "vendor/ext/capnproto/c++/src/capnp/rpc.h",
+    );
+    defer allocator.free(rpc_h);
+    const capability_h = try readRepoFile(
+        allocator,
+        io,
+        "vendor/ext/capnproto/c++/src/capnp/capability.h",
+    );
+    defer allocator.free(capability_h);
+
+    tap.ok(
+        containsAll(rpc_prelude, &.{
+            "canIntroduceTo",
+            "introduceTo",
+            "connectToIntroduced",
+            "awaitThirdParty",
+            "completeThirdParty",
+            "generateEmbargoId",
+        }),
+        "C++ generic VatNetworkBase exposes the Level-3 hooks used by this lane",
+    );
+    tap.ok(
+        !containsAny(rpc_prelude, &.{
+            "newJoiner",
+            "addJoinResult",
+            "acceptConnectionFromJoiner",
+        }),
+        "C++ generic VatNetworkBase exposes no callable Level-4 Join hook",
+    );
+
+    const l4_section = try sliceBetween(rpc_h, "Level 4 features", "private:");
+    tap.ok(
+        containsAll(l4_section, &.{"TODO(someday)"}) and
+            !containsAny(l4_section, &.{ "virtual", "newJoiner", "Joiner", "acceptConnectionFromJoiner" }),
+        "C++ typed VatNetwork Level-4 section remains TODO-only",
+    );
+    tap.ok(
+        containsAll(capability_h, &.{"TODO(someday):  method(s) for Join"}),
+        "C++ Capability::Client exposes only a Join TODO",
+    );
+    tap.ok(
+        containsAll(capability_h, &.{"TODO(someday):  Method which can optionally be overridden to implement Join"}),
+        "C++ Capability::Server exposes only a Join TODO",
+    );
+}
+
 fn expectTransientDrain(
     tap: *Tap,
     scenario: Scenario,
@@ -962,6 +1044,7 @@ pub fn main(init: std.process.Init) !void {
         join_result_probe.join_id == 0x5060_7080 and join_result_probe.succeeded and join_result_probe.cap_id == 17,
         "L4 JoinResult fixture shape remains consumable by Zig",
     );
+    try probeCppL4RuntimeSurface(allocator, io, &tap);
 
     std.debug.print("1..{d}\n", .{tap.test_num});
     if (tap.failures > 0) return error.TestFailed;

@@ -82,6 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   joined-cap retention. This is regression evidence only: no high-level Join API
   was added and the Stable surface is unchanged.
 
+- **Experimental RPC Level-4 C++ runtime blocker probe.** `just e2e-l3-cpp`
+  now enforces the source-backed C++ L4 recon result in addition to the
+  JoinKeyPart/JoinResult shape checks: vendored C++ exposes the generic L3
+  `VatNetworkBase` hooks used by the lane, exposes no callable generic L4 Join
+  hook, keeps typed `VatNetwork` Level-4 as TODO-only, and still has only
+  Capability client/server Join TODO comments. This keeps the cross-impl L4
+  status checked without claiming runtime interop.
+
 - **C++-first cross-implementation RPC Level-3 handoff e2e.** A new
   `l3_l4_interop` e2e lane (`just e2e-l3-cpp`) runs a real TCP three-party
   handoff with vats A/B in capnp-zig and the hosted Number capability in the
