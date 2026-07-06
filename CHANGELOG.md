@@ -22,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation via explicit cancel and deinit, pending-Join deinit cancellation,
   partial Finish retry without resending already-finished JoinResult questions,
   malformed/exception JoinResult cleanup that Finishes the affected question
-  without restoring it, mismatched successful JoinResults that release retained
-  `Joined` leases and keep failed Finish sends retryable before returning
+  without restoring it, mixed retained-result/malformed cleanup that cancels the
+  aggregate Join and releases retained `Joined` leases immediately, mismatched
+  successful JoinResults that release retained `Joined` leases and keep failed
+  Finish sends retryable before returning
   `JoinResultMismatch`,
   Accept-exception cleanup that still Finishes JoinResult lifetimes,
   proxy-relay pickup through the real `JoinCoordinator`, and

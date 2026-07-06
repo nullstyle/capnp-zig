@@ -1139,6 +1139,61 @@ test "JoinCoordinator exception JoinResult Return finishes terminal question" {
     try harness.expectNoJoinState(&peer);
 }
 
+test "JoinCoordinator malformed JoinResult after retained result cancels aggregate join" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var addressed = vat_join.AddressedJoinNetwork(Peer).init(allocator);
+    defer addressed.deinit();
+    var connector = StaticAddressConnector{ .peer = &peer };
+    addressed.setAddressConnector(&connector, StaticAddressConnector.connect);
+
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, addressed.network(), 0x4b10, 2);
+    defer coordinator.deinit();
+
+    const first_qid = try coordinator.sendImportedCapPart(&peer, 920, 2, 0);
+    const second_qid = try coordinator.sendImportedCapPart(&peer, 921, 2, 1);
+    try std.testing.expect(peer.questions.contains(first_qid));
+    try std.testing.expect(peer.questions.contains(second_qid));
+
+    const first_result = try buildAddressedJoinResult(allocator, 0x4b10, "direct-retained", 1);
+    defer allocator.free(first_result);
+    const first_return = try buildReturnJoinResultFrame(allocator, first_qid, first_result);
+    defer allocator.free(first_return);
+    try peer.handleFrame(first_return);
+
+    try std.testing.expect(!peer.questions.contains(first_qid));
+    try std.testing.expect(peer.questions.contains(second_qid));
+    try std.testing.expectEqual(@as(usize, 1), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 1), addressed.registry.count());
+
+    const malformed_return = try buildReturnTextResultsFrame(allocator, second_qid, "not-a-join-result");
+    defer allocator.free(malformed_return);
+    try peer.handleFrame(malformed_return);
+
+    try std.testing.expect(!peer.questions.contains(first_qid));
+    try std.testing.expect(!peer.questions.contains(second_qid));
+    try std.testing.expect(coordinator.canceled);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.unexpected_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 0), coordinator.sent_parts.count());
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(coordinator.question_finished.items[1]);
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), addressed.registry.count());
+    try capture.expectFinish(first_qid, false);
+    try capture.expectFinish(second_qid, false);
+    try std.testing.expectError(error.JoinDidNotSucceed, coordinator.acceptFirst());
+    try harness.expectNoJoinState(&peer);
+}
+
 test "JoinCoordinator mismatched JoinResults are terminal and release retained joins" {
     const allocator = std.testing.allocator;
 

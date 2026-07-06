@@ -201,7 +201,8 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
   partial-Finish retry without replaying successful Finishes, Accept-exception
-  JoinResult cleanup, malformed/exception JoinResult terminal cleanup,
+  JoinResult cleanup, malformed/exception JoinResult terminal cleanup including
+  mixed retained-result cleanup,
   mismatched successful JoinResult cleanup, sendPart OOM rollback,
   addressed unknown/stale/duplicate provision handling,
   connector malformed-token/no-dial,

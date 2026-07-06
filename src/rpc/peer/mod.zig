@@ -805,6 +805,24 @@ pub const JoinCoordinator = struct {
         self.noteAllJoinResultsFinished();
     }
 
+    fn noteSyntheticCancelReturn(self: *@This(), peer: *Peer, question_id: u32) bool {
+        if (!self.canceled) return false;
+        const question = peer.questions.get(question_id) orelse return false;
+        if (!question.cancelled) return false;
+        self.markQuestionFinished(peer, question_id);
+        self.noteAllJoinResultsFinished();
+        return true;
+    }
+
+    fn failTerminalJoinResult(self: *@This(), peer: *Peer, question_id: u32, reason: []const u8) void {
+        if (self.noteSyntheticCancelReturn(peer, question_id)) return;
+        self.finishOneBestEffort(peer, question_id);
+        self.cancelPending(reason) catch |err| {
+            self.finish_failures += 1;
+            log.debug("failed to cancel L4 JoinCoordinator after terminal JoinResult {}: {}", .{ question_id, err });
+        };
+    }
+
     fn markQuestionFinished(self: *@This(), peer: *Peer, question_id: u32) void {
         for (self.question_ids.items, self.question_peers.items, self.question_finished.items) |qid, qpeer, *finished| {
             if (qid == question_id and qpeer == peer) {
@@ -825,33 +843,33 @@ pub const JoinCoordinator = struct {
             .results => {
                 const payload = ret.results orelse {
                     self.unexpected_exceptions += 1;
-                    self.finishOneBestEffort(peer, ret.answer_id);
+                    self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
                     return;
                 };
                 if (self.expected_parts != 0 and self.joined.items.len >= self.expected_parts) {
                     self.unexpected_exceptions += 1;
-                    self.finishOneBestEffort(peer, ret.answer_id);
+                    self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
                     return;
                 }
                 const decoded = join_network.decodeJoinResult(payload.content) catch {
                     self.unexpected_exceptions += 1;
-                    self.finishOneBestEffort(peer, ret.answer_id);
+                    self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
                     return;
                 };
                 if (!decoded.succeeded or decoded.join_id != self.join_id) {
                     self.mismatch_exceptions += 1;
-                    self.finishOneBestEffort(peer, ret.answer_id);
+                    self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
                     return;
                 }
                 var joined = self.join_network.connectJoined(self.allocator, payload.content) catch {
                     self.unexpected_exceptions += 1;
-                    self.finishOneBestEffort(peer, ret.answer_id);
+                    self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
                     return;
                 };
                 self.joined.append(self.allocator, joined) catch {
                     joined.deinit(self.allocator);
                     self.unexpected_exceptions += 1;
-                    self.finishOneBestEffort(peer, ret.answer_id);
+                    self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
                     return;
                 };
             },
@@ -864,11 +882,11 @@ pub const JoinCoordinator = struct {
                 } else {
                     self.unexpected_exceptions += 1;
                 }
-                self.finishOneBestEffort(peer, ret.answer_id);
+                self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
             },
             else => {
                 self.unexpected_exceptions += 1;
-                self.finishOneBestEffort(peer, ret.answer_id);
+                self.failTerminalJoinResult(peer, ret.answer_id, "join canceled");
             },
         }
     }

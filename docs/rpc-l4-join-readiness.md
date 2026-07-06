@@ -137,9 +137,9 @@ checks. This is not a full C++ L4 Join runtime.
   later cleanup retries only the unfinished JoinResult questions instead of
   replaying already-sent Finishes.
 - Malformed or exception JoinResult Returns are terminal for the affected
-  coordinator question: the coordinator records failure state, sends Finish, and
-  does not let the generic Return dispatcher restore or defer the callback
-  question.
+  coordinator question: the coordinator records failure state, sends Finish,
+  cancels the aggregate Join, releases any retained `Joined` leases, and does
+  not let the generic Return dispatcher restore or defer the callback question.
 - Mismatched successful JoinResults are terminal for the coordinator: the
   coordinator records the mismatch, attempts to Finish each held JoinResult
   lifetime, keeps failed Finish sends retryable, releases retained `Joined`
@@ -181,6 +181,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 - malformed/exception `JoinCoordinator` JoinResult Return cleanup, proving the
   question is removed and Finished instead of restored or deferred after
   callback handling,
+- malformed `JoinCoordinator` cleanup after a successful addressed JoinResult,
+  proving retained connector leases are released and all JoinResult lifetimes
+  are Finished when the aggregate Join becomes impossible,
 - mismatched successful `JoinCoordinator` JoinResults, proving `acceptFirst()`
   releases retained addressed connector leases, sends Finish for held JoinResult
   lifetimes, and keeps failed Finish sends retryable before returning

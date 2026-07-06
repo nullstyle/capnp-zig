@@ -109,12 +109,13 @@ proxy source peer; the real `JoinCoordinator` now tracks the originating peer fo
 each part, rejects duplicate local part sends, Finishes each JoinResult on the
 correct upstream connection after pickup, retries only unfinished JoinResult
 Finishes after a partial send failure, Finishes JoinResults after direct Accept
-exceptions, and can cancel a pending direct Accept if its Return is lost or the
-coordinator is dropped. The transparent proxy relay also keeps owner/source
-state when forwarding the downstream Finish fails, so a retry can drain the
-downstream JoinResult lifetime, rejects non-import source targets before
-allocating relay state, neutralizes the source question during owner-peer
-teardown even if that best-effort downstream Finish send fails, and degrades
+exceptions, releases retained `Joined` leases when a later terminal JoinResult
+failure makes the aggregate impossible, and can cancel a pending direct Accept
+if its Return is lost or the coordinator is dropped. The transparent proxy relay
+also keeps owner/source state when forwarding the downstream Finish fails, so a
+retry can drain the downstream JoinResult lifetime, rejects non-import source
+targets before allocating relay state, neutralizes the source question during
+owner-peer teardown even if that best-effort downstream Finish send fails, and degrades
 unexpected downstream Return tags to a local exception while draining relay
 state. It still has no Stable `Peer.sendJoin`, no production Join addressing
 policy or bundled dialer, no multi-hop relay beyond that transparent proxy case,
