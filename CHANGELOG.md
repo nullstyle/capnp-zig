@@ -64,6 +64,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Experimental RPC Level-4 Join origination pilot.** `Peer.sendJoinExperimental`
+  can now send raw `Join` messages with caller-supplied key parts and ordinary
+  Return callbacks. New Zig↔Zig regressions originate a two-part Join, import
+  the returned cap, invoke it successfully, verify mismatch exceptions drain
+  state, and inject allocation failures through the sender rollback path. This
+  is a manual Experimental helper only: there is still no Stable/high-level
+  `Peer.sendJoin`, direct `JoinResult` connection flow, multi-hop relay, or
+  cross-implementation L4 runtime claim.
+
 - **C++-first cross-implementation RPC Level-3 handoff e2e.** A new
   `l3_l4_interop` e2e lane (`just e2e-l3-cpp`) runs a real TCP three-party
   handoff with vats A/B in capnp-zig and the hosted Number capability in the
@@ -79,10 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without yielding a second cap, hosted-cap exceptions report over the direct
   A↔C++ path, and every case checks local Provide/Accept/vine/embargo state
   drains. The lane also records the current L4 recon result: capnp-zig can
-  consume the C++-shape `JoinKeyPart` struct used by this probe, but C++'s
-  generic `VatNetwork` still marks Level 4 as TODO and capnp-zig still has no
-  public `Peer.sendJoin` or direct `JoinResult` flow. L3/L4 remain Experimental;
-  Stable API unchanged.
+  consume the C++-shape `JoinKeyPart` and `JoinResult` structs used by this
+  probe, but the C++ reference stack exposes no callable generic `VatNetwork`
+  Join hook for the TCP harness. L3/L4 remain Experimental; Stable API
+  unchanged.
 
 - **RPC L4 Join readiness note and shared L3/L4 invariants.** The new
   `docs/rpc-l4-join-readiness.md` documents the current receive-side Join slice,

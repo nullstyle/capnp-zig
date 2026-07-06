@@ -162,13 +162,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   pins.
 - **Level 4 (Join):** a guarded receive-side readiness slice is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
-  Inbound `Join` can collect local JoinKeyPart structs, compare resolved
-  targets, return provided caps when all parts match, send mismatch exceptions,
-  and drain state on Finish/send-failure/OOM paths. There is no public
+  `Peer.sendJoinExperimental` can originate raw Join parts, and inbound `Join`
+  can collect local JoinKeyPart structs, compare resolved targets, return
+  provided caps when all parts match, send mismatch exceptions, and drain state
+  on Finish/send-failure/OOM paths. There is no Stable/high-level
   `Peer.sendJoin`, no direct-connection JoinResult flow, no multi-hop relay, and
-  no cross-implementation L4 interop claim. The C++ L3 e2e lane includes a
-  receive-shape probe for the C++-convention `JoinKeyPart`, but C++ generic
-  `VatNetwork` still marks Level 4 as TODO. Experimental; exact-pin only.
+  no cross-implementation L4 interop claim. The C++ L3 e2e lane includes shape
+  probes for the C++-convention `JoinKeyPart` and `JoinResult`, but the C++
+  reference stack exposes no callable generic `VatNetwork` Join hook for this
+  TCP harness. Experimental; exact-pin only.
 
 ## Known limitations (v0.3.0)
 

@@ -1850,6 +1850,33 @@ pub const Peer = struct {
         return question_id;
     }
 
+    /// Experimental Level-4 Join origination. This is a low-level/manual
+    /// helper: callers provide the raw `Join.keyPart` AnyPointer and receive the
+    /// ordinary `Return` callback for the Join question. It intentionally does
+    /// not implement the full E-join workflow, public `JoinResult` processing,
+    /// or direct-connection formation.
+    pub fn sendJoinExperimental(
+        self: *Peer,
+        target: protocol.MessageTarget,
+        key_part: ?message.AnyPointerReader,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+
+        const question_id = try self.allocateQuestion(ctx, on_return);
+        errdefer self.removeQuestion(question_id);
+
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildJoin(question_id, target, key_part);
+        try self.sendBuilder(&builder);
+
+        log.debug("sent experimental join question_id={}", .{question_id});
+        return question_id;
+    }
+
     /// Allocate the next callee-chosen answer id for an outbound
     /// `ThirdPartyAnswer`. Per rpc.capnp:936-941 the value must have bit 30 set
     /// and bit 31 clear ([2^30, 2^31)); this is enforced by masking the counter

@@ -61,14 +61,30 @@ not a production VatNetwork addressing policy.
 
 ## L4 Result
 
-`just e2e-l3-cpp` includes a receive-shape check for the C++-convention
-`JoinKeyPart` struct used by the probe schema:
+`just e2e-l3-cpp` includes shape checks for the C++/twoparty-convention L4
+structs used by the probe schema.
+
+`JoinKeyPart`:
 
 - `joinId :UInt32`
 - `partCount :UInt16`
 - `partNum :UInt16`
 
-That proves capnp-zig can consume the shape used by the cross-impl probe. It
-does not prove L4 runtime interop. C++ generic `VatNetwork` still marks Level 4
-as TODO, and capnp-zig still has no public `Peer.sendJoin`, direct
-`JoinResult` connection flow, or multi-hop Join relay.
+`JoinResult`:
+
+- `joinId :UInt32`
+- `succeeded :Bool`
+- `cap :Capability`
+
+That proves capnp-zig can consume the shapes used by the cross-impl probe. It
+does not prove L4 runtime interop. capnp-zig now has a raw Experimental
+`Peer.sendJoinExperimental` helper and a Zig↔Zig Join pilot, but it still has no
+Stable/high-level `Peer.sendJoin`, direct `JoinResult` connection flow, or
+multi-hop Join relay.
+
+The current C++ blocker is source-backed: vendored Cap'n Proto C++ exposes the
+generic Level-3 `VatNetwork` hooks used by this sprint, while Level-4 Join is
+still described only in the commented network pseudo-interface in `rpc.capnp`
+(`newJoiner`, `Joiner.addJoinResult`, `Joiner.connect`, and
+`acceptConnectionFromJoiner`). No callable generic C++ `VatNetwork` Join hook is
+available for the TCP e2e harness today.

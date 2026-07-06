@@ -649,6 +649,37 @@ fn buildJoinProbe(allocator: Allocator) !u32 {
     return try reader.getJoinId();
 }
 
+const JoinResultProbe = struct {
+    join_id: u32,
+    succeeded: bool,
+    cap_id: u32,
+};
+
+fn buildJoinResultProbe(allocator: Allocator) !JoinResultProbe {
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    const root = try builder.initRootAnyPointer();
+    const result_struct = try root.initStruct(1, 1);
+    var result = l3.JoinResult.Builder.wrap(result_struct);
+    try result.setJoinId(0x5060_7080);
+    try result.setSucceeded(true);
+    try result.setCapCapability(.{ .id = 17 });
+
+    const bytes = try builder.toBytes();
+    defer allocator.free(bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
+    defer msg.deinit();
+    const any = try msg.getRootAnyPointer();
+    const reader = l3.JoinResult.Reader.wrap(try any.getStruct());
+    const cap_any = try reader.getCap();
+    const cap = try cap_any.getCapability();
+    return .{
+        .join_id = try reader.getJoinId(),
+        .succeeded = try reader.getSucceeded(),
+        .cap_id = cap.id,
+    };
+}
+
 fn expectTransientDrain(
     tap: *Tap,
     scenario: Scenario,
@@ -926,6 +957,11 @@ pub fn main(init: std.process.Init) !void {
 
     const join_probe_id = try buildJoinProbe(allocator);
     tap.ok(join_probe_id == 0x1020_3040, "L4 JoinKeyPart shape remains consumable on the Zig receive-side path");
+    const join_result_probe = try buildJoinResultProbe(allocator);
+    tap.ok(
+        join_result_probe.join_id == 0x5060_7080 and join_result_probe.succeeded and join_result_probe.cap_id == 17,
+        "L4 JoinResult fixture shape remains consumable by Zig",
+    );
 
     std.debug.print("1..{d}\n", .{tap.test_num});
     if (tap.failures > 0) return error.TestFailed;

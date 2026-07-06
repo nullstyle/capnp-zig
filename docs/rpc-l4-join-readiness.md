@@ -1,15 +1,19 @@
 # RPC L4 Join Readiness
 
-Status: Experimental, receive-side/readiness only.
+Status: Experimental, raw origination pilot plus receive-side readiness.
 
-`capnp-zig` has a guarded receive-side slice of Cap'n Proto RPC Level 4
-`Join`. This is not a complete L4 implementation and is not part of the Stable
-surface. It exists to keep the provide/join state model correct while L3
-handoff grows toward cross-implementation use.
+`capnp-zig` has a guarded slice of Cap'n Proto RPC Level 4 `Join`: inbound
+Join state handling plus a low-level Experimental sender for raw Join parts.
+This is not a complete L4 implementation and is not part of the Stable surface.
+It exists to keep the provide/join state model correct while L3 handoff grows
+toward cross-implementation use.
 
 ## What Exists
 
 - The wire layer can encode and decode `Message.join`.
+- `Peer.sendJoinExperimental` can originate a raw Join question with a caller
+  supplied `Join.keyPart` AnyPointer and ordinary `Return` callback. It is a
+  manual probe helper, not a high-level E-join API.
 - `Peer.handleJoin` accepts inbound `Join` messages and resolves their
   `target` through the same target machinery used by `Provide`.
 - Join parts are collected in `pending_joins`, with question-to-part back-links
@@ -34,9 +38,10 @@ ordering, cleanup, and target equality behavior; it is not a frozen public key
 format.
 
 The C++ L3 interop lane uses the same struct shape in its test schema
-(`JoinKeyPart { joinId :UInt32, partCount :UInt16, partNum :UInt16 }`) and the
-Zig orchestrator decodes that shape as a receive-side probe. This is a
-compatibility data-shape check, not a full C++ L4 Join runtime.
+(`JoinKeyPart { joinId :UInt32, partCount :UInt16, partNum :UInt16 }`) and a
+twoparty-style `JoinResult { joinId :UInt32, succeeded :Bool, cap :Capability }`
+fixture. The Zig orchestrator decodes both shapes as compatibility data-shape
+checks. This is not a full C++ L4 Join runtime.
 
 ## Invariants
 
@@ -57,6 +62,10 @@ compatibility data-shape check, not a full C++ L4 Join runtime.
 
 Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 
+- Zig-originated two-part Join against another Zig peer, importing the returned
+  cap and successfully invoking it,
+- Zig-originated mismatch Returns delivered as exceptions,
+- allocation-failure rollback for `sendJoinExperimental`,
 - matching two-part Join completion,
 - mismatched target exceptions,
 - Finish-before-completion cleanup,
@@ -67,23 +76,24 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
 The shared L3/L4 test harness now includes assertions for drained provide,
 join, embargoed-accept, third-party, and parked-call state.
 
-`just e2e-l3-cpp` adds a cross-implementation recon check for the
-`JoinKeyPart` shape while also documenting the blocker: vendored Cap'n Proto C++
-2.0 exposes generic Level-3 `VatNetwork` hooks, but its generic `VatNetwork`
-header still marks Level 4 as `TODO(someday)`.
+`just e2e-l3-cpp` adds cross-implementation recon checks for the `JoinKeyPart`
+and `JoinResult` shapes while also documenting the blocker: vendored Cap'n Proto
+C++ 2.0 exposes generic Level-3 `VatNetwork` hooks, but the Level-4 joiner and
+connection-acceptance hooks are still only described as TODO pseudo-interface
+comments in `rpc.capnp`.
 
 ## Not Implemented
 
-- No public `Peer.sendJoin` API.
-- No JoinResult builder/parser beyond treating Join results as ordinary
-  provided-cap Returns in the current receive-side slice.
+- No Stable or high-level `Peer.sendJoin` API.
+- No JoinResult runtime flow beyond shape fixtures and treating current Join
+  success as ordinary provided-cap Returns.
 - No direct-connection establishment from Join results.
 - No multi-hop Join relay semantics.
 - No cross-implementation L4 runtime interop.
 
 ## Next Work
 
-The next L4 step is not another API surface. It is a small, reference-backed
-probe that can either drive a real `Join` exchange against a partner runtime or
-pin down the exact missing hook. Until that exists, keep L4 documented as
-receive-side/readiness only.
+The next L4 step is a reference-backed partner-runtime probe. It should either
+drive a real `Join` exchange against an implementation with usable Join hooks or
+pin down the exact missing hook. Until that exists, keep L4 documented as an
+Experimental Zig↔Zig/raw-helper pilot, not cross-implementation runtime interop.
