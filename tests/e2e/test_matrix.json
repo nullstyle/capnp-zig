@@ -1,7 +1,7 @@
 {
   "target": "capnp-zig",
   "reference_backends": ["cpp", "go", "python", "rust"],
-  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo"],
+  "scenarios": ["game_world", "chat", "inventory", "matchmaking", "resolve_disembargo", "l3_l4_interop"],
   "directions": [
     "zig-client_to_reference-server",
     "reference-client_to_zig-server"
@@ -16,6 +16,17 @@
       "reference-client_to_zig-server": {
         "excluded_backends": [],
         "reason": "W1 (v0.3.0) made the reflected-loopback return a plain sendResultsTo=caller call with plain .results — consumable by all four reference clients. The earlier go/rust skips (go-capnp could not parse takeFromOtherQuestion; capnp-rpc stalled on it) were removed."
+      }
+    },
+    "l3_l4_interop": {
+      "note": "Experimental L3/L4 interop lane. C++ is the only runnable L3 runtime proof today. Go is covered by the source-backed `just e2e-l3-go` blocker probe because vendored go-capnp exposes Network3PH names but still TODO/panics on the required runtime 3PH paths.",
+      "zig-client_to_reference-server": {
+        "excluded_backends": ["go", "python", "rust"],
+        "reason": "C++ has the runnable TCP L3 handoff harness. Go is runtime-blocked by TODO 3PH paths checked by `just e2e-l3-go`; Python and Rust adapters currently expose only two-party paths."
+      },
+      "reference-client_to_zig-server": {
+        "excluded_backends": ["cpp", "go", "python", "rust"],
+        "reason": "The current l3_l4_interop orchestrator is Zig-client-only: vats A/B are capnp-zig and the reference backend hosts vat C."
       }
     }
   },

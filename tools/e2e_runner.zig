@@ -72,7 +72,9 @@ const all_backends = [_]Backend{ .cpp, .go, .python, .rust };
 // The docker interop matrix covers every (schema x backend x direction) case
 // except narrow scenario-specific reference gaps recorded as SKIP below:
 // resolve_disembargo has one pycapnp server gap, and l3_l4_interop is currently
-// the C++-first Zig-client lane only.
+// the C++-first Zig-client runtime lane only. Go has a separate source-backed
+// `just e2e-l3-go` recon gate because vendored go-capnp exposes Network3PH
+// names but its runtime still TODO/panics on the required 3PH paths.
 const all_schemas = [_]Schema{ .game_world, .chat, .inventory, .matchmaking, .resolve_disembargo, .l3_l4_interop };
 
 /// resolve_disembargo is the only scenario with per-direction reference-impl
@@ -109,6 +111,7 @@ fn resolveDisembargoSkip(schema: Schema, backend: Backend, zig_is_client: bool) 
 
 fn l3L4InteropSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]const u8 {
     if (schema != .l3_l4_interop) return null;
+    if (backend == .go) return "SKIP(l3-go-runtime-blocked; see just e2e-l3-go)";
     if (backend != .cpp) return "SKIP(l3-l4-cpp-only)";
     if (!zig_is_client) return "SKIP(l3-l4-zig-client-only)";
     return null;

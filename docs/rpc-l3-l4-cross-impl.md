@@ -52,8 +52,12 @@ not a production VatNetwork addressing policy.
 ## Other Implementations
 
 - Go: vendored go-capnp has a `Network3PH` interface with introduce/forward/
-  await/complete hooks, but this sprint did not build a TCP e2e harness for it.
-  Treat Go L3 as promising but unproven here.
+  await/complete hooks, but `just e2e-l3-go` now confirms the runtime is not
+  ready for a TCP L3 proof: inbound `Accept`/`Provide`, `thirdPartyHosted`
+  pickup with a network, `awaitFromThirdParty`, accept-context `Disembargo`, and
+  same-network embargo/locality handling still hit `TODO: 3PH` guards or TODO
+  comments in vendored `rpc.go`. Treat Go L3 as source-recon only until those
+  paths are implemented upstream or locally vendored.
 - Rust: the current repo e2e adapter uses `twoparty::VatNetwork`; no ready L3
   TCP hook was integrated this sprint.
 - Python: the current pycapnp e2e adapter exposes only the two-party path for

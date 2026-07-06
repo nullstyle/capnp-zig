@@ -25,6 +25,9 @@ test-l3-cpp:
 test-l3-cpp-skip-build:
     {{runner}} --skip-build --backend=cpp --schema=l3_l4_interop --direction=zig-client
 
+test-l3-go:
+    cd ../.. && zig run tools/e2e_l3_go_probe.zig --
+
 test-scaffold:
     {{runner}} --allow-missing-hooks
 

@@ -135,9 +135,12 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `just e2e-l3-cpp` runs a Zig↔C++ Level-3 handoff over real TCP against the
   C++ reference stack built from vendored Cap'n Proto 2.0, with Vat A accepting
   and invoking the hosted cap directly on its A↔C++ connection. This is
-  C++-first evidence, not a full reference matrix: Go has promising `Network3PH`
-  hooks but no TCP e2e harness in this repo yet, and the current Rust/Python e2e
-  adapters expose only the two-party path. The former gap — the introducer not
+  C++-first evidence, not a full reference matrix: `just e2e-l3-go` now checks
+  that vendored go-capnp exposes `Network3PH` hook names but still leaves the
+  required runtime paths (`Accept`/`Provide`, `thirdPartyHosted` pickup with a
+  network, `awaitFromThirdParty`, accept-context `Disembargo`, same-network
+  locality) behind `TODO: 3PH` guards, and the current Rust/Python e2e adapters
+  expose only the two-party path. The former gap — the introducer not
   forwarding the *original* parked pipelined calls on a promise to the host (they
   hit the Level-1/2 rejecting vine) — is now
   **RESOLVED**: when the handed-off promise resolves, the introducer forwards

@@ -90,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Capability client/server Join TODO comments. This keeps the cross-impl L4
   status checked without claiming runtime interop.
 
+- **Experimental RPC Level-3 Go handoff recon gate.** A new `just e2e-l3-go`
+  source-backed probe checks vendored go-capnp's current three-party status:
+  `Network3PH` hook names are present, but inbound `Accept`/`Provide`,
+  `thirdPartyHosted` pickup with a network, `awaitFromThirdParty`,
+  accept-context `Disembargo`, and same-network embargo/locality handling still
+  hit `TODO: 3PH` guards. This records why there is no Zig↔Go L3 runtime
+  interop claim yet and gives future Go 3PH support a failing gate to revisit.
+
 - **C++-first cross-implementation RPC Level-3 handoff e2e.** A new
   `l3_l4_interop` e2e lane (`just e2e-l3-cpp`) runs a real TCP three-party
   handoff with vats A/B in capnp-zig and the hosted Number capability in the
