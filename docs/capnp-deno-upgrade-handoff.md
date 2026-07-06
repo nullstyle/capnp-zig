@@ -37,17 +37,19 @@ The relevant baseline includes:
   it sends key parts, collects matching JoinResults through a `JoinNetwork`,
   sends direct Accept, retains/releases the accepted cap, and Finishes each
   JoinResult question on the peer where that part originated with per-question
-  retry state; it rejects duplicate local part numbers before sending and can
-  cancel after JoinResults arrive, after a direct Accept question is pending, or
-  during deinit before freeing its callback context. This is still
-  Zig-shape-only and not a Stable downstream API.
+  retry state; it also Finishes JoinResults after direct Accept exceptions. It
+  rejects duplicate local part numbers before sending and can cancel after
+  JoinResults arrive, after a direct Accept question is pending, or during deinit
+  before freeing its callback context. This is still Zig-shape-only and not a
+  Stable downstream API.
 - Experimental L4 transparent proxy Join relay: Join requests targeting
   cross-peer proxy exports can forward to the proxy source peer, relay
   downstream JoinResult/exception Returns upstream, and preserve downstream
-  lifetime until upstream Finish. Regressions cover source unavailable,
-  downstream send failure, owner/source teardown, target mismatch through relay,
-  Finish-before-Return, and OOM rollback. There is no public Stable `sendJoin`
-  convenience or cross-implementation L4 claim.
+  lifetime until upstream Finish, including retry state if forwarding that
+  downstream Finish fails. Regressions cover source unavailable, downstream send
+  failure, downstream Finish retry, owner/source teardown, target mismatch
+  through relay, Finish-before-Return, and OOM rollback. There is no public
+  Stable `sendJoin` convenience or cross-implementation L4 claim.
 - Experimental L4 addressed Join registry pilot: `AddressedJoinNetwork` carries
   opaque application addresses in provision tokens, resolves already-live
   registry entries, and can call an app-supplied connector for unknown addressed

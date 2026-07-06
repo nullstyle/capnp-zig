@@ -118,13 +118,18 @@ checks. This is not a full C++ L4 Join runtime.
   rollback when no result reached the joiner, and peer deinit.
 - `pending_join_relays` and `cross_peer_join_relay_links` drain together on
   upstream Finish, downstream exception, owner/source teardown, downstream send
-  failure, and allocation rollback.
+  failure, and allocation rollback. If relaying the downstream Finish fails,
+  the owner relay record and source back-link remain live so a later upstream
+  Finish retry can drain the downstream lifetime.
 - Coordinator-originated joins split across multiple origin peers Finish or
   cancel each JoinResult on the peer that originated that part, preserving relay
   lifetime across A→B/A→C-style proxy paths.
 - Coordinator Finish retries are per-question: if one peer's Finish send fails,
   later cleanup retries only the unfinished JoinResult questions instead of
   replaying already-sent Finishes.
+- A direct Accept exception is terminal for the coordinator's JoinResults: the
+  coordinator records the Accept failure and still Finishes every JoinResult
+  lifetime because the host-side provision has already been consumed.
 - Coordinator deinit cancels outstanding Join questions and pending direct
   Accept questions before freeing the coordinator, leaving only cancelled
   question entries that absorb the peer's required late Return.
@@ -164,6 +169,8 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   neutralizes callbacks before the coordinator memory goes away,
 - partial `JoinCoordinator.finishJoinResults()` failure and retry, proving a
   successful Finish is not resent while the failed peer is retried,
+- direct Accept results-send failure on the host, where the coordinator receives
+  the fallback exception and still drains JoinResult answers/provisions,
 - JoinResult Return send failure rollback, proving no stale
   `pending_join_accepts` entry remains when all JoinResult Returns fail,
 - transparent proxy Join relay where A joins two caps through B/C proxy exports
@@ -172,9 +179,9 @@ Focused peer regressions in `tests/rpc/peer/rpc_join_readiness_test.zig` cover:
   directly, and automatically drains relay state by Finishing each upstream
   JoinResult on the correct A→B/A→C peer after pickup,
 - relay failure/lifecycle cases: upstream Finish before downstream Return,
-  source unavailable, downstream Join send failure, owner-peer-first teardown,
-  source-peer-first teardown, target mismatch through the relay, and OOM
-  rollback around relay setup,
+  failed downstream Finish retry, source unavailable, downstream Join send
+  failure, owner-peer-first teardown, source-peer-first teardown, target
+  mismatch through the relay, and OOM rollback around relay setup,
 - test-local coordinator selection of a callable cap across two returned Join
   parts, including release of the retained result imports,
 - test-local coordinator mismatch handling with no retained joined caps,

@@ -177,11 +177,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   JoinResult question so partial send failures retry only unfinished questions.
   It rejects duplicate local part numbers before sending and can cancel after
   JoinResults arrive, including a pending direct Accept whose Return is lost.
+  If the direct Accept returns an exception, the coordinator still Finishes
+  JoinResult lifetimes because the host-side provision has already been
+  consumed.
   Dropping a coordinator best-effort cancels pending Join and Accept questions
   before freeing its callback context. Transparent cross-peer proxy exports can
   relay Join requests to their source peer, relay downstream JoinResult/exception
   Returns upstream, and keep the downstream JoinResult alive until the upstream
-  Finish.
+  Finish; if forwarding that downstream Finish fails, relay state is kept for a
+  later retry.
   `AddressedJoinNetwork` adds an Experimental registry proof where
   application-supplied opaque addresses are carried in provision tokens,
   resolved through already-live registry entries, or resolved through an
@@ -189,14 +193,15 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   Regressions cover Finish/send-failure/OOM paths, pending direct-Accept
   rollback, coordinator duplicate-send rejection, post-JoinResult and
   post-Accept-send cancel cleanup, drop-time pending Join/Accept cancellation,
-  partial-Finish retry without replaying successful Finishes, sendPart OOM
-  rollback, addressed unknown/stale/duplicate provision handling, connector
-  malformed-token/no-dial, network-teardown-before-release, and OOM-before-dial
-  handling, retained result import release, mismatch/cancel cleanup, callback
-  failure after retention, proxy relay success through the real coordinator,
-  source unavailable, downstream send failure, owner/source
-  teardown, target mismatch through relay, and relay setup OOM rollback. `just
-  e2e-l4-zig` now runs a real Zig↔Zig TCP gate for the addressed
+  partial-Finish retry without replaying successful Finishes, Accept-exception
+  JoinResult cleanup, sendPart OOM rollback, addressed unknown/stale/duplicate
+  provision handling, connector malformed-token/no-dial,
+  network-teardown-before-release, and OOM-before-dial handling, retained result
+  import release, mismatch/cancel cleanup, callback failure after retention,
+  proxy relay success through the real coordinator, source unavailable,
+  downstream send failure, downstream Finish retry, owner/source teardown,
+  target mismatch through relay, and relay setup OOM rollback. `just e2e-l4-zig`
+  now runs a real Zig↔Zig TCP gate for the addressed
   JoinResult→Accept path. There is no Stable `Peer.sendJoin`, no production Join
   addressing policy or bundled dialer, no multi-hop relay beyond transparent
   proxy relay, and no cross-implementation L4 interop claim. The C++ L3 e2e lane

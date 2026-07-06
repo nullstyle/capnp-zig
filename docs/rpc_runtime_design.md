@@ -165,11 +165,19 @@ For the JoinResult path, the coordinator records the peer for every originated
 part, rejects duplicate local part numbers, and Finishes each JoinResult
 question on that same peer after the direct Accept succeeds. Finish state is
 tracked per question, so a partial send failure can be retried without replaying
-already-sent Finishes. That releases the host-side pending Accept provision even
-when the JoinResults arrived through multiple proxy paths. Dropping the
-coordinator best-effort cancels outstanding Join and direct Accept questions
-first, leaving cancelled question entries to absorb late Returns without calling
-back into freed coordinator state.
+already-sent Finishes. If the direct Accept returns an exception, the
+coordinator still Finishes those JoinResult questions because the host-side
+pending provision has already been consumed. That releases the host-side pending
+Accept provision even when the JoinResults arrived through multiple proxy paths.
+Dropping the coordinator best-effort cancels outstanding Join and direct Accept
+questions first, leaving cancelled question entries to absorb late Returns
+without calling back into freed coordinator state.
+
+Transparent cross-peer proxy exports can relay inbound `Join` requests to their
+source peer. The relay keeps an owner answer -> source question record plus a
+source-peer back-link until the upstream caller sends `Finish`; if forwarding
+that downstream Finish fails, both records stay live so a later retry can drain
+the downstream lifetime instead of silently losing the cancellation edge.
 See [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md) for the current
 evidence and limitations.
 

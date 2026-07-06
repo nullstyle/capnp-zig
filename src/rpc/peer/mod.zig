@@ -863,6 +863,10 @@ pub const JoinCoordinator = struct {
             },
             .exception => {
                 self.accept_exceptions += 1;
+                self.finishJoinResults() catch |err| {
+                    self.finish_failures += 1;
+                    log.debug("failed to finish L4 JoinResult questions after Accept exception: {}", .{err});
+                };
             },
             else => return error.UnexpectedAcceptReturn,
         }
@@ -6548,16 +6552,19 @@ pub const Peer = struct {
         send_downstream_finish: bool,
         release_result_caps: bool,
     ) !void {
-        const removed = self.pending_join_relays.fetchRemove(owner_answer_id) orelse return;
-        if (removed.value.source_peer) |source_peer| {
-            source_peer.deregisterCrossPeerJoinRelay(self, owner_answer_id);
+        const relay = self.pending_join_relays.getPtr(owner_answer_id) orelse return;
+        const source_peer = relay.source_peer;
+        const source_question_id = relay.source_question_id;
+        if (source_peer) |peer| {
             if (send_downstream_finish) {
-                try source_peer.sendJoinRelayFinishAndNeutralize(
-                    removed.value.source_question_id,
+                try peer.sendJoinRelayFinishAndNeutralize(
+                    source_question_id,
                     release_result_caps,
                 );
             }
+            peer.deregisterCrossPeerJoinRelay(self, owner_answer_id);
         }
+        _ = self.pending_join_relays.remove(owner_answer_id);
     }
 
     fn tryHandleCrossPeerProxyJoin(self: *Peer, join: protocol.Join) !bool {

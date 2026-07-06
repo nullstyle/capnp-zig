@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duplicate-part rejection without a second wire Join, lost-Accept-Return
   cancellation via explicit cancel and deinit, pending-Join deinit cancellation,
   partial Finish retry without resending already-finished JoinResult questions,
+  Accept-exception cleanup that still Finishes JoinResult lifetimes,
   and proxy-relay pickup through the real `JoinCoordinator`.
 
 - **RPC Level-4 Join state insertion is rollback-safe.** Fresh Join buckets now
@@ -110,9 +111,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Returns back upstream, and keep the downstream Join question alive until the
   upstream caller sends Finish. Relay state has explicit source-peer back-links
   and direct-Accept-host back-links so owner-peer-first teardown,
-  source-peer-first teardown, upstream Finish-before-Return, source unavailable,
-  downstream send failure, target mismatch through the relay, and OOM during
-  relay setup all drain without stale pointers or duplicate Returns. The
+  source-peer-first teardown, upstream Finish-before-Return, failed downstream
+  Finish retry, source unavailable, downstream send failure, target mismatch
+  through the relay, and OOM during relay setup all drain without stale pointers
+  or duplicate Returns. The
   Zig-only happy path now proves A can join caps through B/C proxy exports,
   Accept directly on A↔D, and invoke the accepted cap without routing through
   the proxy owners after pickup. L4 remains Experimental: no Stable

@@ -138,6 +138,31 @@ const ResultsFailCapture = struct {
     }
 };
 
+const ResultsFailingServerLink = struct {
+    client: *Peer,
+    failed_results: usize = 0,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch {
+            try self.client.handleFrame(frame);
+            return;
+        };
+        defer decoded.deinit();
+        if (decoded.tag == .@"return") {
+            const ret = decoded.asReturn() catch {
+                try self.client.handleFrame(frame);
+                return;
+            };
+            if (ret.tag == .results) {
+                self.failed_results += 1;
+                return error.TestExpectedError;
+            }
+        }
+        try self.client.handleFrame(frame);
+    }
+};
+
 const FailingSend = struct {
     frames: usize = 0,
 
@@ -949,6 +974,51 @@ test "JoinCoordinator cancel drains pending Accept question after lost Return" {
     try harness.expectNoJoinState(&server);
 }
 
+test "JoinCoordinator Accept exception still finishes JoinResults" {
+    const allocator = std.testing.allocator;
+
+    var client = Peer.initDetached(allocator);
+    client.disableThreadAffinity();
+    defer client.deinit();
+    var server = Peer.initDetached(allocator);
+    server.disableThreadAffinity();
+    defer server.deinit();
+
+    var link = ZigJoinLink{ .client = &client, .server = &server };
+    defer link.forwarding = false;
+    client.setSendFrameOverride(&link, ZigJoinLink.clientToServer);
+    server.setSendFrameOverride(&link, ZigJoinLink.serverToClient);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&server, &client);
+    server.attachJoinNetwork(join_net.network());
+
+    const export_id = try addNoopExport(&server);
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b0c, 2);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&client, export_id, 2, 1);
+    try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
+    try std.testing.expectEqual(@as(usize, 1), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 2), server.pending_join_result_answers.count());
+
+    var fail_results = ResultsFailingServerLink{ .client = &client };
+    server.setSendFrameOverride(&fail_results, ResultsFailingServerLink.onFrame);
+
+    _ = try coordinator.acceptFirst();
+    try std.testing.expectEqual(@as(usize, 1), fail_results.failed_results);
+    try std.testing.expectEqual(@as(u32, 1), coordinator.accept_exceptions);
+    try std.testing.expect(coordinator.join_results_finished);
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), server.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try std.testing.expectEqual(@as(usize, 0), client.questions.count());
+    try harness.expectNoJoinState(&client);
+    try harness.expectNoJoinState(&server);
+}
+
 test "JoinCoordinator deinit cancels pending Join question" {
     const allocator = std.testing.allocator;
 
@@ -1247,6 +1317,70 @@ test "L4 Join proxy relay sends downstream Finish when upstream finishes first" 
     try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
     try source_capture.expectFinish(downstream_qid, true);
+    try std.testing.expect(source.questions.contains(downstream_qid));
+
+    const late_return = try buildReturnResultsFrame(allocator, downstream_qid);
+    defer allocator.free(late_return);
+    try source.handleFrame(late_return);
+    try std.testing.expect(!source.questions.contains(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 0), upstream_capture.frames.items.len);
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&source);
+}
+
+test "L4 Join proxy relay keeps retry state when downstream Finish send fails" {
+    const allocator = std.testing.allocator;
+
+    var upstream_capture = ReturnCapture{ .allocator = allocator };
+    defer upstream_capture.deinit();
+    var source_finish = FinishFailOnceCapture{
+        .capture = .{ .allocator = allocator },
+        .fail_question_id = 0,
+    };
+    defer source_finish.deinit();
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&upstream_capture, ReturnCapture.onFrame);
+
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_finish, FinishFailOnceCapture.onFrame);
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 124 } },
+        null,
+    );
+
+    const join_frame = try buildJoinFrame(allocator, 52, proxy_export, 0x4c0a, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+
+    const relay = owner.pending_join_relays.get(52) orelse return error.MissingJoinRelay;
+    const downstream_qid = relay.source_question_id;
+    source_finish.fail_question_id = downstream_qid;
+    try std.testing.expect(source.questions.contains(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+
+    const finish_frame = try buildFinishFrame(allocator, 52, true);
+    defer allocator.free(finish_frame);
+    try std.testing.expectError(error.TestExpectedError, owner.handleFrame(finish_frame));
+
+    try std.testing.expect(source_finish.failed);
+    try std.testing.expectEqual(@as(usize, 1), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+    try std.testing.expect(source.questions.contains(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 0), source_finish.capture.countFinish(downstream_qid));
+
+    try owner.handleFrame(finish_frame);
+
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    try source_finish.capture.expectFinish(downstream_qid, true);
     try std.testing.expect(source.questions.contains(downstream_qid));
 
     const late_return = try buildReturnResultsFrame(allocator, downstream_qid);
