@@ -5188,6 +5188,28 @@ pub const Peer = struct {
         );
     }
 
+    /// Drop wire references the peer holds on an import WITHOUT sending a
+    /// Release frame. Used by host integrations when ownership of the
+    /// references transfers to the host (a relayed host-call Return with
+    /// `releaseParamCaps = false`): the host keeps the remote capability
+    /// alive and later sends its own Release, so the peer must forget its
+    /// bookkeeping silently or the reference would be spent twice.
+    pub fn forgetImportRefsForHost(self: *Peer, import_id: u32, count: u32) !void {
+        self.assertThreadAffinity();
+        try peer_cap_lifecycle.releaseImport(
+            Peer,
+            self,
+            import_id,
+            count,
+            peer_cap_lifecycle.importRefCountForPeerFn(Peer),
+            peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
+            Peer.releaseResolvedImport,
+            noopSendReleaseForForgottenImport,
+        );
+    }
+
+    fn noopSendReleaseForForgottenImport(_: *Peer, _: u32, _: u32) anyerror!void {}
+
     /// Send a Finish message on behalf of a host integration, with explicit
     /// control over `releaseResultCaps` and `requireEarlyCancellation` flags.
     pub fn sendFinishForHost(

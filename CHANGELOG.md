@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Host-call param caps live until the host answers, and the host can retain
+  them.** The host-call bridge (`HostPeer`) used to release a relayed call's
+  parameter capabilities as soon as the call was queued for the host, sending
+  the remote a `Release` before the host even saw the call — a host handler
+  could never legally keep a param capability past its dispatch. Queued host
+  calls now retain their param-cap imports; the retained references are settled
+  when the host answers, following the Return's `releaseParamCaps` flag:
+  `true` (the rpc.capnp default, and the legacy results/exception paths)
+  releases each reference back to the remote with explicit `Release` frames
+  once the Return is on the wire, while `false` transfers ownership to the
+  host — the peer forgets its import bookkeeping silently (new
+  `Peer.forgetImportRefsForHost`) and the host sends its own Release when
+  done. Queued-but-unanswered calls drop their records without wire traffic on
+  `clearHostCalls`/`deinit`. The wasm ABI advertises the behavior via the new
+  `FEATURE_HOST_CALL_PARAM_CAP_RETENTION` feature-flag bit (1 << 9).
+
 - **Experimental RPC Level-3 auto-pickup cleanup is callback-failure safe.**
   Automatic `thirdPartyHosted` pickup now sends its internal Accept question
   with no restore-on-return-error from creation, avoiding restored questions

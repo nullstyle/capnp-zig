@@ -60,6 +60,12 @@ pub const HostPeer = struct {
     host_calls: std.ArrayList(HostCall),
     host_call_bytes: usize = 0,
     pending_host_call_questions: std.AutoHashMap(u32, void),
+    /// Param-cap import ids (one entry per capTable occurrence) retained for
+    /// each queued host call, keyed by question id. Populated by `onHostCall`,
+    /// settled when the host answers: `releaseParamCaps = true` releases each
+    /// reference back to the remote (wire Release frames), `false` transfers
+    /// ownership to the host and only drops the peer's bookkeeping.
+    pending_host_call_param_imports: std.AutoHashMap(u32, []u32),
     current_inbound_frame: ?[]const u8 = null,
     host_bridge_enabled: bool = false,
     wired_override: bool = false,
@@ -80,6 +86,7 @@ pub const HostPeer = struct {
             .outgoing = std.ArrayList([]u8).empty,
             .host_calls = std.ArrayList(HostCall).empty,
             .pending_host_call_questions = std.AutoHashMap(u32, void).init(allocator),
+            .pending_host_call_param_imports = std.AutoHashMap(u32, []u32).init(allocator),
         };
     }
 
@@ -90,6 +97,9 @@ pub const HostPeer = struct {
         self.clearHostCalls();
         self.host_calls.deinit(self.allocator);
         self.pending_host_call_questions.deinit();
+        var record_it = self.pending_host_call_param_imports.valueIterator();
+        while (record_it.next()) |ids| self.allocator.free(ids.*);
+        self.pending_host_call_param_imports.deinit();
         self.peer.deinit();
     }
 
@@ -197,9 +207,39 @@ pub const HostPeer = struct {
         for (self.host_calls.items) |call| {
             self.allocator.free(call.frame);
             _ = self.pending_host_call_questions.remove(call.question_id);
+            // The queued call will never be answered; drop its retained
+            // param-cap record without wire traffic (teardown/reset path).
+            if (self.pending_host_call_param_imports.fetchRemove(call.question_id)) |record| {
+                self.allocator.free(record.value);
+            }
         }
         self.host_calls.clearRetainingCapacity();
         self.host_call_bytes = 0;
+    }
+
+    /// Settle the param-cap imports retained for a host call once its Return
+    /// is on the wire. `release_param_caps = true` (the rpc.capnp default)
+    /// means the host did not keep the capabilities: each reference is
+    /// released back to the remote, which the peer signals with explicit
+    /// Release frames (this stack's clients reclaim exports from those frames
+    /// rather than from the Return flag). `false` means the host retained the
+    /// capabilities past the call: the wire references now belong to the host
+    /// (which sends its own Release when done), so the peer only forgets its
+    /// import bookkeeping and puts nothing on the wire.
+    fn settleHostCallParamImports(self: *HostPeer, question_id: u32, release_param_caps: bool) void {
+        const record = self.pending_host_call_param_imports.fetchRemove(question_id) orelse return;
+        defer self.allocator.free(record.value);
+        for (record.value) |import_id| {
+            if (release_param_caps) {
+                self.peer.releaseImport(import_id, 1) catch |err| {
+                    log.debug("failed to release host-call param import {}: {}", .{ import_id, err });
+                };
+            } else {
+                self.peer.forgetImportRefsForHost(import_id, 1) catch |err| {
+                    log.debug("failed to forget host-call param import {}: {}", .{ import_id, err });
+                };
+            }
+        }
     }
 
     pub fn respondHostCallException(self: *HostPeer, question_id: u32, reason: []const u8) !void {
@@ -207,6 +247,11 @@ pub const HostPeer = struct {
         if (!self.pending_host_call_questions.contains(question_id)) return error.UnknownQuestion;
         try self.sendSanitizedReturnException(question_id, false, false, reason);
         _ = self.pending_host_call_questions.remove(question_id);
+        // A failed call cannot legitimately retain its params; release them
+        // back to the remote. The exception Return above already says
+        // `releaseParamCaps = false`, so the explicit Release frames here are
+        // the one and only release signal (spec-consistent).
+        self.settleHostCallParamImports(question_id, true);
     }
 
     pub fn respondHostCallResults(self: *HostPeer, question_id: u32, payload_frame: []const u8) !void {
@@ -254,6 +299,9 @@ pub const HostPeer = struct {
         var ctx = BuildCtx{ .any = payload_any };
         try self.peer.sendReturnResults(question_id, &ctx, BuildCtx.build);
         _ = self.pending_host_call_questions.remove(question_id);
+        // This legacy path cannot express retention; params are released back
+        // to the remote once the Return is on the wire.
+        self.settleHostCallParamImports(question_id, true);
     }
 
     pub fn respondHostCallReturnFrame(self: *HostPeer, return_frame: []const u8) !void {
@@ -284,6 +332,11 @@ pub const HostPeer = struct {
             try self.peer.sendPrebuiltReturnFrame(ret, return_frame);
         }
         _ = self.pending_host_call_questions.remove(ret.answer_id);
+        // Honor the host's retention decision now that the Return is on the
+        // wire: `releaseParamCaps = false` keeps the param caps alive for the
+        // host (no Release frames), anything else releases them back to the
+        // remote.
+        self.settleHostCallParamImports(ret.answer_id, ret.release_param_caps);
     }
 
     /// Ensure every senderHosted capability named by a host-built Return
@@ -356,7 +409,6 @@ pub const HostPeer = struct {
         inbound_caps: *const cap_table.InboundCapTable,
     ) anyerror!void {
         _ = called_peer;
-        _ = inbound_caps;
 
         const self: *HostPeer = @ptrCast(@alignCast(ctx));
         const inbound_frame = self.current_inbound_frame orelse return error.MissingHostInboundFrame;
@@ -417,6 +469,26 @@ pub const HostPeer = struct {
             }
         }
 
+        // Collect the param-cap import ids (one per capTable occurrence) so
+        // the call can retain them for its whole lifetime. All fallible work
+        // happens before the queue is mutated; the retention marks and record
+        // insert run in the infallible tail below.
+        var param_import_ids = std.ArrayList(u32).empty;
+        defer param_import_ids.deinit(self.allocator);
+        var cap_idx: u32 = 0;
+        while (cap_idx < inbound_caps.len()) : (cap_idx += 1) {
+            switch (try inbound_caps.get(cap_idx)) {
+                .imported => |cap| try param_import_ids.append(self.allocator, cap.id),
+                else => {},
+            }
+        }
+        var owned_import_ids: ?[]u32 = null;
+        errdefer if (owned_import_ids) |ids| self.allocator.free(ids);
+        if (param_import_ids.items.len > 0) {
+            owned_import_ids = try self.allocator.dupe(u32, param_import_ids.items);
+            try self.pending_host_call_param_imports.ensureUnusedCapacity(1);
+        }
+
         const frame_copy = try self.allocator.alloc(u8, inbound_frame.len);
         errdefer self.allocator.free(frame_copy);
         std.mem.copyForwards(u8, frame_copy, inbound_frame);
@@ -432,6 +504,25 @@ pub const HostPeer = struct {
             .frame = frame_copy,
         });
         self.host_call_bytes += inbound_frame.len;
+
+        if (owned_import_ids) |ids| {
+            // Mark every imported param cap retained so the dispatch-time
+            // release pass leaves it alone: the references stay live until
+            // the host answers and `settleHostCallParamImports` settles them.
+            // `inbound_caps` is const by handler contract, but its `retained`
+            // slice aliases the dispatching frame's mutable table — the same
+            // shared-storage retention pattern native handlers use.
+            var mutable_caps = inbound_caps.*;
+            cap_idx = 0;
+            while (cap_idx < inbound_caps.len()) : (cap_idx += 1) {
+                switch (inbound_caps.get(cap_idx) catch unreachable) {
+                    .imported => mutable_caps.retainIndex(cap_idx) catch unreachable,
+                    else => {},
+                }
+            }
+            self.pending_host_call_param_imports.putAssumeCapacity(call.question_id, ids);
+            owned_import_ids = null;
+        }
     }
 
     fn captureOutgoingFrame(ctx: *anyopaque, frame: []const u8) anyerror!void {

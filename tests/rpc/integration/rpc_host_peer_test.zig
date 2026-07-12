@@ -803,6 +803,229 @@ test "respondHostCallResults rejects pointer-aliasing amplification payload" {
     try std.testing.expectError(error.TraversalLimitExceeded, respondWithCraftedPayload(allocator, payload));
 }
 
+const HostCallParamCapHarness = struct {
+    const client_sink_export_id: u32 = 7;
+    const call_question_id: u32 = 2;
+
+    server: HostPeer,
+
+    fn init(allocator: std.mem.Allocator) HostCallParamCapHarness {
+        return .{ .server = HostPeer.init(allocator) };
+    }
+
+    /// Wire the server and push the bootstrap + cap-bearing Call frames.
+    /// Must run after the harness reached its final address: `start` captures
+    /// `&self.server` in the peer's send-frame override, so the struct cannot
+    /// move afterwards.
+    fn setup(self: *HostCallParamCapHarness, allocator: std.mem.Allocator) !void {
+        self.server.start(null, null, null);
+        try self.server.enableHostCallBridge();
+
+        // Raw-frame client (a host-side wire client with no peer of its own,
+        // the wasm-relay topology). Bootstrap to learn the root export id.
+        var bootstrap_builder = protocol.MessageBuilder.init(allocator);
+        defer bootstrap_builder.deinit();
+        try bootstrap_builder.buildBootstrap(1);
+        const bootstrap_frame = try bootstrap_builder.finish();
+        defer allocator.free(bootstrap_frame);
+        try self.server.pushFrame(bootstrap_frame);
+
+        var bootstrap_export_id: ?u32 = null;
+        while (self.server.popOutgoingFrame()) |frame| {
+            defer self.server.freeFrame(frame);
+            var decoded = try protocol.DecodedMessage.init(allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") continue;
+            const ret = try decoded.asReturn();
+            const payload = ret.results orelse return error.MissingPayload;
+            const list = payload.cap_table orelse return error.MissingCapTable;
+            const desc = try protocol.CapDescriptor.fromReader(try list.get(0));
+            bootstrap_export_id = desc.id orelse return error.MissingId;
+        }
+
+        // Call the root export with one senderHosted param cap: the client's
+        // sink capability (client-minted export id).
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(call_question_id, 0x2222, 3);
+        try call.setTargetImportedCap(bootstrap_export_id orelse return error.MissingBootstrapExport);
+        var cap_list = try call.initCapTableTyped(1);
+        protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), client_sink_export_id);
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try self.server.pushFrame(call_frame);
+    }
+
+    fn deinit(self: *HostCallParamCapHarness) void {
+        self.server.deinit();
+    }
+
+    const DrainedFrames = struct {
+        return_count: usize = 0,
+        release_count: usize = 0,
+        released_id: ?u32 = null,
+        released_reference_count: u32 = 0,
+    };
+
+    fn drainOutgoing(self: *HostCallParamCapHarness, allocator: std.mem.Allocator) !DrainedFrames {
+        var drained = DrainedFrames{};
+        while (self.server.popOutgoingFrame()) |frame| {
+            defer self.server.freeFrame(frame);
+            var decoded = try protocol.DecodedMessage.init(allocator, frame);
+            defer decoded.deinit();
+            switch (decoded.tag) {
+                .@"return" => drained.return_count += 1,
+                .release => {
+                    const release = try decoded.asRelease();
+                    drained.release_count += 1;
+                    drained.released_id = release.id;
+                    drained.released_reference_count = release.reference_count;
+                },
+                else => {},
+            }
+        }
+        return drained;
+    }
+
+    fn buildResultsReturn(
+        allocator: std.mem.Allocator,
+        question_id: u32,
+        release_param_caps: bool,
+    ) ![]const u8 {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        var ret = try builder.beginReturn(question_id, .results);
+        ret.setReleaseParamCaps(release_param_caps);
+        var payload = try ret.payloadTyped();
+        const content = try payload.initContent();
+        try content.setText("done");
+        _ = try ret.initCapTableTyped(0);
+        return try builder.finish();
+    }
+};
+
+test "host-call param caps stay alive until the host answers (releaseParamCaps=true releases them)" {
+    const allocator = std.testing.allocator;
+
+    var harness = HostCallParamCapHarness.init(allocator);
+    defer harness.deinit();
+    try harness.setup(allocator);
+
+    // The call is queued for the host; its param cap must NOT be released
+    // yet — the host may still be using it (or deciding to keep it).
+    const before_respond = try harness.drainOutgoing(allocator);
+    try std.testing.expectEqual(@as(usize, 0), before_respond.release_count);
+    try std.testing.expect(harness.server.peer.caps.hasImport(HostCallParamCapHarness.client_sink_export_id));
+
+    const call = harness.server.popHostCall() orelse return error.MissingHostCall;
+    defer harness.server.freeHostCallFrame(call.frame);
+
+    // Host answers without retaining (rpc.capnp default releaseParamCaps).
+    const return_frame = try HostCallParamCapHarness.buildResultsReturn(allocator, call.question_id, true);
+    defer allocator.free(return_frame);
+    try harness.server.respondHostCallReturnFrame(return_frame);
+
+    // The Return goes out first, then exactly one Release spending the
+    // param-cap reference back to the client.
+    const after_respond = try harness.drainOutgoing(allocator);
+    try std.testing.expectEqual(@as(usize, 1), after_respond.return_count);
+    try std.testing.expectEqual(@as(usize, 1), after_respond.release_count);
+    try std.testing.expectEqual(
+        @as(?u32, HostCallParamCapHarness.client_sink_export_id),
+        after_respond.released_id,
+    );
+    try std.testing.expectEqual(@as(u32, 1), after_respond.released_reference_count);
+    try std.testing.expect(!harness.server.peer.caps.hasImport(HostCallParamCapHarness.client_sink_export_id));
+}
+
+test "host-call Return with releaseParamCaps=false retains the param cap for the host" {
+    const allocator = std.testing.allocator;
+
+    var harness = HostCallParamCapHarness.init(allocator);
+    defer harness.deinit();
+    try harness.setup(allocator);
+
+    const call = harness.server.popHostCall() orelse return error.MissingHostCall;
+    defer harness.server.freeHostCallFrame(call.frame);
+
+    // Host retains the param cap past the call (the OutputSink pump
+    // pattern): the Return says releaseParamCaps=false.
+    const return_frame = try HostCallParamCapHarness.buildResultsReturn(allocator, call.question_id, false);
+    defer allocator.free(return_frame);
+    try harness.server.respondHostCallReturnFrame(return_frame);
+
+    // No Release may reach the client: the host now owns the reference. The
+    // peer's own import bookkeeping is dropped (the host bypasses the peer
+    // for its later calls and release).
+    const after_respond = try harness.drainOutgoing(allocator);
+    try std.testing.expectEqual(@as(usize, 1), after_respond.return_count);
+    try std.testing.expectEqual(@as(usize, 0), after_respond.release_count);
+    try std.testing.expect(!harness.server.peer.caps.hasImport(HostCallParamCapHarness.client_sink_export_id));
+
+    // When the host finally drops the capability it sends the Release
+    // through the lifecycle helper; the client-facing reference is spent
+    // exactly once, AFTER the originating call returned.
+    try harness.server.peer.sendReleaseForHost(HostCallParamCapHarness.client_sink_export_id, 1);
+    const after_host_release = try harness.drainOutgoing(allocator);
+    try std.testing.expectEqual(@as(usize, 1), after_host_release.release_count);
+    try std.testing.expectEqual(
+        @as(?u32, HostCallParamCapHarness.client_sink_export_id),
+        after_host_release.released_id,
+    );
+}
+
+test "host-call exception and legacy results paths release param caps at answer time" {
+    const allocator = std.testing.allocator;
+
+    // Exception path.
+    {
+        var harness = HostCallParamCapHarness.init(allocator);
+        defer harness.deinit();
+        try harness.setup(allocator);
+
+        const call = harness.server.popHostCall() orelse return error.MissingHostCall;
+        defer harness.server.freeHostCallFrame(call.frame);
+
+        const before_respond = try harness.drainOutgoing(allocator);
+        try std.testing.expectEqual(@as(usize, 0), before_respond.release_count);
+
+        try harness.server.respondHostCallException(call.question_id, "boom");
+        const after_respond = try harness.drainOutgoing(allocator);
+        try std.testing.expectEqual(@as(usize, 1), after_respond.return_count);
+        try std.testing.expectEqual(@as(usize, 1), after_respond.release_count);
+        try std.testing.expectEqual(
+            @as(?u32, HostCallParamCapHarness.client_sink_export_id),
+            after_respond.released_id,
+        );
+    }
+
+    // Legacy respondHostCallResults path (no retention control).
+    {
+        var harness = HostCallParamCapHarness.init(allocator);
+        defer harness.deinit();
+        try harness.setup(allocator);
+
+        const call = harness.server.popHostCall() orelse return error.MissingHostCall;
+        defer harness.server.freeHostCallFrame(call.frame);
+
+        var payload_builder = capnpc.message.MessageBuilder.init(allocator);
+        defer payload_builder.deinit();
+        const root = try payload_builder.initRootAnyPointer();
+        try root.setText("ok");
+        const payload = try payload_builder.toBytes();
+        defer allocator.free(payload);
+
+        try harness.server.respondHostCallResults(call.question_id, payload);
+        const after_respond = try harness.drainOutgoing(allocator);
+        try std.testing.expectEqual(@as(usize, 1), after_respond.return_count);
+        try std.testing.expectEqual(@as(usize, 1), after_respond.release_count);
+        try std.testing.expectEqual(
+            @as(?u32, HostCallParamCapHarness.client_sink_export_id),
+            after_respond.released_id,
+        );
+    }
+}
+
 test "respondHostCallResults rejects deep pointer-chain payload" {
     const allocator = std.testing.allocator;
 
