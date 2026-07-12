@@ -278,9 +278,57 @@ pub const HostPeer = struct {
                 ex.reason,
             );
         } else {
+            var created = try self.registerHostReturnExports(ret);
+            defer created.deinit(self.allocator);
+            errdefer for (created.items) |id| self.peer.removeUnreferencedExport(id);
             try self.peer.sendPrebuiltReturnFrame(ret, return_frame);
         }
         _ = self.pending_host_call_questions.remove(ret.answer_id);
+    }
+
+    /// Ensure every senderHosted capability named by a host-built Return
+    /// frame has a dispatchable entry in the peer's export table.
+    ///
+    /// In relay mode the trusted host owns the export-id space: its handlers
+    /// mint new capability ids and reference them in Return cap tables
+    /// without the peer ever seeing an addExport call. Each unknown id is
+    /// registered as a host-bridge export (the same `onHostCall` handler the
+    /// bootstrap bridge uses) so `sendPrebuiltReturnFrame`'s cap-ref
+    /// accounting accepts the frame and later inbound Calls targeting the id
+    /// are queued back to the host.
+    ///
+    /// senderPromise ids are NOT auto-registered: a promise export carries a
+    /// Resolve obligation the host bridge has no way to satisfy, so those
+    /// still fail with UnknownExport in `sendPrebuiltReturnFrame`.
+    ///
+    /// Returns the ids newly created here (in list order) so a caller that
+    /// fails before the frame takes its first reference can roll them back
+    /// via `removeUnreferencedExport`. On error every id already created is
+    /// rolled back before returning.
+    fn registerHostReturnExports(self: *HostPeer, ret: protocol.Return) !std.ArrayList(u32) {
+        var created = std.ArrayList(u32).empty;
+        errdefer {
+            for (created.items) |id| self.peer.removeUnreferencedExport(id);
+            created.deinit(self.allocator);
+        }
+
+        if (ret.tag != .results) return created;
+        const payload = ret.results orelse return created;
+        const cap_list = payload.cap_table orelse return created;
+
+        var idx: u32 = 0;
+        while (idx < cap_list.len()) : (idx += 1) {
+            const desc = try protocol.CapDescriptor.fromReader(try cap_list.get(idx));
+            if (desc.tag != .senderHosted) continue;
+            const id = desc.id orelse return error.MissingCapDescriptorId;
+            try created.ensureUnusedCapacity(self.allocator, 1);
+            const added = try self.peer.ensureExportAt(id, .{
+                .ctx = self,
+                .on_call = onHostCall,
+            });
+            if (added) created.appendAssumeCapacity(id);
+        }
+        return created;
     }
 
     pub fn freeFrame(self: *HostPeer, frame: []u8) void {

@@ -1662,6 +1662,55 @@ pub const Peer = struct {
         return id;
     }
 
+    /// Register a local capability under a caller-chosen export id, if the
+    /// id is not already exported.
+    ///
+    /// Host-relay integrations (see `HostPeer.respondHostCallReturnFrame`)
+    /// let the trusted host own the export-id space: a prebuilt Return frame
+    /// may name an export this peer has never seen. Registering the id here
+    /// before the frame is sent gives the peer a dispatchable entry without
+    /// disturbing `allocExportId`, which already skips ids present in the
+    /// cap table.
+    ///
+    /// Returns true when a new entry was created, false when `id` was
+    /// already exported.
+    pub fn ensureExportAt(self: *Peer, id: u32, exported: Export) !bool {
+        self.assertThreadAffinity();
+        if (self.exports.contains(id)) return false;
+        try self.caps.noteExportAt(id);
+        errdefer self.caps.clearExport(id);
+        try self.exports.put(id, .{
+            .handler = exported,
+            .deinit_ctx = null,
+            .ref_count = 0,
+            .is_promise = false,
+            .resolved = null,
+        });
+        log.debug("registered export at explicit id={}", .{id});
+        return true;
+    }
+
+    /// Remove an export entry that carries no wire, answer-held, or
+    /// promise-held references. Used by host-relay rollback paths to undo a
+    /// speculative `ensureExportAt` when the frame that would have taken the
+    /// first reference fails before sending. No-op when the entry is
+    /// missing, still referenced, or is the bootstrap export.
+    pub fn removeUnreferencedExport(self: *Peer, id: u32) void {
+        self.assertThreadAffinity();
+        if (self.bootstrap_export_id) |bootstrap_id| {
+            if (bootstrap_id == id) return;
+        }
+        const entry = self.exports.getPtr(id) orelse return;
+        if (entry.ref_count != 0 or
+            entry.answer_ref_count != 0 or
+            entry.promise_ref_count != 0)
+        {
+            return;
+        }
+        _ = self.exports.remove(id);
+        self.caps.clearExport(id);
+    }
+
     /// Export a promise capability that will be resolved later via
     /// `resolvePromiseExportToExport` or `resolvePromiseExportToException`.
     pub fn addPromiseExport(self: *Peer) !u32 {
