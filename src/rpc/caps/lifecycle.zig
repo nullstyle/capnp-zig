@@ -103,6 +103,17 @@ pub const CapTable = struct {
         try self.exports.put(export_id, {});
     }
 
+    /// Register a caller-chosen export id in the export identity set,
+    /// enforcing the same table-size bound as `allocExportId`. Re-adding an
+    /// id that is already present is a no-op. `allocExportId` skips ids
+    /// registered here, so explicit ids and locally allocated ids never
+    /// collide.
+    pub fn noteExportAt(self: *CapTable, export_id: u32) !void {
+        if (self.exports.contains(export_id)) return;
+        try self.ensureCanAddEntry();
+        try self.exports.put(export_id, {});
+    }
+
     pub fn clearExport(self: *CapTable, export_id: u32) void {
         _ = self.exports.remove(export_id);
         _ = self.promised_exports.remove(export_id);

@@ -863,3 +863,128 @@ test "respondHostCallResults still accepts a normal small valid payload" {
 
     try respondWithCraftedPayload(allocator, payload);
 }
+
+test "host peer host-call bridge auto-registers senderHosted exports in relayed returns" {
+    const allocator = std.testing.allocator;
+
+    // The host mints this id itself (it owns the export-id space in relay
+    // mode); the peer has never seen an addExport for it.
+    const host_minted_export_id: u32 = 41;
+
+    const ClientCtx = struct {
+        bootstrap_import_id: ?u32 = null,
+        call_returned: bool = false,
+        minted_import_id: ?u32 = null,
+    };
+    const Handlers = struct {
+        fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.bootstrap_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
+            const state: *ClientCtx = @ptrCast(@alignCast(ctx));
+            state.call_returned = true;
+            try std.testing.expectEqual(protocol.ReturnTag.results, ret.tag);
+            const payload = ret.results orelse return error.MissingPayload;
+            const cap = try payload.content.getCapability();
+            // Retain so the post-callback release pass does not send a
+            // Release for the freshly minted import before we call it.
+            var mutable_caps = caps.*;
+            try mutable_caps.retainCapability(cap);
+            const resolved = try caps.resolveCapability(cap);
+            switch (resolved) {
+                .imported => |imported| state.minted_import_id = imported.id,
+                else => return error.UnexpectedResolvedCapability,
+            }
+        }
+
+        fn onSecondCallReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+
+        fn buildEmptyCall(_: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            _ = try call.initCapTableTyped(0);
+        }
+    };
+
+    var client = HostPeer.init(allocator);
+    defer client.deinit();
+    client.start(null, null, null);
+
+    var server = HostPeer.init(allocator);
+    defer server.deinit();
+    server.start(null, null, null);
+    try server.enableHostCallBridge();
+
+    var client_ctx = ClientCtx{};
+    _ = try client.peer.sendBootstrap(&client_ctx, Handlers.onBootstrapReturn);
+
+    try pumpAll(&client, &server);
+    try pumpAll(&server, &client);
+    try pumpAll(&client, &server);
+
+    const bootstrap_import_id = client_ctx.bootstrap_import_id orelse return error.MissingBootstrapImport;
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = bootstrap_import_id } },
+        0x2222,
+        3,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onCallReturn,
+    );
+
+    try pumpAll(&client, &server);
+    const call = server.popHostCall() orelse return error.MissingHostCall;
+    defer server.freeHostCallFrame(call.frame);
+
+    // The host answers with a Return whose results carry a capability the
+    // peer has never exported: senderHosted with a host-minted id.
+    var return_builder = protocol.MessageBuilder.init(allocator);
+    defer return_builder.deinit();
+    var ret = try return_builder.beginReturn(call.question_id, .results);
+    var payload = try ret.payloadTyped();
+    const content = try payload.initContent();
+    try content.setCapability(.{ .id = 0 });
+    var cap_list = try ret.initCapTableTyped(1);
+    protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), host_minted_export_id);
+    const return_frame = try return_builder.finish();
+    defer allocator.free(return_frame);
+
+    // Before the fix this failed with error.UnknownExport from the outbound
+    // cap-ref accounting in sendPrebuiltReturnFrame.
+    try server.respondHostCallReturnFrame(return_frame);
+    try pumpAll(&server, &client);
+
+    try std.testing.expect(client_ctx.call_returned);
+    try std.testing.expectEqual(
+        @as(?u32, host_minted_export_id),
+        client_ctx.minted_import_id,
+    );
+
+    // Calling the minted capability must route back to the host-call queue,
+    // proving the auto-registered export got the host-bridge handler.
+    _ = try client.peer.sendCallResolved(
+        .{ .imported = .{ .id = host_minted_export_id } },
+        0x3333,
+        5,
+        &client_ctx,
+        Handlers.buildEmptyCall,
+        Handlers.onSecondCallReturn,
+    );
+    try pumpAll(&client, &server);
+    try std.testing.expectEqual(@as(usize, 1), server.pendingHostCallCount());
+
+    const second = server.popHostCall() orelse return error.MissingSecondHostCall;
+    defer server.freeHostCallFrame(second.frame);
+    try std.testing.expectEqual(@as(u64, 0x3333), second.interface_id);
+    try std.testing.expectEqual(@as(u16, 5), second.method_id);
+
+    try server.respondHostCallException(second.question_id, "drained");
+    try pumpAll(&server, &client);
+}

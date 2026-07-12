@@ -519,3 +519,25 @@ test "InboundCapTable.clone owns promised answers independently of the frame" {
     // `clone.deinit()` (via defer) and the testing allocator together assert the
     // owned promised storage is freed exactly once with no leak or double-free.
 }
+
+test "noteExportAt registers explicit ids that allocExportId then skips" {
+    const allocator = std.testing.allocator;
+
+    var caps = cap_table.CapTable.init(allocator);
+    defer caps.deinit();
+
+    // Host-chosen id lands in the export identity set.
+    try caps.noteExportAt(1);
+    try std.testing.expect(caps.hasExport(1));
+
+    // Re-registering the same id is a no-op, not an error.
+    try caps.noteExportAt(1);
+    try std.testing.expect(caps.hasExport(1));
+
+    // Local allocation never hands out an explicitly registered id.
+    const first = try caps.allocExportId();
+    try std.testing.expectEqual(@as(u32, 0), first);
+    try caps.noteExport(first);
+    const second = try caps.allocExportId();
+    try std.testing.expectEqual(@as(u32, 2), second);
+}
