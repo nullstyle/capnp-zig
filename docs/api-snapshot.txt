@@ -435,6 +435,7 @@ capnpc-zig.rpc.caps.table.lifecycle.CapTable.init: fn (mem.Allocator) rpc.caps.l
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.isExportPromise: fn (*const rpc.caps.lifecycle.CapTable, u32) bool
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.markExportPromise: fn (*rpc.caps.lifecycle.CapTable, u32) @typeInfo(@typeInfo(@TypeOf(rpc.caps.lifecycle.CapTable.markExportPromise)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteExport: fn (*rpc.caps.lifecycle.CapTable, u32) @typeInfo(@typeInfo(@TypeOf(rpc.caps.lifecycle.CapTable.noteExport)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteExportAt: fn (*rpc.caps.lifecycle.CapTable, u32) @typeInfo(@typeInfo(@TypeOf(rpc.caps.lifecycle.CapTable.noteExportAt)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteImport: fn (*rpc.caps.lifecycle.CapTable, u32) @typeInfo(@typeInfo(@TypeOf(rpc.caps.lifecycle.CapTable.noteImport)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.notePromiseImportRef: fn (*rpc.caps.lifecycle.CapTable, u32) @typeInfo(@typeInfo(@TypeOf(rpc.caps.lifecycle.CapTable.notePromiseImportRef)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteReceiverAnswer: fn (*rpc.caps.lifecycle.CapTable, rpc.wire.protocol.PromisedAnswer) @typeInfo(@typeInfo(@TypeOf(rpc.caps.lifecycle.CapTable.noteReceiverAnswer)).@"fn".return_type.?).error_union.error_set!u32
