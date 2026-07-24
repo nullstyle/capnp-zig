@@ -65,7 +65,14 @@ jobs:
             echo "fuzzing window elapsed with no findings"
             exit 0
           fi
-          if grep -qE "the following maker command terminated with signal|fuzzer\.zig|libfuzzer\.log" fuzz.log; then
+          # Downgrade ONLY zig fuzzer infrastructure failures (maker slice
+          # panics, libfuzzer harness errors) to warnings. Do NOT match the
+          # bare token `fuzzer.zig`: a genuine finding — the fuzz TARGET dying —
+          # prints a stack trace that also passes through `fuzzer.zig`, so
+          # matching it here silently swallowed real memory-safety findings.
+          # If a true infra panic ever fails to match these specific markers,
+          # the nightly (non-blocking) goes red for triage — the safe direction.
+          if grep -qE "the following maker command terminated with signal|libfuzzer\.log" fuzz.log; then
             echo "::warning::zig fuzzer infrastructure failed (experimental on zig master) — not a fuzz finding"
             exit 0
           fi

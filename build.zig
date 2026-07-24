@@ -1030,6 +1030,11 @@ pub fn build(b: *std.Build) void {
     check_compile_step.dependOn(&serialization_demo_example.step);
     check_compile_step.dependOn(&e2e_zig_client.step);
     check_compile_step.dependOn(&e2e_zig_server.step);
+    // The Experimental L4 e2e driver otherwise only compiles inside its own
+    // run-only step, which no per-push CI job invokes; fold it into the compile
+    // gate so its compile rot is caught every push. It is cross-target safe
+    // (the L3/C++ driver is not — see the native `check` step below).
+    check_compile_step.dependOn(&e2e_l4_zig.step);
     check_compile_step.dependOn(&wasm_host_module.step);
 
     // Compile every registered test binary without running it. CI pairs
@@ -1045,4 +1050,10 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Check for compilation errors");
     check_step.dependOn(check_compile_step);
     check_step.dependOn(docs_smoke_step);
+    // The Zig/C++ L3 e2e driver is native-only (its TCP rendezvous uses posix
+    // poll, which std does not wire for Windows on the current toolchain), so
+    // it cannot join the cross-target `check-compile`. Gate it here instead:
+    // CI runs `zig build check` natively, catching L3 driver compile rot per
+    // push without forcing it through the Windows cross-target matrix.
+    check_step.dependOn(&e2e_l3_cpp.step);
 }

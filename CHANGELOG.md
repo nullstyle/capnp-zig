@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CI compile-gates the Experimental L3/L4 e2e drivers.** They previously
+  compiled only inside their own run-only steps, which no per-push job invokes,
+  so their compile rot went unnoticed. `e2e-l4-zig` now joins the cross-target
+  `check-compile`; the Zig/C++ L3 driver (`e2e-l3-cpp`), whose TCP rendezvous
+  uses posix `poll` that std does not wire for Windows on the current
+  toolchain, joins the native `check` step instead of the Windows cross-target
+  matrix. (Wiring the L4 driver into the cross-target gate immediately caught a
+  latent Windows-incompatibility in the L3 driver, which is why it is
+  native-gated.)
+
+- **Nightly fuzz no longer masks genuine findings.** The crash classifier
+  downgraded any log matching the bare token `fuzzer.zig` to a warning — but a
+  real finding (the fuzz target dying) prints a stack trace that also passes
+  through `fuzzer.zig`, so genuine memory-safety findings were silently
+  swallowed. The downgrade now matches only the specific zig-fuzzer
+  infrastructure-failure markers.
+
 - **Repository hygiene:** the unanchored `.gitignore` entry `test_*` shadowed
   the whole `tests/test_schemas/` directory, silently dropping any new fixture
   added via `git add .`; it is now anchored to the repo root (`/test_*`).
