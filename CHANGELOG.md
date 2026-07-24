@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Real clients were unaffected: `ClientSession` has set `TCP_NODELAY` on
   connect all along.
 
+- **The hardening gate covers the host-call param-cap retention loop.** The
+  two `catch unreachable` sites in `HostPeer.onHostCall`'s retention pass are
+  reviewed and registered: both `InboundCapTable.get` and `retainIndex` fail
+  only on an out-of-bounds index, the loop is bounded by `inbound_caps.len()`,
+  and the first param-scan loop already try-walked the same range. The gate
+  (red since the retention change landed) passes again.
+
 - **RPC resolved-answer cleanup now preserves pipelined calls across
   reentrant Finish.** A synchronous transport can deliver a caller's `Finish`
   while the callee is still sending the results `Return`, before the callee has

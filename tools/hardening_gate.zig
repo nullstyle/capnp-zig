@@ -52,6 +52,9 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/peer/return/peer_return_orchestration.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag/path check" },
     .{ .path = "src/rpc/peer/call/peer_call_orchestration.zig", .kind = .unchecked_unreachable, .needle = ".queue_promise_export => unreachable", .reason = "filtered by handleCallImportedTargetForPeer before dispatch" },
 
+    .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = "switch (inbound_caps.get(cap_idx) catch unreachable) {", .reason = "get fails only on index >= len; loop bound is inbound_caps.len() and the first param-scan loop already try-walked the same range" },
+    .{ .path = "src/rpc/integration/host_peer.zig", .kind = .catch_unreachable, .needle = ".imported => mutable_caps.retainIndex(cap_idx) catch unreachable,", .reason = "retainIndex fails only on index >= len; mutable_caps is a struct copy sharing the same entries/retained slices, so the loop bound proves the index in-bounds" },
+
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .panic_call, .needle = "Connection method called from wrong thread", .reason = "debug misuse guard, not input-driven protocol handling" },
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "const bytes = frame.?;", .reason = "guarded by preceding null frame branch" },
     .{ .path = "src/rpc/transport/tcp/connection.zig", .kind = .optional_unwrap, .needle = "self.on_message.?", .reason = "checked before callback invocation" },
