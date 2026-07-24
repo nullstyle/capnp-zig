@@ -538,7 +538,7 @@ test "Codegen union group init zeroes stale variant data" {
         \\
         \\    const root = try msg.getRootStruct();
         \\    const reader = generated.Shape.Reader.wrap(root);
-        \\    const dims_reader = reader.getDims();
+        \\    const dims_reader = try reader.getDims();
         \\
         \\    // All group fields must read back as defaults, not stale data.
         \\    try std.testing.expectEqual(@as(f32, 0.0), try dims_reader.getWidth());
@@ -591,7 +591,7 @@ test "Codegen nested groups compile and round-trip" {
         \\    const reader = try generated.Shape.Reader.init(&msg);
         \\    const ur = reader.getU();
         \\    try std.testing.expectEqual(generated.Shape.U.WhichTag.circle, try ur.which());
-        \\    const cr = ur.getCircle();
+        \\    const cr = try ur.getCircle();
         \\    try std.testing.expectEqual(@as(f64, 3.5), try cr.getRadius());
         \\    try std.testing.expectEqual(true, try cr.getFilled());
         \\
@@ -621,7 +621,7 @@ test "Codegen nested groups compile and round-trip" {
         \\    const reader = try generated.Shape.Reader.init(&msg);
         \\    const ur = reader.getU();
         \\    try std.testing.expectEqual(generated.Shape.U.WhichTag.circle, try ur.which());
-        \\    try std.testing.expectEqual(@as(f64, 0.0), try ur.getCircle().getRadius());
+        \\    try std.testing.expectEqual(@as(f64, 0.0), try (try ur.getCircle()).getRadius());
         \\}
         \\
     );

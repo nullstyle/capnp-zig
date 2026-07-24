@@ -216,7 +216,7 @@ pub const StructGenerator = struct {
         }
         for (group_struct_info.fields) |group_field| {
             if (group_field.group != null) {
-                try self.generateGroupNestedReaderAccessor(group_field, writer);
+                try self.generateGroupNestedReaderAccessor(group_field, group_struct_info, writer);
             } else {
                 try self.generateGroupFieldGetter(group_field, group_struct_info, writer);
             }
@@ -278,7 +278,7 @@ pub const StructGenerator = struct {
     /// Emit a group-typed field accessor inside a group's Reader. Mirrors the
     /// top-level `generateGroupFieldAccessor` but at the group's inner indent
     /// with a `@This()` receiver.
-    fn generateGroupNestedReaderAccessor(self: *StructGenerator, field: schema.Field, writer: anytype) !void {
+    fn generateGroupNestedReaderAccessor(self: *StructGenerator, field: schema.Field, parent_struct_info: schema.StructNode, writer: anytype) !void {
         const group = field.group orelse return;
         const group_node = self.getNode(group.type_id) orelse return;
         const group_name = try self.allocTypeName(group_node);
@@ -289,7 +289,12 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
 
-        try writer.print("            pub fn get{s}(self: @This()) {s}.Reader {{\n", .{ cap_name, group_name });
+        // Guard union-member groups on the discriminant (see
+        // generateGroupFieldAccessor), at the group's inner indent.
+        const is_union_member = field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0;
+        const bang = if (is_union_member) "!" else "";
+        try writer.print("            pub fn get{s}(self: @This()) {s}{s}.Reader {{\n", .{ cap_name, bang, group_name });
+        try self.writeUnionMemberGuard(field, parent_struct_info, "                ", writer);
         try writer.writeAll("                return .{ ._reader = self._reader };\n");
         try writer.writeAll("            }\n\n");
     }
@@ -431,7 +436,7 @@ pub const StructGenerator = struct {
         // Generate field getters
         for (struct_info.fields) |field| {
             if (field.group != null) {
-                try self.generateGroupFieldAccessor(field, writer);
+                try self.generateGroupFieldAccessor(field, struct_info, writer);
             } else {
                 try self.generateFieldGetter(field, struct_info, writer);
             }
@@ -786,7 +791,7 @@ pub const StructGenerator = struct {
         }
     }
 
-    fn generateGroupFieldAccessor(self: *StructGenerator, field: schema.Field, writer: anytype) !void {
+    fn generateGroupFieldAccessor(self: *StructGenerator, field: schema.Field, parent_struct_info: schema.StructNode, writer: anytype) !void {
         const group = field.group orelse return;
         const group_node = self.getNode(group.type_id) orelse return;
         const group_name = try self.allocTypeName(group_node);
@@ -797,7 +802,15 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
 
-        try writer.print("        pub fn get{s}(self: {s}) {s}.Reader {{\n", .{ cap_name, self.reader_ref, group_name });
+        // A group that is a union member must guard on the discriminant like a
+        // slot member does — otherwise reading a non-selected variant silently
+        // reinterprets the sibling variant's bits. The guard makes the getter
+        // fallible (`!Group.Reader`); plain (non-union) groups keep the
+        // infallible signature.
+        const is_union_member = field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0;
+        const bang = if (is_union_member) "!" else "";
+        try writer.print("        pub fn get{s}(self: {s}) {s}{s}.Reader {{\n", .{ cap_name, self.reader_ref, bang, group_name });
+        try self.writeUnionMemberGuard(field, parent_struct_info, "            ", writer);
         try writer.writeAll("            return .{ ._reader = self._reader };\n");
         try writer.writeAll("        }\n\n");
     }

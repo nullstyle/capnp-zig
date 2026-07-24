@@ -908,7 +908,11 @@ test "Codegen: group-typed union variant emits nested type and accessors" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getRadius(self: @This())"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setRadius(self: *@This()"));
     // The group Reader must expose getCircle returning the nested reader.
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getCircle(self: @This()) Circle.Reader"));
+    // As a union member (discriminant 0), the getter is guarded and fallible:
+    // reading it while a sibling variant is selected returns WrongUnionMember
+    // instead of reinterpreting the sibling's bits.
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getCircle(self: @This()) !Circle.Reader"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .circle) return error.WrongUnionMember;"));
     // The group Builder must expose initCircle that writes the discriminant.
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initCircle(self: *@This()) Circle.Builder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(10, 0)"));

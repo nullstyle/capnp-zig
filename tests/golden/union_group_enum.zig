@@ -84,7 +84,8 @@ pub const Shape = struct {
             return @bitCast(self._reader.readU64(8));
         }
 
-        pub fn getRectangle(self: Reader) Rectangle.Reader {
+        pub fn getRectangle(self: Reader) !Rectangle.Reader {
+            if ((try self.which()) != .rectangle) return error.WrongUnionMember;
             return .{ ._reader = self._reader };
         }
 

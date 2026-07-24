@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Codegen: group-typed union members now guard on the discriminant.** A
+  union member whose type is a group generated a getter with no `which()`
+  check — reading it while a sibling variant was selected silently
+  reinterpreted the sibling's bits. Group union-member getters are now fallible
+  (`!Group.Reader`) and return `error.WrongUnionMember` when a different variant
+  is selected, matching the guard slot union-members already had. Plain
+  (non-union) groups keep their infallible getter. This is a source-visible
+  change to generated code for schemas with group union members: such getters
+  now require `try`.
+
 - **The per-connection validation-work budget now charges frames that fail to
   decode.** `handleFrame` ran the full validating pointer walk before charging
   the budget, and both decode-failure arms — an unknown message tag (which
