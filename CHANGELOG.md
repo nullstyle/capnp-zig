@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The per-connection validation-work budget now charges frames that fail to
+  decode.** `handleFrame` ran the full validating pointer walk before charging
+  the budget, and both decode-failure arms — an unknown message tag (which
+  echoes `Unimplemented`, re-walking and cloning the same payload) and a
+  malformed frame — returned before any charge. A hostile peer could therefore
+  spend unbounded validation CPU, and amplify through the `Unimplemented` echo,
+  with frames that never dispatch. Decoding now accounts the traversal-word
+  cost even on failure (new `Message.initCounting` / `validateCountedInto` and
+  `DecodedMessage.initCounting`, which report the walk's cost including when it
+  aborts partway), and `handleFrame` charges that cost before the echo and
+  before returning. `SECURITY.md`'s amplification class is closed on this path.
+
+- **`Finish`-cancelling a queued pipelined call now drains calls pipelined on
+  it.** Cancelling a queued call sent its mandated `Return(canceled)` but never
+  touched the calls pipelined on that call's own (now-cancelled) answer. Those
+  grandchildren received no `Return` at all — hanging a compliant caller — and
+  their orphaned queue bucket could later replay against an unrelated answer if
+  the remote reused the question id. The cancel path now fail-drains those
+  pipelined calls (each with its own exception `Return`) through the same
+  worklist `sendReturnException` uses, preserving the exactly-one-Return-per-call
+  invariant.
+
 - **The `bench-rpc` client now sets `TCP_NODELAY`, matching the real client
   transport.** The benchmark's hand-rolled loopback client never disabled
   Nagle, so on Linux the sequential mode's small frame writes hit the

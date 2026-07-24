@@ -492,6 +492,27 @@ pub const Message = struct {
         return msg;
     }
 
+    /// Like `init`, but always writes the traversal-word cost into `cost_out`,
+    /// INCLUDING when validation fails partway through the walk. A caller
+    /// metering a per-connection validation-work budget uses this so a frame
+    /// that fails to validate is still charged for the work its aborted walk
+    /// spent. On the cheap pre-walk failures (segment header / total-size
+    /// limit) `cost_out` is 0.
+    pub fn initCounting(
+        allocator: std.mem.Allocator,
+        data: []const u8,
+        options: ValidationOptions,
+        cost_out: *usize,
+    ) !Message {
+        cost_out.* = 0;
+        var msg = try initUnvalidated(allocator, data);
+        errdefer msg.deinit();
+        try msg.validateTotalSegmentWords(options.total_segment_words_limit);
+        try msg.validateCountedInto(options, cost_out);
+        msg.traversal_words_used = cost_out.*;
+        return msg;
+    }
+
     /// Deserialize a Cap'n Proto message from its framed wire representation
     /// without performing validation.
     ///
@@ -940,6 +961,24 @@ pub const Message = struct {
     /// on-wire size for shared/cyclic structures). Used to charge a cumulative
     /// per-connection validation-work budget.
     pub fn validateCounted(self: *const Message, options: ValidationOptions) MessageValidationError!usize {
+        var consumed: usize = 0;
+        try self.validateCountedInto(options, &consumed);
+        return consumed;
+    }
+
+    /// Like `validateCounted`, but writes the number of traversal words the
+    /// walk visited into `consumed_out` even when validation FAILS partway —
+    /// the aborted walk still spent that work. Callers metering a
+    /// per-connection validation-work budget charge this on the failure path
+    /// too; otherwise a hostile peer gets unlimited validation CPU by sending
+    /// frames that always fail after maximal traversal. On the cheap pre-walk
+    /// header failures (empty/truncated/too-many-segments) `consumed_out` is 0.
+    pub fn validateCountedInto(
+        self: *const Message,
+        options: ValidationOptions,
+        consumed_out: *usize,
+    ) MessageValidationError!void {
+        consumed_out.* = 0;
         if (self.segments.len == 0) return error.EmptyMessage;
         if (self.segments.len > options.segment_count_limit) return error.SegmentCountLimitExceeded;
         const segment = self.segments[0];
@@ -948,8 +987,11 @@ pub const Message = struct {
         const root_pointer = std.mem.readInt(u64, segment[0..8], .little);
         var remaining_words = options.traversal_limit_words;
         var remaining_inline_composite_elements = options.inline_composite_element_limit;
+        // Record the consumed count on BOTH success and error: validatePointer
+        // decrements remaining_words in place as it walks, so on a mid-walk
+        // failure it still reflects the work already spent.
+        defer consumed_out.* = options.traversal_limit_words - remaining_words;
         try self.validatePointer(0, 0, root_pointer, &remaining_words, &remaining_inline_composite_elements, options.nesting_limit);
-        return options.traversal_limit_words - remaining_words;
     }
 
     fn consumeWords(remaining: *usize, words: usize) !void {

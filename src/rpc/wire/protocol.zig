@@ -297,7 +297,20 @@ pub const DecodedMessage = struct {
     tag: MessageTag,
 
     pub fn init(allocator: std.mem.Allocator, frame: []const u8) !DecodedMessage {
-        var msg = try message.Message.init(allocator, frame, .{});
+        var cost: usize = undefined;
+        return initCounting(allocator, frame, &cost);
+    }
+
+    /// Like `init`, but always writes the frame's validation-work cost (in
+    /// traversal words) into `cost_out`, INCLUDING when decoding fails — both
+    /// a malformed frame (validation aborts partway) and a well-formed frame
+    /// with an unknown message tag (`error.InvalidMessageTag`, after a full
+    /// validated walk). A peer metering a per-connection validation budget
+    /// charges `cost_out` on the failure path so a hostile peer cannot get
+    /// unlimited validation CPU — or amplify through the Unimplemented echo —
+    /// by sending frames that never dispatch.
+    pub fn initCounting(allocator: std.mem.Allocator, frame: []const u8, cost_out: *usize) !DecodedMessage {
+        var msg = try message.Message.initCounting(allocator, frame, .{}, cost_out);
         errdefer msg.deinit();
         const root = try msg.getRootStruct();
         const disc = root.readUnionDiscriminant(MESSAGE_DISCRIMINANT_OFFSET_BYTES);

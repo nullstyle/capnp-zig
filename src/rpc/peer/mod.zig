@@ -5909,7 +5909,25 @@ pub const Peer = struct {
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
         events.emitFrame(self.observer, .peer, .unknown, .received, frame.len);
-        var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch |err| {
+
+        // Decode with cost accounting so the validation-work budget is charged
+        // even when decoding fails. `decode_cost` holds the traversal words the
+        // validating walk spent whether it succeeded, hit an unknown message
+        // tag after a full walk, or aborted partway on a malformed frame.
+        var decode_cost: usize = 0;
+        var decoded = protocol.DecodedMessage.initCounting(self.allocator, frame, &decode_cost) catch |err| {
+            // Charge the failed frame's validation work FIRST — before the
+            // Unimplemented echo (which re-walks and clones the same payload)
+            // and before returning — so a hostile peer cannot get unlimited
+            // validation CPU, or amplify through the echo, by sending frames
+            // that never dispatch.
+            self.chargeValidationBudget(decode_cost) catch |budget_err| {
+                log.warn("validation-work budget exceeded on undispatchable frame (words={}); aborting connection", .{decode_cost});
+                events.emitProtocolError(self.observer, .peer, .unknown, budget_err, null);
+                self.sendAbortForError(budget_err);
+                if (!self.isAttachedTransportClosing()) self.closeAttachedTransport();
+                return budget_err;
+            };
             if (err == error.InvalidMessageTag) {
                 log.debug("unknown message tag in frame, sending unimplemented", .{});
                 events.emitProtocolError(self.observer, .peer, .unknown, err, null);
@@ -6236,7 +6254,19 @@ pub const Peer = struct {
     fn cancelQueuedPendingQuestion(self: *Peer, question_id: u32) !bool {
         const canceled_promised = try self.cancelQueuedPendingQuestionInMap(&self.pending_promises, question_id);
         const canceled_export = try self.cancelQueuedPendingQuestionInMap(&self.pending_export_promises, question_id);
-        return canceled_promised or canceled_export;
+        const canceled = canceled_promised or canceled_export;
+        if (canceled) {
+            // The cancelled call's answer will never be produced, so any calls
+            // pipelined ON it (queued under pending_promises[question_id], and
+            // transitively) can never be satisfied. Fail-drain them, each with
+            // its own exception Return, so the exactly-one-Return-per-call
+            // invariant holds and a stale orphan bucket cannot later replay
+            // against an unrelated answer if the remote reuses the id. Run here,
+            // outside the pending-map iteration above, since the drain
+            // fetchRemoves buckets. Mirrors sendReturnException's drain.
+            self.failQueuedPromisedCalls(question_id, "pipelined on a cancelled call");
+        }
+        return canceled;
     }
 
     fn handleRelease(self: *Peer, release: protocol.Release) !void {

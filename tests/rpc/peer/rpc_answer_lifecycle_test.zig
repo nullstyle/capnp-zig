@@ -30,6 +30,17 @@ const ReturnCapture = struct {
         self.frames.deinit(self.allocator);
     }
 
+    /// Count captured frames whose message-union tag is `tag`.
+    fn countTag(self: *@This(), tag: protocol.MessageTag) usize {
+        var n: usize = 0;
+        for (self.frames.items) |frame| {
+            var decoded = protocol.DecodedMessage.init(self.allocator, frame) catch continue;
+            defer decoded.deinit();
+            if (decoded.tag == tag) n += 1;
+        }
+        return n;
+    }
+
     /// Count Return frames for `answer_id` carrying `tag`.
     fn countReturns(self: *@This(), answer_id: u32, tag: protocol.ReturnTag) usize {
         var n: usize = 0;
@@ -69,6 +80,23 @@ fn buildExportCallFrame(allocator: std.mem.Allocator, question_id: u32, export_i
 
 fn newCapture(allocator: std.mem.Allocator) ReturnCapture {
     return .{ .allocator = allocator, .frames = std.ArrayList([]u8).empty };
+}
+
+/// A well-formed frame whose message-union discriminant is an unknown tag:
+/// it passes the full validation walk (so its traversal cost is a normal
+/// call's) but dispatches to nothing — `DecodedMessage` reports
+/// `error.InvalidMessageTag` and the peer echoes `Unimplemented`. The
+/// message-union discriminant is the u16 at the root struct's data offset 0.
+fn buildUnknownTagFrame(allocator: std.mem.Allocator, question_id: u32) ![]u8 {
+    const base = try buildCallFrame(allocator, question_id);
+    defer allocator.free(base);
+    const buf = try allocator.dupe(u8, base);
+    errdefer allocator.free(buf);
+    // Frame header (8 bytes for a single segment) + root struct pointer word
+    // (8 bytes) puts the root struct's data word 0 at byte 16; the message
+    // union discriminant is its low u16.
+    std.mem.writeInt(u16, buf[16..18], 63, .little);
+    return buf;
 }
 
 test "exception Return drains queued pipelined calls with their own Return" {
@@ -126,6 +154,50 @@ test "Finish cancelling a queued pipelined call sends Return(canceled)" {
     // The cancelled queued call must receive its mandated Return(canceled),
     // and the queue must be empty.
     try std.testing.expectEqual(@as(usize, 1), capture.countReturns(42, .canceled));
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
+}
+
+test "Finish cancelling a queued call drains calls pipelined on it" {
+    // A queued call (100) is pipelined on unresolved answer 10; a grandchild
+    // (200) is in turn pipelined on 100's own answer. When Finish(100) cancels
+    // the queued call, 100's answer will never be produced — so 200 can never
+    // be satisfied and must also receive a Return. Before the fix the cancel
+    // sent Return(canceled) for 100 but left pending_promises[100] untouched:
+    // 200 hung forever and its orphan bucket could later replay against an
+    // unrelated answer if the remote reused id 100.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    // Queue call 100 against unresolved answer 10.
+    const call_100 = try buildCallFrame(allocator, 100);
+    defer allocator.free(call_100);
+    const inbound_100 = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 10, call_100, inbound_100);
+
+    // Queue grandchild 200 pipelined on 100's own (future) answer.
+    const call_200 = try buildPipelinedCallFrame(allocator, 200, 100);
+    defer allocator.free(call_200);
+    const inbound_200 = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 100, call_200, inbound_200);
+    try std.testing.expectEqual(@as(usize, 2), peer.pending_promises.count());
+
+    // Cancel the queued call 100.
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 100,
+        .release_result_caps = true,
+        .require_early_cancellation = false,
+    });
+
+    // 100 gets its Return(canceled); 200 gets an exception Return (its target
+    // was cancelled); both buckets are drained.
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(100, .canceled));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(200, .exception));
     try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
 }
 
@@ -285,6 +357,49 @@ test "validation-work budget aborts a connection that exceeds its rate" {
     try peer.handleFrame(frame);
     // Second frame at the same instant exhausts the bucket → abort.
     try std.testing.expectError(error.ValidationBudgetExceeded, peer.handleFrame(frame));
+}
+
+test "undispatchable frames are charged against the validation budget" {
+    // A frame that validates fully but carries an unknown message tag never
+    // dispatches — it only echoes Unimplemented (which re-walks and clones the
+    // same payload). Before the fix that path skipped the budget charge, so a
+    // hostile peer got unlimited validation CPU (and echo amplification) from
+    // frames that never dispatch. Now the failed frame is charged first.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var clock = capnpc.rpc.time.TestClock{};
+    peer.setClock(clock.clock());
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    const unknown = try buildUnknownTagFrame(allocator, 1);
+    defer allocator.free(unknown);
+    // Confirm the frame is well-formed but undispatchable, and learn its cost.
+    var probe_cost: usize = 0;
+    try std.testing.expectError(
+        error.InvalidMessageTag,
+        protocol.DecodedMessage.initCounting(allocator, unknown, &probe_cost),
+    );
+    try std.testing.expect(probe_cost > 0);
+
+    // Budget for exactly one such frame; a frozen clock means no refill.
+    peer.setLimits(.{ .max_validation_words_per_second = 1000, .max_validation_burst_words = probe_cost });
+
+    // First undispatchable frame fits and is echoed as Unimplemented.
+    try peer.handleFrame(unknown);
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.unimplemented));
+    try std.testing.expectEqual(@as(usize, 0), capture.countTag(.abort));
+
+    // Second at the same instant exhausts the now-charged budget → abort,
+    // with no second Unimplemented echo.
+    try std.testing.expectError(error.ValidationBudgetExceeded, peer.handleFrame(unknown));
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.unimplemented));
+    try std.testing.expectEqual(@as(usize, 1), capture.countTag(.abort));
 }
 
 test "outstanding questions are failed with Disconnected on connection close" {

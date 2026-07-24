@@ -15,6 +15,7 @@ Status values:
 | Class | Primary Surface | Regression Gate | Status |
 |---|---|---|---|
 | Malformed segment tables, far pointers, and pointer traversal | `src/serialization/message.zig` | `zig build test-message`, `zig build test-resource-budgets` | Covered |
+| Validation-work amplification budget charged on undispatchable frames (unknown message tag, malformed frame) | `src/rpc/peer/mod.zig` (`handleFrame`), `src/serialization/message.zig` (`validateCountedInto`/`initCounting`) | `tests/rpc/peer/rpc_answer_lifecycle_test.zig` "undispatchable frames are charged against the validation budget" | Covered |
 | Packed decode malformed input and expansion behavior | `src/serialization/message/packing.zig` | `tests/serialization/message_test.zig`, `tests/serialization/serialization_fuzz_test.zig` | Covered |
 | Zero-width or low-word-count structures bypassing resource budgets | Serialization validation and request reader | `tests/serialization/message_test.zig`, `tests/serialization/schema_validation_test.zig` | Covered |
 | CodeGeneratorRequest size and output expansion | `src/main.zig`, `src/capnpc-zig/generator.zig` | `src/main.zig` tests, `src/capnpc-zig/generator.zig` budget tests, `zig build test-resource-budgets` | Covered |
