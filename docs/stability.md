@@ -25,7 +25,7 @@ updated as phases land.
 | Deterministic fuzz smoke | full | full | full |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | where zig exposes it | where zig exposes it | blocked upstream (`EventedBackendUnsupported`) |
-| QUIC transport | experimental (`-Dquic=true`; CI-gated per push) | experimental (`-Dquic=true`; CI-gated per push) | not yet exercised in CI |
+| QUIC transport | experimental (`-Dquic=true`; CI-gated per push) | experimental (`-Dquic=true`; builds locally, **not exercised in CI** — the only `-Dquic=true` job is Linux) | not yet exercised in CI |
 
 ## Stability Levels
 

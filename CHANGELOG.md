@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   getting-started guide: `Message.init` / `initPacked` take a
   `ValidationOptions` argument (`.{}` for defaults), and a scalar setter
   returns an error union (`try person.setAge(30)`).
+- Corrected the QUIC row of the `stability.md` platform matrix: it advertised
+  the transport as "CI-gated per push" on macOS, but the only job that passes
+  `-Dquic=true` runs on Linux. macOS QUIC coverage is zero.
 - Corrected the `build-integration.md` generated-file path: `-ozig:gen` writes
   under `gen/` preserving the schema path (`schema/addressbook.capnp` ->
   `gen/schema/addressbook.zig`); the module now imports the right file, and its
