@@ -1030,13 +1030,13 @@ pub fn build(b: *std.Build) void {
     check_compile_step.dependOn(&serialization_demo_example.step);
     check_compile_step.dependOn(&e2e_zig_client.step);
     check_compile_step.dependOn(&e2e_zig_server.step);
-    // NOTE: the Experimental L3/L4 e2e drivers are deliberately NOT in this
-    // gate. They depend on `rpc.vat`, which the QUIC build (`lib_quic` ->
-    // `mod_quic`) does not expose, and the L3/C++ driver's TCP rendezvous uses
-    // posix `poll`, which std does not wire for Windows on the current
-    // toolchain — and `check` / `check-compile` run under both `-Dquic=true`
-    // and `-Dtarget=*-windows` in CI. They compile-gate through their own
-    // run-only steps (`e2e-l4-zig`, `e2e-l3-cpp`) in the native non-QUIC config.
+    // The Experimental L4 e2e driver otherwise only compiles inside its own
+    // run-only step, which no per-push CI job invokes. It is safe in every
+    // config this gate runs in — native, `-Dquic=true`, and cross-target
+    // (verified on x86_64-windows). The L3/C++ driver is deliberately NOT here:
+    // its TCP rendezvous uses posix `poll`, which std does not wire for Windows
+    // on the current toolchain, and this gate runs natively on Windows in CI.
+    check_compile_step.dependOn(&e2e_l4_zig.step);
     check_compile_step.dependOn(&wasm_host_module.step);
 
     // Compile every registered test binary without running it. CI pairs

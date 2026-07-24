@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`-Dquic=true` builds expose `rpc.vat` again.** `mod_quic.zig` re-exported
+  every `mod_base` namespace except `vat`, so QUIC-enabled builds silently lost
+  the Experimental L3/L4 addressing seams (`rpc.vat.network`, `rpc.vat.join`)
+  entirely — any consumer building with `-Dquic=true` could not reach them, and
+  the L3/L4 e2e drivers would not compile in that config. A QUIC build is the
+  same RPC runtime with a different transport, so the namespace lists must
+  mirror. With this fixed, `e2e-l4-zig` rejoins the `check-compile` gate (it is
+  now verified in native, `-Dquic=true`, and cross-target Windows builds).
+
 - **Nightly fuzz no longer masks genuine findings.** The crash classifier
   downgraded any log matching the bare token `fuzzer.zig` to a warning — but a
   real finding (the fuzz target dying) prints a stack trace that also passes
