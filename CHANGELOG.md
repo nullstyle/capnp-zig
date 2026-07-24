@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The `bench-rpc` client now sets `TCP_NODELAY`, matching the real client
+  transport.** The benchmark's hand-rolled loopback client never disabled
+  Nagle, so on Linux the sequential mode's small frame writes hit the
+  Nagle/delayed-ACK interaction and measured the kernel's ~40ms coalescing
+  timer instead of the RPC stack — the CI benchmark gate had never passed on a
+  hosted runner (the pipelined mode, which batches writes, always passed).
+  Real clients were unaffected: `ClientSession` has set `TCP_NODELAY` on
+  connect all along.
+
 - **RPC resolved-answer cleanup now preserves pipelined calls across
   reentrant Finish.** A synchronous transport can deliver a caller's `Finish`
   while the callee is still sending the results `Return`, before the callee has

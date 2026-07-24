@@ -357,6 +357,11 @@ pub fn main(init: std.process.Init) !void {
     // -- Client connection ------------------------------------------------
     const stream = try net.IpAddress.connect(&address, io, .{ .mode = .stream });
     const fd = stream.socket.handle;
+    // Match the real client transport (ClientSession sets TCP_NODELAY on
+    // connect): without it the sequential mode's small frame writes hit the
+    // Nagle/delayed-ACK interaction — ~40ms per round trip on Linux — and the
+    // bench measures the kernel's coalescing timer instead of the RPC stack.
+    rpc.transport.tcp.runtime.setTcpNoDelay(.{ .handle = fd });
 
     const conn = try allocator.create(Connection);
     conn.* = try Connection.init(allocator, io, .{ .handle = fd }, .{
