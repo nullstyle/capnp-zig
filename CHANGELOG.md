@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Added a **Schema-language support** section to `docs/supported-surface.md`: a
+  verified per-feature table (structs/groups/unions, enums, defaults, lists,
+  `AnyPointer` variants, generics, annotations, constants, JSON/serde,
+  canonicalization, imports) plus the sharp edges — exhaustive enums are not
+  forward-compatible, there is no `has<Field>()` accessor, generics are erased
+  to `AnyPointer` silently, nested-list writes are limited to primitive inner
+  elements, and the JSON manifest is a descriptor, not a serializer.
 - Fixed uncompilable serialization snippets in the README and the serialization
   getting-started guide: `Message.init` / `initPacked` take a
   `ValidationOptions` argument (`.{}` for defaults), and a scalar setter

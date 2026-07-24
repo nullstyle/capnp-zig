@@ -57,6 +57,40 @@ The frozen Stable RPC surface is exactly the categorized set in
 (ungated) in [`api-snapshot-experimental.txt`](api-snapshot-experimental.txt).
 See [`stability.md`](stability.md) for the full matrix and per-platform status.
 
+## Schema-language support
+
+What the `capnpc-zig` code generator does with each Cap'n Proto schema-language
+feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
+"unsupported" carry the caveats below.
+
+| Feature | Status | Notes |
+|---|---|---|
+| Structs, groups, named/unnamed unions | supported | Union members (slot *and* group) guard on the discriminant and return `error.WrongUnionMember` for the wrong variant. |
+| Enums | supported (exhaustive) | Generated as exhaustive `enum(u16)`; an unknown/out-of-range ordinal is rejected with `error.InvalidEnumValue` (see caveat). |
+| Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. |
+| Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. |
+| Nested lists `List(List(T))` | partial | Read via the untyped `message.PointerListReader`; no typed wrapper. Writable only when the inner element is a primitive — `List(List(Text))`, `List(List(Struct))`, and deeper nesting are readable but **not** writable. |
+| `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | partial | All collapse to one untyped `AnyPointerReader` / `AnyPointerBuilder` accessor (the sub-variant is erased during parsing). A *named interface* type does get a typed capability accessor. |
+| Generics / parameterized types / brands | unsupported | Type parameters and brand bindings are silently erased to `AnyPointer` — no error, no specialization. e.g. `Persistent(SturdyRef, Owner)` exposes its parameter fields as `AnyPointer`. |
+| Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. |
+| Constants (incl. struct/list/enum consts) | supported | Emitted as `pub const`; pointer-typed consts expose a `get()` reader. |
+| JSON / serde | descriptor only | `CAPNP_SCHEMA_MANIFEST_JSON` names the `capnp_<module>_<type>_to_json` / `_from_json` C-ABI symbols an *external* serde tool must supply; no `to_json` / `from_json` bodies are generated. |
+| Canonicalization | supported | `schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage` (schema-driven). No boolean `isCanonical` predicate — canonicalize-and-compare, or catch `error.NonCanonicalSegments`. |
+| Cross-file `import` / `using` | supported | Correct relative `@import` for referenced types; only referenced imports are emitted. A `using` alias produces no declaration (frontend-resolved). |
+
+**Caveats worth pinning to memory:**
+
+- **Enums are not forward-compatible.** An older generated reader that meets a
+  newly-added enumerant (or any unknown ordinal) gets `error.InvalidEnumValue`
+  and cannot see the raw value — unlike the C++/Rust reference impls, which pass
+  unknown ordinals through. Plan enum evolution accordingly.
+- **No `has<Field>()` accessor.** A pointer getter returns an empty/default
+  value for an absent field, so a getter alone cannot distinguish "unset" from
+  "empty".
+- **Generics are erased silently.** If your schema leans on parameterized types
+  for type safety, the generated Zig gives you `AnyPointer` and manual casts,
+  with no diagnostic.
+
 ## Error contract
 
 The one frozen public error set is validation:
