@@ -11,6 +11,14 @@ const Case = struct {
     // (the default). Throughput metrics (e.g. calls_per_sec) regress when
     // they shrink; set this true so the gate bounds the downside instead.
     higher_is_better: bool = false,
+    // Measure and report, but never fail the gate. For metrics that a shared
+    // CI runner cannot measure reliably — a serialized round-trip's latency
+    // percentiles are dominated by hypervisor/neighbor scheduling, not by our
+    // code, so enforcing them produces random red builds that train everyone
+    // to ignore the gate. Advisory cases still print their numbers (as [WARN]
+    // when out of band) so a real regression remains visible, and they stay
+    // enforceable on a quiet machine via `--enforce-advisory`.
+    advisory: bool = false,
 };
 
 const Baselines = struct {
@@ -21,6 +29,10 @@ const Baselines = struct {
 const Options = struct {
     baseline_path: []const u8 = "bench/baselines.json",
     max_regression_pct_override: ?f64 = null,
+    // Promote advisory cases back to hard failures. Use on a quiet machine
+    // (local runs, a dedicated bench host) where latency percentiles are
+    // actually measurable.
+    enforce_advisory: bool = false,
 };
 
 fn printUsage() void {
@@ -28,6 +40,7 @@ fn printUsage() void {
         \\Usage: zig build bench-check -- [options]
         \\  --baseline PATH   Baseline JSON path (default: bench/baselines.json)
         \\  --max-reg-pct N   Override max regression percent for all cases
+        \\  --enforce-advisory  Fail on advisory cases too (quiet machines only)
         \\  -h, --help        Show this help
         \\
     , .{});
@@ -48,6 +61,10 @@ fn parseArgs(iter: *std.process.Args.Iterator) !?Options {
         }
         if (std.mem.eql(u8, arg, "--max-reg-pct")) {
             opts.max_regression_pct_override = try parseF64(iter.next() orelse return error.InvalidArgument);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--enforce-advisory")) {
+            opts.enforce_advisory = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
@@ -76,6 +93,10 @@ fn runCase(
     case: Case,
     default_max_regression_pct: f64,
     override_max_regression_pct: ?f64,
+    // True when a miss actually fails the gate. Only affects the printed
+    // label, so an out-of-band advisory case under --enforce-advisory reads
+    // [FAIL] (which is what it does) rather than [WARN].
+    gates: bool,
 ) !bool {
     const argv = try allocator.alloc([]const u8, case.args.len + 1);
     defer allocator.free(argv);
@@ -110,7 +131,7 @@ fn runCase(
         std.debug.print(
             "[{s}] {s}: {s}={d:.2} baseline={d:.2} allowed>={d:.2} (-{d:.1}%)\n",
             .{
-                if (pass) "PASS" else "FAIL",
+                if (pass) "PASS" else if (gates) "FAIL" else "WARN",
                 case.name,
                 case.metric,
                 actual,
@@ -128,7 +149,7 @@ fn runCase(
     std.debug.print(
         "[{s}] {s}: {s}={d:.2} baseline={d:.2} allowed<={d:.2} (+{d:.1}%)\n",
         .{
-            if (pass) "PASS" else "FAIL",
+            if (pass) "PASS" else if (gates) "FAIL" else "WARN",
             case.name,
             case.metric,
             actual,
@@ -170,19 +191,38 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var failures: usize = 0;
+    var advisories: usize = 0;
     for (baselines.cases) |case| {
+        // An advisory case never fails the gate unless --enforce-advisory.
+        // A harness error (could not run / could not parse) always fails,
+        // advisory or not: that is a broken benchmark, not a noisy metric.
+        const gates = !case.advisory or opts.enforce_advisory;
         const pass = runCase(
             allocator,
             io,
             case,
             baselines.max_regression_pct,
             opts.max_regression_pct_override,
+            gates,
         ) catch |err| {
             failures += 1;
             std.debug.print("[FAIL] {s}: {s}\n", .{ case.name, @errorName(err) });
             continue;
         };
-        if (!pass) failures += 1;
+        if (!pass) {
+            if (gates) {
+                failures += 1;
+            } else {
+                advisories += 1;
+            }
+        }
+    }
+
+    if (advisories != 0) {
+        std.debug.print(
+            "{d} advisory case(s) outside their band (not gating; re-run with --enforce-advisory on a quiet machine)\n",
+            .{advisories},
+        );
     }
 
     if (failures != 0) {

@@ -196,7 +196,8 @@
       ],
       "metric": "p50_ns",
       "baseline": 50325.0,
-      "max_regression_pct": 50.0
+      "max_regression_pct": 50.0,
+      "advisory": true
     },
     {
       "name": "rpc_round_trip_seq_p99",
@@ -212,7 +213,8 @@
       ],
       "metric": "p99_ns",
       "baseline": 64025.0,
-      "max_regression_pct": 60.0
+      "max_regression_pct": 60.0,
+      "advisory": true
     },
     {
       "name": "rpc_round_trip_seq_calls_per_sec",
@@ -229,7 +231,8 @@
       "metric": "calls_per_sec",
       "baseline": 19513.0,
       "max_regression_pct": 35.0,
-      "higher_is_better": true
+      "higher_is_better": true,
+      "advisory": true
     },
     {
       "name": "rpc_round_trip_pipelined_calls_per_sec",

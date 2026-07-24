@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The RPC benchmark gate no longer flaps on hosted CI.** The sequential
+  round-trip latency cases were enforced against a baseline measured on a
+  developer machine, but a serialized round-trip on a shared CI runner is
+  dominated by hypervisor/neighbor scheduling: re-running the *same commit*
+  produced p50 94us then 68us, and p99 105us then 210us. `bench_check` gains an
+  `advisory` per-case flag (report as `[WARN]`, never gate) and an
+  `--enforce-advisory` override for quiet machines; the three
+  `rpc_round_trip_seq_*` cases are marked advisory. The pipelined throughput
+  case - stable within ~3% across the same runs - stays enforced and remains
+  the real code-regression signal. Harness errors still fail regardless.
+
 - **`-Dquic=true` builds expose `rpc.vat` again.** `mod_quic.zig` re-exported
   every `mod_base` namespace except `vat`, so QUIC-enabled builds silently lost
   the Experimental L3/L4 addressing seams (`rpc.vat.network`, `rpc.vat.join`)

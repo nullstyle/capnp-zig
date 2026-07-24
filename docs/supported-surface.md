@@ -126,9 +126,13 @@ matrix (returned-capability invocation, typed pipelining with E-order, and
 capability release).
 
 **Performance + soak evidence.** The two-party core carries committed regression
-evidence: `bench-rpc` gates round-trip latency (p50/p99/max) + calls/sec against
+evidence: `bench-rpc` measures round-trip latency (p50/p99) + calls/sec against
 a committed baseline (`bench-check`), and the RPC soak harness reports latency
 percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
+In CI the *pipelined throughput* case is enforced; the *sequential latency*
+cases are advisory (a shared runner cannot measure a serialized round-trip
+reliably — see [`stability.md`](stability.md)), and gate on a quiet machine via
+`bench-check -- --enforce-advisory`.
 Answer-lifecycle regressions also cover synchronous transports where `Finish`
 re-enters during a results — or Bootstrap — `Return` send: parked
 promised-answer calls replay before the recorded answer is immediately cleaned

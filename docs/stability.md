@@ -68,11 +68,18 @@ Experimental surface evolves in `docs/api-snapshot-experimental.txt` (ungated).
 
 **Honest disclosures for the Stable RPC core:**
 
-- **Soaked, with committed regression evidence.** A `bench-rpc` round-trip
-  latency + calls/sec regression gate (p50/p99/max, committed baseline) and the
-  RPC soak harness (latency percentiles + a flat memory-growth curve asserted at
-  ≥100 concurrent peers) run against the two-party core. This is real soak
-  evidence, not a claim. Answer-lifecycle regressions additionally cover
+- **Soaked, with committed regression evidence.** A `bench-rpc` regression gate
+  and the RPC soak harness (latency percentiles + a flat memory-growth curve
+  asserted at ≥100 concurrent peers) run against the two-party core. This is
+  real soak evidence, not a claim. Scope of the bench gate, precisely: the
+  **pipelined throughput** case (calls/sec) is enforced in CI and is the
+  reliable code-regression signal. The **sequential round-trip latency**
+  percentiles (p50/p99) and its calls/sec are measured and printed but marked
+  *advisory* — a serialized round-trip on a shared CI runner is dominated by
+  hypervisor/neighbor scheduling, and was observed swinging p99 105µs → 210µs
+  on identical code, so enforcing it produced random red builds. Run
+  `zig build -Doptimize=ReleaseFast bench-check -- --enforce-advisory` on a
+  quiet machine to gate those too. Answer-lifecycle regressions additionally cover
   synchronous reentrant `Finish` during results and Bootstrap `Return`
   delivery (queued promised-answer replay before immediate cleanup), the
   `releaseResultCaps` flag on a late `Return` after a cancelling `Finish`, and
