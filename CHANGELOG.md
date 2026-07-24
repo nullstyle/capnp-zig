@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **RPC resolved-answer cleanup now preserves pipelined calls across
+  reentrant Finish.** A synchronous transport can deliver a caller's `Finish`
+  while the callee is still sending the results `Return`, before the callee has
+  committed the answer into `resolved_answers`. The peer now marks answers that
+  are in that post-send commit window, records the caller's early-Finish flag,
+  drains any queued promised-answer calls by committing the reserved answer, and
+  then immediately applies the normal Finish cleanup. This avoids stale
+  `resolved_answers` entries without dropping parked pipelined calls — the same
+  commit window embargoed Level-3 Accept pickup relies on to deliver parked
+  promised-answer calls to the host before post-pickup direct calls (regression
+  coverage lives in the two-party answer-lifecycle suite). Bootstrap answers now
+  commit through the same reserve → send → commit-or-cleanup discipline:
+  recording a Bootstrap Return can no longer fail after the frame is on the
+  wire, and a Finish that re-enters during the Bootstrap send no longer strands
+  a recorded answer (plus its answer-held export reference) that no later
+  Finish could clear. The commit-then-cleanup discipline applies in BOTH
+  orderings: a late `Return` for a call the caller already cancelled with an
+  early `Finish` also transiently commits, so calls pipelined on the cancelled
+  answer replay with their own Returns instead of being stranded without any
+  Return (previously they hung a compliant caller forever and their frames
+  leaked until teardown). The late Return honors the Finish's
+  `releaseResultCaps` flag by releasing the wire references its results
+  descriptors took (previously they leaked for the connection lifetime), and
+  reusing a question id whose early-Finish tombstone is still undischarged is
+  rejected as `DuplicateQuestionId` — a compliant caller never reuses an id
+  before receiving its Return, and a violator could otherwise force the stale
+  tombstone's release flag onto the new answer's result caps (a premature
+  export release). Resolved-answer reservations are also counted while they
+  are held open across a send, so a nested inbound Call or Bootstrap answered
+  synchronously (a reentrant transport delivering frames mid-send) can no
+  longer consume the map slot an outer reservation's infallible post-send
+  commit depends on at a hash-map load-factor boundary.
+
 ## [0.4.0] - 2026-07-11
 
 ### Fixed

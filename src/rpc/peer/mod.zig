@@ -1262,12 +1262,28 @@ pub const Peer = struct {
     resolved_answers: std.AutoHashMap(u32, ResolvedAnswer),
     /// Inbound call question IDs accepted from the remote peer until Return or Finish.
     active_inbound_questions: std.AutoHashMap(u32, void),
+    /// Answer IDs whose results Return is currently being synchronously delivered
+    /// and may receive a reentrant Finish before the resolved answer is committed.
+    resolving_answers: std.AutoHashMap(u32, void),
+    /// Count of ResolvedAnswerReservation values currently outstanding
+    /// (reserved but not yet committed or rolled back). A reservation is held
+    /// open across the transport send, and a synchronous transport can deliver
+    /// a nested inbound Call/Bootstrap that reserves and commits a DIFFERENT
+    /// answer while the outer reservation is pending. Each reserve therefore
+    /// ensures map capacity for itself PLUS every outstanding reservation so
+    /// the outer infallible commit can never underflow the map's reserved-slot
+    /// accounting (getOrPutAssumeCapacity).
+    resolved_answer_reservations: u32 = 0,
     /// Inbound question ids whose Finish arrived before their (async) Return.
     /// A late Return for one of these must NOT be recorded in resolved_answers:
     /// no further Finish will ever clear it, and a stale entry poisons legal
     /// reuse of the id (DuplicateQuestionId against a compliant peer). Bounded
     /// by max_active_inbound_questions.
-    finished_early_answers: std.AutoHashMap(u32, void),
+    /// The bool records Finish.releaseResultCaps so the later Return sender can
+    /// apply the Finish after delivery. If the sender already reserved a
+    /// resolved answer, it commits first to drain queued promised calls, then
+    /// immediately removes the recorded answer through normal Finish cleanup.
+    finished_early_answers: std.AutoHashMap(u32, bool),
 
     // -- Promise queueing ---------------------------------------------------
 
@@ -1553,7 +1569,8 @@ pub const Peer = struct {
             .question_param_export_refs = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator),
             .resolved_answers = std.AutoHashMap(u32, ResolvedAnswer).init(allocator),
             .active_inbound_questions = std.AutoHashMap(u32, void).init(allocator),
-            .finished_early_answers = std.AutoHashMap(u32, void).init(allocator),
+            .resolving_answers = std.AutoHashMap(u32, void).init(allocator),
+            .finished_early_answers = std.AutoHashMap(u32, bool).init(allocator),
             .pending_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .pending_export_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .forwarded_questions = std.AutoHashMap(u32, u32).init(allocator),
@@ -1901,6 +1918,7 @@ pub const Peer = struct {
         }
         self.question_param_export_refs.deinit();
         self.active_inbound_questions.deinit();
+        self.resolving_answers.deinit();
         self.finished_early_answers.deinit();
         {
             var p_it = self.persistent_exports.valueIterator();
@@ -4709,18 +4727,21 @@ pub const Peer = struct {
         defer self.allocator.free(bytes);
 
         // Capture before delivery: sendReturnFrameWithLoopback consumes the
-        // loopback_questions and finished_early_answers entries for this id.
+        // loopback marker. Do not record a resolved answer for loopback
+        // answers: they are delivered locally, are never referenced by a
+        // remote PromisedAnswer, and get no Finish — and their outbound-counter
+        // ids would collide with the remote question-id space, so a recorded
+        // entry would leak and poison DuplicateQuestionId checks.
+        //
+        // Finished-early answers (Finish already arrived — before this late
+        // async Return, or reentrantly while this send is on the stack) still
+        // reserve: the post-send commit step re-checks the tombstone map and,
+        // when a tombstone is present, commits the reserved answer FIRST so
+        // calls pipelined on it replay with their own Returns, then
+        // immediately applies the Finish cleanup. Skipping the reservation
+        // would strand those parked calls with no Return at all.
         const is_loopback = self.loopback_questions.contains(answer_id);
-        const is_finished_early = self.finished_early_answers.contains(answer_id);
-
-        // Do not record a resolved answer when it can never be cleared by a
-        // Finish: (1) loopback answers are delivered locally, are never
-        // referenced by a remote PromisedAnswer, and get no Finish — and their
-        // outbound-counter ids would collide with the remote question-id space;
-        // (2) finished-early answers already had their Finish arrive before
-        // this (late, async) Return. In both cases a recorded entry would leak
-        // and poison DuplicateQuestionId checks against a compliant peer.
-        const should_record = !is_loopback and !is_finished_early;
+        const should_record = !is_loopback;
 
         // Reserve the record resources (count budget, map slot, frame copy)
         // BEFORE sending so recording is infallible afterward. If it could fail
@@ -4728,16 +4749,25 @@ pub const Peer = struct {
         // catch to send a second exception Return for this answer (audit item 7).
         var reservation: ?ResolvedAnswerReservation = null;
         errdefer if (reservation) |r| r.deinit(self);
-        if (should_record) reservation = try self.reserveResolvedAnswer(answer_id, bytes);
+        var resolving_answer = false;
+        errdefer if (resolving_answer) {
+            _ = self.resolving_answers.remove(answer_id);
+        };
+        if (should_record) {
+            reservation = try self.reserveResolvedAnswer(answer_id, bytes);
+            try self.resolving_answers.put(answer_id, {});
+            resolving_answer = true;
+        }
 
         try self.sendReturnFrameWithLoopback(answer_id, bytes);
         cap_table.commitOutboundCapEffects(&self.caps, &effects);
         effects_committed = true;
-
-        if (reservation) |r| {
-            self.commitReservedResolvedAnswer(answer_id, r);
-            reservation = null;
+        if (resolving_answer) {
+            _ = self.resolving_answers.remove(answer_id);
+            resolving_answer = false;
         }
+
+        self.commitOrRollbackResolvedAnswerAfterSend(answer_id, bytes, &reservation);
     }
 
     /// Complete a return for an inbound call that carried `sendResultsTo =
@@ -4834,14 +4864,15 @@ pub const Peer = struct {
         };
         try self.noteOutboundReturnCapRefs(ret);
         self.clearSendResultsRouting(ret.answer_id);
-        // Capture before delivery consumes the loopback / finished-early entry.
+        // Capture before delivery consumes the loopback marker. Finished-early
+        // answers still reserve (see sendReturnResults): the post-send commit
+        // step re-checks the tombstone map and commits-then-cleans so calls
+        // pipelined on the answer replay instead of being stranded.
         const is_loopback = self.loopback_questions.contains(ret.answer_id);
-        const is_finished_early = self.finished_early_answers.contains(ret.answer_id);
 
-        // See sendReturnResults: neither loopback nor finished-early answers
-        // may be recorded — no Finish will clear them and the id would be
-        // poisoned for reuse.
-        const should_record = ret.tag == .results and !is_loopback and !is_finished_early;
+        // See sendReturnResults: loopback answers may not be recorded — no
+        // Finish will clear them and the id would be poisoned for reuse.
+        const should_record = ret.tag == .results and !is_loopback;
 
         // Reserve record resources before the send so recording is infallible
         // afterward and cannot force a second (exception) Return for this
@@ -4849,15 +4880,24 @@ pub const Peer = struct {
         // refs back (via rollback_outbound_refs) since nothing was sent yet.
         var reservation: ?ResolvedAnswerReservation = null;
         errdefer if (reservation) |r| r.deinit(self);
-        if (should_record) reservation = try self.reserveResolvedAnswer(ret.answer_id, frame);
+        var resolving_answer = false;
+        errdefer if (resolving_answer) {
+            _ = self.resolving_answers.remove(ret.answer_id);
+        };
+        if (should_record) {
+            reservation = try self.reserveResolvedAnswer(ret.answer_id, frame);
+            try self.resolving_answers.put(ret.answer_id, {});
+            resolving_answer = true;
+        }
 
         try self.sendReturnFrameWithLoopback(ret.answer_id, frame);
         rollback_outbound_refs = false;
-
-        if (reservation) |r| {
-            self.commitReservedResolvedAnswer(ret.answer_id, r);
-            reservation = null;
+        if (resolving_answer) {
+            _ = self.resolving_answers.remove(ret.answer_id);
+            resolving_answer = false;
         }
+
+        self.commitOrRollbackResolvedAnswerAfterSend(ret.answer_id, frame, &reservation);
     }
 
     /// Send a return with an exception for a previously received call.
@@ -4885,6 +4925,7 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
+        _ = self.finished_early_answers.remove(answer_id);
     }
 
     /// Fail and drain every pipelined call queued against `answer_id` (and,
@@ -4938,6 +4979,44 @@ pub const Peer = struct {
         peer_return_dispatch.reportNonfatalErrorForPeer(Peer, self, err);
     }
 
+    fn commitOrRollbackResolvedAnswerAfterSend(
+        self: *Peer,
+        answer_id: u32,
+        frame: []const u8,
+        reservation: *?ResolvedAnswerReservation,
+    ) void {
+        if (self.finished_early_answers.fetchRemove(answer_id)) |finished| {
+            if (reservation.*) |r| {
+                self.commitReservedResolvedAnswer(answer_id, r);
+                reservation.* = null;
+                self.cleanupResolvedAnswerAfterEarlyFinish(answer_id, finished.value);
+                return;
+            }
+            if (finished.value) {
+                self.releaseResultCaps(frame) catch |err| self.reportNonfatalError(err);
+            }
+            return;
+        }
+
+        if (reservation.*) |r| {
+            self.commitReservedResolvedAnswer(answer_id, r);
+            reservation.* = null;
+        }
+    }
+
+    fn cleanupResolvedAnswerAfterEarlyFinish(self: *Peer, answer_id: u32, release_result_caps: bool) void {
+        peer_finish.handleResolvedAnswerCleanup(
+            Peer,
+            self,
+            answer_id,
+            release_result_caps,
+            peer_finish.takeResolvedAnswerFrameForPeerFn(Peer),
+            releaseAnswerHeldResultCaps,
+            releaseResultCaps,
+            peer_finish.freeOwnedFrameForPeerFn(Peer),
+        ) catch |err| self.reportNonfatalError(err);
+    }
+
     /// Send a return with an empty struct result (0 data words, 0 pointers).
     /// Used by streaming methods to auto-ack after the handler completes.
     pub fn sendReturnEmptyStruct(self: *Peer, answer_id: u32) !void {
@@ -4963,6 +5042,7 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
+        _ = self.finished_early_answers.remove(answer_id);
     }
 
     fn sendReturnTakeFromOtherQuestion(self: *Peer, answer_id: u32, other_question_id: u32) !void {
@@ -4974,6 +5054,7 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
+        _ = self.finished_early_answers.remove(answer_id);
     }
 
     fn sendReturnAcceptFromThirdParty(self: *Peer, answer_id: u32, await_payload: ?[]const u8) !void {
@@ -4985,6 +5066,7 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
+        _ = self.finished_early_answers.remove(answer_id);
     }
 
     fn clearSendResultsRouting(self: *Peer, answer_id: u32) void {
@@ -5006,9 +5088,6 @@ pub const Peer = struct {
             sendFrameControl,
         );
         _ = self.active_inbound_questions.remove(answer_id);
-        // Any terminal Return for this answer discharges a finished-early
-        // tombstone (see finished_early_answers / handleFinish).
-        _ = self.finished_early_answers.remove(answer_id);
     }
 
     fn sendReturnProvidedTarget(self: *Peer, answer_id: u32, target: *const ProvideTarget) !void {
@@ -6003,31 +6082,55 @@ pub const Peer = struct {
             inboundQuestionIdInUse,
             noteExportRef,
             rollbackExportRef,
-            noteAnswerExportRef,
-            rollbackAnswerExportRef,
             sendReturnException,
-            sendFrame,
-            recordResolvedAnswer,
+            sendAndRecordBootstrapReturn,
         );
+    }
+
+    /// Deliver a Bootstrap results Return and record its resolved answer with
+    /// the same reserve → send → commit-or-cleanup discipline as
+    /// sendReturnResults: the record resources (count budget, map slot, frame
+    /// copy, answer-held export refs) are reserved before the frame is sent so
+    /// recording cannot fail once the frame is on the wire, and the id is
+    /// marked resolving so a Finish delivered synchronously during the send
+    /// leaves a finished-early tombstone for the post-send step instead of
+    /// vanishing — without this, the reentrant Finish would find nothing to
+    /// clean and the record afterward would strand a resolved answer (plus its
+    /// answer-held export reference) that no later Finish could ever clear.
+    fn sendAndRecordBootstrapReturn(self: *Peer, question_id: u32, bytes: []const u8) anyerror!void {
+        var reservation: ?ResolvedAnswerReservation = try self.reserveResolvedAnswer(question_id, bytes);
+        errdefer if (reservation) |r| r.deinit(self);
+        try self.resolving_answers.put(question_id, {});
+        var resolving_answer = true;
+        errdefer if (resolving_answer) {
+            _ = self.resolving_answers.remove(question_id);
+        };
+
+        try self.sendFrame(bytes);
+        _ = self.resolving_answers.remove(question_id);
+        resolving_answer = false;
+
+        self.commitOrRollbackResolvedAnswerAfterSend(question_id, bytes, &reservation);
     }
 
     fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
         const qid = finish_msg.question_id;
         const was_active = self.active_inbound_questions.remove(qid);
+        const was_resolving = self.resolving_answers.contains(qid);
         self.clearPendingJoinResultAnswer(qid);
         try self.clearPendingJoinRelay(qid, true, finish_msg.release_result_caps);
         // Cancellation race: a Finish for an in-flight inbound call (still
-        // active, not yet resolved) means an async handler will answer later.
-        // Tombstone the id so that late Return is not recorded in
-        // resolved_answers (nothing would ever clear it, and it would poison
-        // legal reuse of the id). Bounded by max_active_inbound_questions;
-        // best-effort under OOM. Synchronous handlers already removed the
-        // active entry before this Finish, so was_active is false for them.
-        if (was_active and
+        // active, not yet resolved), or for a synchronous Return whose frame is
+        // on the wire but whose resolved answer is not committed yet, means the
+        // Return sender must not later leave a resolved_answers entry that no
+        // further Finish will clear. Preserve releaseResultCaps for the sender
+        // so it can either roll back a late async Return or commit+cleanup a
+        // synchronous Return after replaying queued promised calls.
+        if ((was_active or was_resolving) and
             !self.resolved_answers.contains(qid) and
             self.finished_early_answers.count() < self.limits.max_active_inbound_questions)
         {
-            self.finished_early_answers.put(qid, {}) catch |err| self.reportNonfatalError(err);
+            self.finished_early_answers.put(qid, finish_msg.release_result_caps) catch |err| self.reportNonfatalError(err);
         }
         if (!finish_msg.require_early_cancellation) {
             // Default behavior: if Finish arrives before a promised-target call is
@@ -7518,13 +7621,23 @@ pub const Peer = struct {
     }
 
     /// True when `question_id` is already consumed by an inbound Call or
-    /// Bootstrap answer (active, resolved, forwarded, or queued for a promised
-    /// target). This is the shared answer namespace; it deliberately excludes
-    /// the provide/join question tables so their handlers can report their own
-    /// specific errors for same-type collisions.
+    /// Bootstrap answer (active, resolved, resolving, finished-early, forwarded,
+    /// or queued for a promised target). This is the shared answer namespace;
+    /// it deliberately excludes the provide/join question tables so their
+    /// handlers can report their own specific errors for same-type collisions.
+    ///
+    /// A finished-early tombstone keeps the id reserved until the late Return
+    /// drains it: a compliant caller may not reuse a question id before it has
+    /// received that Return (which consumes the tombstone), so only a violator
+    /// is rejected here. Without this, a reused id's Return sender would
+    /// fetchRemove the STALE tombstone — skipping the record and applying the
+    /// old Finish's releaseResultCaps flag to the new answer's result caps, a
+    /// remote-forceable premature export release.
     fn inboundAnswerQuestionIdInUse(self: *Peer, question_id: u32) !bool {
         return self.resolved_answers.contains(question_id) or
             self.active_inbound_questions.contains(question_id) or
+            self.resolving_answers.contains(question_id) or
+            self.finished_early_answers.contains(question_id) or
             self.send_results_to_yourself.contains(question_id) or
             self.send_results_to_third_party.contains(question_id) or
             self.forwarded_questions.contains(question_id) or
@@ -7651,6 +7764,7 @@ pub const Peer = struct {
         held_export_ids: []u32,
 
         fn deinit(self: ResolvedAnswerReservation, peer: *Peer) void {
+            peer.resolved_answer_reservations -= 1;
             var idx = self.held_export_ids.len;
             while (idx > 0) {
                 idx -= 1;
@@ -7682,11 +7796,17 @@ pub const Peer = struct {
     fn reserveResolvedAnswer(self: *Peer, question_id: u32, frame: []const u8) !ResolvedAnswerReservation {
         try ensureCountLimit(
             self.resolved_answers.contains(question_id),
-            self.resolved_answers.count(),
+            self.resolved_answers.count() + self.resolved_answer_reservations,
             self.limits.max_resolved_answers,
         );
-        // Reserve a map slot so the post-send getOrPutAssumeCapacity cannot OOM.
-        try self.resolved_answers.ensureUnusedCapacity(1);
+        // Reserve a map slot so the post-send getOrPutAssumeCapacity cannot
+        // OOM. Ensure one slot per OUTSTANDING reservation as well: a nested
+        // reserve→commit for a different answer id (a synchronous transport
+        // delivering a Call/Bootstrap while an outer send is on the stack)
+        // would otherwise consume the single slot the outer reservation's
+        // ensure counted on, and the outer infallible commit would underflow
+        // the map's reserved-slot accounting.
+        try self.resolved_answers.ensureUnusedCapacity(1 + self.resolved_answer_reservations);
         const frame_copy = try self.allocator.dupe(u8, frame);
         errdefer self.allocator.free(frame_copy);
         const held_export_ids = try peer_cap_lifecycle.noteAnswerHeldResultCaps(
@@ -7697,6 +7817,7 @@ pub const Peer = struct {
             Peer.noteAnswerExportRef,
             rollbackAnswerExportRef,
         );
+        self.resolved_answer_reservations += 1;
         return .{ .frame_copy = frame_copy, .held_export_ids = held_export_ids };
     }
 
@@ -7712,6 +7833,7 @@ pub const Peer = struct {
         question_id: u32,
         reservation: ResolvedAnswerReservation,
     ) void {
+        self.resolved_answer_reservations -= 1;
         self.allocator.free(reservation.held_export_ids);
         pending_calls.recordResolvedAnswerAssumeCapacity(
             Peer,

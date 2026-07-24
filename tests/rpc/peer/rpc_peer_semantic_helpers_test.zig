@@ -366,11 +366,7 @@ test "peer bootstrap sends exception when bootstrap export is not configured" {
         exception_reason: ?[]const u8 = null,
         note_export_ref_calls: usize = 0,
         rollback_export_ref_calls: usize = 0,
-        note_answer_export_ref_calls: usize = 0,
-        rollback_answer_export_ref_calls: usize = 0,
-        send_frame_calls: usize = 0,
-        record_resolved_answer_calls: usize = 0,
-        allocator: std.mem.Allocator,
+        send_and_record_calls: usize = 0,
 
         fn questionIdInUse(state: *@This(), question_id: u32) !bool {
             _ = state;
@@ -388,35 +384,20 @@ test "peer bootstrap sends exception when bootstrap export is not configured" {
             state.rollback_export_ref_calls += 1;
         }
 
-        fn noteAnswerExportRef(state: *@This(), export_id: u32) !void {
-            _ = export_id;
-            state.note_answer_export_ref_calls += 1;
-        }
-
-        fn rollbackAnswerExportRef(state: *@This(), export_id: u32) void {
-            _ = export_id;
-            state.rollback_answer_export_ref_calls += 1;
-        }
-
         fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
             state.send_return_exception_calls += 1;
             state.exception_question_id = question_id;
             state.exception_reason = reason;
         }
 
-        fn sendFrame(state: *@This(), frame: []const u8) !void {
-            _ = frame;
-            state.send_frame_calls += 1;
-        }
-
-        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
+        fn sendAndRecordReturn(state: *@This(), question_id: u32, frame: []const u8) !void {
             _ = question_id;
-            state.record_resolved_answer_calls += 1;
-            state.allocator.free(frame);
+            _ = frame;
+            state.send_and_record_calls += 1;
         }
     };
 
-    var state = State{ .allocator = std.testing.allocator };
+    var state = State{};
     try handleBootstrap(
         State,
         &state,
@@ -429,11 +410,8 @@ test "peer bootstrap sends exception when bootstrap export is not configured" {
         State.questionIdInUse,
         State.noteExportRef,
         State.rollbackExportRef,
-        State.noteAnswerExportRef,
-        State.rollbackAnswerExportRef,
         State.sendReturnException,
-        State.sendFrame,
-        State.recordResolvedAnswer,
+        State.sendAndRecordReturn,
     );
 
     try std.testing.expectEqual(@as(usize, 1), state.send_return_exception_calls);
@@ -441,30 +419,21 @@ test "peer bootstrap sends exception when bootstrap export is not configured" {
     try std.testing.expectEqualStrings("bootstrap not configured", state.exception_reason orelse "");
     try std.testing.expectEqual(@as(usize, 0), state.note_export_ref_calls);
     try std.testing.expectEqual(@as(usize, 0), state.rollback_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.note_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.rollback_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.send_frame_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.record_resolved_answer_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.send_and_record_calls);
 }
 
-test "peer bootstrap sends frame and records resolved bootstrap answer" {
+test "peer bootstrap delivers and records through the combined send hook" {
     const State = struct {
         allocator: std.mem.Allocator,
         note_export_ref_calls: usize = 0,
         noted_export_id: ?u32 = null,
         rollback_export_ref_calls: usize = 0,
-        note_answer_export_ref_calls: usize = 0,
-        noted_answer_export_id: ?u32 = null,
-        rollback_answer_export_ref_calls: usize = 0,
         send_return_exception_calls: usize = 0,
-        send_frame_calls: usize = 0,
-        sent_frame: ?[]u8 = null,
-        record_resolved_answer_calls: usize = 0,
+        send_and_record_calls: usize = 0,
         recorded_question_id: ?u32 = null,
         recorded_frame: ?[]u8 = null,
 
         fn deinit(state: *@This()) void {
-            if (state.sent_frame) |bytes| state.allocator.free(bytes);
             if (state.recorded_frame) |bytes| state.allocator.free(bytes);
         }
 
@@ -484,33 +453,18 @@ test "peer bootstrap sends frame and records resolved bootstrap answer" {
             state.rollback_export_ref_calls += 1;
         }
 
-        fn noteAnswerExportRef(state: *@This(), export_id: u32) !void {
-            state.note_answer_export_ref_calls += 1;
-            state.noted_answer_export_id = export_id;
-        }
-
-        fn rollbackAnswerExportRef(state: *@This(), export_id: u32) void {
-            _ = export_id;
-            state.rollback_answer_export_ref_calls += 1;
-        }
-
         fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
             _ = question_id;
             _ = reason;
             state.send_return_exception_calls += 1;
         }
 
-        fn sendFrame(state: *@This(), frame: []const u8) !void {
-            state.send_frame_calls += 1;
+        fn sendAndRecordReturn(state: *@This(), question_id: u32, frame: []const u8) !void {
+            state.send_and_record_calls += 1;
+            state.recorded_question_id = question_id;
             const copy = try state.allocator.alloc(u8, frame.len);
             std.mem.copyForwards(u8, copy, frame);
-            state.sent_frame = copy;
-        }
-
-        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
-            state.record_resolved_answer_calls += 1;
-            state.recorded_question_id = question_id;
-            state.recorded_frame = frame;
+            state.recorded_frame = copy;
         }
     };
 
@@ -531,39 +485,32 @@ test "peer bootstrap sends frame and records resolved bootstrap answer" {
         State.questionIdInUse,
         State.noteExportRef,
         State.rollbackExportRef,
-        State.noteAnswerExportRef,
-        State.rollbackAnswerExportRef,
         State.sendReturnException,
-        State.sendFrame,
-        State.recordResolvedAnswer,
+        State.sendAndRecordReturn,
     );
 
     try std.testing.expectEqual(@as(usize, 1), state.note_export_ref_calls);
     try std.testing.expectEqual(@as(?u32, 1234), state.noted_export_id);
     try std.testing.expectEqual(@as(usize, 0), state.rollback_export_ref_calls);
-    // The recorded answer took its own reference on the export (released at
-    // the question's Finish), and nothing rolled it back.
-    try std.testing.expectEqual(@as(usize, 1), state.note_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(?u32, 1234), state.noted_answer_export_id);
-    try std.testing.expectEqual(@as(usize, 0), state.rollback_answer_export_ref_calls);
     try std.testing.expectEqual(@as(usize, 0), state.send_return_exception_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.send_frame_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.record_resolved_answer_calls);
+    // Exactly one delivery+record for the bootstrap question, handed a
+    // decodable Return frame whose descriptor names the bootstrap export.
+    try std.testing.expectEqual(@as(usize, 1), state.send_and_record_calls);
     try std.testing.expectEqual(@as(?u32, 7), state.recorded_question_id);
-    try std.testing.expect(state.sent_frame != null);
     try std.testing.expect(state.recorded_frame != null);
-    try std.testing.expectEqualSlices(u8, state.sent_frame.?, state.recorded_frame.?);
+    var decoded = try protocol.DecodedMessage.init(std.testing.allocator, state.recorded_frame.?);
+    defer decoded.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.@"return", decoded.tag);
+    const ret = try decoded.asReturn();
+    try std.testing.expectEqual(@as(u32, 7), ret.answer_id);
 }
 
 test "peer bootstrap rejects a question id already in use without a second return" {
     const State = struct {
         note_export_ref_calls: usize = 0,
         rollback_export_ref_calls: usize = 0,
-        note_answer_export_ref_calls: usize = 0,
-        rollback_answer_export_ref_calls: usize = 0,
         send_return_exception_calls: usize = 0,
-        send_frame_calls: usize = 0,
-        record_resolved_answer_calls: usize = 0,
+        send_and_record_calls: usize = 0,
 
         fn questionIdInUse(state: *@This(), question_id: u32) !bool {
             _ = state;
@@ -581,31 +528,16 @@ test "peer bootstrap rejects a question id already in use without a second retur
             state.rollback_export_ref_calls += 1;
         }
 
-        fn noteAnswerExportRef(state: *@This(), export_id: u32) !void {
-            _ = export_id;
-            state.note_answer_export_ref_calls += 1;
-        }
-
-        fn rollbackAnswerExportRef(state: *@This(), export_id: u32) void {
-            _ = export_id;
-            state.rollback_answer_export_ref_calls += 1;
-        }
-
         fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
             _ = question_id;
             _ = reason;
             state.send_return_exception_calls += 1;
         }
 
-        fn sendFrame(state: *@This(), frame: []const u8) !void {
-            _ = frame;
-            state.send_frame_calls += 1;
-        }
-
-        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
+        fn sendAndRecordReturn(state: *@This(), question_id: u32, frame: []const u8) !void {
             _ = question_id;
             _ = frame;
-            state.record_resolved_answer_calls += 1;
+            state.send_and_record_calls += 1;
         }
     };
 
@@ -622,32 +554,23 @@ test "peer bootstrap rejects a question id already in use without a second retur
         State.questionIdInUse,
         State.noteExportRef,
         State.rollbackExportRef,
-        State.noteAnswerExportRef,
-        State.rollbackAnswerExportRef,
         State.sendReturnException,
-        State.sendFrame,
-        State.recordResolvedAnswer,
+        State.sendAndRecordReturn,
     ));
 
     // No second Return, no export ref bump, and no cached answer to poison.
     try std.testing.expectEqual(@as(usize, 0), state.note_export_ref_calls);
     try std.testing.expectEqual(@as(usize, 0), state.rollback_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.note_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.rollback_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.send_frame_calls);
     try std.testing.expectEqual(@as(usize, 0), state.send_return_exception_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.record_resolved_answer_calls);
+    try std.testing.expectEqual(@as(usize, 0), state.send_and_record_calls);
 }
 
-test "peer bootstrap rolls back the export ref when the send fails" {
+test "peer bootstrap rolls back the export ref when delivery fails" {
     const State = struct {
         note_export_ref_calls: usize = 0,
         rollback_export_ref_calls: usize = 0,
         rolled_back_export_id: ?u32 = null,
-        note_answer_export_ref_calls: usize = 0,
-        rollback_answer_export_ref_calls: usize = 0,
-        send_frame_calls: usize = 0,
-        record_resolved_answer_calls: usize = 0,
+        send_and_record_calls: usize = 0,
 
         fn questionIdInUse(state: *@This(), question_id: u32) !bool {
             _ = state;
@@ -665,32 +588,17 @@ test "peer bootstrap rolls back the export ref when the send fails" {
             state.rolled_back_export_id = export_id;
         }
 
-        fn noteAnswerExportRef(state: *@This(), export_id: u32) !void {
-            _ = export_id;
-            state.note_answer_export_ref_calls += 1;
-        }
-
-        fn rollbackAnswerExportRef(state: *@This(), export_id: u32) void {
-            _ = export_id;
-            state.rollback_answer_export_ref_calls += 1;
-        }
-
         fn sendReturnException(state: *@This(), question_id: u32, reason: []const u8) !void {
             _ = state;
             _ = question_id;
             _ = reason;
         }
 
-        fn sendFrame(state: *@This(), frame: []const u8) !void {
-            _ = frame;
-            state.send_frame_calls += 1;
-            return error.TransportGone;
-        }
-
-        fn recordResolvedAnswer(state: *@This(), question_id: u32, frame: []u8) !void {
+        fn sendAndRecordReturn(state: *@This(), question_id: u32, frame: []const u8) !void {
             _ = question_id;
             _ = frame;
-            state.record_resolved_answer_calls += 1;
+            state.send_and_record_calls += 1;
+            return error.TransportGone;
         }
     };
 
@@ -707,24 +615,17 @@ test "peer bootstrap rolls back the export ref when the send fails" {
         State.questionIdInUse,
         State.noteExportRef,
         State.rollbackExportRef,
-        State.noteAnswerExportRef,
-        State.rollbackAnswerExportRef,
         State.sendReturnException,
-        State.sendFrame,
-        State.recordResolvedAnswer,
+        State.sendAndRecordReturn,
     ));
 
-    // The ref bump before the failed send is rolled back; the remote never
-    // received the descriptor, so we must not record a resolved answer either.
-    // The answer-held ref is taken only after a successful send, so nothing
-    // to take or roll back here.
+    // Any error out of the delivery+record hook means the frame was not
+    // delivered: the remote never received the descriptor, so the ref bump is
+    // rolled back and no resolved answer was recorded.
     try std.testing.expectEqual(@as(usize, 1), state.note_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 1), state.send_frame_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.send_and_record_calls);
     try std.testing.expectEqual(@as(usize, 1), state.rollback_export_ref_calls);
     try std.testing.expectEqual(@as(?u32, 1234), state.rolled_back_export_id);
-    try std.testing.expectEqual(@as(usize, 0), state.note_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.rollback_answer_export_ref_calls);
-    try std.testing.expectEqual(@as(usize, 0), state.record_resolved_answer_calls);
 }
 
 test "peer finish frame helper factories take and free resolved answer frame" {

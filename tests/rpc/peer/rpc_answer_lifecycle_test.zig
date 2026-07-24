@@ -560,6 +560,59 @@ fn buildPipelinedCallFrame(allocator: std.mem.Allocator, question_id: u32, targe
     return builder.finish();
 }
 
+/// A pipelined call whose transform is empty: the target answer's payload
+/// content IS the capability (the classic call-on-bootstrap-promise shape).
+fn buildBootstrapPipelinedCallFrame(allocator: std.mem.Allocator, question_id: u32, target_question_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xABCD, 0);
+    try call.setTargetPromisedAnswer(target_question_id);
+    _ = try call.initCapTableTyped(0);
+    return builder.finish();
+}
+
+fn buildBootstrapFrame(allocator: std.mem.Allocator, question_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildBootstrap(question_id);
+    return builder.finish();
+}
+
+/// A handler that holds its question open (the async-answer pattern): it
+/// records the question id and returns without sending any Return, so the
+/// question stays in active_inbound_questions until the app answers later.
+const AsyncHoldState = struct {
+    held_question_id: u32 = 0,
+    calls: u32 = 0,
+};
+
+fn onAsyncHoldCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+    _ = p;
+    const state: *AsyncHoldState = @ptrCast(@alignCast(ctx_ptr));
+    state.held_question_id = call.question_id;
+    state.calls += 1;
+}
+
+/// A handler that answers synchronously with cap-less results, so every call
+/// records a resolved answer (empty-struct tag Returns are not recorded).
+const ResultsEchoState = struct {
+    calls: u32 = 0,
+    export_id: u32 = 0,
+};
+
+fn onResultsEchoCall(ctx_ptr: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+    const state: *ResultsEchoState = @ptrCast(@alignCast(ctx_ptr));
+    state.calls += 1;
+    try p.sendReturnResults(call.question_id, ctx_ptr, buildEchoResults);
+}
+
+fn buildEchoResults(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+    _ = ctx_ptr;
+    var payload = try ret.payloadTyped();
+    var any = try payload.initContent();
+    _ = try any.initStruct(1, 0);
+}
+
 fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32, release_result_caps: bool) ![]const u8 {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
@@ -704,6 +757,311 @@ test "queued pipelined call dispatches when Release lands before the answer comm
     const entry = peer.exports.get(state.service_export_id) orelse return error.ExportDestroyedByEarlyRelease;
     try std.testing.expectEqual(@as(u32, 0), entry.ref_count);
     try std.testing.expectEqual(@as(u32, 1), entry.answer_ref_count);
+}
+
+test "reentrant Finish during Return send drains queued promise before cleanup" {
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const finish_frame = try buildFinishFrame(allocator, 10, false);
+    defer allocator.free(finish_frame);
+
+    const Injector = struct {
+        capture: ReturnCapture,
+        peer: *Peer,
+        finish_frame: []const u8,
+        injected: bool = false,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try ReturnCapture.onFrame(&self.capture, frame);
+            if (self.injected) return;
+            var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch return;
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = decoded.asReturn() catch return;
+            if (ret.answer_id != 10 or ret.tag != .results) return;
+            self.injected = true;
+            try self.peer.handleFrame(self.finish_frame);
+        }
+    };
+
+    var state = AnswerHeldState{};
+    state.service_export_id = try peer.addExport(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+
+    var injector = Injector{
+        .capture = newCapture(allocator),
+        .peer = &peer,
+        .finish_frame = finish_frame,
+    };
+    defer injector.capture.deinit();
+    peer.setSendFrameOverride(&injector, Injector.onFrame);
+
+    const child_frame = try buildPipelinedCallFrame(allocator, 42, 10);
+    defer allocator.free(child_frame);
+    const inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 10, child_frame, inbound);
+
+    try peer.sendReturnResults(10, &state, buildAnswerHeldServiceResults);
+
+    try std.testing.expect(injector.injected);
+    try std.testing.expectEqual(@as(usize, 1), injector.capture.countReturns(10, .results));
+    try std.testing.expectEqual(@as(u32, 1), state.service_calls);
+    try std.testing.expectEqual(@as(usize, 1), injector.capture.countReturns(42, .results));
+    try std.testing.expect(!peer.resolved_answers.contains(10));
+    try std.testing.expect(!peer.resolving_answers.contains(10));
+    try std.testing.expect(!peer.finished_early_answers.contains(10));
+}
+
+test "reentrant Finish during Bootstrap Return send drains queued pipelined call before cleanup" {
+    // Bootstrap answers commit through the same reserve → send →
+    // commit-or-cleanup discipline as sendReturnResults. Before that, a Finish
+    // delivered synchronously while the Bootstrap Return send was on the stack
+    // found nothing to clean (bootstrap ids are never active or resolving), and
+    // the record afterwards stranded a resolved answer — plus its answer-held
+    // export reference — that no later Finish could ever clear.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    const finish_frame = try buildFinishFrame(allocator, 10, true);
+    defer allocator.free(finish_frame);
+
+    const Injector = struct {
+        capture: ReturnCapture,
+        peer: *Peer,
+        finish_frame: []const u8,
+        injected: bool = false,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            try ReturnCapture.onFrame(&self.capture, frame);
+            if (self.injected) return;
+            var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch return;
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = decoded.asReturn() catch return;
+            if (ret.answer_id != 10 or ret.tag != .results) return;
+            self.injected = true;
+            try self.peer.handleFrame(self.finish_frame);
+        }
+    };
+
+    var state = AnswerHeldState{};
+    const bootstrap_export_id = try peer.setBootstrap(.{ .ctx = &state, .on_call = onAnswerHeldServiceCall });
+    state.service_export_id = bootstrap_export_id;
+
+    var injector = Injector{
+        .capture = newCapture(allocator),
+        .peer = &peer,
+        .finish_frame = finish_frame,
+    };
+    defer injector.capture.deinit();
+    peer.setSendFrameOverride(&injector, Injector.onFrame);
+
+    // The caller pipelines a call on the bootstrap answer before Bootstrap
+    // itself is delivered (the classic call-on-bootstrap-promise shape).
+    const child_frame = try buildBootstrapPipelinedCallFrame(allocator, 42, 10);
+    defer allocator.free(child_frame);
+    const inbound = try cap_table.InboundCapTable.init(allocator, null, &peer.caps);
+    try peer_test_hooks.queuePromisedCall(&peer, 10, child_frame, inbound);
+
+    const bootstrap_frame = try buildBootstrapFrame(allocator, 10);
+    defer allocator.free(bootstrap_frame);
+    try peer.handleFrame(bootstrap_frame);
+
+    // The parked pipelined call replayed against the committed answer before
+    // the reentrant Finish's cleanup removed it.
+    try std.testing.expect(injector.injected);
+    try std.testing.expectEqual(@as(usize, 1), injector.capture.countReturns(10, .results));
+    try std.testing.expectEqual(@as(u32, 1), state.service_calls);
+    try std.testing.expectEqual(@as(usize, 1), injector.capture.countReturns(42, .results));
+    try std.testing.expect(!peer.resolved_answers.contains(10));
+    try std.testing.expect(!peer.resolving_answers.contains(10));
+    try std.testing.expect(!peer.finished_early_answers.contains(10));
+    // releaseResultCaps=true dropped the descriptor's wire reference and the
+    // cleanup dropped the answer-held reference. The bootstrap export entry
+    // itself persists for the connection lifetime by design (it must stay
+    // servable for the next Bootstrap), but it holds no leaked references.
+    const entry = peer.exports.get(bootstrap_export_id) orelse return error.MissingBootstrapExport;
+    try std.testing.expectEqual(@as(u32, 0), entry.ref_count);
+    try std.testing.expectEqual(@as(u32, 0), entry.answer_ref_count);
+}
+
+test "late Return after cancelling Finish releases result caps per the Finish flag" {
+    // Finish-before-Return with releaseResultCaps=true: the caller will never
+    // release caps from a Return it receives after its Finish, so the late
+    // Return sender must drop the wire references its results descriptors
+    // took. Before this fix they leaked for the connection lifetime.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var svc = AnswerHeldState{};
+    svc.service_export_id = try peer.addExport(.{ .ctx = &svc, .on_call = onAnswerHeldServiceCall });
+    var holder = AsyncHoldState{};
+    const factory_export_id = try peer.addExport(.{ .ctx = &holder, .on_call = onAsyncHoldCall });
+
+    // The handler holds question 10 open (async answer pattern).
+    const call_frame = try buildExportCallFrame(allocator, 10, factory_export_id);
+    defer allocator.free(call_frame);
+    try peer.handleFrame(call_frame);
+    try std.testing.expectEqual(@as(u32, 1), holder.calls);
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(10, .results));
+
+    // A pipelined call parks on the unresolved answer before the cancel.
+    const child_frame = try buildPipelinedCallFrame(allocator, 42, 10);
+    defer allocator.free(child_frame);
+    try peer.handleFrame(child_frame);
+
+    // The remote cancels: Finish before any Return, releaseResultCaps=true.
+    // The parked child survives the Finish (it is addressed by its own id).
+    const finish_frame = try buildFinishFrame(allocator, 10, true);
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+    try std.testing.expect(peer.finished_early_answers.contains(10));
+
+    // The app answers late with cap-bearing results.
+    try peer.sendReturnResults(10, &svc, buildAnswerHeldServiceResults);
+
+    // Exactly one late Return went out, the parked child replayed with its
+    // own Return (spec: every Call gets exactly one Return), nothing stayed
+    // recorded, and the tombstone drained.
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(10, .results));
+    try std.testing.expectEqual(@as(u32, 1), svc.service_calls);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(42, .results));
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
+    try std.testing.expect(!peer.resolved_answers.contains(10));
+    try std.testing.expect(!peer.finished_early_answers.contains(10));
+    // The Finish's releaseResultCaps dropped the wire reference the results
+    // descriptor took; the transient commit's answer-held reference was
+    // released by the immediate cleanup, so the export is destroyed rather
+    // than leaked.
+    try std.testing.expect(!peer.exports.contains(svc.service_export_id));
+}
+
+test "reusing a question id with an undischarged early-Finish tombstone is rejected" {
+    // A compliant caller may not reuse a question id before it has received
+    // the id's Return (which drains the tombstone). A violator that reuses it
+    // earlier must be rejected: otherwise the reused id's Return sender would
+    // consume the STALE tombstone — skipping its record and applying the old
+    // Finish's releaseResultCaps flag to the new answer's result caps, a
+    // remote-forceable premature export release.
+    const allocator = std.testing.allocator;
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var capture = newCapture(allocator);
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+
+    var svc = AnswerHeldState{};
+    svc.service_export_id = try peer.addExport(.{ .ctx = &svc, .on_call = onAnswerHeldServiceCall });
+    var holder = AsyncHoldState{};
+    const factory_export_id = try peer.addExport(.{ .ctx = &holder, .on_call = onAsyncHoldCall });
+
+    const call_frame = try buildExportCallFrame(allocator, 10, factory_export_id);
+    defer allocator.free(call_frame);
+    try peer.handleFrame(call_frame);
+
+    // Finish-before-Return (releaseResultCaps=false: the caller says it will
+    // release result caps individually once the late Return arrives).
+    const finish_frame = try buildFinishFrame(allocator, 10, false);
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+    try std.testing.expect(peer.finished_early_answers.contains(10));
+
+    // The violator reuses the id before the late Return has drained it.
+    const dup_frame = try buildExportCallFrame(allocator, 10, factory_export_id);
+    defer allocator.free(dup_frame);
+    try std.testing.expectError(error.DuplicateQuestionId, peer.handleFrame(dup_frame));
+    try std.testing.expectEqual(@as(u32, 1), holder.calls);
+    try std.testing.expect(peer.finished_early_answers.contains(10));
+
+    // The late Return still drains the tombstone normally afterwards, keeping
+    // the wire reference for the remote to Release individually.
+    try peer.sendReturnResults(10, &svc, buildAnswerHeldServiceResults);
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(10, .results));
+    try std.testing.expect(!peer.finished_early_answers.contains(10));
+    try std.testing.expect(!peer.resolved_answers.contains(10));
+    const entry = peer.exports.get(svc.service_export_id) orelse return error.MissingExport;
+    try std.testing.expectEqual(@as(u32, 1), entry.ref_count);
+    try std.testing.expectEqual(@as(u32, 0), entry.answer_ref_count);
+}
+
+test "nested resolved-answer reservations survive the map's load-factor boundary" {
+    // A synchronous transport can deliver a nested inbound Call while an
+    // outer results Return send is on the stack. The nested reserve→commit
+    // consumes a resolved_answers slot that the outer reservation's
+    // ensureUnusedCapacity counted on; at an exact load-factor boundary the
+    // outer infallible commit then underflowed the map's reserved-slot
+    // accounting. Sweep filler counts across the first growth boundaries so
+    // at least one iteration lands on a boundary regardless of std.HashMap's
+    // internal growth policy.
+    const allocator = std.testing.allocator;
+    var filler: u32 = 0;
+    while (filler <= 16) : (filler += 1) {
+        var peer = Peer.initDetached(allocator);
+        peer.disableThreadAffinity();
+        defer peer.deinit();
+
+        var echo = ResultsEchoState{};
+        echo.export_id = try peer.addExport(.{ .ctx = &echo, .on_call = onResultsEchoCall });
+
+        const Injector = struct {
+            peer: *Peer,
+            nested_frame: []const u8,
+            injected: bool = false,
+
+            fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+                const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+                if (self.injected) return;
+                var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch return;
+                defer decoded.deinit();
+                if (decoded.tag != .@"return") return;
+                const ret = decoded.asReturn() catch return;
+                if (ret.answer_id != 500 or ret.tag != .results) return;
+                self.injected = true;
+                try self.peer.handleFrame(self.nested_frame);
+            }
+        };
+
+        const nested_frame = try buildExportCallFrame(allocator, 501, echo.export_id);
+        defer allocator.free(nested_frame);
+        var injector = Injector{ .peer = &peer, .nested_frame = nested_frame };
+        peer.setSendFrameOverride(&injector, Injector.onFrame);
+
+        // Fill resolved_answers to this sweep point with synchronous calls.
+        var i: u32 = 0;
+        while (i < filler) : (i += 1) {
+            const f = try buildExportCallFrame(allocator, 1000 + i, echo.export_id);
+            defer allocator.free(f);
+            try peer.handleFrame(f);
+        }
+
+        // The outer call's Return send delivers the nested call reentrantly:
+        // the nested answer reserves and commits while the outer reservation
+        // is still open.
+        const outer_frame = try buildExportCallFrame(allocator, 500, echo.export_id);
+        defer allocator.free(outer_frame);
+        try peer.handleFrame(outer_frame);
+
+        try std.testing.expect(injector.injected);
+        try std.testing.expect(peer.resolved_answers.contains(500));
+        try std.testing.expect(peer.resolved_answers.contains(501));
+        try std.testing.expectEqual(filler + 2, peer.resolved_answers.count());
+        try std.testing.expectEqual(@as(u32, filler + 2), echo.calls);
+        try std.testing.expectEqual(@as(u32, 0), peer.resolved_answer_reservations);
+    }
 }
 
 test "successful call at the resolved_answers cap sends exactly one Return" {

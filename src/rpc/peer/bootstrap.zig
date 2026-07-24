@@ -124,11 +124,8 @@ pub fn handleBootstrap(
     question_id_in_use: *const fn (*PeerType, u32) anyerror!bool,
     note_export_ref: *const fn (*PeerType, u32) anyerror!void,
     rollback_export_ref: *const fn (*PeerType, u32) void,
-    note_answer_export_ref: *const fn (*PeerType, u32) anyerror!void,
-    rollback_answer_export_ref: *const fn (*PeerType, u32) void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
-    send_frame: *const fn (*PeerType, []const u8) anyerror!void,
-    record_resolved_answer: *const fn (*PeerType, u32, []u8) anyerror!void,
+    send_and_record_return: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
     // Reject a Bootstrap whose question id is already live (spec violation),
     // mirroring handleCall's defense. Without this a remote could reuse an
@@ -149,29 +146,15 @@ pub fn handleBootstrap(
     defer allocator.free(bytes);
 
     try note_export_ref(peer, export_id);
-    // If the send fails the remote never received the cap descriptor and will
+    // If delivery fails the remote never received the cap descriptor and will
     // never Release it, so undo the ref-count bump to avoid overstating the
-    // export's ref-count for the connection lifetime. Cleared once the send
-    // succeeds: past that point the remote holds the descriptor and owns the
-    // ref, so a later recordResolvedAnswer failure must NOT roll it back
-    // (matching sendReturnResults / sendPrebuiltReturnFrame).
-    var rollback_ref = true;
-    errdefer if (rollback_ref) rollback_export_ref(peer, export_id);
-    try send_frame(peer, bytes);
-    rollback_ref = false;
-
-    // The recorded answer holds its own reference on the export until its
-    // Finish (released there via the stored frame's cap table), matching the
-    // reserve step of sendReturnResults / sendPrebuiltReturnFrame. Rolled
-    // back if recording fails: an unrecorded answer releases nothing at
-    // Finish, so keeping the ref would pin the count forever.
-    try note_answer_export_ref(peer, export_id);
-    var rollback_answer_ref = true;
-    errdefer if (rollback_answer_ref) rollback_answer_export_ref(peer, export_id);
-
-    const copy = try allocator.alloc(u8, bytes.len);
-    errdefer allocator.free(copy);
-    std.mem.copyForwards(u8, copy, bytes);
-    try record_resolved_answer(peer, bootstrap_msg.question_id, copy);
-    rollback_answer_ref = false;
+    // export's ref-count for the connection lifetime. send_and_record_return
+    // reserves the recorded answer's resources BEFORE sending — recording
+    // cannot fail once the frame is on the wire (matching sendReturnResults /
+    // sendPrebuiltReturnFrame) — and afterward either commits the answer or,
+    // when a Finish re-entered while the send was on the stack, commits it to
+    // drain queued pipelined calls and immediately applies the Finish cleanup.
+    // Every error it can return means the frame was not delivered.
+    errdefer rollback_export_ref(peer, export_id);
+    try send_and_record_return(peer, bootstrap_msg.question_id, bytes);
 }

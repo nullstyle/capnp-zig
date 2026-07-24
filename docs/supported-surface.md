@@ -95,6 +95,20 @@ capability release).
 evidence: `bench-rpc` gates round-trip latency (p50/p99/max) + calls/sec against
 a committed baseline (`bench-check`), and the RPC soak harness reports latency
 percentiles plus a memory-growth curve asserted flat at ≥100 concurrent peers.
+Answer-lifecycle regressions also cover synchronous transports where `Finish`
+re-enters during a results — or Bootstrap — `Return` send: parked
+promised-answer calls replay before the recorded answer is immediately cleaned
+up (Bootstrap answers commit through the same reserve → send →
+commit-or-cleanup discipline, so recording can no longer fail after the frame
+is on the wire). The same commit-then-cleanup applies when the `Finish`
+preceded the late `Return` entirely, so calls pipelined on a cancelled answer
+always receive their own Returns. A late `Return` for a call cancelled by an
+early `Finish` honors the Finish's `releaseResultCaps` flag instead of leaking
+the results descriptors' wire references, reusing a question id whose
+early-Finish tombstone is still undischarged is rejected as
+`DuplicateQuestionId`, and nested resolved-answer reservations (a reentrant
+transport delivering a new Call/Bootstrap mid-send) are counted so an outer
+post-send commit cannot underflow the answer map's reserved capacity.
 
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
@@ -156,7 +170,8 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   paths, `sendProvide` / `sendAccept` allocator rollback, vine/provide teardown
   ordering, embargoed pickup ordering, auto-pickup callback-failure cleanup,
   auto-pickup internal Accept Finish retry after synchronous host-answer commit,
-  and cross-peer proxy cleanup. The C++
+  and cross-peer proxy cleanup (the reentrant-Finish promised-answer drain the
+  pickup path relies on is covered by the two-party answer-lifecycle suite). The C++
   interop lane is now a small failure matrix rather than only a happy-path proof:
   bad contact data falls back to the vine proxy, invalid/unknown completion tokens
   and await-side C++ rejection produce deterministic pickup exceptions, a C++

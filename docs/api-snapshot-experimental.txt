@@ -675,7 +675,7 @@ capnpc-zig.rpc.peer.VatNetwork.mintIntroduction: fn (rpc.vat.network.VatNetwork(
 capnpc-zig.rpc.peer.VatNetwork: struct
 capnpc-zig.rpc.peer.bootstrap.buildBootstrapReturnFrame: fn (mem.Allocator, u32, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.buildBootstrapReturnFrame)).@"fn".return_type.?).error_union.error_set![]const u8
 capnpc-zig.rpc.peer.bootstrap.handleAbort: fn (mem.Allocator, *?[]u8, rpc.wire.protocol.Abort) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleAbort)).@"fn".return_type.?).error_union.error_set!void
-capnpc-zig.rpc.peer.bootstrap.handleBootstrap: fn (comptime type, anytype, mem.Allocator, rpc.wire.protocol.Bootstrap, ?u32, anytype, anytype, anytype, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleBootstrap)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.bootstrap.handleBootstrap: fn (comptime type, anytype, mem.Allocator, rpc.wire.protocol.Bootstrap, ?u32, anytype, anytype, anytype, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleBootstrap)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplemented: fn (comptime type, anytype, rpc.wire.protocol.Unimplemented, anytype, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplemented)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestion: fn (comptime type, anytype, u32, anytype) @typeInfo(@typeInfo(@TypeOf(rpc.peer.bootstrap.handleUnimplementedQuestion)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.bootstrap.handleUnimplementedQuestionForPeerFn: fn (comptime type, comptime anytype) anytype
