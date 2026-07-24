@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Fixed uncompilable serialization snippets in the README and the serialization
+  getting-started guide: `Message.init` / `initPacked` take a
+  `ValidationOptions` argument (`.{}` for defaults), and a scalar setter
+  returns an error union (`try person.setAge(30)`).
+- Corrected the `build-integration.md` generated-file path: `-ozig:gen` writes
+  under `gen/` preserving the schema path (`schema/addressbook.capnp` ->
+  `gen/schema/addressbook.zig`); the module now imports the right file, and its
+  snippet test asserts the output-dir-prefixed convention.
+
 ### Fixed
+
+- **Repository hygiene:** the unanchored `.gitignore` entry `test_*` shadowed
+  the whole `tests/test_schemas/` directory, silently dropping any new fixture
+  added via `git add .`; it is now anchored to the repo root (`/test_*`).
+  Removed a committed agent scratchpad under `private/` and now ignore
+  `private/`.
 
 - **Codegen: group-typed union members now guard on the discriminant.** A
   union member whose type is a group generated a getter with no `which()`

@@ -14,7 +14,8 @@ obj/
 __cmake_systeminformation/
 ext/capnp-deno/.artifacts/
 examples/kvstore/go-client/kvstore-client
-test_*
+/test_*
 e2e_runner
 .tmp/
 .worktrees/
+private/

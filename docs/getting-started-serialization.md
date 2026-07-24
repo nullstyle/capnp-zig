@@ -140,8 +140,8 @@ pub fn main() !void {
 Reading is zero-copy — the `Reader` accesses bytes directly from the message buffer:
 
 ```zig
-// 1. Parse the framed message
-var msg = try message.Message.init(allocator, bytes);
+// 1. Parse the framed message (`.{}` uses the default validation limits)
+var msg = try message.Message.init(allocator, bytes, .{});
 defer msg.deinit();
 
 // 2. Get a typed Reader for the root struct
@@ -362,7 +362,7 @@ const packed_bytes = try builder.toPackedBytes();
 defer allocator.free(packed_bytes);
 
 // Deserialize from packed format
-var msg = try message.Message.initPacked(allocator, packed_bytes);
+var msg = try message.Message.initPacked(allocator, packed_bytes, .{});
 defer msg.deinit();
 ```
 

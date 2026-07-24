@@ -111,7 +111,7 @@ pub fn main() !void {
     defer allocator.free(bytes);
 
     // Deserialize
-    var msg = try message.Message.init(allocator, bytes);
+    var msg = try message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
@@ -155,7 +155,7 @@ pub fn main() !void {
 
     var person_builder = try Person.Builder.init(&msg_builder);
     try person_builder.setName("Alice");
-    person_builder.setAge(30);
+    try person_builder.setAge(30);
     try person_builder.setEmail("alice@example.com");
 
     // Serialize
@@ -163,7 +163,7 @@ pub fn main() !void {
     defer allocator.free(bytes);
 
     // Deserialize
-    var msg = try capnpc.message.Message.init(allocator, bytes);
+    var msg = try capnpc.message.Message.init(allocator, bytes, .{});
     defer msg.deinit();
 
     const person_reader = try Person.Reader.init(&msg);

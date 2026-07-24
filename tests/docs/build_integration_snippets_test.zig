@@ -10,7 +10,9 @@ const BuildIntegrationSnippet = struct {
     pub const generated_import_name = "addressbook";
     pub const app_root_path = "src/main.zig";
     pub const schema_path = "schema/addressbook.capnp";
-    pub const generated_root_path = "schema/addressbook.zig";
+    // `-ozig:gen` writes under the `gen/` output dir, preserving the schema
+    // path: schema/addressbook.capnp -> gen/schema/addressbook.zig.
+    pub const generated_root_path = "gen/schema/addressbook.zig";
     pub const codegen_output_arg = "-ozig:gen";
     pub const codegen_argv = [_][]const u8{
         "capnpc",
@@ -37,16 +39,28 @@ fn parseCapnpOutputArg(arg: []const u8) !CapnpOutputArg {
     };
 }
 
-fn pathFollowsCapnpToZigConvention(schema_path: []const u8, generated_path: []const u8) bool {
+/// The generated path is the output dir (`-o<plugin>:<dir>`) joined with the
+/// schema path, extension swapped `.capnp` -> `.zig`. For `-ozig:gen` and
+/// `schema/addressbook.capnp` that is `gen/schema/addressbook.zig`.
+fn pathFollowsCapnpToZigConvention(output_arg: []const u8, schema_path: []const u8, generated_path: []const u8) bool {
     const capnp_ext = ".capnp";
     const zig_ext = ".zig";
 
     if (!std.mem.endsWith(u8, schema_path, capnp_ext)) return false;
 
+    // Output dir is the text after the `:` in `-o<plugin>:<dir>`.
+    const colon = std.mem.lastIndexOfScalar(u8, output_arg, ':') orelse return false;
+    const out_dir = output_arg[colon + 1 ..];
+    if (out_dir.len == 0) return false;
+
     const stem = schema_path[0 .. schema_path.len - capnp_ext.len];
-    return generated_path.len == stem.len + zig_ext.len and
-        std.mem.eql(u8, generated_path[0..stem.len], stem) and
-        std.mem.eql(u8, generated_path[stem.len..], zig_ext);
+    if (!std.mem.startsWith(u8, generated_path, out_dir)) return false;
+    var rest = generated_path[out_dir.len..];
+    if (rest.len == 0 or rest[0] != '/') return false;
+    rest = rest[1..];
+    return rest.len == stem.len + zig_ext.len and
+        std.mem.eql(u8, rest[0..stem.len], stem) and
+        std.mem.eql(u8, rest[stem.len..], zig_ext);
 }
 
 test "build integration snippet keeps dependency module and import names current" {
@@ -70,10 +84,11 @@ test "build integration snippet models capnp codegen command without running it"
 
 test "build integration snippet keeps generated path convention current" {
     try testing.expect(pathFollowsCapnpToZigConvention(
+        BuildIntegrationSnippet.codegen_output_arg,
         BuildIntegrationSnippet.schema_path,
         BuildIntegrationSnippet.generated_root_path,
     ));
-    try testing.expectEqualStrings("schema/addressbook.zig", BuildIntegrationSnippet.generated_root_path);
+    try testing.expectEqualStrings("gen/schema/addressbook.zig", BuildIntegrationSnippet.generated_root_path);
 }
 
 test "generated modules can compile against the documented capnpc-zig import" {

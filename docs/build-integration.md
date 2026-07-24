@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const addressbook = b.createModule(.{
-        .root_source_file = b.path("schema/addressbook.zig"),
+        .root_source_file = b.path("gen/schema/addressbook.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -99,6 +99,8 @@ pub fn build(b: *std.Build) void {
 
 ## Notes
 
-- The generated file path follows the schema path (`schema/addressbook.capnp` -> `schema/addressbook.zig`).
+- `-ozig:gen` writes generated code under the `gen/` output directory,
+  preserving the schema's path: `schema/addressbook.capnp` ->
+  `gen/schema/addressbook.zig`.
 - `capnpc-zig` is quiet by default; generated logs are only emitted when verbose mode is enabled (`capnpc-zig --verbose` when invoking the plugin directly).
 - If your plugin is not on `PATH`, replace `"capnpc-zig"` in the `-o` argument with an absolute executable path.
