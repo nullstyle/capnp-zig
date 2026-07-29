@@ -1,6 +1,65 @@
-# Changelog
+## [Unreleased]
 
-All notable changes to this project will be documented in this file.
+### Fixed
+
+- **The benchmark regression gate can now actually fire.** `bench/baselines.json`
+  carried a global `max_regression_pct: 500.0` while the wall-clock baselines had
+  gone unrefreshed since 2026-02-06 — CI numbers had since improved 6–15×, so the
+  effective headroom was 65–150×: `packed_pack_default` would have had to become
+  roughly 78× slower to fail. Bands are now sized per case from measured data
+  (5 successive green CI runs on `main`) rather than one global guess:
+
+  - wall-clock cases: baseline at the **worst observed CI run**, 40% band. The
+    observed spread is 1.07×–1.25×, so this cannot flap while still catching a
+    real regression — roughly 50× tighter than before.
+  - allocation counts: 10% band, and two stale-conservative baselines corrected
+    (`packed_unpack_default_allocs` 7→3, `packed_roundtrip_default_allocs` 13→9,
+    which had been permitting 2.3× and 1.4× regressions). Variance across every
+    observed run is exactly zero, so one extra allocation is now a failure.
+  - **allocation bytes are gated for the first time** (5 new cases). The
+    benchmarks already emitted `alloc_bytes_per_iter` and `bench_check` already
+    reads arbitrary JSON keys, so a change that kept the call count at 6 while
+    growing each buffer tenfold was simply invisible. 25% band for its first
+    release, since these values have not previously been observed on CI.
+
+  Correction to an earlier claim: the five allocation-count cases were **never**
+  governed by the 500% global band — each already carried its own
+  `max_regression_pct: 30.0`. Only the five wall-clock cases were dead.
+  Ablation-verified: inflating a baseline past its band turns both the
+  allocation-count and allocation-byte gates red.
+
+- **The nightly coverage-guided fuzz job no longer reports green without
+  fuzzing.** Zig master's fuzzer aborts in its `maker` stage before fuzzing
+  begins on the pinned toolchain; the job's infrastructure-failure downgrade then
+  fired and exited 0, so 30 consecutive nightlies passed having produced zero
+  coverage-guided signal — "the fuzzer never started" was indistinguishable from
+  "the window elapsed with no findings". The job now requires a positive signal:
+  an infrastructure abort inside the first 120 seconds fails with the remediation
+  spelled out, while one after real fuzzing stays a warning. `SECURITY.md` no
+  longer lists coverage-guided fuzzing among the controls that actually run.
+
+- **`capnp` is installed on all three CI tiers.** It was installed on Linux only,
+  so ten serialization/codegen suites that shell out to it returned
+  `SkipZigTest` — 26 tests silently skipped on macOS and 29 on Windows — while
+  the platform matrix advertised codegen as "full | full | full". macOS installs
+  via Homebrew; Windows unpacks the upstream prebuilt tools (URL and archive
+  layout verified against the published release rather than assumed). A new
+  per-OS step runs `capnp --version` so a missing tool fails the job instead of
+  quietly disabling coverage.
+
+### Documentation
+
+- Corrected two `docs/stability.md` claims this work disproved, in opposite
+  directions. The bench note called the pipelined throughput case "stable within
+  ~3%" and the reliable signal; it is the **widest-variance** case of the
+  fourteen at 1.75× across 5 runs. Conversely, both `stability.md` and
+  `supported-surface.md` claimed the cross-implementation e2e matrix runs on a
+  local Docker host only — it in fact runs **per push** on the Linux tier via the
+  `e2e-zig` job, so the project was understating its strongest interop evidence.
+  `tests/hardening/toolchain_gate_test.zig` now states that it covers committed
+  fixtures only and points at the CI step that asserts the tool.
+
+nges to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

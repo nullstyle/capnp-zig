@@ -7,6 +7,17 @@
 //! green-by-skip instead of failing — and Zig's build test runner folds
 //! per-test skips into the step summary, so the regression is easy to miss.
 //!
+//! SCOPE: this gate covers committed FILES only. The external `capnp` TOOL is
+//! the larger silent-skip source — ten serialization/codegen suites shell out to
+//! it and return SkipZigTest when it is missing, which is how 26 tests skipped
+//! on macOS and 29 on Windows while the platform matrix advertised codegen as
+//! "full" on all three tiers. That is asserted by CI instead (the "Verify the
+//! toolchain the tests depend on is present" step in .github/workflows/ci.yml
+//! runs `capnp --version` on every OS and fails the job if it is absent),
+//! because a test block cannot read the environment on this Zig version without
+//! a `process.Init`. If that step is ever removed, the skips become silent
+//! again.
+//!
 //! Committed fixtures are ALWAYS expected to exist. This gate asserts the
 //! fixtures that gate whole suites are present, so a rename/move fails loudly
 //! here (locally and in CI) instead of silently disabling coverage elsewhere.

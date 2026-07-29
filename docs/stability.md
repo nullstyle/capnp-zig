@@ -72,14 +72,26 @@ Experimental surface evolves in `docs/api-snapshot-experimental.txt` (ungated).
   and the RPC soak harness (latency percentiles + a flat memory-growth curve
   asserted at ≥100 concurrent peers) run against the two-party core. This is
   real soak evidence, not a claim. Scope of the bench gate, precisely: the
-  **pipelined throughput** case (calls/sec) is enforced in CI and is the
-  reliable code-regression signal. The **sequential round-trip latency**
-  percentiles (p50/p99) and its calls/sec are measured and printed but marked
-  *advisory* — a serialized round-trip on a shared CI runner is dominated by
-  hypervisor/neighbor scheduling, and was observed swinging p99 105µs → 210µs
-  on identical code, so enforcing it produced random red builds. Run
-  `zig build -Doptimize=ReleaseFast bench-check -- --enforce-advisory` on a
-  quiet machine to gate those too. Answer-lifecycle regressions additionally cover
+  **pipelined throughput** case (calls/sec) is enforced in CI. The **sequential
+  round-trip latency** percentiles (p50/p99) and its calls/sec are measured and
+  printed but marked *advisory* — a serialized round-trip on a shared CI runner
+  is dominated by hypervisor/neighbor scheduling, and was observed swinging p99
+  105µs → 210µs on identical code, so enforcing it produced random red builds.
+  Run `zig build -Doptimize=ReleaseFast bench-check -- --enforce-advisory` on a
+  quiet machine to gate those too.
+
+  Measured variance across 5 successive green CI runs on `main`: the
+  serialization/ping-pong wall-clock cases span 1.07×–1.25×, and every
+  allocation counter is **exactly** invariant (1.00×). The pipelined throughput
+  case spans **1.75×** — the widest of the fourteen, despite earlier wording
+  here calling it stable within ~3%. Bands are now sized per case from that
+  data: 40% above the worst observed run for wall-clock, 10% for allocation
+  counts, 25% for allocation bytes (a new gated metric — a change that keeps the
+  call count identical while growing each buffer was previously invisible).
+  Treat the allocation metrics as the deterministic signal and the wall-clock
+  cases as coarse.
+
+  Answer-lifecycle regressions additionally cover
   synchronous reentrant `Finish` during results and Bootstrap `Return`
   delivery (queued promised-answer replay before immediate cleanup), the
   `releaseResultCaps` flag on a late `Return` after a cancelling `Finish`, and

@@ -34,6 +34,10 @@ jobs:
         with:
           version: 0.17.0-dev.813+2153f8143
 
+      # capnp must be present on EVERY tier. Ten serialization/codegen suites
+      # shell out to it and skip when it is missing, so installing it on Linux
+      # only meant 26 tests silently skipped on macOS and 29 on Windows while
+      # docs/stability.md advertised codegen as "full" on all three.
       - name: Install Cap'n Proto compiler (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -44,6 +48,35 @@ jobs:
             apt-get update
             apt-get install -y capnproto libcapnp-dev
           fi
+
+      - name: Install Cap'n Proto compiler (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
+
+      - name: Install Cap'n Proto compiler (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Upstream ships prebuilt Windows tools inside the C++ release archive
+          # (a `capnproto-tools-win32-<ver>/` directory alongside the sources);
+          # there is no package-manager entry to rely on. Locate capnp.exe by
+          # search rather than by assuming the layout.
+          $ErrorActionPreference = 'Stop'
+          $ver = '1.0.2'
+          Invoke-WebRequest -Uri "https://capnproto.org/capnproto-c++-win32-$ver.zip" -OutFile capnp.zip
+          Expand-Archive -Path capnp.zip -DestinationPath capnp-dist
+          $exe = Get-ChildItem -Path capnp-dist -Recurse -Filter capnp.exe | Select-Object -First 1
+          if (-not $exe) { throw "capnp.exe not found in the capnproto $ver Windows archive" }
+          Write-Host "capnp.exe at $($exe.FullName)"
+          $exe.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # Turn a missing tool into a hard job failure instead of ~10 test files
+      # quietly returning SkipZigTest and the suite reporting green. This step
+      # is the assertion; tests/hardening/toolchain_gate_test.zig covers
+      # committed fixtures but cannot read the environment to check the tool.
+      - name: Verify the toolchain the tests depend on is present
+        shell: bash
+        run: capnp --version
 
       - name: Run tests
         timeout-minutes: 20

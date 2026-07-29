@@ -161,10 +161,10 @@ params) and **disconnect-mid-call** cross-impl (E2). The one remaining `SKIP` is
 matrix is asymmetric only because of that single reference-library gap, not
 capnp-zig behavior — see Known limitations #4.
 
-Note this cross-implementation matrix runs on a **local Docker host only** (Docker
-Desktop / WSL2); hosted CI runners cannot run the Linux-container reference
-matrix, so it is verified locally before each release. The Zig↔Zig self-interop
-e2e (`zig build e2e-self`) does run in hosted CI on every push.
+Note this cross-implementation matrix runs **per push on the Linux CI tier**
+(the `e2e-zig` job), alongside the Zig↔Zig self-interop e2e
+(`zig build e2e-self`). It does not run on the macOS or Windows tiers, because
+hosted runners there cannot run Linux containers.
 
 Beyond Level 1 (all **Experimental**, outside the frozen contract):
 

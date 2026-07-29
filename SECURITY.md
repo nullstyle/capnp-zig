@@ -48,7 +48,16 @@ Out of scope (file ordinary issues instead):
 
 The repository maintains a security regression matrix
 ([docs/security-regression-matrix.md](docs/security-regression-matrix.md)),
-deterministic fuzz/OOM/resource-budget gates in CI, coverage-guided fuzz
-targets (`zig build test-fuzz --fuzz`), and a nightly soak harness. New
-parser or protocol code is expected to come with bounds-checked accessors
-and regression coverage.
+deterministic fuzz/OOM/resource-budget gates in CI (`zig build
+test-fuzz-smoke`, `test-oom`, `test-resource-budgets` — all per push), and a
+nightly soak harness. New parser or protocol code is expected to come with
+bounds-checked accessors and regression coverage.
+
+**Coverage-guided fuzzing is currently not operational.** Fuzz targets exist for
+every untrusted-input surface (`zig build test-fuzz --fuzz`) and a nightly lane
+invokes them, but Zig master's experimental fuzzer aborts in its `maker` stage
+before fuzzing begins on the toolchain this project pins, so that lane has
+produced no coverage-guided signal. The nightly job now fails rather than
+reporting green when this happens, so the gap stays visible. Treat the
+deterministic fuzz smoke — not coverage-guided fuzzing — as the control that
+actually runs today.

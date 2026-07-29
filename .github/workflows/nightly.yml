@@ -59,12 +59,25 @@ jobs:
         # genuine findings.
         run: |
           set +e
-          timeout --kill-after=30 600 zig build test-fuzz --fuzz 2>&1 | tee fuzz.log
+          # A run that produced NO fuzzing must not be reportable as success.
+          # This job passed green for 30 consecutive nightlies while the zig
+          # fuzzer's `maker` aborted at startup: the infra-failure downgrade
+          # below fired every time, so "the fuzzer never started" was
+          # indistinguishable from "the window elapsed with no findings". The
+          # elapsed-time floor is that missing positive signal.
+          FUZZ_WINDOW=600
+          MIN_FUZZ_SECONDS=120
+          started=$(date +%s)
+          timeout --kill-after=30 "$FUZZ_WINDOW" zig build test-fuzz --fuzz 2>&1 | tee fuzz.log
           rc=${PIPESTATUS[0]}
+          elapsed=$(( $(date +%s) - started ))
+          echo "fuzzing ran for ${elapsed}s (rc=${rc})"
+
           if [ "$rc" -eq 124 ]; then
             echo "fuzzing window elapsed with no findings"
             exit 0
           fi
+
           # Downgrade ONLY zig fuzzer infrastructure failures (maker slice
           # panics, libfuzzer harness errors) to warnings. Do NOT match the
           # bare token `fuzzer.zig`: a genuine finding — the fuzz TARGET dying —
@@ -73,9 +86,14 @@ jobs:
           # If a true infra panic ever fails to match these specific markers,
           # the nightly (non-blocking) goes red for triage — the safe direction.
           if grep -qE "the following maker command terminated with signal|libfuzzer\.log" fuzz.log; then
-            echo "::warning::zig fuzzer infrastructure failed (experimental on zig master) — not a fuzz finding"
+            if [ "$elapsed" -lt "$MIN_FUZZ_SECONDS" ]; then
+              echo "::error::The zig fuzzer aborted after ${elapsed}s, before fuzzing began — this run produced ZERO coverage-guided signal. Not a fuzz finding, and not a pass either. Remediation: pin the fuzz lane to a zig snapshot whose fuzzer works, or vendor one. Until then this job is red by design; SECURITY.md must not claim coverage-guided fuzzing as an active control."
+              exit 1
+            fi
+            echo "::warning::zig fuzzer infrastructure failed after ${elapsed}s of real fuzzing (experimental on zig master) — not a fuzz finding"
             exit 0
           fi
+
           echo "fuzzer exited early (rc=$rc) — likely a finding"
           exit "$rc"
 

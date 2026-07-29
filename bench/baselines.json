@@ -1,5 +1,5 @@
 {
-  "max_regression_pct": 500.0,
+  "max_regression_pct": 30.0,
   "cases": [
     {
       "name": "ping_pong_default",
@@ -14,7 +14,24 @@
         "--json"
       ],
       "metric": "ns_per_iter",
-      "baseline": 2929.381833
+      "baseline": 574.99,
+      "max_regression_pct": 40.0
+    },
+    {
+      "name": "ping_pong_default_alloc_bytes",
+      "binary": "./zig-out/bin/bench-ping-pong",
+      "args": [
+        "--iters",
+        "6000",
+        "--payload",
+        "1024",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "alloc_bytes_per_iter",
+      "baseline": 20604.0,
+      "max_regression_pct": 25.0
     },
     {
       "name": "ping_pong_default_allocs",
@@ -30,7 +47,7 @@
       ],
       "metric": "allocs_per_iter",
       "baseline": 6.0,
-      "max_regression_pct": 30.0
+      "max_regression_pct": 10.0
     },
     {
       "name": "ping_pong_far",
@@ -46,7 +63,25 @@
         "--json"
       ],
       "metric": "ns_per_iter",
-      "baseline": 3459.708333
+      "baseline": 726.19,
+      "max_regression_pct": 40.0
+    },
+    {
+      "name": "ping_pong_far_alloc_bytes",
+      "binary": "./zig-out/bin/bench-ping-pong",
+      "args": [
+        "--iters",
+        "6000",
+        "--payload",
+        "1024",
+        "--warmup",
+        "200",
+        "--far",
+        "--json"
+      ],
+      "metric": "alloc_bytes_per_iter",
+      "baseline": 20424.0,
+      "max_regression_pct": 25.0
     },
     {
       "name": "ping_pong_far_allocs",
@@ -63,7 +98,7 @@
       ],
       "metric": "allocs_per_iter",
       "baseline": 6.0,
-      "max_regression_pct": 30.0
+      "max_regression_pct": 10.0
     },
     {
       "name": "packed_pack_default",
@@ -82,7 +117,28 @@
         "--json"
       ],
       "metric": "ns_per_iter",
-      "baseline": 173923.652833
+      "baseline": 15006.89,
+      "max_regression_pct": 40.0
+    },
+    {
+      "name": "packed_pack_default_alloc_bytes",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "pack",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "alloc_bytes_per_iter",
+      "baseline": 77131.0,
+      "max_regression_pct": 25.0
     },
     {
       "name": "packed_pack_default_allocs",
@@ -102,7 +158,7 @@
       ],
       "metric": "allocs_per_iter",
       "baseline": 6.0,
-      "max_regression_pct": 30.0
+      "max_regression_pct": 10.0
     },
     {
       "name": "packed_unpack_default",
@@ -121,7 +177,28 @@
         "--json"
       ],
       "metric": "ns_per_iter",
-      "baseline": 108204.368
+      "baseline": 7514.88,
+      "max_regression_pct": 40.0
+    },
+    {
+      "name": "packed_unpack_default_alloc_bytes",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "unpack",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "alloc_bytes_per_iter",
+      "baseline": 30952.0,
+      "max_regression_pct": 25.0
     },
     {
       "name": "packed_unpack_default_allocs",
@@ -140,8 +217,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 7.0,
-      "max_regression_pct": 30.0
+      "baseline": 3.0,
+      "max_regression_pct": 10.0
     },
     {
       "name": "packed_roundtrip_default",
@@ -160,7 +237,28 @@
         "--json"
       ],
       "metric": "ns_per_iter",
-      "baseline": 270675.972167
+      "baseline": 21919.72,
+      "max_regression_pct": 40.0
+    },
+    {
+      "name": "packed_roundtrip_default_alloc_bytes",
+      "binary": "./zig-out/bin/bench-pack-unpack",
+      "args": [
+        "--mode",
+        "roundtrip",
+        "--iters",
+        "6000",
+        "--payload",
+        "4096",
+        "--list-len",
+        "2048",
+        "--warmup",
+        "200",
+        "--json"
+      ],
+      "metric": "alloc_bytes_per_iter",
+      "baseline": 108083.0,
+      "max_regression_pct": 25.0
     },
     {
       "name": "packed_roundtrip_default_allocs",
@@ -179,8 +277,8 @@
         "--json"
       ],
       "metric": "allocs_per_iter",
-      "baseline": 13.0,
-      "max_regression_pct": 30.0
+      "baseline": 9.0,
+      "max_regression_pct": 10.0
     },
     {
       "name": "rpc_round_trip_seq_p50",
@@ -249,7 +347,7 @@
         "--json"
       ],
       "metric": "calls_per_sec",
-      "baseline": 34649.0,
+      "baseline": 39997.43,
       "max_regression_pct": 35.0,
       "higher_is_better": true
     }
