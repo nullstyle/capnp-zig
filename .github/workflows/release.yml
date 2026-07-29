@@ -1,0 +1,77 @@
+name: Release tag audit
+
+# Detective control for the release ceremony (RELEASING.md).
+#
+# `just release-tag` refuses to create a tag on a commit without a green CI
+# run. This job is what catches a tag created any other way: it runs on the tag
+# itself, so bypassing the rule leaves a permanent red mark on the release
+# rather than being discovered twelve days later, which is exactly how v0.4.0
+# shipped with the hardening and benchmark gates red on all three OSes.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  audit:
+    name: Audit tagged commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: The tagged commit must have a green CI run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "Tag ${GITHUB_REF_NAME} points at ${sha}"
+
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${sha}" \
+            --jq '[.workflow_runs[] | select(.name == "CI")]')"
+
+          count="$(printf '%s' "$runs" | jq 'length')"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No CI run exists for ${sha}. A tag must be cut from a commit whose CI has already concluded successfully (RELEASING.md step 2)."
+            exit 1
+          fi
+
+          printf '%s' "$runs" | jq -r '.[] | "\(.conclusion)\t\(.html_url)"'
+
+          failed="$(printf '%s' "$runs" | jq '[.[] | select(.conclusion != "success")] | length')"
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::${failed} CI run(s) for ${sha} did not conclude successfully. This tag was cut through a red gate."
+            exit 1
+          fi
+
+          echo "CI is green for ${sha}."
+
+      - name: The tag must match the manifest and the CHANGELOG
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+
+          manifest="$(sed -n 's/.*\.version = "\(.*\)".*/\1/p' build.zig.zon | head -1)"
+          if [ "$manifest" != "$version" ]; then
+            echo "::error::Tag ${tag} does not match build.zig.zon version ${manifest}."
+            exit 1
+          fi
+
+          if ! grep -q "^## \[${version}\] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated '## [${version}] - ...' section."
+            exit 1
+          fi
+
+          if ! grep -q "^\[${version}\]: " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md link footer does not define [${version}]."
+            exit 1
+          fi
+
+          echo "Tag ${tag}, manifest ${manifest}, and CHANGELOG agree."

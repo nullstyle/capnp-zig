@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-29
+
+This release exists primarily to make the shipped artifact match the verified
+one. `v0.4.0` was tagged three minutes before its own push CI went red — the
+static hardening gate failed on all three operating systems and the benchmark
+regression gate failed with it — and both gates were only repaired twelve days
+later. Everything in that repair, plus a remote-triggerable validation-CPU
+amplification fix and a pipelined-call `Return` liveness fix, lands here on a
+commit whose CI is green in all 21 jobs. `v0.4.0` should be considered
+superseded; consumers on it should move to `v0.5.0`.
+
+The minor bump (rather than a patch) is forced by the codegen change under
+**Breaking** below: it alters the shape of generated code, which is part of the
+Stable tier.
+
+### Breaking
+
+- **Codegen: group-typed union member getters are now fallible.** A union
+  member whose type is a group generated a getter with no `which()` check —
+  reading it while a sibling variant was selected silently reinterpreted the
+  sibling's bits. Group union-member getters now return `!Group.Reader` and
+  yield `error.WrongUnionMember` when a different variant is selected, matching
+  the guard slot union-members already had. Plain (non-union) groups keep their
+  infallible getter.
+
+  **Migration:** regenerate your schemas and add `try` at call sites that read a
+  group-typed union member. Only schemas with group members inside a union are
+  affected; if `capnp compile` on your schemas produces no `!Group.Reader`
+  getters, there is nothing to change.
+
+### Added
+
+- **The release ceremony is written down and mechanically enforced.**
+  `RELEASING.md` records the checklist that previously lived only in maintainer
+  habit — semver classification (including the rule that a change to the *shape
+  of generated code* is a Stable-tier break the `check-api` gate structurally
+  cannot see), the green-CI precondition, the version sweep, the CHANGELOG cut,
+  and the post-tag `zig fetch` validation. Three gates back it:
+
+  - `zig build docs-smoke` now requires every consumer-facing version stamp to
+    match `build.zig.zon` and rejects any `zig fetch` pin naming a different
+    version. Ablation-checked: bumping the manifest alone produces 14 failures
+    across README, `build-integration.md`, `supported-surface.md`,
+    `stability.md`, and the CHANGELOG.
+  - `just release-tag X.Y.Z` refuses to create a tag when the worktree is
+    dirty, when the manifest version disagrees, or when the commit being tagged
+    has no green CI run.
+  - `.github/workflows/release.yml` runs on the tag itself and fails when the
+    tagged commit's CI was not green, or when tag, manifest, and CHANGELOG
+    disagree — so bypassing the recipe leaves a permanent red mark on the
+    release instead of being discovered twelve days later.
+
 ### Documentation
 
 - Added a **Schema-language support** section to `docs/supported-surface.md`: a
@@ -62,16 +114,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   added via `git add .`; it is now anchored to the repo root (`/test_*`).
   Removed a committed agent scratchpad under `private/` and now ignore
   `private/`.
-
-- **Codegen: group-typed union members now guard on the discriminant.** A
-  union member whose type is a group generated a getter with no `which()`
-  check — reading it while a sibling variant was selected silently
-  reinterpreted the sibling's bits. Group union-member getters are now fallible
-  (`!Group.Reader`) and return `error.WrongUnionMember` when a different variant
-  is selected, matching the guard slot union-members already had. Plain
-  (non-union) groups keep their infallible getter. This is a source-visible
-  change to generated code for schemas with group union members: such getters
-  now require `try`.
 
 - **The per-connection validation-work budget now charges frames that fail to
   decode.** `handleFrame` ran the full validating pointer walk before charging
@@ -997,6 +1039,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/nullstyle/capnp-zig/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/nullstyle/capnp-zig/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nullstyle/capnp-zig/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nullstyle/capnp-zig/releases/tag/v0.2.0
