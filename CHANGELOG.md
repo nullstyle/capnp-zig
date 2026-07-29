@@ -10,6 +10,15 @@
   below: expanding inferred error sets forces body analysis, which surfaced it
   immediately. The schema-validation suite now calls it, so it cannot rot again.
 
+- **`just check-generated` no longer diffs the experimental API snapshot.** That
+  file is regenerated on every run by design and records target-dependent detail:
+  `OwnerThreadId.value` is `std.Thread.Id`, which renders `u64` on macOS and
+  `u32` on Linux, so a committed copy can never match on all three tiers. Once
+  field rendering started capturing types, this turned the Linux drift check red
+  for a difference that is not an API change. The **Stable** file stays in the
+  diff — it must be target-stable, and `zig build check-api` proves that by
+  running on all three OSes.
+
 - **The API freeze gate now pins struct fields, defaults, enum ordinals, and
   error sets.** `tools/api_snapshot.zig` walked `declarations` only, so every
   frozen struct was pinned by *name alone*: changing

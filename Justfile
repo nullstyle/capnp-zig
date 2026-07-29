@@ -182,7 +182,13 @@ check-generated:
     cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
     zig build api-snapshot
     just fmt
-    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt docs/api-snapshot-experimental.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
+    # docs/api-snapshot-experimental.txt is deliberately NOT diffed here. It is
+    # regenerated on every run by design ("drift here is expected and NEVER fails
+    # the gate"), and it records target-dependent detail: `OwnerThreadId.value` is
+    # `std.Thread.Id`, which renders u64 on macOS and u32 on Linux, so a committed
+    # copy can never match on every OS. The Stable file MUST be target-stable and
+    # stays in the diff — `zig build check-api` enforces that on all three tiers.
+    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Complete local release preflight, including heavier CI build/regression jobs
 release-preflight:
