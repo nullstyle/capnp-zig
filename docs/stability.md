@@ -14,7 +14,7 @@ updated as phases land.
 | Layer | Linux | macOS | Windows |
 |---|---|---|---|
 | Serialization / wire format / packing | full | full | full |
-| Codegen + `capnpc-zig` plugin (incl. CLI options) | full | full | full |
+| Codegen + `capnpc-zig` plugin (incl. CLI options) | full | full | partial (see note) |
 | RPC protocol engine (`Peer`, persistence, promises) | full | full | full |
 | TCP transport: connect/accept/read/write | full | full | full |
 | TCP transport: ticks, idle reaping, wake | full | full | full (reader-thread bridge; see plan doc) |
@@ -26,6 +26,17 @@ updated as phases land.
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | where zig exposes it | where zig exposes it | blocked upstream (`EventedBackendUnsupported`) |
 | QUIC transport | experimental (`-Dquic=true`; CI-gated per push) | experimental (`-Dquic=true`; builds locally, **not exercised in CI** — the only `-Dquic=true` job is Linux) | not yet exercised in CI |
+
+Note on **Windows codegen**: the plugin itself builds and runs, but the
+`capnp`-driven codegen and interop suites do not execute there. Those suites
+shell out to the `capnp` CLI, and the upstream prebuilt Windows tools ship only
+the executables — not the standard schema include tree — so a schema using an
+absolute standard import (`import "/capnp/stream.capnp"`) fails to compile.
+Installing `capnp` on the Windows runner was tried and turned two suites red for
+exactly that reason; the honest state is that this coverage is **absent**, not
+merely unmeasured. Closing it needs an `-I` include path threaded through the
+~10 test files that currently hardcode their `capnp` argv. Until then, treat
+Windows codegen as unverified by CI.
 
 ## Stability Levels
 

@@ -38,14 +38,22 @@
   spelled out, while one after real fuzzing stays a warning. `SECURITY.md` no
   longer lists coverage-guided fuzzing among the controls that actually run.
 
-- **`capnp` is installed on all three CI tiers.** It was installed on Linux only,
-  so ten serialization/codegen suites that shell out to it returned
-  `SkipZigTest` — 26 tests silently skipped on macOS and 29 on Windows — while
-  the platform matrix advertised codegen as "full | full | full". macOS installs
-  via Homebrew; Windows unpacks the upstream prebuilt tools (URL and archive
-  layout verified against the published release rather than assumed). A new
-  per-OS step runs `capnp --version` so a missing tool fails the job instead of
-  quietly disabling coverage.
+- **`capnp` is installed on the macOS CI tier, converting 26 silent skips into
+  real coverage.** It was installed on Linux only, so ten serialization/codegen
+  suites that shell out to it returned `SkipZigTest` — 26 tests silently skipped
+  on macOS and 29 on Windows — while the platform matrix advertised codegen as
+  "full | full | full". A `capnp --version` step now fails the job outright if
+  the tool is missing, instead of letting the suites quietly disable themselves.
+
+  **Windows is deliberately excluded, and that exclusion produced a finding.**
+  Installing the upstream prebuilt Windows tools makes the suites run and then
+  fail: they ship only the executables, not the standard schema include tree, so
+  a schema using an absolute standard import (`import "/capnp/stream.capnp"`)
+  cannot compile. So Windows codegen coverage is genuinely **absent**, not
+  merely unmeasured — the platform matrix's "full" for that tier was never
+  evidenced. `docs/stability.md` now says so and records what closing it needs
+  (an `-I` include path threaded through the ~10 test files that hardcode their
+  `capnp` argv).
 
 ### Documentation
 
