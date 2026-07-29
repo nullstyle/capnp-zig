@@ -581,6 +581,7 @@ capnpc-zig.rpc.peer.JoinNetwork.init: fn (*anyopaque, *const fn (*anyopaque, mem
 capnpc-zig.rpc.peer.JoinNetwork: struct
 capnpc-zig.rpc.peer.Joined: struct
 capnpc-zig.rpc.peer.Peer.PeerStats: struct
+capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy: enum
 capnpc-zig.rpc.peer.Peer.assertThreadAffinity: fn (*const rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.attachJoinNetwork: fn (*rpc.peer.mod.Peer, rpc.vat.join.JoinNetwork(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.Peer.attachTransport: fn (*rpc.peer.mod.Peer, *anyopaque, ?*const fn (*anyopaque, *rpc.peer.mod.Peer) void, ?*const fn (*anyopaque, []const u8) anyerror!void, ?*const fn (*anyopaque) void, ?*const fn (*anyopaque) bool) void
@@ -624,6 +625,7 @@ capnpc-zig.rpc.peer.Peer.sendRestore: fn (*rpc.peer.mod.Peer, u32, []const u8, *
 capnpc-zig.rpc.peer.Peer.sendReturnEmptyStruct: fn (*rpc.peer.mod.Peer, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnEmptyStruct)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendReturnException: fn (*rpc.peer.mod.Peer, u32, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnException)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendReturnResults: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.wire.protocol.ReturnBuilder) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnResults)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.peer.Peer.sendReturnResultsSentElsewhere: fn (*rpc.peer.mod.Peer, u32) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendReturnResultsSentElsewhere)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.sendSave: fn (*rpc.peer.mod.Peer, u32, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.peer.mod.SaveResponse) anyerror!void) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendSave)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.peer.Peer.sendThirdPartyAnswer: fn (*rpc.peer.mod.Peer, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.sendThirdPartyAnswer)).@"fn".return_type.?).error_union.error_set!u32
 capnpc-zig.rpc.peer.Peer.setClock: fn (*rpc.peer.mod.Peer, ?rpc.time.Clock) void
@@ -636,6 +638,7 @@ capnpc-zig.rpc.peer.Peer.setQuestionDeadline: fn (*rpc.peer.mod.Peer, u32, u64) 
 capnpc-zig.rpc.peer.Peer.setQuestionDeinitCtx: fn (*rpc.peer.mod.Peer, u32, *const fn (mem.Allocator, *anyopaque) void) void
 capnpc-zig.rpc.peer.Peer.setRestorer: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.peer.persistence.RestoreOutcome(rpc.peer.mod.Export)) @typeInfo(@typeInfo(@TypeOf(rpc.peer.mod.Peer.setRestorer)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.peer.Peer.setSendFrameOverride: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (*anyopaque, []const u8) anyerror!void) void
+capnpc-zig.rpc.peer.Peer.setThirdPartyResultPolicy: fn (*rpc.peer.mod.Peer, rpc.peer.mod.Peer.ThirdPartyResultPolicy) void
 capnpc-zig.rpc.peer.Peer.setTimeouts: fn (*rpc.peer.mod.Peer, rpc.peer.state.PeerTimeouts) void
 capnpc-zig.rpc.peer.Peer.shutdown: fn (*rpc.peer.mod.Peer, ?*const fn (*rpc.peer.mod.Peer) void) void
 capnpc-zig.rpc.peer.Peer.start: fn (*rpc.peer.mod.Peer, ?*anyopaque, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer, anyerror) void, ?*const fn (?*anyopaque, *rpc.peer.mod.Peer) void) void
@@ -697,13 +700,13 @@ capnpc-zig.rpc.peer.dispatch: struct
 capnpc-zig.rpc.peer.errors.CallError: type = error{CallTimedOut,Canceled,Disconnected,RemoteException,UnexpectedReturn}
 capnpc-zig.rpc.peer.errors.Lifecycle: type = error{PeerShuttingDown,TransportNotAttached}
 capnpc-zig.rpc.peer.errors.Limits: type = error{EmbargoIdExhausted,PeerLimitExceeded,QuestionIdExhausted,RefCountOverflow}
-capnpc-zig.rpc.peer.errors.PeerError: type = error{CapabilityUnavailable,ConflictingThirdPartyAnswer,DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,DuplicateQuestionId,DuplicateResolve,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,EchoedDisembargoUnimplemented,EmbargoIdExhausted,ExportIsNotPromise,InvalidJoinKeyPart,InvalidThirdPartyAnswerId,MissingCallTarget,MissingJoinKeyPart,PeerLimitExceeded,PeerShuttingDown,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved,PromisedAnswerMissing,QuestionIdExhausted,RefCountOverflow,ReleaseCountExceeded,RemoteAbort,TransportNotAttached,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
+capnpc-zig.rpc.peer.errors.PeerError: type = error{CapabilityUnavailable,ConflictingThirdPartyAnswer,DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,DuplicateQuestionId,DuplicateResolve,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,EchoedDisembargoUnimplemented,EmbargoIdExhausted,ExportIsNotPromise,InvalidJoinKeyPart,InvalidThirdPartyAnswerId,MissingCallTarget,MissingJoinKeyPart,PeerLimitExceeded,PeerShuttingDown,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved,PromisedAnswerMissing,QuestionIdExhausted,RefCountOverflow,ReleaseCountExceeded,RemoteAbort,ResultsNotRedirected,ThirdPartyResultsNotRedirected,TransportNotAttached,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
 capnpc-zig.rpc.peer.errors.Promise: type = error{DuplicateResolve,ExportIsNotPromise,PromiseAlreadyResolved,PromiseBroken,PromiseUnresolved}
 capnpc-zig.rpc.peer.errors.ProvideAcceptJoin: type = error{DuplicateJoinQuestionId,DuplicateProvideQuestionId,DuplicateProvideRecipient,InvalidJoinKeyPart,MissingJoinKeyPart}
 capnpc-zig.rpc.peer.errors.Release: type = error{ReleaseCountExceeded}
 capnpc-zig.rpc.peer.errors.Remote: type = error{RemoteAbort}
 capnpc-zig.rpc.peer.errors.Routing: type = error{CapabilityUnavailable,DuplicateQuestionId,EchoedDisembargoUnimplemented,MissingCallTarget,PromisedAnswerMissing,UnexpectedForwardedTailReturn,UnexpectedMessage,UnknownDisembargoTarget,UnknownExport,UnknownQuestion}
-capnpc-zig.rpc.peer.errors.ThirdParty: type = error{ConflictingThirdPartyAnswer,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,InvalidThirdPartyAnswerId}
+capnpc-zig.rpc.peer.errors.ThirdParty: type = error{ConflictingThirdPartyAnswer,DuplicateThirdPartyAnswerId,DuplicateThirdPartyAwait,DuplicateThirdPartyReturn,InvalidThirdPartyAnswerId,ResultsNotRedirected,ThirdPartyResultsNotRedirected}
 capnpc-zig.rpc.peer.errors: struct
 capnpc-zig.rpc.peer.finish.FinishOps: fn (comptime type) type
 capnpc-zig.rpc.peer.finish.clearFinishQuestionState: fn (comptime type, anytype, u32, anytype, anytype, anytype, anytype, anytype) void

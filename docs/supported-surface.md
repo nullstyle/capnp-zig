@@ -297,6 +297,31 @@ Each of these is a defined, non-corrupting behavior — safe to tag with, listed
 you know exactly what you are relying on. None is a leak/UAF/hang against a
 cooperating peer.
 
+### Active
+
+- **Inbound `Call.sendResultsTo = thirdParty` is refused by default.** Answering
+  it requires connecting to a third vat and delivering the results there;
+  capnp-zig does not do that for you, so it answers with a single exception
+  `Return` before dispatching rather than accepting a call whose results it
+  cannot deliver. Both reference implementations refuse too (go-capnp echoes
+  `Unimplemented`; the C++ stack aborts the connection), so this is not an
+  interop regression. Applications that perform the redirect themselves opt in
+  with `Peer.setThirdPartyResultPolicy(.application)` and settle the answer with
+  `Peer.sendReturnResultsSentElsewhere`, which emits the spec-mandated
+  `resultsSentElsewhere`. Consequence for proxy topologies: an introducer no
+  longer propagates third-party result routing unless every capnp-zig hop opts
+  in. Pipelining on a redirected answer is not supported — such calls are failed
+  with their own exception `Return`, because this vat never observes the results
+  it would need in order to resolve them.
+
+- **Reading a `List(Struct)` from data encoded as a struct list is not
+  supported.** The *forward* direction of the list-upgrade rule works: a list
+  encoded with any element size except one bit decodes as a struct list, so a
+  peer that evolved `List(UInt32)` into `List(SomeStruct)` can read old data. The
+  inverse — an old binary reading a correctly-encoded struct list as
+  `List(UInt32)` — is not implemented. Only half the compatibility guarantee is
+  in place.
+
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved on main; no active limitation is currently
 documented for the frozen two-party surface. Historical resolved items are listed

@@ -73,6 +73,14 @@ pub const ThirdParty = error{
     DuplicateThirdPartyAwait,
     DuplicateThirdPartyReturn,
     InvalidThirdPartyAnswerId,
+    /// `sendReturnResults` was called for an answer whose caller redirected the
+    /// results to a third vat. The runtime cannot deliver them there, so it
+    /// refuses rather than silently discarding them.
+    ThirdPartyResultsNotRedirected,
+    /// `sendReturnResultsSentElsewhere` was called for an answer whose caller
+    /// did not redirect its results, which would leave that caller with no
+    /// results at all.
+    ResultsNotRedirected,
 };
 
 pub const Remote = error{

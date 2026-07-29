@@ -1837,21 +1837,23 @@ test "handleCall supports sendResultsTo.yourself for local export target" {
     try std.testing.expect(server_ctx.called);
 }
 
-test "handleCall supports sendResultsTo.thirdParty for local export target" {
+test "handleCall rejects sendResultsTo.thirdParty by default" {
     const allocator = std.testing.allocator;
 
-    // When a loopback call uses sendResultsTo.thirdParty the production code
-    // converts the results to an accept_from_third_party return.  That return
-    // then enters the third-party adoption path: the callback is NOT invoked
-    // immediately but instead a pending await is stored.  This test verifies
-    // that the server handler fires and that the pending third-party state is
-    // correctly established.
+    // `sendResultsTo = thirdParty` asks this vat to deliver the results to a
+    // third vat. It cannot, so it must refuse before dispatching -- accepting
+    // the call and then dropping its results is the one outcome the protocol
+    // never permits. Both reference implementations refuse too.
 
     const ServerCtx = struct {
         called: bool = false,
     };
     const ClientBuildCtx = struct {
         destination: message.AnyPointerReader,
+    };
+    const ReturnCtx = struct {
+        returns: usize = 0,
+        tag: ?protocol.ReturnTag = null,
     };
     const Handlers = struct {
         fn buildCall(ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
@@ -1874,14 +1876,89 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
             try peer.sendReturnResults(call.question_id, server, buildResults);
         }
 
-        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
-            // Should not be called synchronously in the thirdParty flow.
-            return error.UnexpectedCallback;
+        fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const rc: *ReturnCtx = castCtx(*ReturnCtx, ctx);
+            rc.returns += 1;
+            rc.tag = ret.tag;
         }
     };
 
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
+
+    var server_ctx = ServerCtx{};
+    const export_id = try peer.addExport(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    var third_builder = message.MessageBuilder.init(allocator);
+    defer third_builder.deinit();
+    const third_root = try third_builder.initRootAnyPointer();
+    try third_root.setText("local-third-party");
+    const third_bytes = try third_builder.toBytes();
+    defer allocator.free(third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
+    defer third_msg.deinit();
+
+    var client_build_ctx = ClientBuildCtx{
+        .destination = try third_msg.getRootAnyPointer(),
+    };
+    var return_ctx = ReturnCtx{};
+    _ = try peer.sendCallResolved(
+        .{ .exported = .{ .id = export_id } },
+        0x99,
+        0,
+        &client_build_ctx,
+        Handlers.buildCall,
+        Handlers.onReturn,
+    );
+    // The loopback Return is delivered synchronously inside sendCallResolved,
+    // so the callback has already run by the time it returns.
+    _ = &return_ctx;
+
+    // The call was refused before dispatch.
+    try std.testing.expect(!server_ctx.called);
+    // Exactly one Return, and it is an exception -- not an instruction to await
+    // a third party that will never be contacted.
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_third_party_awaits.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.send_results_to_third_party.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.active_inbound_questions.count());
+}
+
+test "handleCall dispatches sendResultsTo.thirdParty under the application policy" {
+    const allocator = std.testing.allocator;
+
+    // With the host opting in, the call dispatches and the handler is
+    // responsible for delivering results to the third vat itself, then settling
+    // this answer with resultsSentElsewhere -- the tag the protocol mandates for
+    // a Return answering a Call whose sendResultsTo was not `caller`.
+
+    const ServerCtx = struct {
+        called: bool = false,
+    };
+    const ClientBuildCtx = struct {
+        destination: message.AnyPointerReader,
+    };
+    const Handlers = struct {
+        fn buildCall(ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            const cb: *const ClientBuildCtx = castCtx(*const ClientBuildCtx, ctx);
+            try call.setSendResultsToThirdParty(cb.destination);
+        }
+
+        fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
+            server.called = true;
+            try peer.sendReturnResultsSentElsewhere(call.question_id);
+        }
+
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setThirdPartyResultPolicy(.application);
 
     var server_ctx = ServerCtx{};
     const export_id = try peer.addExport(.{
@@ -1910,11 +1987,142 @@ test "handleCall supports sendResultsTo.thirdParty for local export target" {
         Handlers.onReturn,
     );
 
-    // The server handler should have fired.
     try std.testing.expect(server_ctx.called);
-    // The accept_from_third_party return entered the third-party adoption
-    // path so a pending await should have been stored.
-    try std.testing.expectEqual(@as(usize, 1), peer.pending_third_party_awaits.count());
+    // The routing marker and the answer are both drained by the settle.
+    try std.testing.expectEqual(@as(usize, 0), peer.send_results_to_third_party.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.active_inbound_questions.count());
+}
+
+test "sendReturnResults refuses to discard results redirected to a third party" {
+    const allocator = std.testing.allocator;
+
+    // The regression for the original defect: a handler that builds results for
+    // a redirected answer must not have them silently thrown away. Under the
+    // application policy the call dispatches, so a handler that calls
+    // sendReturnResults (rather than the settle API) gets a hard error.
+
+    const ServerCtx = struct {
+        build_ran: bool = false,
+        got: ?anyerror = null,
+    };
+    const ClientBuildCtx = struct {
+        destination: message.AnyPointerReader,
+    };
+    const Handlers = struct {
+        fn buildCall(ctx: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
+            const cb: *const ClientBuildCtx = castCtx(*const ClientBuildCtx, ctx);
+            try call.setSendResultsToThirdParty(cb.destination);
+        }
+
+        fn buildResults(ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
+            server.build_ran = true;
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            _ = try any.initStruct(0, 0);
+            _ = try ret.initCapTableTyped(0);
+        }
+
+        fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
+            peer.sendReturnResults(call.question_id, server, buildResults) catch |err| {
+                server.got = err;
+                // Settle the answer so the caller still gets exactly one Return.
+                try peer.sendReturnResultsSentElsewhere(call.question_id);
+                return;
+            };
+        }
+
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setThirdPartyResultPolicy(.application);
+
+    var server_ctx = ServerCtx{};
+    const export_id = try peer.addExport(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    var third_builder = message.MessageBuilder.init(allocator);
+    defer third_builder.deinit();
+    const third_root = try third_builder.initRootAnyPointer();
+    try third_root.setText("local-third-party");
+    const third_bytes = try third_builder.toBytes();
+    defer allocator.free(third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
+    defer third_msg.deinit();
+
+    var client_build_ctx = ClientBuildCtx{
+        .destination = try third_msg.getRootAnyPointer(),
+    };
+    _ = try peer.sendCallResolved(
+        .{ .exported = .{ .id = export_id } },
+        0x99,
+        0,
+        &client_build_ctx,
+        Handlers.buildCall,
+        Handlers.onReturn,
+    );
+
+    // Before the fix this returned void and the built results vanished.
+    try std.testing.expectEqual(@as(?anyerror, error.ThirdPartyResultsNotRedirected), server_ctx.got);
+    try std.testing.expectEqual(@as(usize, 0), peer.send_results_to_third_party.count());
+}
+
+test "sendReturnResultsSentElsewhere rejects an answer whose results were not redirected" {
+    const allocator = std.testing.allocator;
+
+    const ServerCtx = struct {
+        got: ?anyerror = null,
+    };
+    const Handlers = struct {
+        fn buildCall(_: *anyopaque, _: *protocol.CallBuilder) anyerror!void {}
+
+        fn buildResults(ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+            _ = ctx;
+            var payload = try ret.payloadTyped();
+            var any = try payload.initContent();
+            _ = try any.initStruct(0, 0);
+            _ = try ret.initCapTableTyped(0);
+        }
+
+        fn onCall(ctx: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
+            // A plain caller-routed answer must never be settled without its
+            // results.
+            peer.sendReturnResultsSentElsewhere(call.question_id) catch |err| {
+                server.got = err;
+            };
+            try peer.sendReturnResults(call.question_id, server, buildResults);
+        }
+
+        fn onReturn(_: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var server_ctx = ServerCtx{};
+    const export_id = try peer.addExport(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    _ = try peer.sendCallResolved(
+        .{ .exported = .{ .id = export_id } },
+        0x99,
+        0,
+        &server_ctx,
+        Handlers.buildCall,
+        Handlers.onReturn,
+    );
+
+    try std.testing.expectEqual(@as(?anyerror, error.ResultsNotRedirected), server_ctx.got);
 }
 
 test "handleReturn adopts thirdPartyAnswer when await arrives first" {
@@ -4883,6 +5091,11 @@ fn sendResultsToThirdPartyLocalExportOomImpl(allocator: std.mem.Allocator) !void
 
     var peer = Peer.initDetached(allocator);
     defer peer.deinit();
+    // Opt in: under the default `.reject` policy handleCall refuses such calls
+    // before the routing marker is ever recorded, so the allocator-failure paths
+    // this test covers (noteSendResultsToThirdParty's budget accounting and
+    // payload clone) would never be reached.
+    peer.setThirdPartyResultPolicy(.application);
 
     var handler_state: u8 = 0;
     const export_id = try peer.addExport(.{
@@ -5114,4 +5327,114 @@ test "peer forwardResolvedCall third-party context path propagates OOM without l
         forwardResolvedCallThirdPartyContextOomImpl,
         .{},
     );
+}
+
+test "sendReturnResultsSentElsewhere drains calls pipelined on the redirected answer" {
+    const allocator = std.testing.allocator;
+
+    // A redirected answer's results never pass through this vat, so it cannot
+    // resolve a promised-answer target against them. Calls already pipelined on
+    // that answer must therefore each get their own Return -- left waiting they
+    // hang a compliant caller forever, which is exactly what a plain
+    // sendReturnTag would do (failQueuedPromisedCalls has no caller on the tag
+    // path).
+
+    const ServerCtx = struct {
+        parked_question: ?u32 = null,
+    };
+    const Handlers = struct {
+        // Deferred: record the question and return without settling, so the
+        // pipelined child can be delivered while the answer is still pending.
+        fn onCall(ctx: *anyopaque, _: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = caps;
+            const server: *ServerCtx = castCtx(*ServerCtx, ctx);
+            server.parked_question = call.question_id;
+        }
+    };
+
+    var captured = std.ArrayList([]u8).empty;
+    defer {
+        for (captured.items) |f| allocator.free(f);
+        captured.deinit(allocator);
+    }
+    const Capture = struct {
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const list: *std.ArrayList([]u8) = @ptrCast(@alignCast(ctx));
+            try list.append(std.testing.allocator, try std.testing.allocator.dupe(u8, frame));
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setThirdPartyResultPolicy(.application);
+    peer.setSendFrameOverride(&captured, Capture.send);
+
+    var server_ctx = ServerCtx{};
+    const export_id = try peer.addExport(.{
+        .ctx = &server_ctx,
+        .on_call = Handlers.onCall,
+    });
+
+    // A third-party recipient token for the redirected call.
+    var third_builder = message.MessageBuilder.init(allocator);
+    defer third_builder.deinit();
+    const third_root = try third_builder.initRootAnyPointer();
+    try third_root.setText("recipient");
+    const third_bytes = try third_builder.toBytes();
+    defer allocator.free(third_bytes);
+    var third_msg = try message.Message.init(allocator, third_bytes, .{});
+    defer third_msg.deinit();
+    const recipient = try third_msg.getRootAnyPointer();
+
+    // (1) An inbound Call with sendResultsTo = thirdParty targeting our export.
+    const parent_qid: u32 = 41;
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        var call = try builder.beginCall(parent_qid, 0xABCD, 0);
+        try call.setTargetImportedCap(export_id);
+        try call.setSendResultsToThirdParty(recipient);
+        _ = try call.initCapTableTyped(0);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?u32, parent_qid), server_ctx.parked_question);
+    try std.testing.expect(peer.send_results_to_third_party.contains(parent_qid));
+
+    // (2) A second Call pipelined on that still-pending answer.
+    const child_qid: u32 = 42;
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        var call = try builder.beginCall(child_qid, 0xABCD, 0);
+        try call.setTargetPromisedAnswer(parent_qid);
+        _ = try call.initCapTableTyped(0);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+
+    const frames_before = captured.items.len;
+
+    // (3) The application settles the parent with resultsSentElsewhere.
+    try peer.sendReturnResultsSentElsewhere(parent_qid);
+
+    // Two Returns must have been emitted: the parent's resultsSentElsewhere and
+    // the child's exception. Without the drain the child never hears back.
+    try std.testing.expect(captured.items.len >= frames_before + 2);
+
+    var saw_parent = false;
+    var saw_child = false;
+    for (captured.items) |frame| {
+        var decoded = protocol.DecodedMessage.init(allocator, frame) catch continue;
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") continue;
+        const ret = decoded.asReturn() catch continue;
+        if (ret.answer_id == parent_qid and ret.tag == .resultsSentElsewhere) saw_parent = true;
+        if (ret.answer_id == child_qid and ret.tag == .exception) saw_child = true;
+    }
+    try std.testing.expect(saw_parent);
+    try std.testing.expect(saw_child);
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
 }

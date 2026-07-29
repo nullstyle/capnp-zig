@@ -1206,6 +1206,17 @@ const JoinCoordinatorAcceptLink = struct {
     coordinator: *JoinCoordinator,
 };
 
+/// Reason sent when refusing an inbound Call whose results were redirected to a
+/// third vat that this peer cannot contact.
+const third_party_results_unsupported =
+    "sendResultsTo.thirdParty unsupported: this vat cannot route results to a third party";
+
+/// Reason sent to calls pipelined on an answer whose results went to a third
+/// vat: this peer never observes those results, so it cannot resolve a
+/// promised-answer target against them.
+const results_sent_elsewhere_no_pipelining =
+    "results sent elsewhere; pipelining is not supported on a redirected answer";
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     limits: PeerLimits,
@@ -1220,6 +1231,7 @@ pub const Peer = struct {
     /// peer; set via `attachVatNetwork` before originating `Provide`/`Accept`
     /// handoffs. Borrowed — its `ctx` must outlive the peer.
     vat_network: ?VatNetwork = null,
+    third_party_result_policy: ThirdPartyResultPolicy = .reject,
 
     /// Optional Experimental Level-4 Join addressing seam. When present, inbound
     /// `Join` completion returns Zig `JoinResult` payloads and registers a
@@ -1757,6 +1769,33 @@ pub const Peer = struct {
     /// originating `Provide`/`Accept` handoffs (`sendProvide`/`sendAccept`); a
     /// plain two-party peer never needs one. The network's `ctx` must outlive
     /// the peer.
+    /// Callee policy for an inbound `Call` carrying `sendResultsTo = thirdParty`.
+    ///
+    /// That field asks the callee to connect to a third vat, deliver the results
+    /// there, and answer its immediate caller with `resultsSentElsewhere`. It is
+    /// a Level-3 feature, a callee is not required to implement it, and neither
+    /// reference implementation does: go-capnp echoes `Unimplemented` and drops
+    /// the call before touching its answer table, and the C++ stack fails the
+    /// requirement and aborts the connection.
+    pub const ThirdPartyResultPolicy = enum {
+        /// Default. Answer with a single exception `Return` and never dispatch
+        /// the call.
+        reject,
+        /// The application performs the redirect itself: the call dispatches
+        /// normally, and the handler is responsible for delivering results to
+        /// the third vat and then settling this answer with
+        /// `sendReturnResultsSentElsewhere`.
+        application,
+    };
+
+    /// Select how inbound `sendResultsTo = thirdParty` calls are handled. Per
+    /// `Peer`, not per call: in the canonical handoff topology only the callee's
+    /// peer facing the introducer needs `.application`.
+    pub fn setThirdPartyResultPolicy(self: *Peer, policy: ThirdPartyResultPolicy) void {
+        self.assertThreadAffinity();
+        self.third_party_result_policy = policy;
+    }
+
     pub fn attachVatNetwork(self: *Peer, network: VatNetwork) void {
         self.assertThreadAffinity();
         self.vat_network = network;
@@ -4700,11 +4739,18 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         // sendResultsTo routing is resolved in precedence order:
         // third-party handoff > local results-sent-elsewhere marker > normal results payload.
-        if (self.send_results_to_third_party.fetchRemove(answer_id)) |entry| {
-            _ = self.send_results_to_yourself.remove(answer_id);
-            defer if (entry.value) |payload| self.allocator.free(payload);
-            try self.sendReturnAcceptFromThirdParty(answer_id, entry.value);
-            return;
+        if (self.send_results_to_third_party.contains(answer_id)) {
+            // This answer's results were redirected to a third vat, so we are
+            // holding results we cannot deliver. Refuse loudly rather than drop
+            // them: the marker is deliberately LEFT IN PLACE, because every
+            // dispatch site converts an error from here into exactly one
+            // exception Return, and that path clears the routing state and frees
+            // the captured payload. An application that performed the redirect
+            // itself settles the answer with sendReturnResultsSentElsewhere.
+            //
+            // Under the default `.reject` policy this is unreachable: handleCall
+            // refuses such calls before the marker is ever recorded.
+            return error.ThirdPartyResultsNotRedirected;
         }
 
         if (self.send_results_to_yourself.remove(answer_id)) {
@@ -5031,6 +5077,33 @@ pub const Peer = struct {
         };
         var ctx: u8 = 0;
         try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
+    }
+
+    /// Settle an inbound call that carried `sendResultsTo = thirdParty`, after
+    /// the application has delivered the results to the third vat itself.
+    ///
+    /// Emits `Return{resultsSentElsewhere}` — the tag the protocol mandates for
+    /// a Return answering a Call whose `sendResultsTo` was not `caller`.
+    /// `awaitFromThirdParty` is *not* this tag: that is what an introducer sends
+    /// to the original caller on a different connection, and it is gated on that
+    /// caller having set `allowThirdPartyTailCall`.
+    ///
+    /// Requires `setThirdPartyResultPolicy(.application)`. Errors with
+    /// `error.ResultsNotRedirected` when this answer's caller did not redirect
+    /// its results, so a plain caller-routed question can never be settled
+    /// without them.
+    ///
+    /// Pipelining is not supported on a redirected answer: this vat never sees
+    /// the results, so it cannot resolve a promised-answer target against them.
+    /// Any calls already pipelined on this answer are failed with their own
+    /// exception `Return` rather than left waiting forever.
+    pub fn sendReturnResultsSentElsewhere(self: *Peer, answer_id: u32) !void {
+        self.assertThreadAffinity();
+        if (!self.send_results_to_third_party.contains(answer_id)) {
+            return error.ResultsNotRedirected;
+        }
+        try self.sendReturnTag(answer_id, .resultsSentElsewhere);
+        self.failQueuedPromisedCalls(answer_id, results_sent_elsewhere_no_pipelining);
     }
 
     fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
@@ -7694,6 +7767,25 @@ pub const Peer = struct {
         // questions so a Call can never collide with any other inbound question.
         if (try self.inboundQuestionIdInUse(call.question_id)) {
             return error.DuplicateQuestionId;
+        }
+
+        // `sendResultsTo = thirdParty` asks this vat to connect to a third vat
+        // and deliver the results there. Unless the host opted in, we cannot —
+        // and accepting the call only to drop its results is the one outcome the
+        // protocol never permits. Refuse with a single exception Return.
+        //
+        // Placement is load-bearing: after the duplicate-id check, so a reused
+        // id still reports DuplicateQuestionId; before the answer bookkeeping,
+        // so there is nothing to unwind; and before the inbound cap table is
+        // built, so no import references are taken and the exception Return's
+        // default `releaseParamCaps` correctly tells the sender to drop its
+        // export refs. This also covers in-process loopback calls, which are
+        // delivered through handleFrame.
+        if (call.send_results_to.tag == .thirdParty and
+            self.third_party_result_policy == .reject)
+        {
+            try self.sendReturnException(call.question_id, third_party_results_unsupported);
+            return;
         }
 
         const inbound_before = self.active_inbound_questions.count();

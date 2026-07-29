@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An inbound `Call` with `sendResultsTo = thirdParty` no longer silently
+  discards its results.** `sendReturnResults` took the third-party branch and
+  answered `awaitFromThirdParty` *without ever invoking the `build` closure*. For
+  a generated direct handler the whole method body lives inside that closure, so
+  the application method never ran; for a deferred handler it ran and its results
+  were dropped. Either way the caller was told to await results from a third vat
+  that would never be contacted, and its question sat un-settled until the peer
+  was torn down — a remote peer could make this vat accept a call, run nothing,
+  and leave the question hanging, which is the one outcome the protocol never
+  permits.
+
+  Inbound `thirdParty` calls are now **refused by default**, before dispatch and
+  before any answer bookkeeping, with a single exception `Return`. That is what
+  both reference implementations do — go-capnp echoes `Unimplemented` and drops
+  the call, the C++ stack fails the requirement and aborts — so no reference peer
+  can observe a difference. `sendReturnResults` now returns
+  `error.ThirdPartyResultsNotRedirected` rather than dropping results it cannot
+  deliver.
+
+  Applications that *do* perform the redirect themselves opt in with
+  `Peer.setThirdPartyResultPolicy(.application)` and settle the answer with the
+  new `Peer.sendReturnResultsSentElsewhere`. That emits
+  `Return{resultsSentElsewhere}` — the tag the spec mandates for a Return
+  answering a Call whose `sendResultsTo` was not `caller`. The previous code
+  emitted `awaitFromThirdParty`, which is a *different* message: what an
+  introducer sends the original caller on another connection, gated on that
+  caller having set `allowThirdPartyTailCall`. Settling also fails any calls
+  already pipelined on the redirected answer, since this vat never sees the
+  results and so cannot resolve a promised-answer target against them — without
+  that drain those children would never receive a Return at all.
+
+  Two behavior changes worth naming: **capnp-zig acting as an introducer or
+  proxy no longer propagates third-party result routing by default** (the
+  `propagate_accept_from_third_party` forwarding mode requires `.application` on
+  each capnp-zig hop), and the L3 redirected-return slice now puts
+  `resultsSentElsewhere` on the wire where it previously put
+  `awaitFromThirdParty`. Both are Experimental, Zig↔Zig-only paths — no
+  reference implementation accepts an inbound `sendResultsTo = thirdParty` at
+  all.
+
 - **Struct-list "upgrade" decoding is implemented; capnp-zig no longer reports
   a legal message as corrupt.** Cap'n Proto requires a reader to decode a list
   of any element size except `C = 1` (one bit) as a struct list, synthesizing a

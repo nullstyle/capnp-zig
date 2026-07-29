@@ -8,8 +8,8 @@
 //! A (the third party that receives the results) — are wired over a synchronous
 //! in-process loopback. A `Peer` binds to exactly one remote, so:
 //!
-//!   Vat B:  b_to_c  (B<->C)          — sends the redirected Call, gets awaitFromThirdParty
-//!   Vat C:  c_to_b  (B<->C)          — receives the Call, answers B with awaitFromThirdParty
+//!   Vat B:  b_to_c  (B<->C)          — sends the redirected Call, gets resultsSentElsewhere
+//!   Vat C:  c_to_b  (B<->C)          — receives the Call, answers B with resultsSentElsewhere
 //!           c_to_a  (C<->A)          — sends ThirdPartyAnswer + results Return to A
 //!   Vat A:  a_to_c  (C<->A)          — primed to await; receives ThirdPartyAnswer + results
 //!
@@ -24,9 +24,14 @@
 //!        a. sends a `ThirdPartyAnswer{ completion, answerId=X }` to A on c_to_a,
 //!           where X is a CALLEE-allocated answer id in [2^30, 2^31);
 //!        b. sends the real results `Return{ answerId=X, n=42 }` to A on c_to_a;
-//!        c. settles B's question by calling `sendReturnResults` on c_to_b, which
-//!           routes `send_results_to_third_party` to an `awaitFromThirdParty`
-//!           Return (rpc.capnp:503) — B gets the redirect marker, NOT the payload.
+//!        c. settles B's question by calling `sendReturnResultsSentElsewhere` on
+//!           c_to_b, which emits `Return{resultsSentElsewhere}` — the tag the
+//!           spec mandates for a Return answering a Call whose sendResultsTo was
+//!           not `caller`. B learns the call completed; it never sees the value.
+//!
+//! Note `c_to_b` opts in with `setThirdPartyResultPolicy(.application)`. The
+//! default is to refuse such a Call: a vat that cannot reach the third party must
+//! not accept the call and then drop its results.
 //!   6. A adopts its parked await under X (handleThirdPartyAnswer), the results
 //!      Return completes A's callback with 42, and A sends a Finish(X) to C
 //!      (rpc.capnp:924-926) which drains C's answer table.
@@ -104,10 +109,13 @@ const Carol = struct {
         var ret_ctx = NumberReturnCtx{ .n = 42 };
         try self.c_to_a.sendReturnResults(answer_id, &ret_ctx, NumberReturnCtx.build);
 
-        // (c) Settle the caller's (B's) question: the runtime routes the recorded
-        //     send_results_to_third_party marker to an awaitFromThirdParty Return.
-        //     The build fn is never consulted on the redirected path.
-        try peer.sendReturnResults(call.question_id, &ret_ctx, NumberReturnCtx.build);
+        // (c) Settle the caller's (B's) question with `resultsSentElsewhere` --
+        //     the tag the protocol mandates for a Return answering a Call whose
+        //     sendResultsTo was not `caller`. `awaitFromThirdParty` is a
+        //     different message: it is what an INTRODUCER sends to the ORIGINAL
+        //     caller on a different connection, and this three-peer harness does
+        //     not model that link.
+        try peer.sendReturnResultsSentElsewhere(call.question_id);
     }
 };
 
@@ -138,22 +146,19 @@ const CarolImportProbe = struct {
 
 // -- Vat B: caller of the redirected call ------------------------------------
 //
-// B is the caller; per spec its question is settled with `awaitFromThirdParty`,
-// NOT the results (rpc.capnp:503). handleReturnAcceptFromThirdParty parks B's
-// question in pending_third_party_awaits keyed by the recipient bytes (B never
-// receives a ThirdPartyAnswer of its own, so that entry drains only at teardown
-// — exactly the state the receive side already models for the introducer role).
+// B is the caller; its question is settled with `resultsSentElsewhere`, NOT the
+// results. B's callback fires with that tag and the question drains normally.
 //
 // A single ctx carries both the outbound recipient token (for the build fn) and
 // the observed Return tag (for the on_return fn); `sendCall` shares one ctx.
 
 const RedirectedCall = struct {
     recipient: message.AnyPointerReader,
-    // Set by onReturn only if the callback is ever invoked. For a redirected
-    // call the introducer's question is parked on the awaitFromThirdParty Return
-    // (which the orchestration handles WITHOUT invoking on_return), so a real
-    // results/exception callback here would mean the redirect leaked back to B.
+    // Set by onReturn. For a redirected call the callback fires with
+    // `resultsSentElsewhere`; a `.results` tag here would mean the payload
+    // leaked back to B instead of going to A.
     callback_invoked: bool = false,
+    observed_tag: ?protocol.ReturnTag = null,
 
     // Set sendResultsTo = thirdParty(recipient) on the outbound Call.
     fn buildCall(ctx_ptr: *anyopaque, call: *protocol.CallBuilder) anyerror!void {
@@ -164,11 +169,12 @@ const RedirectedCall = struct {
     fn onReturn(
         ctx_ptr: *anyopaque,
         _: *Peer,
-        _: protocol.Return,
+        ret: protocol.Return,
         _: *const cap_table.InboundCapTable,
     ) anyerror!void {
         const self: *RedirectedCall = castCtx(*RedirectedCall, ctx_ptr);
         self.callback_invoked = true;
+        self.observed_tag = ret.tag;
     }
 };
 
@@ -256,6 +262,11 @@ test "three-party handoff redirected return: sendResultsTo=thirdParty delivers r
 
     link.b_to_c = &b_to_c;
     link.c_to_b = &c_to_b;
+    // Opt in to application-owned third-party result routing: Carol delivers the
+    // results to A itself and then settles B's question. Without this the peer
+    // refuses the call outright, which is the correct default for a vat that
+    // cannot reach a third party.
+    c_to_b.setThirdPartyResultPolicy(.application);
     link.c_to_a = &c_to_a;
     link.a_to_c = &a_to_c;
 
@@ -325,16 +336,17 @@ test "three-party handoff redirected return: sendResultsTo=thirdParty delivers r
     try std.testing.expectEqual(@as(usize, 0), a_to_c.pending_third_party_awaits.count());
     try std.testing.expectEqual(@as(usize, 0), a_to_c.pending_third_party_answers.count());
 
-    // B's question was settled with awaitFromThirdParty (the redirect marker),
-    // NOT the results payload (rpc.capnp:503). The receive-side orchestration
-    // handles awaitFromThirdParty by PARKING B's question in the introducer
-    // await table WITHOUT invoking on_return, so B's callback never fires and B
-    // never observes the value — the results went to A.
-    try std.testing.expect(!redirected.callback_invoked);
-    // B's question left its questions table (moved into the introducer await
-    // bookkeeping keyed by the recipient bytes it sent).
+    // B's question was settled with `resultsSentElsewhere`: B learns the call
+    // completed and that the results went somewhere else, and never observes the
+    // value itself. B's callback DOES fire (with that tag) and its question
+    // drains normally -- no entry is parked until teardown.
+    try std.testing.expect(redirected.callback_invoked);
+    try std.testing.expectEqual(
+        @as(?protocol.ReturnTag, .resultsSentElsewhere),
+        redirected.observed_tag,
+    );
     try std.testing.expect(!b_to_c.questions.contains(b_question_id));
-    try std.testing.expectEqual(@as(usize, 1), b_to_c.pending_third_party_awaits.count());
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.pending_third_party_awaits.count());
 
     // C's per-call redirect marker was consumed on the settle to B.
     try std.testing.expectEqual(@as(usize, 0), c_to_b.send_results_to_third_party.count());
@@ -353,10 +365,10 @@ test "three-party handoff redirected return: sendResultsTo=thirdParty delivers r
     try std.testing.expectEqual(@as(usize, 0), c_to_a.active_inbound_questions.count());
 
     // -- Teardown drains everything. ------------------------------------------
-    // B's introducer-side await never gets a ThirdPartyAnswer of its own (B is
-    // the caller, not the third party): it is a live-until-teardown entry that
-    // deinit drains (owned key freed, no leak). Confirm it is exactly that one.
-    try std.testing.expectEqual(@as(usize, 1), b_to_c.pending_third_party_awaits.count());
+    // Nothing is parked until teardown any more: settling with
+    // `resultsSentElsewhere` drains B's question at the point the Return
+    // arrives.
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.pending_third_party_awaits.count());
 
     // Release B's Carol import so B<->C caps drain.
     try b_to_c.releaseImport(carol_import_id, 1);
