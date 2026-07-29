@@ -194,6 +194,20 @@ release-preflight:
 # Alias for the complete local release preflight
 preflight: release-preflight
 
+# Create and push an annotated release tag — but refuse when the commit being
+# tagged does not already have a green CI run. v0.4.0 was tagged three minutes
+# before its own push run went red on four jobs; this recipe is the preventive
+# half of that lesson (.github/workflows/release.yml is the detective half).
+# Usage: just release-tag 0.5.0
+release-tag VERSION:
+    test -z "$(git status --porcelain)" || { echo "ERROR: worktree is dirty — commit or stash first"; exit 1; }
+    test "$(cat build.zig.zon | sed -n 's/.*\.version = "\(.*\)".*/\1/p')" = "{{VERSION}}" || { echo "ERROR: build.zig.zon version does not match {{VERSION}} — run the RELEASING.md sweep first"; exit 1; }
+    zig build docs-smoke
+    gh api "repos/:owner/:repo/actions/runs?head_sha=$(git rev-parse HEAD)" --jq '[.workflow_runs[] | select(.name == "CI")] | if length == 0 then "NO_RUN" elif all(.conclusion == "success") then "GREEN" else "RED" end' | grep -qx GREEN || { echo "ERROR: HEAD has no green CI run — push and wait for CI before tagging (see RELEASING.md step 2)"; exit 1; }
+    git tag -a "v{{VERSION}}" -m "v{{VERSION}}"
+    git push origin "v{{VERSION}}"
+    @echo "Tagged v{{VERSION}}. Now do RELEASING.md step 6: real zig fetch, record the hash, create the GitHub Release."
+
 # List CI workflow jobs as seen by `act`
 act-list:
     act -l

@@ -36,6 +36,7 @@ const required_paths = [_][]const u8{
     "README.md",
     "CHANGELOG.md",
     "CLAUDE.md",
+    "RELEASING.md",
     "docs/architecture.md",
     "docs/getting-started-rpc.md",
     "docs/getting-started-serialization.md",
@@ -106,6 +107,7 @@ const required_just_recipes = [_][]const u8{
     "check",
     "docs",
     "docs-smoke",
+    "release-tag",
     "example",
     "test-docs-snippets",
     "test-rpc-wire",
@@ -127,6 +129,45 @@ const required_doc_needles = [_]RequiredNeedle{
     .{ .path = "docs/quic-transport.md", .needle = "rpc.transport.quic.Server", .reason = "QUIC guide should document multi-session fanout" },
     .{ .path = "docs/rpc-migration-guide.md", .needle = "rpc.protocol", .reason = "migration guide should preserve old-name mapping coverage" },
     .{ .path = "examples/rpc_pingpong.zig", .needle = "rpc.transport.tcp.ServerSession", .reason = "RPC example should use the current one-call session transport path" },
+};
+
+/// A doc string that must carry the version declared in `build.zig.zon`.
+/// `{v}` expands to the bare version (`0.5.0`), so `v{v}` renders `v0.5.0`.
+///
+/// This is the mechanical half of the release ceremony in RELEASING.md: the
+/// v0.4.0 cut bumped the manifest and left every consumer-facing doc pinned to
+/// v0.3.0, which nothing caught. These make that failure a red build.
+const VersionNeedle = struct {
+    path: []const u8,
+    template: []const u8,
+    reason: []const u8,
+};
+
+const version_needles = [_]VersionNeedle{
+    .{ .path = "README.md", .template = "**Status (v{v}):**", .reason = "README status banner must name the released version" },
+    .{ .path = "README.md", .template = "capnp-zig.git#v{v}", .reason = "README install snippet must pin the released version" },
+    .{ .path = "docs/build-integration.md", .template = "capnp-zig.git#v{v}", .reason = "build-integration install snippet must pin the released version" },
+    .{ .path = "docs/build-integration.md", .template = "capnpc_zig-{v}-", .reason = "build-integration hash example must match the released version" },
+    .{ .path = "docs/supported-surface.md", .template = "# Supported Surface (v{v})", .reason = "the authoritative consumer contract must be titled for the released version" },
+    .{ .path = "docs/supported-surface.md", .template = "#v{v}", .reason = "supported-surface pinning advice must name the released version" },
+    .{ .path = "docs/supported-surface.md", .template = "## Known limitations (v{v})", .reason = "known-limitations heading must name the released version" },
+    .{ .path = "docs/stability.md", .template = "The current version is **{v}**", .reason = "stability semver guidance must name the released version" },
+    .{ .path = "CHANGELOG.md", .template = "## [{v}] - ", .reason = "CHANGELOG must carry a dated section for the released version" },
+    .{ .path = "CHANGELOG.md", .template = "[{v}]: https://github.com/nullstyle/capnp-zig/compare/", .reason = "CHANGELOG link footer must define the released version" },
+};
+
+/// Markers whose immediately-following text is a version. Any occurrence in
+/// `version_pinned_docs` that does not continue with the manifest version is a
+/// stale pin — the failure mode that shipped consumers at v0.3.0 for two
+/// releases.
+const version_pin_markers = [_][]const u8{
+    "capnp-zig.git#v",
+    "capnpc_zig-",
+};
+
+const version_pinned_docs = [_][]const u8{
+    "README.md",
+    "docs/build-integration.md",
 };
 
 const Context = struct {
@@ -151,6 +192,7 @@ fn printUsage() void {
         \\  - checks documented build and Justfile recipes still exist
         \\  - rejects stale RPC public-surface names in source/examples/tests
         \\  - rejects stale event-loop/xev wording in active docs
+        \\  - requires consumer-facing docs to carry the build.zig.zon version
         \\
     , .{});
 }
@@ -327,6 +369,67 @@ fn verifyRequiredDocNeedles(ctx: *Context) void {
     }
 }
 
+fn parseManifestVersion(manifest: []const u8) ?[]const u8 {
+    const key = ".version = \"";
+    const start = std.mem.indexOf(u8, manifest, key) orelse return null;
+    const rest = manifest[start + key.len ..];
+    const end = std.mem.indexOfScalar(u8, rest, '"') orelse return null;
+    return rest[0..end];
+}
+
+fn renderVersionTemplate(allocator: std.mem.Allocator, template: []const u8, version: []const u8) ![]u8 {
+    const size = std.mem.replacementSize(u8, template, "{v}", version);
+    const out = try allocator.alloc(u8, size);
+    _ = std.mem.replace(u8, template, "{v}", version, out);
+    return out;
+}
+
+fn scanStalePins(ctx: *Context, path: []const u8, version: []const u8) !void {
+    const bytes = try readFile(ctx, path);
+    defer ctx.allocator.free(bytes);
+    ctx.checks += version_pin_markers.len;
+
+    var line_no: usize = 1;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line_with_cr| : (line_no += 1) {
+        const line = std.mem.trimEnd(u8, raw_line_with_cr, "\r");
+        for (version_pin_markers) |marker| {
+            var search: usize = 0;
+            while (std.mem.indexOfPos(u8, line, search, marker)) |idx| {
+                const after = line[idx + marker.len ..];
+                if (!std.mem.startsWith(u8, after, version)) {
+                    ctx.fail(
+                        "{s}:{d}: `{s}` pin does not match build.zig.zon version {s}",
+                        .{ path, line_no, marker, version },
+                    );
+                }
+                search = idx + marker.len;
+            }
+        }
+    }
+}
+
+fn verifyVersionStamps(ctx: *Context) !void {
+    const manifest = try readFile(ctx, "build.zig.zon");
+    defer ctx.allocator.free(manifest);
+
+    ctx.checks += 1;
+    const version = parseManifestVersion(manifest) orelse {
+        ctx.fail("build.zig.zon: could not parse `.version = \"...\"`", .{});
+        return;
+    };
+
+    for (version_needles) |item| {
+        const needle = try renderVersionTemplate(ctx.allocator, item.template, version);
+        defer ctx.allocator.free(needle);
+        requireNeedle(ctx, item.path, needle, item.reason);
+    }
+
+    for (version_pinned_docs) |path| {
+        try scanStalePins(ctx, path, version);
+    }
+}
+
 pub fn main(init: std.process.Init) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(gpa.deinit() == .ok);
@@ -350,6 +453,7 @@ pub fn main(init: std.process.Init) !void {
     try scanSourcePublicNames(&ctx);
     try verifyBuildAndJustfile(&ctx);
     verifyRequiredDocNeedles(&ctx);
+    try verifyVersionStamps(&ctx);
 
     if (ctx.failures != 0) {
         std.debug.print(

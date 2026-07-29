@@ -83,6 +83,15 @@ Include a clear summary, the commands you ran, and schema samples if codegen
 behavior changes. PRs that change wire-format or RPC behavior should point
 at the relevant section of the Cap'n Proto spec.
 
+## Releases
+
+Cutting a tagged release follows [RELEASING.md](RELEASING.md). The two rules
+that are easy to get wrong: a tag may only be created on a commit whose CI has
+**already** concluded green (`just release-tag X.Y.Z` enforces this), and a
+change to the *shape of generated code* is a Stable-tier break requiring a minor
+bump and a `### Breaking` CHANGELOG entry — `zig build check-api` snapshots
+library declarations only and cannot see it.
+
 ## Security issues
 
 Do not open public issues for vulnerabilities — see [SECURITY.md](SECURITY.md).
