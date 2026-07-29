@@ -659,8 +659,22 @@ fn readOptionalData(reader: message.StructReader, pointer_index: usize) ![]const
     };
 }
 
+/// Reject a struct list whose elements occupy no space at all: a huge element
+/// count over zero-width elements is an amplification vector against the
+/// plugin, which allocates one schema node per element.
+///
+/// `sub_word_data_bytes` must be part of the test. A list upgraded from element
+/// size C = 2/3/4 legitimately reports `data_words == 0` and
+/// `pointer_words == 0` while carrying a real 1/2/4-byte element, so without
+/// this conjunct the plugin would reject valid CodeGeneratorRequests. A Void
+/// (C = 0) upgrade still lands on all-zero and is still rejected, so the guard
+/// keeps its full strength.
 fn rejectZeroWidthStructList(list: message.StructListReader) !void {
-    if (list.element_count > 0 and list.data_words == 0 and list.pointer_words == 0) {
+    if (list.element_count > 0 and
+        list.data_words == 0 and
+        list.pointer_words == 0 and
+        list.sub_word_data_bytes == 0)
+    {
         return error.InvalidInlineCompositePointer;
     }
 }

@@ -24,13 +24,14 @@ These errors protect against malicious or corrupt messages that pass header pars
 
 | Error | When it occurs | What to do |
 |---|---|---|
-| `TraversalLimitExceeded` | The cumulative number of words visited during the pointer-graph walk exceeds `traversal_limit_words` (default: 8M words = 64 MiB). | The message may contain amplification attacks (e.g., many far pointers to the same data). Reject it, or raise the limit via `ValidationOptions` if you expect legitimately large messages. |
+| `TraversalLimitExceeded` | The cumulative number of words visited during the pointer-graph walk exceeds `traversal_limit_words` (default: 8M words = 64 MiB). A list whose elements occupy zero words (`List(Void)`, or a struct list of zero-width elements) is charged one word per element, so a very large one can trip this even though it allocates no content. | The message may contain amplification attacks (e.g., many far pointers to the same data). Reject it, or raise the limit via `ValidationOptions` if you expect legitimately large messages. |
 | `NestingLimitExceeded` | Pointer-following depth exceeds `nesting_limit` (default: 64). | The message has excessively deep nesting, possibly crafted to cause stack overflow. Reject it, or raise the limit if your schema genuinely requires deep nesting. |
 | `SegmentCountLimitExceeded` | Segment count exceeds `ValidationOptions.segment_count_limit` during validation. | Same as the deserialization variant but configurable per-call. |
 | `InvalidPointer` | A pointer word has an unrecognized type tag, or a list/struct pointer is internally inconsistent. | The message is corrupt or was built by a buggy writer. Reject it. |
 | `InvalidFarPointer` | A far pointer's landing pad has an invalid type, or a double-far pointer chain is malformed. | Reject the message. |
 | `InvalidRootPointer` | The root pointer at segment 0, offset 0 is null, non-struct, or points outside the segment. | The message has no valid root struct. Reject it. |
 | `InvalidInlineCompositePointer` | An inline-composite list's tag word is inconsistent with the list pointer's word count or element count. | The message is corrupt. Reject it. |
+| `CannotUpgradeBitList` | A `List(Bool)` was read as a struct list. Every other element size may be decoded as a struct list under the list-upgrade rule; a bit list is the sole exception. | Not corruption — either a schema mismatch, or a peer that upgraded a `Bool` list, which the encoding forbids. Read the field as `List(Bool)`. |
 | `OutOfBounds` | A struct or list's computed byte range extends past its segment boundary. | The message is corrupt. Reject it. |
 | `InvalidSegmentId` | A far pointer references a segment ID that does not exist. | The message is corrupt. Reject it. |
 | `EmptyMessage` | The message has zero segments. | The message is empty or was never initialized. |
@@ -41,12 +42,14 @@ These errors protect against malicious or corrupt messages that pass header pars
 
 ### ValidationOptions
 
-Defined in `Message.ValidationOptions` (see `src/serialization/message.zig` line 341):
+Defined in `Message.ValidationOptions` (see `src/serialization/message.zig`):
 
 ```zig
 pub const ValidationOptions = struct {
-    segment_count_limit: usize = max_segment_count,    // 512
-    traversal_limit_words: usize = 8 * 1024 * 1024,    // 64 MiB
+    segment_count_limit: usize = max_segment_count,          // 512
+    total_segment_words_limit: usize = max_total_words,      // 8M words
+    traversal_limit_words: usize = 8 * 1024 * 1024,          // 64 MiB
+    inline_composite_element_limit: usize = max_total_words, // 8M elements
     nesting_limit: usize = 64,
 };
 ```

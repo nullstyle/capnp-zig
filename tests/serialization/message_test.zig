@@ -1903,14 +1903,43 @@ test "MessageBuilder: void list accepts the max 29-bit element count without tru
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
 
-    // Void lists carry no content words, so validation stays cheap.
-    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    // A Void list allocates no content words, but validation deliberately
+    // charges one traversal word per element: a zero-width element is readable
+    // as a struct under the list-upgrade rule, so leaving it free would let a
+    // one-word pointer synthesize 2^29 elements at no cost. Raise the limit
+    // past the count so this test keeps measuring what it is about — that the
+    // 29-bit count survives a round trip untruncated.
+    var msg = try message.Message.init(testing.allocator, bytes, .{
+        .traversal_limit_words = @as(usize, max_count) + 16,
+    });
     defer msg.deinit();
 
     const root = try msg.getRootStruct();
     const void_list = try root.readVoidList(0);
     // The decoded count must be exactly what we wrote — not truncated.
     try testing.expectEqual(max_count, void_list.element_count);
+}
+
+test "Message: a huge void list is charged one traversal word per element" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    _ = try struct_builder.writeVoidList(0, 4096);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    // The list occupies zero content words, so under a per-element charge of
+    // zero this would validate comfortably inside a 1024-word budget.
+    try testing.expectError(
+        error.TraversalLimitExceeded,
+        message.Message.init(testing.allocator, bytes, .{ .traversal_limit_words = 1024 }),
+    );
+
+    // With room for the elements it validates normally.
+    var msg = try message.Message.init(testing.allocator, bytes, .{ .traversal_limit_words = 8192 });
+    defer msg.deinit();
 }
 
 test "MessageBuilder: void list rejects a count that overflows the 29-bit field" {
@@ -1989,4 +2018,310 @@ test "Message.validate exposes the frozen MessageValidationError contract" {
     try testing.expect(validate_err == message.Message.MessageValidationError);
     const counted_err = @typeInfo(@typeInfo(@TypeOf(message.Message.validateCounted)).@"fn".return_type.?).error_union.error_set;
     try testing.expect(counted_err == message.Message.MessageValidationError);
+}
+
+// --- Struct-list "upgrade" decoding ---
+//
+// Cap'n Proto requires a reader to decode a list of any element size except
+// C = 1 (one bit) as a struct list, synthesizing a struct whose data section is
+// the element itself. That rule is what makes evolving a `List(UInt32)` field
+// into a `List(SomeStruct)` backward compatible: a peer that performed the
+// evolution can still read data written under the old schema, and vice versa.
+//
+// capnp-zig previously rejected every such list as `InvalidInlineCompositePointer`
+// — i.e. reported a legal, spec-conformant message as corrupt.
+
+test "struct-list upgrade: List(UInt32) reads as List(Struct)" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeU32List(0, 3);
+    try list_builder.set(0, 0xAABBCCDD);
+    try list_builder.set(1, 1);
+    try list_builder.set(2, 0xFFFFFFFF);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const list = try root.readStructList(0);
+    try testing.expectEqual(@as(u32, 3), list.len());
+
+    const expected = [_]u32{ 0xAABBCCDD, 1, 0xFFFFFFFF };
+    for (expected, 0..) |want, i| {
+        const element = try list.get(@intCast(i));
+        try testing.expectEqual(want, element.readU32(0));
+        try testing.expectEqual(@as(u16, @truncate(want)), element.readU16(0));
+        // The decisive assertion: a read past the element's true 4-byte width
+        // must yield the field default, NOT the next element's bytes. A naive
+        // implementation that rounds the data section up to one word returns
+        // `expected[i + 1]` here.
+        try testing.expectEqual(@as(u32, 0), element.readU32(4));
+        try testing.expectEqual(@as(u16, 0), element.pointer_count);
+        try testing.expectEqual(@as(usize, 4), element.getDataSection().len);
+    }
+    try testing.expectError(error.IndexOutOfBounds, list.get(3));
+}
+
+test "struct-list upgrade: List(UInt8) keeps a one-byte stride" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeU8List(0, 5);
+    for (0..5) |i| try list_builder.set(@intCast(i), @intCast(0x10 + i));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    try testing.expectEqual(@as(u32, 5), list.len());
+    for (0..5) |i| {
+        const element = try list.get(@intCast(i));
+        // Stride is 1: element i is byte i, not byte 8*i.
+        try testing.expectEqual(@as(u8, @intCast(0x10 + i)), element.readU8(0));
+        try testing.expectEqual(@as(u8, 0), element.readU8(1));
+        try testing.expectEqual(@as(usize, 1), element.getDataSection().len);
+    }
+}
+
+test "struct-list upgrade: List(UInt16) keeps a two-byte stride" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeU16List(0, 4);
+    for (0..4) |i| try list_builder.set(@intCast(i), @intCast(0x1000 + i));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    for (0..4) |i| {
+        const element = try list.get(@intCast(i));
+        try testing.expectEqual(@as(u16, @intCast(0x1000 + i)), element.readU16(0));
+        // Out of a 2-byte data section: default, not the neighbour.
+        try testing.expectEqual(@as(u32, 0), element.readU32(0));
+        try testing.expectEqual(@as(usize, 2), element.getDataSection().len);
+    }
+}
+
+test "struct-list upgrade: List(UInt64) takes the existing whole-word path" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeU64List(0, 3);
+    for (0..3) |i| try list_builder.set(@intCast(i), 0xDEADBEEF00000000 + i);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    try testing.expectEqual(@as(u16, 1), list.data_words);
+    try testing.expectEqual(@as(u8, 0), list.sub_word_data_bytes);
+    for (0..3) |i| {
+        const element = try list.get(@intCast(i));
+        try testing.expectEqual(@as(u64, 0xDEADBEEF00000000 + i), element.readU64(0));
+        try testing.expectEqual(@as(usize, 8), element.getDataSection().len);
+    }
+}
+
+test "struct-list upgrade: List(Void) yields zero-width structs" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    _ = try root_builder.writeVoidList(0, 7);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    try testing.expectEqual(@as(u32, 7), list.len());
+    for (0..7) |i| {
+        const element = try list.get(@intCast(i));
+        try testing.expectEqual(@as(u64, 0), element.readU64(0));
+        try testing.expectEqual(@as(usize, 0), element.getDataSection().len);
+    }
+}
+
+test "struct-list upgrade: List(pointer) yields one-pointer structs" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeTextList(0, 2);
+    try list_builder.set(0, "alpha");
+    try list_builder.set(1, "beta");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    try testing.expectEqual(@as(u16, 0), list.data_words);
+    try testing.expectEqual(@as(u16, 1), list.pointer_words);
+    // Proves the synthesized pointer section is anchored at the element start.
+    try testing.expectEqualStrings("alpha", try (try list.get(0)).readText(0));
+    try testing.expectEqualStrings("beta", try (try list.get(1)).readText(0));
+}
+
+test "struct-list upgrade: List(Bool) is the one element size that cannot upgrade" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeBoolList(0, 8);
+    try list_builder.set(0, true);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    // A distinct error, not `InvalidInlineCompositePointer`: this is a schema
+    // mismatch (or a peer that violated the spec), not a corrupt message.
+    try testing.expectError(error.CannotUpgradeBitList, root.readStructList(0));
+}
+
+test "struct-list upgrade: through a nested pointer list" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var outer = try root_builder.writePointerList(0, 1);
+    var inner = try outer.initU32List(0, 2);
+    try inner.set(0, 111);
+    try inner.set(1, 222);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    // Covers PointerListReader.getStructList independently of readStructList.
+    const outer_reader = try (try msg.getRootStruct()).readPointerList(0);
+    const list = try outer_reader.getStructList(0);
+    try testing.expectEqual(@as(u32, 2), list.len());
+    try testing.expectEqual(@as(u32, 111), (try list.get(0)).readU32(0));
+    try testing.expectEqual(@as(u32, 222), (try list.get(1)).readU32(0));
+    try testing.expectEqual(@as(u32, 0), (try list.get(0)).readU32(4));
+}
+
+test "struct-list upgrade: inline-composite lists still decode unchanged" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeStructList(0, 2, 1, 0);
+    var first = try list_builder.get(0);
+    first.writeU32(0, 7);
+    var second = try list_builder.get(1);
+    second.writeU32(0, 9);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    // Regression fence: the native encoding must not acquire sub-word state.
+    try testing.expectEqual(@as(u8, 0), list.sub_word_data_bytes);
+    try testing.expectEqual(@as(u16, 1), list.data_words);
+    try testing.expectEqual(@as(u32, 7), (try list.get(0)).readU32(0));
+    try testing.expectEqual(@as(u32, 9), (try list.get(1)).readU32(0));
+}
+
+test "struct-list upgrade: a double-far inline-composite list still decodes" {
+    // The layout-A regression. For a double-far struct list this builder stores
+    // the struct *tag* as the landing pad's second word, and a tag word has
+    // pointer type 0. An element-size probe built on `resolvePointer` sees that
+    // type-0 word, concludes "not a list", and sends a perfectly valid struct
+    // list down the upgrade path. This is the fixture that goes red for it —
+    // an upgraded (non-composite) far list would not, since its pad's second
+    // word is an ordinary list pointer.
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    const landing_segment = try builder.createSegment();
+    const content_segment = try builder.createSegment();
+    var list_builder = try root_builder.writeStructListInSegments(0, 2, 1, 0, landing_segment, content_segment);
+    var first = try list_builder.get(0);
+    first.writeU32(0, 4242);
+    var second = try list_builder.get(1);
+    second.writeU32(0, 2424);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const list = try (try msg.getRootStruct()).readStructList(0);
+    try testing.expectEqual(@as(u32, 2), list.len());
+    try testing.expectEqual(@as(u8, 0), list.sub_word_data_bytes);
+    try testing.expectEqual(@as(u32, 4242), (try list.get(0)).readU32(0));
+    try testing.expectEqual(@as(u32, 2424), (try list.get(1)).readU32(0));
+}
+
+test "struct-list upgrade: a corrupt inline-composite tag is still rejected" {
+    // The peek must not turn corruption into an upgrade attempt: a list pointer
+    // that genuinely claims C = 7 keeps its strict tag validation.
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    _ = try root_builder.writeStructList(0, 2, 1, 0);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    const mutated = try testing.allocator.dupe(u8, bytes);
+    defer testing.allocator.free(mutated);
+
+    // Find the C = 7 list pointer and corrupt the tag word that follows it by
+    // giving the tag a non-zero pointer type.
+    var word_index: usize = 0;
+    var patched = false;
+    while (word_index + 1 < mutated.len / 8) : (word_index += 1) {
+        const word = std.mem.readInt(u64, mutated[word_index * 8 ..][0..8], .little);
+        if (@as(u2, @truncate(word & 0x3)) != 1) continue;
+        if (@as(u3, @truncate((word >> 32) & 0x7)) != 7) continue;
+        const tag_index = word_index + 1 + @as(usize, @intCast(@max(@as(i32, 0), @as(i32, @truncate(@as(i64, @bitCast(word)) >> 2)))));
+        if (tag_index >= mutated.len / 8) continue;
+        const tag = std.mem.readInt(u64, mutated[tag_index * 8 ..][0..8], .little);
+        std.mem.writeInt(u64, mutated[tag_index * 8 ..][0..8], tag | 0x1, .little);
+        patched = true;
+        break;
+    }
+    try testing.expect(patched);
+
+    try testing.expectError(
+        error.InvalidInlineCompositePointer,
+        message.Message.init(testing.allocator, mutated, .{}),
+    );
 }

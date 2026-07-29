@@ -438,20 +438,14 @@ fn validateListPointer(
     if (element_type == .@"struct") {
         const struct_info = element_type.@"struct";
         const struct_node = findNodeById(nodes, struct_info.type_id) orelse return error.InvalidSchema;
-        const list = try reader.message.resolveInlineCompositeList(reader.segment_id, ptr.pos, ptr.word);
-        const words_per_element = @as(usize, list.data_words) + @as(usize, list.pointer_words);
-        if (list.element_count == 0 or words_per_element == 0) return;
-        const stride = words_per_element * 8;
+        const layout = try reader.message.resolveStructListPointer(reader.segment_id, ptr.pos, ptr.word);
+        // The early-out keys on the stride, not on whole words: an upgraded
+        // sub-word list has zero data/pointer *words* yet real elements, and
+        // testing words here would skip validating every one of them.
+        if (layout.element_count == 0 or layout.stride_bytes == 0) return;
         var idx: u32 = 0;
-        while (idx < list.element_count) : (idx += 1) {
-            const offset = list.elements_offset + @as(usize, idx) * stride;
-            const element_reader = message.StructReader{
-                .message = reader.message,
-                .segment_id = list.segment_id,
-                .offset = offset,
-                .data_size = list.data_words,
-                .pointer_count = list.pointer_words,
-            };
+        while (idx < layout.element_count) : (idx += 1) {
+            const element_reader = structListElementReader(reader.message, layout, idx);
             try validateStruct(nodes, struct_node, element_reader, options, guard, true);
         }
         return;
@@ -552,20 +546,15 @@ fn validateListFromAnyPointer(
     if (element_type == .@"struct") {
         const struct_info = element_type.@"struct";
         const struct_node = findNodeById(nodes, struct_info.type_id) orelse return error.InvalidSchema;
-        const list = try any.getInlineCompositeList();
-        const words_per_element = @as(usize, list.data_words) + @as(usize, list.pointer_words);
-        if (list.element_count == 0 or words_per_element == 0) return;
-        const stride = words_per_element * 8;
+        // Callers reach here only past an `isNull()` guard, so resolving the
+        // pointer directly (rather than through `getInlineCompositeList`, whose
+        // null-is-empty-list behavior does not exist here) cannot turn a null
+        // pointer into an error.
+        const layout = try any.message.resolveStructListPointer(any.segment_id, any.pointer_pos, any.pointer_word);
+        if (layout.element_count == 0 or layout.stride_bytes == 0) return;
         var idx: u32 = 0;
-        while (idx < list.element_count) : (idx += 1) {
-            const offset = list.elements_offset + @as(usize, idx) * stride;
-            const element_reader = message.StructReader{
-                .message = any.message,
-                .segment_id = list.segment_id,
-                .offset = offset,
-                .data_size = list.data_words,
-                .pointer_count = list.pointer_words,
-            };
+        while (idx < layout.element_count) : (idx += 1) {
+            const element_reader = structListElementReader(any.message, layout, idx);
             try validateStruct(nodes, struct_node, element_reader, options, inner_guard, true);
         }
         return;
@@ -745,41 +734,30 @@ fn canonicalizeListFromAnyPointer(
     if (element_type == .@"struct") {
         const struct_info = element_type.@"struct";
         const struct_node = findNodeById(ctx.nodes, struct_info.type_id) orelse return error.InvalidSchema;
-        const list = try src_any.getInlineCompositeList();
+        // Reached only past an `isNull()` guard (see the validator above).
+        // Canonicalizing an upgraded list re-emits it in the inline-composite
+        // encoding, which is the only legal encoding for a struct list — so a
+        // message carrying the old primitive-list form and one carrying the
+        // evolved struct-list form canonicalize to identical bytes.
+        const layout = try src_any.message.resolveStructListPointer(src_any.segment_id, src_any.pointer_pos, src_any.pointer_word);
 
         var max_data_words: u16 = 0;
         var max_pointer_words: u16 = 0;
-        const words_per_element = @as(usize, list.data_words) + @as(usize, list.pointer_words);
-        const stride = if (words_per_element == 0) 0 else words_per_element * 8;
 
         var idx: u32 = 0;
-        while (idx < list.element_count) : (idx += 1) {
-            const offset = list.elements_offset + @as(usize, idx) * stride;
-            const src_struct = message.StructReader{
-                .message = src_any.message,
-                .segment_id = list.segment_id,
-                .offset = offset,
-                .data_size = list.data_words,
-                .pointer_count = list.pointer_words,
-            };
+        while (idx < layout.element_count) : (idx += 1) {
+            const src_struct = structListElementReader(src_any.message, layout, idx);
             const size = try canonicalStructSize(ctx, struct_node, src_struct, options, inner_guard, true);
             if (size.data_words > max_data_words) max_data_words = size.data_words;
             if (size.pointer_words > max_pointer_words) max_pointer_words = size.pointer_words;
         }
 
-        var out_list = try dest_any.initStructList(list.element_count, max_data_words, max_pointer_words);
-        if (list.element_count == 0 or words_per_element == 0) return;
+        var out_list = try dest_any.initStructList(layout.element_count, max_data_words, max_pointer_words);
+        if (layout.element_count == 0 or layout.stride_bytes == 0) return;
 
         idx = 0;
-        while (idx < list.element_count) : (idx += 1) {
-            const offset = list.elements_offset + @as(usize, idx) * stride;
-            const src_struct = message.StructReader{
-                .message = src_any.message,
-                .segment_id = list.segment_id,
-                .offset = offset,
-                .data_size = list.data_words,
-                .pointer_count = list.pointer_words,
-            };
+        while (idx < layout.element_count) : (idx += 1) {
+            const src_struct = structListElementReader(src_any.message, layout, idx);
             const dest_struct = try out_list.get(idx);
             try canonicalizeStructInto(ctx, struct_node, src_struct, dest_struct, options, inner_guard, true);
         }
@@ -1029,6 +1007,27 @@ fn getListPointer(msg: *const message.Message, list: message.Message.ResolvedLis
     if (pos + 8 > segment.len) return error.OutOfBounds;
     const word = std.mem.readInt(u64, segment[pos..][0..8], .little);
     return .{ .pos = pos, .word = word };
+}
+
+/// Build the element reader for index `idx` of a struct list being validated or
+/// canonicalized, honouring a sub-word data section.
+///
+/// A list upgraded from element size C = 2/3/4 reports `data_bytes` of 1/2/4
+/// with zero pointers, and its elements must keep that exact width — rounding
+/// up to a word would read the following element's bytes.
+fn structListElementReader(
+    msg: anytype,
+    layout: message.StructListLayout,
+    idx: u32,
+) message.StructReader {
+    return .{
+        .message = msg,
+        .segment_id = layout.segment_id,
+        .offset = layout.elements_offset + @as(usize, idx) * @as(usize, layout.stride_bytes),
+        .data_size = @intCast(layout.data_bytes / 8),
+        .pointer_count = layout.pointer_count,
+        .sub_word_data_bytes = if (layout.data_bytes % 8 == 0) 0 else @intCast(layout.data_bytes),
+    };
 }
 
 fn findNodeById(nodes: []schema.Node, id: schema.Id) ?*const schema.Node {

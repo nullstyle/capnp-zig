@@ -395,6 +395,75 @@ pub const InlineCompositeList = struct {
     pointer_words: u16,
 };
 
+/// Byte-granular per-element layout of a list being read as `List(Struct)`.
+///
+/// Covers both the native inline-composite encoding (element size C = 7) and
+/// lists encoded with a different element size that are being *decoded* as a
+/// struct list under the Cap'n Proto upgrade rule. That rule is what makes
+/// evolving a `List(UInt32)` field into a `List(SomeStruct)` backward
+/// compatible: a reader must accept any element size except C = 1 as a struct
+/// list, synthesizing a struct whose data section is the element itself.
+///
+/// Byte granularity is required, not a convenience: rounding a 1/2/4-byte
+/// element up to a word would make element *i*'s data section overlap element
+/// *i+1*, so a field past the real element width would read the neighbour's
+/// bytes instead of its default, and the final element would read past the end
+/// of the list. C = 1 is excluded precisely because sub-byte granularity would
+/// be needed for it.
+pub const StructListLayout = struct {
+    segment_id: u32,
+    elements_offset: usize,
+    /// Data-section length per element, in BYTES. Sub-word (1, 2 or 4) only
+    /// for lists upgraded from element size C = 2/3/4.
+    data_bytes: u32,
+    pointer_count: u16,
+    /// Distance between consecutive element starts, in BYTES.
+    stride_bytes: u32,
+    element_count: u32,
+
+    fn fromInlineComposite(list: InlineCompositeList) StructListLayout {
+        const words = @as(u32, list.data_words) + @as(u32, list.pointer_words);
+        return .{
+            .segment_id = list.segment_id,
+            .elements_offset = list.elements_offset,
+            .data_bytes = @as(u32, list.data_words) * 8,
+            .pointer_count = list.pointer_words,
+            .stride_bytes = words * 8,
+            .element_count = list.element_count,
+        };
+    }
+
+    /// The upgrade table. `resolveListPointer` has already bounds-checked the
+    /// full content footprint for this element size, so the synthesized
+    /// per-element extents are inside an already-verified range by
+    /// construction; there is deliberately no arithmetic here beyond the table.
+    fn fromUpgradedList(list: Message.ResolvedListPointer) !StructListLayout {
+        const shape: struct { data: u32, pointers: u16, stride: u32 } = switch (list.element_size) {
+            0 => .{ .data = 0, .pointers = 0, .stride = 0 },
+            // A bit list is the one element size that may never be read as a
+            // struct list.
+            1 => return error.CannotUpgradeBitList,
+            2 => .{ .data = 1, .pointers = 0, .stride = 1 },
+            3 => .{ .data = 2, .pointers = 0, .stride = 2 },
+            4 => .{ .data = 4, .pointers = 0, .stride = 4 },
+            5 => .{ .data = 8, .pointers = 0, .stride = 8 },
+            6 => .{ .data = 0, .pointers = 1, .stride = 8 },
+            // Dispatched to `fromInlineComposite` by `resolveStructListPointer`;
+            // answered defensively rather than with `unreachable` so a future
+            // caller cannot turn a reachable path into undefined behavior.
+            7 => return error.InvalidInlineCompositePointer,
+        };
+        return .{
+            .segment_id = list.segment_id,
+            .elements_offset = list.content_offset,
+            .data_bytes = shape.data,
+            .pointer_count = shape.pointers,
+            .stride_bytes = shape.stride,
+            .element_count = list.element_count,
+        };
+    }
+};
+
 /// A capability pointer index, used in the RPC layer to reference entries
 /// in the message's capability table.
 pub const Capability = struct {
@@ -931,6 +1000,74 @@ pub const Message = struct {
         return error.InvalidInlineCompositePointer;
     }
 
+    /// Follow far pointers far enough to learn whether a list pointer uses the
+    /// inline-composite (C = 7) encoding, without decoding the list.
+    ///
+    /// This deliberately does not go through `resolvePointer`: for a double-far
+    /// in the layout this builder writes, `resolvePointer` yields the struct
+    /// *tag* word, which has pointer type 0. A probe built on it would classify
+    /// a perfectly valid double-far struct list as "not a list" and send it
+    /// down the upgrade path.
+    fn structListIsInlineComposite(self: *const Message, pointer_word: u64, depth: u8) !bool {
+        if (depth == 0) return error.PointerDepthLimit;
+
+        const pointer_type = @as(u2, @truncate(pointer_word & 0x3));
+        if (pointer_type == 1) {
+            return @as(u3, @truncate((pointer_word >> 32) & 0x7)) == 7;
+        }
+        if (pointer_type != 2) return error.InvalidPointer;
+
+        const far = decodeFarPointer(pointer_word);
+        const pad = try self.resolveFarLandingPad(far);
+        const landing_word = try self.readWord(far.segment_id, pad.landing_pos);
+
+        if (!far.landing_pad_is_double) {
+            return try self.structListIsInlineComposite(landing_word, depth - 1);
+        }
+
+        // Double-far: the pad's second word is either the struct tag (layout A,
+        // what this builder writes) or a list pointer (layout B, the reference
+        // implementation's shape). Both mean inline-composite when well formed.
+        const second_word = try self.readWord(far.segment_id, pad.landing_pos + 8);
+        return switch (@as(u2, @truncate(second_word & 0x3))) {
+            0 => true,
+            1 => @as(u3, @truncate((second_word >> 32) & 0x7)) == 7,
+            else => error.InvalidInlineCompositePointer,
+        };
+    }
+
+    /// Resolve a list pointer for reading as `List(Struct)`.
+    ///
+    /// Accepts the native inline-composite encoding and, per the Cap'n Proto
+    /// upgrade rule, any other element size except C = 1 — synthesizing a
+    /// struct whose data section is a prefix of the element. This is what lets
+    /// a peer that evolved a `List(UInt32)` field into a `List(SomeStruct)`
+    /// keep reading data written under the old schema.
+    ///
+    /// Every byte of decoding and bounds checking is delegated to
+    /// `resolveInlineCompositeList` and `resolveListPointer`; this adds only
+    /// the dispatch and the upgrade table.
+    ///
+    /// Note an asymmetry inherited from those two: the inline-composite arm
+    /// tolerates a single far hop, while the upgrade arm follows chains up to
+    /// depth 3 (so `error.PointerDepthLimit` is reachable here).
+    pub fn resolveStructListPointer(
+        self: *const Message,
+        segment_id: u32,
+        pointer_pos: usize,
+        pointer_word: u64,
+    ) !StructListLayout {
+        if (pointer_word == 0) return error.InvalidPointer;
+        if (try self.structListIsInlineComposite(pointer_word, 3)) {
+            return StructListLayout.fromInlineComposite(
+                try self.resolveInlineCompositeList(segment_id, pointer_pos, pointer_word),
+            );
+        }
+        return StructListLayout.fromUpgradedList(
+            try self.resolveListPointer(segment_id, pointer_pos, pointer_word),
+        );
+    }
+
     /// The complete set of errors `validate`/`validateCounted` can return. This
     /// is the frozen public contract for message validation — enforced by the
     /// compiler (a returned error outside this set fails to build), so it stays
@@ -1207,6 +1344,15 @@ pub const Message = struct {
         const total_words = try listContentWords(element_size, element_count);
         try consumeWords(remaining_words, total_words);
 
+        // A list whose elements occupy zero words (element size C = 0, Void)
+        // otherwise costs nothing at all, while a struct list of zero-width
+        // elements is capped by `inline_composite_element_limit`. Since a Void
+        // list can be read as a struct list under the upgrade rule, charging
+        // one word per element here is what keeps the two paths symmetric and
+        // stops a 1-word pointer from synthesizing 2^29 readable elements for
+        // free. The reference implementation charges the same amplification.
+        if (element_size == 0) try consumeWords(remaining_words, @as(usize, element_count));
+
         if (element_size != 6 or element_count == 0) return;
         var index: u32 = 0;
         while (index < element_count) : (index += 1) {
@@ -1229,6 +1375,13 @@ pub const Message = struct {
         const word_count = @as(u32, @truncate(pointer_word >> 35));
         try consumeInlineCompositeElements(remaining_inline_composite_elements, @as(usize, list.element_count));
         try consumeWords(remaining_words, @as(usize, word_count));
+
+        // Zero-width elements: charge a word each, on top of (not instead of)
+        // the element-count budget above. The two are independent knobs and
+        // stacking them is the point.
+        if (@as(usize, list.data_words) + @as(usize, list.pointer_words) == 0) {
+            try consumeWords(remaining_words, @as(usize, list.element_count));
+        }
 
         if (list.pointer_words == 0 or list.element_count == 0) return;
 
@@ -1349,11 +1502,26 @@ pub const StructReader = struct {
     offset: usize,
     data_size: u16,
     pointer_count: u16,
+    /// Data-section length in BYTES when it is not a whole number of words
+    /// (1, 2 or 4). Zero means "use `data_size` words".
+    ///
+    /// Non-zero only for elements of a struct list upgraded from element size
+    /// C = 2/3/4; `data_size` and `pointer_count` are then both 0. Keeping the
+    /// real byte width here — rather than rounding up to one word — is what
+    /// makes a read past the element's true width return the field's default
+    /// instead of the next element's bytes.
+    sub_word_data_bytes: u8 = 0,
+
+    /// Effective data-section length in bytes, honouring a sub-word width.
+    fn dataSectionBytes(self: StructReader) error{OutOfBounds}!usize {
+        if (self.sub_word_data_bytes != 0) return @as(usize, self.sub_word_data_bytes);
+        return wordsToBytes(@as(usize, self.data_size));
+    }
 
     pub fn getDataSection(self: StructReader) []const u8 {
         const segment = self.message.segments[self.segment_id];
         const start = self.offset;
-        const data_bytes = wordsToBytes(@as(usize, self.data_size)) catch return &[_]u8{};
+        const data_bytes = self.dataSectionBytes() catch return &[_]u8{};
         const end = checkedAddUsize(start, data_bytes) catch return &[_]u8{};
         if (end > segment.len) return &[_]u8{};
         return segment[start..end];
@@ -1361,7 +1529,7 @@ pub const StructReader = struct {
 
     pub fn getPointerSection(self: StructReader) []const u8 {
         const segment = self.message.segments[self.segment_id];
-        const data_bytes = wordsToBytes(@as(usize, self.data_size)) catch return &[_]u8{};
+        const data_bytes = self.dataSectionBytes() catch return &[_]u8{};
         const pointer_bytes = wordsToBytes(@as(usize, self.pointer_count)) catch return &[_]u8{};
         const start = checkedAddUsize(self.offset, data_bytes) catch return &[_]u8{};
         const end = checkedAddUsize(start, pointer_bytes) catch return &[_]u8{};
@@ -1392,6 +1560,10 @@ pub const StructReader = struct {
             .offset = self.offset,
             .data_size = 0,
             .pointer_count = 0,
+            // Reset explicitly: `self` may be an upgraded sub-word element, and
+            // inheriting its width would give the default-value reader a data
+            // section anchored at an unrelated offset.
+            .sub_word_data_bytes = 0,
         };
     }
 
@@ -1406,6 +1578,7 @@ pub const StructReader = struct {
             .element_count = 0,
             .data_words = 0,
             .pointer_words = 0,
+            .sub_word_data_bytes = 0,
         };
     }
 
@@ -1548,7 +1721,7 @@ pub const StructReader = struct {
     }
 
     fn absolutePointerPos(self: StructReader, pointer_offset: usize) !usize {
-        const data_bytes = try wordsToBytes(@as(usize, self.data_size));
+        const data_bytes = try self.dataSectionBytes();
         const pointer_section_start = try checkedAddUsize(self.offset, data_bytes);
         return checkedAddUsize(pointer_section_start, pointer_offset);
     }
@@ -1564,15 +1737,16 @@ pub const StructReader = struct {
         if (pointer_word == 0) return error.InvalidPointer;
 
         const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
-        const list = try self.message.resolveInlineCompositeList(self.segment_id, absolute_pointer_pos, pointer_word);
+        const layout = try self.message.resolveStructListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
 
         return .{
             .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.elements_offset,
-            .element_count = list.element_count,
-            .data_words = list.data_words,
-            .pointer_words = list.pointer_words,
+            .segment_id = layout.segment_id,
+            .elements_offset = layout.elements_offset,
+            .element_count = layout.element_count,
+            .data_words = @intCast(layout.data_bytes / 8),
+            .pointer_words = layout.pointer_count,
+            .sub_word_data_bytes = if (layout.data_bytes % 8 == 0) 0 else @intCast(layout.data_bytes),
         };
     }
 

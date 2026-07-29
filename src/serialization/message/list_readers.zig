@@ -81,6 +81,18 @@ pub fn define(
             element_count: u32,
             data_words: u16,
             pointer_words: u16,
+            /// Element size in BYTES for a struct list upgraded from element
+            /// size C = 2/3/4, where it is both the stride and the data-section
+            /// length. Zero means "derive from data_words/pointer_words".
+            ///
+            /// Invariant: non-zero implies `data_words == 0`,
+            /// `pointer_words == 0` and a value below 8. Only C = 2/3/4 can
+            /// produce it; C = 0/5/6 map exactly onto (0,0)/(1,0)/(0,1) words.
+            ///
+            /// Defaulted so the six-field literals emitted by codegen keep
+            /// compiling and the checked-in generated files need no
+            /// regeneration.
+            sub_word_data_bytes: u8 = 0,
 
             pub fn len(self: StructListReader) u32 {
                 return self.element_count;
@@ -88,9 +100,20 @@ pub fn define(
 
             pub fn get(self: StructListReader, index: u32) !StructReaderType {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const stride = (@as(usize, self.data_words) + @as(usize, self.pointer_words)) * 8;
+                if (self.sub_word_data_bytes != 0) {
+                    std.debug.assert(self.data_words == 0);
+                    std.debug.assert(self.pointer_words == 0);
+                    std.debug.assert(self.sub_word_data_bytes < 8);
+                }
+                const stride: usize = if (self.sub_word_data_bytes != 0)
+                    @as(usize, self.sub_word_data_bytes)
+                else
+                    (@as(usize, self.data_words) + @as(usize, self.pointer_words)) * 8;
                 const offset = self.elements_offset + @as(usize, index) * stride;
                 const segment = self.message.segments[self.segment_id];
+                // For an upgraded list the stride *is* the exact element
+                // footprint, so this checks the final element tightly and no
+                // read ever reaches into a neighbour.
                 try bounds.checkBounds(segment, offset, stride);
                 return StructReaderType{
                     .message = self.message,
@@ -98,6 +121,7 @@ pub fn define(
                     .offset = offset,
                     .data_size = self.data_words,
                     .pointer_count = self.pointer_words,
+                    .sub_word_data_bytes = self.sub_word_data_bytes,
                 };
             }
         };
@@ -366,14 +390,18 @@ pub fn define(
             pub fn getStructList(self: PointerListReader, index: u32) !StructListReader {
                 const ptr = try self.readPointer(index);
                 if (ptr.word == 0) return error.InvalidPointer;
-                const list = try self.message.resolveInlineCompositeList(self.segment_id, ptr.pos, ptr.word);
+                const layout = try self.message.resolveStructListPointer(self.segment_id, ptr.pos, ptr.word);
                 return .{
                     .message = self.message,
-                    .segment_id = list.segment_id,
-                    .elements_offset = list.elements_offset,
-                    .element_count = list.element_count,
-                    .data_words = list.data_words,
-                    .pointer_words = list.pointer_words,
+                    .segment_id = layout.segment_id,
+                    .elements_offset = layout.elements_offset,
+                    .element_count = layout.element_count,
+                    .data_words = @intCast(layout.data_bytes / 8),
+                    .pointer_words = layout.pointer_count,
+                    .sub_word_data_bytes = if (layout.data_bytes % 8 == 0)
+                        0
+                    else
+                        @intCast(layout.data_bytes),
                 };
             }
 

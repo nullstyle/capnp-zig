@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Struct-list "upgrade" decoding is implemented; capnp-zig no longer reports
+  a legal message as corrupt.** Cap'n Proto requires a reader to decode a list
+  of any element size except `C = 1` (one bit) as a struct list, synthesizing a
+  struct whose data section is the element itself. That rule is the whole
+  mechanism behind evolving a `List(UInt32)` field into a `List(SomeStruct)`:
+  a peer that performed the evolution keeps reading data written under the old
+  schema. capnp-zig rejected every such list outright
+  (`error.InvalidInlineCompositePointer`), so a C++/Go/Rust peer that made a
+  legal schema change and still had old data on the wire was treated as sending
+  a corrupt message — and `docs/error-handling.md` told the consumer to reject
+  it.
+
+  `Message.resolveStructListPointer` now dispatches between the native
+  inline-composite encoding and the upgrade table, and `readStructList` /
+  `PointerListReader.getStructList` both route through it. Element widths are
+  tracked in **bytes**, not words: rounding a 1/2/4-byte element up to a word
+  would make element *i*'s data section overlap element *i+1*, so a field past
+  the real width would return the neighbour's bytes instead of its default and
+  the final element would read past the end of the list. An ablation that makes
+  exactly that mistake turns four tests red. `List(Bool)` reports the new,
+  distinct `error.CannotUpgradeBitList` — a schema mismatch, not corruption.
+
+  Four honest limits on this:
+
+  - **Decode-side only.** The encoder still writes the inline-composite form for
+    every struct list, which is the only legal encoding to *write*.
+  - **The inverse direction is not implemented.** Reading a `C = 7` list as a
+    primitive list — what an old binary needs in order to read data from a new
+    binary that correctly writes the evolved schema — is still unsupported.
+    This closes one half of the compatibility guarantee, not both.
+  - **A type mismatch now reads as defaults rather than erroring.** Because
+    `readStructList` accepts `C = 0/2/3/4/5/6`, pointing it at the wrong field
+    yields structs whose fields are all at their defaults instead of
+    `InvalidInlineCompositePointer`. Every other implementation is equally
+    permissive; the RPC capability-table reader inherits it.
+  - **`require_struct_size` rejects upgraded elements by design.** That opt-in
+    strictness knob is stricter than the spec and will report
+    `StructSizeTooSmall` for a legally upgraded element.
+
+- **A list of zero-width elements is charged one traversal word per element.**
+  A `List(Void)` previously cost nothing at all, while a struct list of
+  zero-width elements was capped by `inline_composite_element_limit`. Since a
+  Void list is now readable as a struct list, that asymmetry would let a
+  one-word list pointer synthesize 2^29 readable elements for free. Both
+  validation paths now charge the element count, matching the reference
+  implementation. **This is a validate-path mitigation only** — consumers using
+  `Message.initUnvalidated`, which skips the walk entirely, are not protected by
+  it. A message containing a very large `List(Void)` or zero-width struct list
+  can now fail with `TraversalLimitExceeded` where it previously passed.
+
+- The compiler plugin's zero-width struct-list guard now also tests
+  `sub_word_data_bytes`. Without it, a legitimately upgraded `C = 2/3/4` list —
+  which reports zero data *words* while carrying real 1/2/4-byte elements —
+  would have been rejected as an amplification attempt. A `Void` upgrade still
+  lands on all-zero and is still rejected, so the guard keeps its full strength.
+
+- Schema-aware validation and canonicalization are upgrade-aware. All three
+  sites keyed their "nothing to walk" early-out on whole words, which is exactly
+  the condition an upgraded sub-word list satisfies — they would have reported
+  success without validating a single element. They now key on the byte stride,
+  and canonicalization re-emits an upgraded list in the inline-composite form,
+  so the old primitive-list encoding and the evolved struct-list encoding
+  canonicalize to identical bytes.
+
+### Added
+
+- `Message.resolveStructListPointer` and `StructListLayout` are additive
+  entries on the frozen Stable surface (`docs/api-snapshot.txt`, 689 → 691
+  declarations). Nothing was removed or changed.
+
 ## [0.5.0] - 2026-07-29
 
 This release exists primarily to make the shipped artifact match the verified
