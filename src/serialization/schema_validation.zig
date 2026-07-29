@@ -129,7 +129,18 @@ pub fn canonicalizeMessage(
 ) ![]u8 {
     var builder = try canonicalizeToBuilder(allocator, msg, nodes, root, options);
     defer builder.deinit();
-    return builder.toBytes();
+    const bytes = try builder.toBytes();
+    // `toBytes` hands back freshly allocated, caller-owned memory but declares
+    // it `[]const u8`, while this function's signature promises `[]u8` (matching
+    // `canonicalizeMessageFlat`). The buffer is genuinely mutable and genuinely
+    // ours, so the const is an artifact of the callee's declaration, not of the
+    // memory — re-typing it is sound and avoids copying the whole message.
+    //
+    // This mismatch made the function uncompilable, and nothing called it, so it
+    // was never type-checked despite being part of the frozen Stable surface.
+    // The regression test in tests/serialization/schema_validation_test.zig now
+    // calls it so that cannot recur.
+    return @constCast(bytes);
 }
 
 pub fn canonicalizeMessageFlat(

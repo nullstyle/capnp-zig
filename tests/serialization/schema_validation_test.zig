@@ -128,4 +128,16 @@ test "Schema validation and canonicalization (TestAllTypes)" {
     defer allocator.free(expected);
 
     try std.testing.expectEqualSlices(u8, expected, canonical_flat);
+
+    // Also exercise the segment-framed variant. It is part of the frozen Stable
+    // surface but had NO caller anywhere in the tree, so its body was never
+    // type-checked — and it did not in fact compile (it returned `[]const u8`
+    // from a `![]u8` signature). Calling it here is what keeps it honest.
+    const canonical_framed = try schema_validation.canonicalizeMessage(allocator, &msg, request.nodes, root_node, .{});
+    defer allocator.free(canonical_framed);
+
+    // The framed form carries the segment table; the flat form is the bare
+    // single segment. The framed payload must contain the flat bytes.
+    try std.testing.expect(canonical_framed.len >= canonical_flat.len);
+    try std.testing.expect(std.mem.indexOf(u8, canonical_framed, canonical_flat) != null);
 }

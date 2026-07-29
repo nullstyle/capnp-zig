@@ -2,6 +2,61 @@
 
 ### Fixed
 
+- **`schema_validation.canonicalizeMessage` did not compile.** It is `pub` and
+  part of the **frozen Stable surface**, and it returned `[]const u8` from a
+  `![]u8` signature — but nothing in the tree called it, so its body had never
+  been type-checked and the mismatch sat there undetected. Any consumer calling
+  it got a compile error inside the library. Found by closing the error-set hole
+  below: expanding inferred error sets forces body analysis, which surfaced it
+  immediately. The schema-validation suite now calls it, so it cannot rot again.
+
+- **The API freeze gate now pins struct fields, defaults, enum ordinals, and
+  error sets.** `tools/api_snapshot.zig` walked `declarations` only, so every
+  frozen struct was pinned by *name alone*: changing
+  `Connection.Options.read_buffer_size`'s default, removing a field from
+  `PeerLimits`, or reordering a union passed `check-api` green. Separately, 325
+  of the frozen lines (nearly half) rendered their inferred error set as the
+  self-referential `@typeInfo(...).error_union.error_set` expression, which is
+  **identical no matter what the set contains** — so adding, removing, or
+  renaming an error on that half of the Stable surface was invisible while
+  breaking every consumer's `catch |err| switch (err)`.
+
+  Now: fields render with their default *values*, unions render their variants,
+  enums render their ordinals (which matters for wire enums), and inferred error
+  sets expand to sorted `error{...}` lists. Opaque error-set lines dropped from
+  **325 to 9**. `PeerLimits` moved from an exact to a prefix rule so its fields
+  join the contract — it is a config struct whose defaults consumers rely on,
+  unlike `Peer` itself, which stays exact so its ~73 fields of internal state
+  stay out.
+
+  Ablation-verified, both dimensions: changing a field default produces
+  `read_buffer_size: field usize = 65536` → `= 32768` drift, and adding an error
+  to a Stable inferred set produces the expanded-set diff. Both were silent
+  before.
+
+  Stable declaration count goes 695 → **1282**. That is one large reviewed diff
+  from newly-captured detail, not new API: no declaration was added or removed.
+
+- **Three `stable_rules` entries named declarations that do not exist** —
+  `Peer.run`, `Peer.close`, and `ClientSession.adoptOwnerThread` — so the freeze
+  scope documented a `Peer` run/close lifecycle that was never implemented (the
+  nearest real method is the Experimental `closeAttachedTransport`). A new
+  comptime assertion requires every rule to match at least one real declaration;
+  it found all three on its first run, and makes the rules list self-validating
+  against typos in future promotions.
+
+### Documentation
+
+- `docs/supported-surface.md` records the two residual freeze holes rather than
+  implying the gate is now complete: nine Stable signatures remain unpinned
+  beyond their arity because they are *generic* (Zig cannot resolve an inferred
+  error set through an `anytype` parameter until instantiation — asking is a
+  compile error), and the frozen surface is still **not closed under its own
+  signatures**, most consequentially `ServerSession.accept`, which needs a
+  `Listener` no Stable API can construct. The closure check is the intended next
+  step and was deliberately sequenced after this work, since a closure walk
+  cannot resolve those `anytype` parameters either.
+
 - **The benchmark regression gate can now actually fire.** `bench/baselines.json`
   carried a global `max_regression_pct: 500.0` while the wall-clock baselines had
   gone unrefreshed since 2026-02-06 — CI numbers had since improved 6–15×, so the

@@ -299,6 +299,30 @@ cooperating peer.
 
 ### Active
 
+- **The frozen snapshot pins signatures, fields and error sets — but not
+  `anytype`.** `docs/api-snapshot.txt` now records struct fields with their
+  default values, union variants, enum ordinals, and concrete error sets
+  (expanded from Zig's inferred sets). Nine Stable signatures remain unpinned
+  beyond their arity, because they are *generic* — Zig cannot resolve an
+  inferred error set for a function whose parameters include `anytype` until it
+  is instantiated, so asking for it is a compile error. They are:
+  `codegen.ArrayListWriter.print`, `message.MessageBuilder.writeTo` /
+  `writePackedTo`, `reader.Reader.readMessage` / `readPackedMessage`,
+  `rpc.caps.table.payload_remap.clonePayloadWithRemappedCaps`, and
+  `rpc.wire.protocol.CapDescriptor.writeReceiverAnswer` /
+  `writeThirdPartyHosted` / `writeThirdPartyHostedNull`. A change to one of
+  those functions' error behavior will not turn `check-api` red.
+
+- **The frozen surface is not closed under its own signatures.** Some Stable
+  entry points take Experimental parameter types — most consequentially
+  `ServerSession.accept`, which needs a `runtime.Listener` that no Stable API can
+  construct, so there is no fully-Stable path to stand up a server. A
+  closure check (fail when a Stable signature mentions an Experimental type) is
+  the intended next step; it was deliberately sequenced *after* the renderer work
+  above, because a closure walk cannot resolve the `anytype` parameters listed in
+  the previous item.
+
+
 - **Inbound `Call.sendResultsTo = thirdParty` is refused by default.** Answering
   it requires connecting to a third vat and delivering the results there;
   capnp-zig does not do that for you, so it answers with a single exception

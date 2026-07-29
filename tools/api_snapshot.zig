@@ -139,7 +139,6 @@ const stable_rules = [_]Rule{
     e("capnpc-zig.rpc.transport.tcp.client.ClientSession.requestStop"),
     e("capnpc-zig.rpc.transport.tcp.client.ClientSession.deinit"),
     e("capnpc-zig.rpc.transport.tcp.client.ClientSession.fromPeer"),
-    e("capnpc-zig.rpc.transport.tcp.client.ClientSession.adoptOwnerThread"),
     // The top-level `connect`/`connectHost` free-function aliases are the
     // documented one-call consumer entry and share ClientSession's signature.
     e("capnpc-zig.rpc.transport.tcp.connect"),
@@ -184,7 +183,12 @@ const stable_rules = [_]Rule{
     // --- Canonical two-party Peer consumer entry points (post F1/F2/F3). ---
     //     Frozen: the canonical ctor + attach, the send family, export/import
     //     management, basic two-party promise resolution, and the
-    //     run/close/deinit/adoptOwnerThread lifecycle. EXCLUDED (Experimental,
+    //     deinit/adoptOwnerThread lifecycle. NOTE: `Peer` has no `run` or
+    //     `close` method — rules for both sat here for releases, freezing
+    //     nothing and promising a lifecycle that was never implemented (the
+    //     nearest real method is the Experimental `closeAttachedTransport`).
+    //     The rule-liveness assertion below now makes that class of mistake a
+    //     compile error. EXCLUDED (Experimental,
     //     omitted): the entire L3 arc (sendProvide/sendAccept/third-party/
     //     handoff/VatNetwork), reflected resolvePromiseExportToImport, the
     //     F3-demoted initDetached*/attachTransport*, persistence, and every
@@ -203,8 +207,6 @@ const stable_rules = [_]Rule{
     e("capnpc-zig.rpc.peer.Peer.releaseImport"),
     e("capnpc-zig.rpc.peer.Peer.resolvePromiseExportToExport"),
     e("capnpc-zig.rpc.peer.Peer.resolvePromiseExportToException"),
-    e("capnpc-zig.rpc.peer.Peer.run"),
-    e("capnpc-zig.rpc.peer.Peer.close"),
     e("capnpc-zig.rpc.peer.Peer.deinit"),
     e("capnpc-zig.rpc.peer.Peer.adoptOwnerThread"),
 
@@ -222,7 +224,12 @@ const stable_rules = [_]Rule{
     e("capnpc-zig.rpc.peer.CallHandler"),
     e("capnpc-zig.rpc.peer.SaveHandler"),
     e("capnpc-zig.rpc.peer.RestoreHandler"),
-    e("capnpc-zig.rpc.peer.PeerLimits"),
+    // PREFIX, not exact: `PeerLimits` is a config struct a consumer constructs
+    // and whose defaults it relies on, so its FIELDS are part of the frozen
+    // contract — removing one, or changing a default, is a consumer-visible
+    // break. Contrast `Peer` itself, frozen exactly so its ~73 fields of
+    // internal state stay out of the contract.
+    p("capnpc-zig.rpc.peer.PeerLimits"),
 };
 
 fn matchesRule(comptime path: []const u8, comptime rules: []const Rule) bool {
@@ -279,6 +286,158 @@ fn contains(comptime seen: []const type, comptime T: type) bool {
     return false;
 }
 
+/// Render a function signature, expanding any inferred error set.
+///
+/// `@typeName` renders an inferred error set as the self-referential expression
+/// `@typeInfo(@typeInfo(@TypeOf(f)).@"fn".return_type.?).error_union.error_set`,
+/// which is IDENTICAL no matter what the set contains — 325 of the frozen lines
+/// rendered that way, so adding, removing, or renaming an error on nearly half
+/// the Stable surface passed the gate unchanged while breaking every consumer's
+/// `catch |err| switch (err)`. Expanding the set to a sorted `error{...}` list
+/// makes those changes visible.
+///
+/// `anytype` parameters remain unpinned: they are genuinely unresolved until
+/// instantiation, so a signature containing one pins only its arity. That
+/// residual hole is documented in docs/supported-surface.md rather than hidden.
+fn renderErrorSet(comptime E: type) []const u8 {
+    const info = @typeInfo(E).error_set;
+    const names = info.error_names orelse return "anyerror";
+
+    comptime var sorted: []const []const u8 = &.{};
+    for (names) |name| sorted = sorted ++ [_][]const u8{name};
+    // Insertion sort: the rendered set must not depend on declaration order.
+    comptime var i: usize = 1;
+    inline while (i < sorted.len) : (i += 1) {
+        comptime var j = i;
+        inline while (j > 0 and std.mem.lessThan(u8, sorted[j], sorted[j - 1])) : (j -= 1) {
+            const swapped = sorted[j - 1];
+            var next: []const []const u8 = sorted[0 .. j - 1];
+            next = next ++ [_][]const u8{sorted[j]} ++ [_][]const u8{swapped};
+            if (j + 1 < sorted.len) next = next ++ sorted[j + 1 ..];
+            sorted = next;
+        }
+    }
+
+    comptime var out: []const u8 = "error{";
+    for (sorted, 0..) |name, idx| {
+        if (idx != 0) out = out ++ ",";
+        out = out ++ name;
+    }
+    return out ++ "}";
+}
+
+fn renderFnType(comptime FnType: type) []const u8 {
+    const fn_info = @typeInfo(FnType).@"fn";
+    // A GENERIC function's inferred error set cannot be resolved here: it
+    // depends on the instantiation, and asking for it is a compile error
+    // ("cannot resolve inferred error set of generic function type"). Those
+    // lines keep the opaque rendering and stay unpinned; the count is recorded
+    // in docs/supported-surface.md so the residual hole is a known quantity
+    // rather than a surprise.
+    if (fn_info.is_generic) return @typeName(FnType);
+    const ret = fn_info.return_type orelse return @typeName(FnType);
+    switch (@typeInfo(ret)) {
+        .error_union => |eu| {
+            // Rebuild the signature with the expanded set. The parameter list is
+            // taken verbatim from @typeName so `anytype`/`comptime` render
+            // exactly as before and only the error set changes.
+            const full = @typeName(FnType);
+            const open = std.mem.indexOfScalar(u8, full, '(') orelse return full;
+            // Match the parameter list's OWN closing paren by depth. A plain
+            // lastIndexOf(')') lands inside the rendered return type — which for
+            // an inferred error set is itself a paren-heavy
+            // `@typeInfo(@typeInfo(@TypeOf(f)).@"fn".return_type.?)` expression —
+            // and splices that fragment into the output.
+            comptime var depth: usize = 0;
+            comptime var close: ?usize = null;
+            inline for (full[open..], open..) |ch, idx| {
+                if (ch == '(') depth += 1;
+                if (ch == ')') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        close = idx;
+                        break;
+                    }
+                }
+            }
+            const close_idx = close orelse return full;
+            const params = full[open .. close_idx + 1];
+            return "fn " ++ params ++ " " ++ renderErrorSet(eu.error_set) ++ "!" ++ @typeName(eu.payload);
+        },
+        else => return @typeName(FnType),
+    }
+}
+
+/// Render a field's default-value initializer, or "" when it has none.
+///
+/// The default VALUE matters, not just its presence: changing
+/// `Connection.Options.read_buffer_size` from one number to another is a
+/// behavior change for every consumer who relied on it, and a name-only
+/// snapshot could not see it. Values are rendered for the scalar kinds where a
+/// default is meaningful and comparable; anything else records that a default
+/// exists without trying to spell it, which still pins presence.
+fn defaultSuffix(
+    comptime FieldType: type,
+    comptime attrs: std.builtin.Type.Struct.FieldAttributes,
+) []const u8 {
+    const value = attrs.defaultValue(FieldType) orelse return "";
+    return switch (@typeInfo(FieldType)) {
+        .int, .comptime_int => " = " ++ std.fmt.comptimePrint("{d}", .{value}),
+        .float, .comptime_float => " = " ++ std.fmt.comptimePrint("{d}", .{value}),
+        .bool => " = " ++ (if (value) "true" else "false"),
+        .@"enum" => " = ." ++ @tagName(value),
+        .void => " = {}",
+        .optional => if (value == null) " = null" else " = <non-null default>",
+        else => " = <default>",
+    };
+}
+
+/// Emit one line per field/enumerant of a container.
+///
+/// The walker enumerates DECLARATIONS only, so before this every frozen struct
+/// was pinned by name alone: removing a field from `PeerLimits`, reordering a
+/// union, or changing a default was invisible to `check-api`. Fields render
+/// under the container's path, so the existing tier rules route them — a
+/// `.prefix` rule (a frozen module) sweeps its types' fields into the contract,
+/// while a `.exact` rule (e.g. `Peer` itself) deliberately does not, keeping 73
+/// fields of internal peer state out of the frozen surface.
+fn fieldEntries(
+    comptime T: type,
+    comptime path: []const u8,
+    comptime entries: *[]const Entry,
+) void {
+    switch (@typeInfo(T)) {
+        .@"struct" => |info| {
+            for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, attrs| {
+                const fpath = path ++ "." ++ name;
+                entries.* = entries.* ++ [_]Entry{.{
+                    .path = fpath,
+                    .line = fpath ++ ": field " ++ @typeName(FieldType) ++ defaultSuffix(FieldType, attrs),
+                }};
+            }
+        },
+        .@"union" => |info| {
+            for (info.field_names, info.field_types) |name, FieldType| {
+                const fpath = path ++ "." ++ name;
+                entries.* = entries.* ++ [_]Entry{.{
+                    .path = fpath,
+                    .line = fpath ++ ": variant " ++ @typeName(FieldType),
+                }};
+            }
+        },
+        .@"enum" => |info| {
+            for (info.field_names, info.field_values) |name, value| {
+                const fpath = path ++ "." ++ name;
+                entries.* = entries.* ++ [_]Entry{.{
+                    .path = fpath,
+                    .line = fpath ++ ": enumerant = " ++ std.fmt.comptimePrint("{d}", .{value}),
+                }};
+            }
+        },
+        else => {},
+    }
+}
+
 /// A rendered declaration line plus the path that produced it (kept so the
 /// categorizer can route lines after they are collected).
 const Entry = struct { path: []const u8, line: []const u8 };
@@ -303,13 +462,25 @@ fn walk(
             if (isContainer(D)) {
                 entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": " ++ containerKind(D) }};
                 if (!foreignType(D)) {
+                    fieldEntries(D, decl_path, entries);
                     walk(D, decl_path, depth + 1, seen, entries);
                 }
             } else {
-                entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": type = " ++ @typeName(D) }};
+                // A typedef whose value is a function (or a pointer to one) is
+                // still a signature consumers code against — expand its error
+                // set too, rather than leaving the opaque @typeName rendering.
+                const rendered = switch (@typeInfo(D)) {
+                    .@"fn" => renderFnType(D),
+                    .pointer => |pi| if (@typeInfo(pi.child) == .@"fn")
+                        "*const " ++ renderFnType(pi.child)
+                    else
+                        @typeName(D),
+                    else => @typeName(D),
+                };
+                entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": type = " ++ rendered }};
             }
         } else if (@typeInfo(DType) == .@"fn") {
-            entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": " ++ @typeName(DType) }};
+            entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": " ++ renderFnType(DType) }};
         } else {
             entries.* = entries.* ++ [_]Entry{.{ .path = decl_path, .line = decl_path ++ ": const " ++ @typeName(DType) }};
         }
@@ -323,6 +494,42 @@ const all_entries: []const Entry = blk: {
     walk(capnpc, "capnpc-zig", 0, &seen, &entries);
     break :blk entries;
 };
+
+/// Every rule must name a declaration that actually exists.
+///
+/// A rule for a symbol that was never there (or has since been renamed) is
+/// silent: it documents a contract nobody can rely on, and it would mask a typo
+/// in a future promotion. This assertion makes the rules list self-validating —
+/// it is what found `Peer.run`, a frozen "lifecycle entry point" that is not a
+/// method on `Peer` at all.
+fn ruleMatchesAnyDeclaration(comptime rule: Rule) bool {
+    for (all_entries) |entry| {
+        switch (rule.kind) {
+            .exact => if (std.mem.eql(u8, entry.path, rule.path)) return true,
+            .prefix => {
+                if (std.mem.eql(u8, entry.path, rule.path)) return true;
+                if (entry.path.len > rule.path.len and
+                    std.mem.startsWith(u8, entry.path, rule.path) and
+                    entry.path[rule.path.len] == '.') return true;
+            },
+        }
+    }
+    return false;
+}
+
+comptime {
+    @setEvalBranchQuota(40_000_000);
+    var dead: []const u8 = "";
+    for (stable_rules) |rule| {
+        if (!ruleMatchesAnyDeclaration(rule)) dead = dead ++ "\n  stable_rules: " ++ rule.path;
+    }
+    for (experimental_overrides) |rule| {
+        if (!ruleMatchesAnyDeclaration(rule)) dead = dead ++ "\n  experimental_overrides: " ++ rule.path;
+    }
+    if (dead.len != 0) {
+        @compileError("api_snapshot: rule(s) match no declaration — remove them or fix the path:" ++ dead);
+    }
+}
 
 /// Split the flat entry list into the two tiers at comptime.
 const stable_lines: []const []const u8 = blk: {
