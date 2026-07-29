@@ -588,12 +588,15 @@ capnpc-zig.rpc.wire.protocol.DecodedMessage.initCounting: fn (mem.Allocator, []c
 capnpc-zig.rpc.wire.protocol.DecodedMessage: struct
 capnpc-zig.rpc.wire.protocol.Disembargo: struct
 capnpc-zig.rpc.wire.protocol.DisembargoContextTag: enum
+capnpc-zig.rpc.wire.protocol.Exception.kind: fn (rpc.wire.protocol.Exception) rpc.wire.protocol.ExceptionType
 capnpc-zig.rpc.wire.protocol.Exception: struct
+capnpc-zig.rpc.wire.protocol.ExceptionType: enum
 capnpc-zig.rpc.wire.protocol.Finish: struct
 capnpc-zig.rpc.wire.protocol.Join: struct
 capnpc-zig.rpc.wire.protocol.MessageBuilder.beginCall: fn (*rpc.wire.protocol.MessageBuilder, u32, u64, u16) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.beginCall)).@"fn".return_type.?).error_union.error_set!rpc.wire.protocol.CallBuilder
 capnpc-zig.rpc.wire.protocol.MessageBuilder.beginReturn: fn (*rpc.wire.protocol.MessageBuilder, u32, rpc.gen.capnp.rpc.Return.WhichTag) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.beginReturn)).@"fn".return_type.?).error_union.error_set!rpc.wire.protocol.ReturnBuilder
 capnpc-zig.rpc.wire.protocol.MessageBuilder.buildAbort: fn (*rpc.wire.protocol.MessageBuilder, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.buildAbort)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.wire.protocol.MessageBuilder.buildAbortTyped: fn (*rpc.wire.protocol.MessageBuilder, []const u8, rpc.wire.protocol.ExceptionType) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.buildAbortTyped)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.wire.protocol.MessageBuilder.buildAccept: fn (*rpc.wire.protocol.MessageBuilder, u32, ?serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader, ?[]const u8) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.buildAccept)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.wire.protocol.MessageBuilder.buildBootstrap: fn (*rpc.wire.protocol.MessageBuilder, u32) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.buildBootstrap)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.wire.protocol.MessageBuilder.buildDisembargoAccept: fn (*rpc.wire.protocol.MessageBuilder, rpc.wire.protocol.MessageTarget, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.MessageBuilder.buildDisembargoAccept)).@"fn".return_type.?).error_union.error_set!void
@@ -650,6 +653,7 @@ capnpc-zig.rpc.wire.protocol.ReturnBuilder.setAcceptFromThirdParty: fn (*rpc.wir
 capnpc-zig.rpc.wire.protocol.ReturnBuilder.setAcceptFromThirdPartyNull: fn (*rpc.wire.protocol.ReturnBuilder) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.ReturnBuilder.setAcceptFromThirdPartyNull)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.wire.protocol.ReturnBuilder.setCanceled: fn (*rpc.wire.protocol.ReturnBuilder) void
 capnpc-zig.rpc.wire.protocol.ReturnBuilder.setException: fn (*rpc.wire.protocol.ReturnBuilder, []const u8) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.ReturnBuilder.setException)).@"fn".return_type.?).error_union.error_set!void
+capnpc-zig.rpc.wire.protocol.ReturnBuilder.setExceptionTyped: fn (*rpc.wire.protocol.ReturnBuilder, []const u8, rpc.wire.protocol.ExceptionType) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.ReturnBuilder.setExceptionTyped)).@"fn".return_type.?).error_union.error_set!void
 capnpc-zig.rpc.wire.protocol.ReturnBuilder.setNoFinishNeeded: fn (*rpc.wire.protocol.ReturnBuilder, bool) void
 capnpc-zig.rpc.wire.protocol.ReturnBuilder.setReleaseParamCaps: fn (*rpc.wire.protocol.ReturnBuilder, bool) void
 capnpc-zig.rpc.wire.protocol.ReturnBuilder.setTakeFromOtherQuestion: fn (*rpc.wire.protocol.ReturnBuilder, u32) @typeInfo(@typeInfo(@TypeOf(rpc.wire.protocol.ReturnBuilder.setTakeFromOtherQuestion)).@"fn".return_type.?).error_union.error_set!void

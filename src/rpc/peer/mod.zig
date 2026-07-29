@@ -1908,7 +1908,7 @@ pub const Peer = struct {
         self.neutralizeCrossPeerProxiesOnSourcePeer();
         self.neutralizeCrossPeerJoinRelaysOnSourcePeer();
         self.neutralizeJoinAcceptHostLinks();
-        _ = self.forceCancelAllQuestions(disconnected_reason);
+        _ = self.forceCancelAllQuestions(disconnected_reason, .disconnected);
         self.neutralizeJoinCoordinatorAcceptLinks();
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
@@ -3497,6 +3497,17 @@ pub const Peer = struct {
     /// is absorbed silently when it arrives. Loopback questions complete
     /// locally and are removed outright.
     pub fn cancelQuestion(self: *Peer, question_id: u32, reason: []const u8) !void {
+        return self.cancelQuestionTyped(question_id, reason, .failed);
+    }
+
+    /// `cancelQuestion` carrying an explicit `Exception.Type` for the locally
+    /// synthesized exception the caller observes.
+    pub fn cancelQuestionTyped(
+        self: *Peer,
+        question_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
         self.assertThreadAffinity();
         const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
         if (entry.cancelled) return;
@@ -3505,7 +3516,7 @@ pub const Peer = struct {
         if (question.is_loopback) {
             _ = self.loopback_questions.remove(question_id);
             self.removeQuestion(question_id);
-            try self.deliverLocalException(question, question_id, reason);
+            try self.deliverLocalException(question, question_id, reason, ex_type);
             return;
         }
 
@@ -3529,7 +3540,7 @@ pub const Peer = struct {
             log.debug("cancel finish send failed for question {}: {}", .{ question_id, err });
         };
 
-        try self.deliverLocalException(question, question_id, reason);
+        try self.deliverLocalException(question, question_id, reason, ex_type);
     }
 
     /// Cancel every question whose deadline has passed, and enforce the
@@ -3554,7 +3565,7 @@ pub const Peer = struct {
         var cancelled: usize = 0;
         for (expired.items) |question_id| {
             events.emitTimeout(self.observer, .peer, .unknown, .call_deadline, question_id);
-            self.cancelQuestion(question_id, deadline_reason) catch |err| {
+            self.cancelQuestionTyped(question_id, deadline_reason, .overloaded) catch |err| {
                 log.debug("deadline cancel failed for question {}: {}", .{ question_id, err });
                 continue;
             };
@@ -3571,7 +3582,7 @@ pub const Peer = struct {
                 if (now >= drain_deadline and self.questions.count() != 0) {
                     self.shutdown_deadline_ns = null;
                     events.emitTimeout(self.observer, .peer, .unknown, .shutdown_drain, null);
-                    cancelled += self.forceCancelAllQuestions(shutdown_reason);
+                    cancelled += self.forceCancelAllQuestions(shutdown_reason, .disconnected);
                 }
             }
         }
@@ -3586,12 +3597,18 @@ pub const Peer = struct {
     /// before the callback could run, the ctx is freed here via
     /// `question.deinit_ctx` — callers have already removed the entry from
     /// the questions map (or dropped its cleanup hook), so nothing else can.
-    fn deliverLocalException(self: *Peer, question: Question, question_id: u32, reason: []const u8) !void {
+    fn deliverLocalException(
+        self: *Peer,
+        question: Question,
+        question_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
         var callback_ran = false;
         errdefer if (!callback_ran) {
             if (question.deinit_ctx) |deinit_ctx| deinit_ctx(self.allocator, question.ctx);
         };
-        const frame = try peer_return_frames.buildReturnExceptionFrame(self.allocator, question_id, reason);
+        const frame = try peer_return_frames.buildReturnExceptionFrame(self.allocator, question_id, reason, ex_type);
         defer self.allocator.free(frame);
         var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
         defer decoded.deinit();
@@ -3608,7 +3625,7 @@ pub const Peer = struct {
     /// Remove and cancel every outstanding question (drain-bound
     /// enforcement). Unlike `cancelQuestion` this does not keep entries
     /// for late Returns — the transport is about to close.
-    fn forceCancelAllQuestions(self: *Peer, reason: []const u8) usize {
+    fn forceCancelAllQuestions(self: *Peer, reason: []const u8, ex_type: protocol.ExceptionType) usize {
         var ids: std.ArrayList(u32) = .empty;
         defer ids.deinit(self.allocator);
         var it = self.questions.keyIterator();
@@ -3636,7 +3653,7 @@ pub const Peer = struct {
                     log.debug("drain finish send failed for question {}: {}", .{ question_id, err });
                 };
             }
-            self.deliverLocalException(question, question_id, reason) catch |err| {
+            self.deliverLocalException(question, question_id, reason, ex_type) catch |err| {
                 log.debug("drain exception delivery failed for question {}: {}", .{ question_id, err });
             };
             cancelled += 1;
@@ -4712,7 +4729,11 @@ pub const Peer = struct {
             },
             .exception => {
                 const reason = if (ret.exception) |e| e.reason else "cross-peer forwarded call failed";
-                try recipient.sendReturnException(answer_id, reason);
+                // Relay the origin's type verbatim: a `disconnected` upstream
+                // must not reach the caller as a generic `failed`, or the
+                // caller cannot tell a retryable loss from an application error.
+                const ex_type = if (ret.exception) |e| e.kind() else protocol.ExceptionType.failed;
+                try recipient.sendReturnExceptionTyped(answer_id, reason, ex_type);
             },
             else => {
                 try recipient.sendReturnException(answer_id, "cross-peer forwarded call: unexpected return");
@@ -4954,20 +4975,40 @@ pub const Peer = struct {
     /// exactly-one-Return-per-call invariant holds and the caller's question
     /// table can drain (a compliant peer otherwise hangs forever).
     pub fn sendReturnException(self: *Peer, answer_id: u32, reason: []const u8) !void {
+        return self.sendReturnExceptionTyped(answer_id, reason, .failed);
+    }
+
+    /// `sendReturnException` carrying an explicit `Exception.Type`, the
+    /// retryability signal a remote peer acts on.
+    ///
+    /// Pipelined children inherit the parent answer's type: they failed for the
+    /// same reason.
+    pub fn sendReturnExceptionTyped(
+        self: *Peer,
+        answer_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
         self.assertThreadAffinity();
-        try self.sendReturnExceptionNoDrain(answer_id, reason);
-        self.failQueuedPromisedCalls(answer_id, reason);
+        try self.sendReturnExceptionNoDrain(answer_id, reason, ex_type);
+        self.failQueuedPromisedCalls(answer_id, reason, ex_type);
     }
 
     /// Send an exception Return without draining queued pipelined children.
     /// Used internally where the queued-call drain must not re-enter (e.g.
     /// while iterating the live `pending_promises` map).
-    fn sendReturnExceptionNoDrain(self: *Peer, answer_id: u32, reason: []const u8) !void {
+    fn sendReturnExceptionNoDrain(
+        self: *Peer,
+        answer_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
         try peer_return_dispatch.sendReturnExceptionForPeer(
             Peer,
             self,
             answer_id,
             reason,
+            ex_type,
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
@@ -4983,7 +5024,12 @@ pub const Peer = struct {
     /// The caller must NOT be iterating the live `pending_promises` map when
     /// invoking this (it fetchRemoves buckets); callers that resolve a
     /// detached bucket, or fail a parent answer outside iteration, are safe.
-    fn failQueuedPromisedCalls(self: *Peer, answer_id: u32, reason: []const u8) void {
+    fn failQueuedPromisedCalls(
+        self: *Peer,
+        answer_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) void {
         var worklist = std.ArrayList(u32).empty;
         defer worklist.deinit(self.allocator);
         // Best-effort under OOM: if we cannot even seed the worklist the
@@ -5006,7 +5052,7 @@ pub const Peer = struct {
 
                 // Non-draining send: descendants are handled by the worklist,
                 // not by re-entering this drain.
-                self.sendReturnExceptionNoDrain(child_qid, reason) catch |err| {
+                self.sendReturnExceptionNoDrain(child_qid, reason, ex_type) catch |err| {
                     self.reportNonfatalError(err);
                 };
                 self.releaseInboundCaps(&pending_call.caps) catch |err| {
@@ -5103,7 +5149,7 @@ pub const Peer = struct {
             return error.ResultsNotRedirected;
         }
         try self.sendReturnTag(answer_id, .resultsSentElsewhere);
-        self.failQueuedPromisedCalls(answer_id, results_sent_elsewhere_no_pipelining);
+        self.failQueuedPromisedCalls(answer_id, results_sent_elsewhere_no_pipelining, .failed);
     }
 
     fn sendReturnTag(self: *Peer, answer_id: u32, tag: protocol.ReturnTag) !void {
@@ -5941,7 +5987,7 @@ pub const Peer = struct {
         // maps are still intact here, so a callback that re-enters the peer is
         // safe; the synthetic Return is delivered only to the question's
         // callback and is never cached as an answer or replayed to pipelining.
-        _ = self.forceCancelAllQuestions(disconnected_reason);
+        _ = self.forceCancelAllQuestions(disconnected_reason, .disconnected);
         if (self.on_close) |cb| cb(self.callback_ctx, self);
     }
 
@@ -6081,10 +6127,11 @@ pub const Peer = struct {
 
     fn sendAbortForError(self: *Peer, err: anyerror) void {
         if (err == error.OutOfMemory) return;
-        peer_outbound_control.sendAbort(
+        peer_outbound_control.sendAbortTyped(
             Peer,
             self,
             @errorName(err),
+            errors.exceptionTypeForError(err),
             Peer.sendBuilderControl,
         ) catch |abort_err| {
             log.debug("failed to send abort: {}", .{abort_err});
@@ -6337,7 +6384,7 @@ pub const Peer = struct {
             // against an unrelated answer if the remote reuses the id. Run here,
             // outside the pending-map iteration above, since the drain
             // fetchRemoves buckets. Mirrors sendReturnException's drain.
-            self.failQueuedPromisedCalls(question_id, "pipelined on a cancelled call");
+            self.failQueuedPromisedCalls(question_id, "pipelined on a cancelled call", .failed);
         }
         return canceled;
     }

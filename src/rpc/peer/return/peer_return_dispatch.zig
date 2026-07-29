@@ -277,10 +277,11 @@ pub fn sendReturnExceptionForPeer(
     peer: *PeerType,
     answer_id: u32,
     reason: []const u8,
+    ex_type: protocol.ExceptionType,
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    const frame = try peer_return_frames.buildReturnExceptionFrame(peer.allocator, answer_id, reason);
+    const frame = try peer_return_frames.buildReturnExceptionFrame(peer.allocator, answer_id, reason, ex_type);
     try clearAndSendReturnFrameForPeer(
         PeerType,
         peer,

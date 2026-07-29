@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`Exception.type` is now set on outbound exceptions and consulted on inbound
+  ones.** Every exception capnp-zig sent carried type 0 (`failed`), including
+  disconnect and shutdown exceptions, so a peer of any other implementation
+  could not tell a retryable transport loss from an application error. Inbound,
+  disconnection was detected by string-comparing the reason against capnp-zig's
+  own `"disconnected"` literal — which no other implementation emits — so a
+  C++/Go/Rust/Python peer signalling `type = disconnected` was reported as a
+  plain remote exception. The standard cross-implementation retry signal was
+  inert in both directions.
+
+  Now: `protocol.ExceptionType` (deliberately **non-exhaustive** — the wire
+  field is a remote-controlled `UInt16`, and future spec revisions may add
+  values, so an unknown code decodes to an unnamed tag instead of being illegal
+  to construct), `Exception.kind()`, and typed builders
+  (`setExceptionTyped` / `buildAbortTyped`). Transport drains and shutdown stamp
+  `disconnected`; deadline expiry stamps `overloaded` (the spec classes timeouts
+  there); a remote that echoes our question as `Unimplemented` yields
+  `unimplemented`; aborts derive their type from the failing error via
+  `errors.exceptionTypeForError`. A cross-peer relay now forwards the origin's
+  type verbatim instead of laundering it to `failed`.
+
+  Generated `unwrap()` switches on the type rather than comparing reason text.
+  This is a **behavior change in generated code with no source change**: the
+  signature and `CallError` set are identical, so nothing needs editing, but the
+  classification is stricter and more correct. A disconnect reported by any
+  implementation is now recognized — and an application exception whose reason
+  text merely reads `"disconnected"` is no longer promoted to
+  `error.Disconnected`. Two tests that pinned the old text-matching behavior
+  encoded exactly that spoof and were rewritten.
+
+  Scope: this stamps the types that carry information for a remote peer. Many
+  remaining internal exception sites still send `failed`, which is the spec's
+  correct catch-all ("repeating the call would fail the same way") — refining
+  those individually is follow-up work, not a defect.
+
 - **An inbound `Call` with `sendResultsTo = thirdParty` no longer silently
   discards its results.** `sendReturnResults` took the third-party branch and
   answered `awaitFromThirdParty` *without ever invoking the `build` closure*. For
@@ -115,9 +150,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Message.resolveStructListPointer` and `StructListLayout` are additive
-  entries on the frozen Stable surface (`docs/api-snapshot.txt`, 689 → 691
-  declarations). Nothing was removed or changed.
+- Additive entries on the frozen Stable surface (`docs/api-snapshot.txt`,
+  689 → 695 declarations, nothing removed or changed):
+  `Message.resolveStructListPointer`, `StructListLayout`,
+  `protocol.ExceptionType`, `protocol.Exception.kind`,
+  `protocol.MessageBuilder.buildAbortTyped`, and
+  `protocol.ReturnBuilder.setExceptionTyped`.
 
 ## [0.5.0] - 2026-07-29
 

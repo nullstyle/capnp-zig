@@ -260,9 +260,20 @@ pub fn sendAbort(
     reason: []const u8,
     send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
 ) !void {
+    return sendAbortTyped(PeerType, peer, reason, .failed, send_builder);
+}
+
+/// `sendAbort` carrying an explicit `Exception.Type`.
+pub fn sendAbortTyped(
+    comptime PeerType: type,
+    peer: *PeerType,
+    reason: []const u8,
+    ex_type: protocol.ExceptionType,
+    send_builder: *const fn (*PeerType, *protocol.MessageBuilder) anyerror!void,
+) !void {
     var builder = protocol.MessageBuilder.init(peer.allocator);
     defer builder.deinit();
-    try builder.buildAbort(reason);
+    try builder.buildAbortTyped(reason, ex_type);
     try send_builder(peer, &builder);
 }
 

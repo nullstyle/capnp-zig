@@ -18,12 +18,13 @@ pub fn buildReturnExceptionFrame(
     allocator: std.mem.Allocator,
     answer_id: u32,
     reason: []const u8,
+    ex_type: protocol.ExceptionType,
 ) ![]const u8 {
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
 
     var ret = try builder.beginReturn(answer_id, .exception);
-    try ret.setException(reason);
+    try ret.setExceptionTyped(reason, ex_type);
     return builder.finish();
 }
 

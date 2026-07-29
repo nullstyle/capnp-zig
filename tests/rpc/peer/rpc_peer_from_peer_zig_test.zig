@@ -5438,3 +5438,97 @@ test "sendReturnResultsSentElsewhere drains calls pipelined on the redirected an
     try std.testing.expect(saw_child);
     try std.testing.expectEqual(@as(usize, 0), peer.pending_promises.count());
 }
+
+test "locally synthesized exceptions carry the spec Exception.Type" {
+    const allocator = std.testing.allocator;
+
+    // The retryability signal must be on the wire, not inferred from reason
+    // text. Before this, every outbound exception carried type 0 (`failed`) and
+    // disconnect detection was a string compare against capnp-zig's own
+    // literal -- which no other implementation emits, so a disconnect reported
+    // by a C++/Go/Rust peer read as a plain application error, and an
+    // application error whose text happened to be "disconnected" read as a
+    // transport loss.
+
+    const Captured = struct {
+        tag: ?protocol.ReturnTag = null,
+        type_value: ?u16 = null,
+    };
+    const Handlers = struct {
+        fn buildCall(_: *anyopaque, _: *protocol.CallBuilder) anyerror!void {}
+        fn onReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const c: *Captured = castCtx(*Captured, ctx);
+            c.tag = ret.tag;
+            if (ret.exception) |ex| c.type_value = ex.type_value;
+        }
+        // Never answers, so the question stays outstanding for the drain.
+        fn onCall(_: *anyopaque, _: *Peer, _: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {}
+    };
+
+    // (1) A transport drain reports `disconnected`.
+    {
+        var peer = Peer.initDetached(allocator);
+        var handler_state: u8 = 0;
+        const export_id = try peer.addExport(.{
+            .ctx = &handler_state,
+            .on_call = Handlers.onCall,
+        });
+        var captured = Captured{};
+        _ = try peer.sendCallResolved(
+            .{ .exported = .{ .id = export_id } },
+            0x99,
+            0,
+            &captured,
+            Handlers.buildCall,
+            Handlers.onReturn,
+        );
+        // deinit drains outstanding questions with a synthetic exception.
+        peer.deinit();
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), captured.tag);
+        try std.testing.expectEqual(
+            @as(?u16, @intFromEnum(protocol.ExceptionType.disconnected)),
+            captured.type_value,
+        );
+    }
+
+    // (2) An ordinary application failure stays `failed`.
+    {
+        var peer = Peer.initDetached(allocator);
+        defer peer.deinit();
+        const Failing = struct {
+            fn onCall(_: *anyopaque, p: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
+                try p.sendReturnException(call.question_id, "application blew up");
+            }
+        };
+        var handler_state: u8 = 0;
+        const export_id = try peer.addExport(.{
+            .ctx = &handler_state,
+            .on_call = Failing.onCall,
+        });
+        var captured = Captured{};
+        _ = try peer.sendCallResolved(
+            .{ .exported = .{ .id = export_id } },
+            0x99,
+            0,
+            &captured,
+            Handlers.buildCall,
+            Handlers.onReturn,
+        );
+        try std.testing.expectEqual(
+            @as(?u16, @intFromEnum(protocol.ExceptionType.failed)),
+            captured.type_value,
+        );
+    }
+}
+
+test "exceptionTypeForError classifies retryability" {
+    const errors = @import("capnpc-zig").rpc.peer.errors;
+    try std.testing.expectEqual(protocol.ExceptionType.overloaded, errors.exceptionTypeForError(error.OutOfMemory));
+    try std.testing.expectEqual(protocol.ExceptionType.overloaded, errors.exceptionTypeForError(error.PeerLimitExceeded));
+    try std.testing.expectEqual(protocol.ExceptionType.disconnected, errors.exceptionTypeForError(error.PeerShuttingDown));
+    try std.testing.expectEqual(protocol.ExceptionType.disconnected, errors.exceptionTypeForError(error.RemoteAbort));
+    try std.testing.expectEqual(protocol.ExceptionType.unimplemented, errors.exceptionTypeForError(error.EchoedDisembargoUnimplemented));
+    // The catch-all: repeating the call fails the same way.
+    try std.testing.expectEqual(protocol.ExceptionType.failed, errors.exceptionTypeForError(error.DuplicateQuestionId));
+    try std.testing.expectEqual(protocol.ExceptionType.failed, errors.exceptionTypeForError(error.PromiseBroken));
+}

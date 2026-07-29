@@ -1,3 +1,4 @@
+const protocol = @import("../wire/protocol.zig");
 /// Named peer error groups.
 ///
 /// The peer currently exposes inferred error unions from its entry points.
@@ -66,6 +67,34 @@ pub const ProvideAcceptJoin = error{
     InvalidJoinKeyPart,
     MissingJoinKeyPart,
 };
+
+/// Map an internal error to the spec `Exception.Type` a remote peer should act
+/// on.
+///
+/// The spec puts resource exhaustion and timeouts under `overloaded` ("retry
+/// much later") and lost capabilities or teardown under `disconnected`
+/// ("reconnect and start over"). Everything else -- protocol violations,
+/// routing faults, application errors -- is `failed`, which is the correct
+/// catch-all: repeating the call would fail the same way.
+pub fn exceptionTypeForError(err: anyerror) protocol.ExceptionType {
+    return switch (err) {
+        error.OutOfMemory,
+        error.PeerLimitExceeded,
+        error.QuestionIdExhausted,
+        error.EmbargoIdExhausted,
+        => .overloaded,
+
+        error.PeerShuttingDown,
+        error.TransportNotAttached,
+        error.RemoteAbort,
+        error.CapabilityUnavailable,
+        => .disconnected,
+
+        error.EchoedDisembargoUnimplemented => .unimplemented,
+
+        else => .failed,
+    };
+}
 
 pub const ThirdParty = error{
     ConflictingThirdPartyAnswer,

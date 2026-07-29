@@ -26,6 +26,27 @@ pub const SendResultsToTag = rpc_capnp.Call.SendResultsTo.WhichTag;
 pub const ResolveTag = rpc_capnp.Resolve.WhichTag;
 
 pub const DisembargoContextTag = rpc_capnp.Disembargo.Context.WhichTag;
+
+/// Spec `Exception.Type`: the retryability signal a peer acts on.
+///
+/// NON-EXHAUSTIVE on purpose. The wire field is a `UInt16` under remote control
+/// and future spec revisions may add values, so an unknown code decodes to an
+/// unnamed tag rather than being illegal to construct. Ordinals match the
+/// generated `rpc_capnp.Exception.Type` one for one, but this deliberately does
+/// not alias it: that type is exhaustive, and `@enumFromInt` on a hostile value
+/// would be illegal behavior.
+pub const ExceptionType = enum(u16) {
+    /// Something went wrong. Repeating the call will probably fail the same way.
+    failed = 0,
+    /// Temporary overload or resource exhaustion. Retry much later.
+    overloaded = 1,
+    /// The capability is no longer usable. Reconnect and start over.
+    disconnected = 2,
+    /// The peer does not implement what was requested. Otherwise treat as
+    /// `failed`.
+    unimplemented = 3,
+    _,
+};
 pub const PayloadBuilder = rpc_capnp.Payload.Builder;
 
 const CapDescriptorListBuilder = message.typed_list_helpers.StructListBuilder(rpc_capnp.CapDescriptor);
@@ -986,11 +1007,30 @@ pub const Join = struct {
     }
 };
 
+/// Write `Exception.type` as a raw u16.
+///
+/// Deliberately not the generated `setType`, which takes an exhaustive enum: an
+/// unknown type relayed from a foreign peer must survive the round trip
+/// verbatim rather than being coerced or rejected.
+fn writeExceptionType(ex: *rpc_capnp.Exception.Builder, ex_type: ExceptionType) void {
+    // Write the raw u16. The generated `setType` takes the exhaustive generated
+    // enum, so reaching it via @enumFromInt on a relayed unknown code would be
+    // illegal behavior. The data section is already allocated by initException /
+    // initAbort, so this cannot fail.
+    ex._builder.writeU16(EXCEPTION_TYPE_OFFSET * 2, @intFromEnum(ex_type));
+}
+
 /// An RPC exception with a human-readable reason, optional stack trace, and type code.
 pub const Exception = struct {
     reason: []const u8,
     trace: []const u8,
     type_value: u16,
+
+    /// Decode `type_value` into the spec enum. Total: an unknown wire code maps
+    /// to an unnamed tag, so a hostile or future value is safe to switch on.
+    pub fn kind(self: Exception) ExceptionType {
+        return @enumFromInt(self.type_value);
+    }
 
     fn fromReader(reader: message.StructReader) !Exception {
         const reason = try reader.readText(EXCEPTION_REASON_PTR);
@@ -1030,9 +1070,15 @@ pub const MessageBuilder = struct {
     }
 
     pub fn buildAbort(self: *MessageBuilder, reason: []const u8) !void {
+        return self.buildAbortTyped(reason, .failed);
+    }
+
+    /// `buildAbort` carrying an explicit `Exception.Type`.
+    pub fn buildAbortTyped(self: *MessageBuilder, reason: []const u8, ex_type: ExceptionType) !void {
         var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
         var ex_builder = try root_builder.initAbort();
         try ex_builder.setReason(reason);
+        writeExceptionType(&ex_builder, ex_type);
     }
 
     pub fn buildRelease(self: *MessageBuilder, id: u32, reference_count: u32) !void {
@@ -1295,10 +1341,16 @@ pub const ReturnBuilder = struct {
     }
 
     pub fn setException(self: *ReturnBuilder, reason: []const u8) !void {
+        return self.setExceptionTyped(reason, .failed);
+    }
+
+    /// `setException` carrying an explicit `Exception.Type`.
+    pub fn setExceptionTyped(self: *ReturnBuilder, reason: []const u8, ex_type: ExceptionType) !void {
         if (self.tag != .exception) return error.InvalidReturnTag;
         var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
         var ex_builder = try ret_builder.initException();
         try ex_builder.setReason(reason);
+        writeExceptionType(&ex_builder, ex_type);
     }
 
     pub fn setCanceled(self: *ReturnBuilder) void {

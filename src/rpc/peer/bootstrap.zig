@@ -59,7 +59,10 @@ pub fn handleUnimplementedQuestion(
         .exception = .{
             .reason = "unimplemented",
             .trace = "",
-            .type_value = 0,
+            // The remote echoed our question back as `Unimplemented`, which is
+            // precisely what this exception type means. Reporting it as `failed`
+            // told the caller nothing about retryability.
+            .type_value = @intFromEnum(protocol.ExceptionType.unimplemented),
         },
         .take_from_other_question = null,
     };

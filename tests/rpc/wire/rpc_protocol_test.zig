@@ -1363,3 +1363,55 @@ test "RPC protocol fuzz malformed frames does not crash decode" {
         }
     }
 }
+
+test "Exception.type round-trips, including an unknown code" {
+    const alloc = std.testing.allocator;
+    inline for (.{
+        .{ protocol.ExceptionType.failed, @as(u16, 0) },
+        .{ protocol.ExceptionType.overloaded, @as(u16, 1) },
+        .{ protocol.ExceptionType.disconnected, @as(u16, 2) },
+        .{ protocol.ExceptionType.unimplemented, @as(u16, 3) },
+        .{ @as(protocol.ExceptionType, @enumFromInt(999)), @as(u16, 999) },
+    }) |case| {
+        var b = protocol.MessageBuilder.init(alloc);
+        defer b.deinit();
+        var ret = try b.beginReturn(7, .exception);
+        try ret.setExceptionTyped("boom", case[0]);
+        const frame = try b.finish();
+        defer alloc.free(frame);
+
+        var decoded = try protocol.DecodedMessage.init(alloc, frame);
+        defer decoded.deinit();
+        const r = try decoded.asReturn();
+        try std.testing.expectEqual(case[1], r.exception.?.type_value);
+        try std.testing.expectEqual(case[0], r.exception.?.kind());
+        try std.testing.expectEqualStrings("boom", r.exception.?.reason);
+    }
+}
+
+test "buildAbortTyped stamps the type" {
+    const alloc = std.testing.allocator;
+    var b = protocol.MessageBuilder.init(alloc);
+    defer b.deinit();
+    try b.buildAbortTyped("gone", .disconnected);
+    const frame = try b.finish();
+    defer alloc.free(frame);
+    var decoded = try protocol.DecodedMessage.init(alloc, frame);
+    defer decoded.deinit();
+    const abort = try decoded.asAbort();
+    try std.testing.expectEqual(protocol.ExceptionType.disconnected, abort.exception.kind());
+}
+
+test "the legacy untyped builders still write failed" {
+    const alloc = std.testing.allocator;
+    var b = protocol.MessageBuilder.init(alloc);
+    defer b.deinit();
+    var ret = try b.beginReturn(7, .exception);
+    try ret.setException("boom");
+    const frame = try b.finish();
+    defer alloc.free(frame);
+    var decoded = try protocol.DecodedMessage.init(alloc, frame);
+    defer decoded.deinit();
+    const r = try decoded.asReturn();
+    try std.testing.expectEqual(protocol.ExceptionType.failed, r.exception.?.kind());
+}

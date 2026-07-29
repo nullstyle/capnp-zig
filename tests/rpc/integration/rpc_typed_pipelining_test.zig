@@ -407,32 +407,53 @@ test "generated typed pipelining stubs run end-to-end (E-order, wire shape, repl
 // -- unwrap() contract --------------------------------------------------------
 //
 // Pins the generated Response.unwrap()/BootstrapResponse.unwrap() mapping to
-// rpc.peer.CallError: the peer's exported locally-synthesized exception
-// reasons map to their dedicated errors, any other reason is RemoteException,
-// and the rare Return arms are UnexpectedReturn. All arms are remote-
-// controlled bytes, so nothing maps to unreachable.
+// rpc.peer.CallError. Classification comes from the spec `Exception.Type`, not
+// from the reason text: a disconnect reported by ANY implementation is
+// recognized, and an application error whose text merely reads "disconnected"
+// is NOT promoted to a transport loss. All arms are remote-controlled bytes, so
+// nothing maps to unreachable.
 
-test "generated Response.unwrap maps exception reasons and rare arms to typed CallErrors" {
+test "generated Response.unwrap classifies by Exception.Type, not reason text" {
     const Response = Bootstrap.GameWorld.Response;
 
-    const reason_cases = [_]struct {
+    const cases = [_]struct {
         reason: []const u8,
+        ex_type: protocol.ExceptionType,
         expected: peer_impl.CallError,
     }{
-        .{ .reason = peer_impl.disconnected_reason, .expected = error.Disconnected },
-        .{ .reason = peer_impl.shutdown_reason, .expected = error.Disconnected },
-        .{ .reason = peer_impl.deadline_reason, .expected = error.CallTimedOut },
-        .{ .reason = "vat exploded", .expected = error.RemoteException },
-        .{ .reason = "", .expected = error.RemoteException },
+        // The type decides, whatever the text says.
+        .{ .reason = "peer went away", .ex_type = .disconnected, .expected = error.Disconnected },
+        .{ .reason = "", .ex_type = .disconnected, .expected = error.Disconnected },
+        // A local deadline is reported as `overloaded` with our sentinel reason.
+        .{ .reason = peer_impl.deadline_reason, .ex_type = .overloaded, .expected = error.CallTimedOut },
+        // A remote's genuine backpressure is not our timeout.
+        .{ .reason = "too busy", .ex_type = .overloaded, .expected = error.RemoteException },
+        .{ .reason = "vat exploded", .ex_type = .failed, .expected = error.RemoteException },
+        .{ .reason = "", .ex_type = .failed, .expected = error.RemoteException },
+        // Spec: treat `unimplemented` like `failed`.
+        .{ .reason = "no such method", .ex_type = .unimplemented, .expected = error.RemoteException },
+        // A spoof: reason text that looks like a local disconnect, but the type
+        // says it is an ordinary application failure. Before the type switch
+        // this returned error.Disconnected.
+        .{ .reason = peer_impl.disconnected_reason, .ex_type = .failed, .expected = error.RemoteException },
+        .{ .reason = peer_impl.shutdown_reason, .ex_type = .failed, .expected = error.RemoteException },
     };
-    for (reason_cases) |case| {
+    for (cases) |case| {
         const response = Response{ .exception = .{
             .reason = case.reason,
             .trace = "",
-            .type_value = 0,
+            .type_value = @intFromEnum(case.ex_type),
         } };
         try std.testing.expectError(case.expected, response.unwrap());
     }
+
+    // An unknown future type code must decode and classify, not panic.
+    const unknown = Response{ .exception = .{
+        .reason = "from the future",
+        .trace = "",
+        .type_value = 4242,
+    } };
+    try std.testing.expectError(error.RemoteException, unknown.unwrap());
 
     try std.testing.expectError(error.Canceled, (Response{ .canceled = {} }).unwrap());
     try std.testing.expectError(error.UnexpectedReturn, (Response{ .results_sent_elsewhere = {} }).unwrap());
@@ -473,16 +494,16 @@ test "generated BootstrapResponse.unwrap returns the client or a typed CallError
     try std.testing.expectEqual(&peer, client.peer);
 
     const disconnected = Bootstrap.BootstrapResponse{ .exception = .{
-        .reason = peer_impl.disconnected_reason,
+        .reason = "peer went away",
         .trace = "",
-        .type_value = 0,
+        .type_value = @intFromEnum(protocol.ExceptionType.disconnected),
     } };
     try std.testing.expectError(error.Disconnected, disconnected.unwrap());
 
     const remote = Bootstrap.BootstrapResponse{ .exception = .{
         .reason = "no bootstrap for you",
         .trace = "",
-        .type_value = 0,
+        .type_value = @intFromEnum(protocol.ExceptionType.failed),
     } };
     try std.testing.expectError(error.RemoteException, remote.unwrap());
 

@@ -334,20 +334,28 @@ pub const Number = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -514,20 +522,28 @@ pub const Number = struct {
         accept_from_third_party,
 
         /// Collapse this BootstrapResponse into its Client or a typed
-        /// rpc.peer.CallError. Locally synthesized exception reasons map to
-        /// their dedicated errors; every other exception is RemoteException
-        /// (reason available on the union arm).
+        /// rpc.peer.CallError. Classification comes from the exception's
+        /// spec `Exception.Type`, so a disconnect reported by ANY
+        /// implementation is recognized; every other exception is
+        /// RemoteException (reason available on the union arm).
         pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
             return switch (self) {
                 .client => |c| c,
-                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                    error.Disconnected
-                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                    error.Disconnected
-                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                    error.CallTimedOut
-                else
-                    error.RemoteException,
+                .exception => |ex| switch (ex.kind()) {
+                    .disconnected => error.Disconnected,
+                    // The spec has no distinct timeout type and classes
+                    // timeouts as overloaded, so our own deadline sentinel
+                    // still separates a local timeout from a remote's
+                    // genuine backpressure.
+                    .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    // .failed, .unimplemented (spec: treat like failed), and
+                    // any future code. `else` is required: the enum is
+                    // non-exhaustive because the wire field is remote-controlled.
+                    else => error.RemoteException,
+                },
                 .canceled => error.Canceled,
                 .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
             };
