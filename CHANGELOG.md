@@ -104,15 +104,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that can carry RPC today — see the Evented note above. The compile check is
   kept as a cheap cross-check that the evented selector still builds.
 
-- **CI runs the full suite under ReleaseSafe**, not the ten-binary
-  `test-release-safe` subset. That subset covered message, codegen, framing,
-  fuzz-smoke and two transport files — leaving most of the RPC runtime (peer,
-  caps, promises, vat, integration) never executed with safety checks on in an
-  optimized build. Ablation-verified in both directions: a deliberately failing
-  assertion added to `tests/rpc/peer/rpc_peer_test.zig` leaves
-  `zig build test-release-safe` **green**, and turns
-  `zig build test -Doptimize=ReleaseSafe` red. 1291 tests across 143 steps.
-  The narrow step remains for a quick local pass and for the nightly job.
+### Known issues
+
+- **`L4 Join proxy relay rolls back state under OOM injection` fails under
+  ReleaseSafe on Linux and Windows.** Found by attempting to promote the CI
+  ReleaseSafe lane from its ten-binary subset to the full suite. The full suite
+  passes on macOS at 1291/1291 and in Debug on every tier, but this one test
+  fails consistently — not flakily — on both `ubuntu-latest` and
+  `windows-latest` under ReleaseSafe. It drives
+  `std.testing.checkAllAllocationFailures`, so the likely shape is an OOM
+  rollback path whose behaviour depends on an allocation sequence that
+  optimization changes.
+
+  The promotion is therefore **not** in this release; the lane still runs the
+  subset, which leaves most of the RPC runtime (peer, caps, promises, vat,
+  integration) unexecuted with safety checks on in an optimized build. Recorded
+  here rather than left as a quietly narrow gate. The promotion itself is
+  ablation-verified and ready: a deliberately failing assertion in
+  `tests/rpc/peer/rpc_peer_test.zig` leaves `zig build test-release-safe` green
+  and turns `zig build test -Doptimize=ReleaseSafe` red.
 
 - **The hardening gate now scans the compiler plugin.** `unsafe_dirs` covered
   `src/serialization`, `src/rpc` and `src/wasm` but not `src/capnpc-zig`, so
