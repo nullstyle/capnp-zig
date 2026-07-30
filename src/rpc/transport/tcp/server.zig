@@ -64,6 +64,9 @@ pub const ServerSession = struct {
     // create/destroy.
     conn: Connection,
     peer: Peer,
+    /// Backs the peer's accept-embargo entropy source (seeded fail-closed
+    /// from `io.randomSecure` at construction).
+    embargo_rng: std.Random.DefaultCsprng,
     allocator: std.mem.Allocator,
     io: std.Io,
     started: bool,
@@ -108,6 +111,17 @@ pub const ServerSession = struct {
         self.peer = Peer.init(gpa, &self.conn);
         self.peer.setLimits(options.limits);
         self.peer.setClockIo(io);
+        // FAIL CLOSED on missing OS entropy (never a guessable fallback id),
+        // mapped into the existing error set: an entropy syscall failure is a
+        // system-level fault, reported as Unexpected with the cause logged.
+        self.embargo_rng = peer_mod.seedEntropyCsprng(io) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            error.EntropyUnavailable => {
+                std.log.scoped(.rpc_tcp).warn("OS entropy unavailable; refusing to construct session", .{});
+                return error.Unexpected;
+            },
+        };
+        self.peer.setEntropySource(peer_mod.EntropySource.fromCsprng(&self.embargo_rng));
         self.peer.setTimeouts(.{
             .default_call_timeout_ms = options.default_call_timeout_ms,
             .shutdown_drain_timeout_ms = options.shutdown_drain_timeout_ms,

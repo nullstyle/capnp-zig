@@ -556,6 +556,37 @@ pub const JoinNetwork = join_network.JoinNetwork(Peer);
 /// multiple connections of one vat). See src/rpc/vat/provisions.zig.
 pub const ProvisionIndex = vat_provisions.ProvisionIndex(Peer);
 pub const ProvisionIndexLimits = vat_provisions.ProvisionIndexLimits;
+
+/// Experimental source of random bytes for accept-embargo ids (rpc.capnp
+/// requires "globally-unique ... chosen at random with enough entropy").
+/// Mirrors the `rpc_time.Clock` seam: ctx + fn pointer, trivially fakeable in
+/// tests. Installed by the tcp session constructors from a
+/// `randomSecure`-seeded CSPRNG; peers without one keep the legacy per-peer
+/// counter (correctness never depends on this — the host keys embargoes per
+/// provision — it is spec compliance and cross-host hygiene).
+pub const EntropySource = struct {
+    ctx: *anyopaque,
+    fill: *const fn (ctx: *anyopaque, buf: []u8) void,
+
+    pub fn fromCsprng(rng: *std.Random.DefaultCsprng) EntropySource {
+        const F = struct {
+            fn fill(ctx: *anyopaque, buf: []u8) void {
+                const r: *std.Random.DefaultCsprng = @ptrCast(@alignCast(ctx));
+                r.random().bytes(buf);
+            }
+        };
+        return .{ .ctx = rng, .fill = F.fill };
+    }
+};
+
+/// Seed a CSPRNG from the OS entropy syscall — FAIL CLOSED on
+/// `error.EntropyUnavailable`: never fall back to `Io.random`'s
+/// pointer+timestamp emergency seed (collision-resistant but guessable).
+pub fn seedEntropyCsprng(io: std.Io) std.Io.RandomSecureError!std.Random.DefaultCsprng {
+    var seed: [std.Random.DefaultCsprng.secret_seed_length]u8 = undefined;
+    try io.randomSecure(&seed);
+    return std.Random.DefaultCsprng.init(seed);
+}
 pub const Joined = join_network.Joined(Peer);
 
 /// Handle returned by `Peer.sendProvide`: the ids the caller needs to drive the
@@ -1383,6 +1414,9 @@ pub const Peer = struct {
     /// `ProvisionIndex.attached_peers`). Null = all L3 host behavior is
     /// exactly today's per-peer behavior. Set via `attachProvisionIndex`.
     provision_index: ?*ProvisionIndex = null,
+    /// Optional random source for accept-embargo ids (BORROWED ctx; must
+    /// outlive the peer). Null = legacy 8-byte per-peer counter ids.
+    entropy: ?EntropySource = null,
     /// OWNER side of vat-wide provisions: Provide question id -> provision
     /// object (+1 ref each). Lives BESIDE `provides_by_question` so
     /// `ProvideEntry`'s shape and every generic helper that constructs it stay
@@ -5378,6 +5412,12 @@ pub const Peer = struct {
     /// Attach this peer to a vat-wide provision index. Preconditions: not
     /// already attached, and no pre-existing per-peer handoff state (the index
     /// must see every provision from the first one).
+    /// Install the random source for accept-embargo ids (see `EntropySource`).
+    pub fn setEntropySource(self: *Peer, source: EntropySource) void {
+        self.assertThreadAffinity();
+        self.entropy = source;
+    }
+
     pub fn attachProvisionIndex(self: *Peer, index: *ProvisionIndex) !void {
         self.assertThreadAffinity();
         index.assertThreadAffinity();
@@ -8079,16 +8119,25 @@ pub const Peer = struct {
 
     /// Length of an opaque accept-embargo byte id. A big-endian encoding of the
     /// per-peer `next_accept_embargo_id` counter: unique per handoff on this
-    /// peer, which is all VatC needs to correlate the `Accept` with its
-    /// `context.accept` `Disembargo`.
-    const ACCEPT_EMBARGO_ID_LEN = 8;
+    /// peer. The HOST keys embargoes per provision, so id collisions across
+    /// recipients cannot co-drain — but the spec asks for globally-unique,
+    /// entropy-rich ids (rpc.capnp:776-778), which the `EntropySource` path
+    /// provides.
+    const ACCEPT_EMBARGO_ID_LEN = 16;
 
-    /// Fill `buf` with the next opaque accept-embargo byte id and return it.
+    /// Fill `buf` with the next opaque accept-embargo byte id and return it:
+    /// 16 random bytes when an entropy source is installed, else the legacy
+    /// 8-byte big-endian per-peer counter (wasm32-freestanding and detached
+    /// test peers run unchanged).
     fn nextAcceptEmbargoId(self: *Peer, buf: *[ACCEPT_EMBARGO_ID_LEN]u8) []const u8 {
+        if (self.entropy) |source| {
+            source.fill(source.ctx, buf[0..]);
+            return buf[0..];
+        }
         const id = self.next_accept_embargo_id;
         self.next_accept_embargo_id +%= 1;
-        std.mem.writeInt(u64, buf, id, .big);
-        return buf[0..];
+        std.mem.writeInt(u64, buf[0..8], id, .big);
+        return buf[0..8];
     }
 
     /// True if this peer has an outbound Call still in flight (Return not yet

@@ -832,6 +832,10 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.workers: field []rpc.integrati
 capnpc-zig.rpc.integration.worker_pool.WorkerPool: struct
 capnpc-zig.rpc.integration.worker_pool: struct
 capnpc-zig.rpc.integration: struct
+capnpc-zig.rpc.peer.EntropySource.ctx: field *anyopaque
+capnpc-zig.rpc.peer.EntropySource.fill: field *const fn (*anyopaque, []u8) void
+capnpc-zig.rpc.peer.EntropySource.fromCsprng: fn (*Random.ChaCha) rpc.peer.mod.EntropySource
+capnpc-zig.rpc.peer.EntropySource: struct
 capnpc-zig.rpc.peer.HandoffPickupCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
 capnpc-zig.rpc.peer.Introduced.completion: field []u8
 capnpc-zig.rpc.peer.Introduced.peer: field *rpc.peer.mod.Peer
@@ -963,6 +967,7 @@ capnpc-zig.rpc.peer.Peer.detachVatNetwork: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.disableThreadAffinity: fn (*rpc.peer.mod.Peer) void
 capnpc-zig.rpc.peer.Peer.enableRuntimeThreadChecks: fn (*rpc.peer.mod.Peer, bool) void
 capnpc-zig.rpc.peer.Peer.ensureExportAt: fn (*rpc.peer.mod.Peer, u32, rpc.peer.mod.Export) error{CapTableFull,OutOfMemory}!bool
+capnpc-zig.rpc.peer.Peer.entropy: field ?rpc.peer.mod.EntropySource = null
 capnpc-zig.rpc.peer.Peer.exports: field hash_map.HashMap(u32,rpc.peer.state.ExportEntry(rpc.peer.mod.Export),hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.finished_early_answers: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.forgetImportRefsForHost: fn (*rpc.peer.mod.Peer, u32, u32) anyerror!void
@@ -1049,6 +1054,7 @@ capnpc-zig.rpc.peer.Peer.send_results_to_third_party: field hash_map.HashMap(u32
 capnpc-zig.rpc.peer.Peer.send_results_to_yourself: field hash_map.HashMap(u32,void,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.setClock: fn (*rpc.peer.mod.Peer, ?rpc.time.Clock) void
 capnpc-zig.rpc.peer.Peer.setClockIo: fn (*rpc.peer.mod.Peer, ?Io) void
+capnpc-zig.rpc.peer.Peer.setEntropySource: fn (*rpc.peer.mod.Peer, rpc.peer.mod.EntropySource) void
 capnpc-zig.rpc.peer.Peer.setHandoffPickupHandler: fn (*rpc.peer.mod.Peer, *anyopaque, *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void) void
 capnpc-zig.rpc.peer.Peer.setLimits: fn (*rpc.peer.mod.Peer, rpc.peer.state.PeerLimits) void
 capnpc-zig.rpc.peer.Peer.setObserver: fn (*rpc.peer.mod.Peer, ?rpc.events.Observer) void
@@ -1363,6 +1369,7 @@ capnpc-zig.rpc.peer.resolve.rememberPendingEmbargoForPeerFn: fn (comptime type) 
 capnpc-zig.rpc.peer.resolve.resolveCapDescriptorForPeer: fn (comptime type, anytype, rpc.wire.protocol.CapDescriptor) @typeInfo(@typeInfo(@TypeOf(rpc.peer.resolve.resolveCapDescriptorForPeer)).@"fn".return_type.?).error_union.error_set!rpc.caps.descriptors.ResolvedCap
 capnpc-zig.rpc.peer.resolve.resolveCapDescriptorForPeerFn: fn (comptime type) anytype
 capnpc-zig.rpc.peer.resolve: struct
+capnpc-zig.rpc.peer.seedEntropyCsprng: fn (Io) error{Canceled,EntropyUnavailable}!Random.ChaCha
 capnpc-zig.rpc.peer.shutdown_reason: const *const [18:0]u8
 capnpc-zig.rpc.peer.state.ExportEntry: fn (comptime type) type
 capnpc-zig.rpc.peer.state.JoinKeyPart.join_id: field u32
@@ -1691,6 +1698,7 @@ capnpc-zig.rpc.transport.stream_state.StreamState: struct
 capnpc-zig.rpc.transport.stream_state: struct
 capnpc-zig.rpc.transport.tcp.ClientSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.ClientSession.conn: field rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.ClientSession.embargo_rng: field Random.ChaCha
 capnpc-zig.rpc.transport.tcp.ClientSession.io: field Io
 capnpc-zig.rpc.transport.tcp.ClientSession.peer: field rpc.peer.mod.Peer
 capnpc-zig.rpc.transport.tcp.ClientSession.user_ctx: field ?*anyopaque
@@ -1747,6 +1755,7 @@ capnpc-zig.rpc.transport.tcp.ServeOptions.shutdown_drain_timeout_ms: field ?u64 
 capnpc-zig.rpc.transport.tcp.ServeOptions: struct
 capnpc-zig.rpc.transport.tcp.ServerSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.ServerSession.conn: field rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.ServerSession.embargo_rng: field Random.ChaCha
 capnpc-zig.rpc.transport.tcp.ServerSession.io: field Io
 capnpc-zig.rpc.transport.tcp.ServerSession.peer: field rpc.peer.mod.Peer
 capnpc-zig.rpc.transport.tcp.ServerSession.started: field bool
@@ -1772,6 +1781,7 @@ capnpc-zig.rpc.transport.tcp.Transport.writer_thread: field ?Thread = null
 capnpc-zig.rpc.transport.tcp.Transport: struct
 capnpc-zig.rpc.transport.tcp.client.ClientSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.client.ClientSession.conn: field rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.client.ClientSession.embargo_rng: field Random.ChaCha
 capnpc-zig.rpc.transport.tcp.client.ClientSession.io: field Io
 capnpc-zig.rpc.transport.tcp.client.ClientSession.peer: field rpc.peer.mod.Peer
 capnpc-zig.rpc.transport.tcp.client.ClientSession.user_ctx: field ?*anyopaque
@@ -1843,6 +1853,7 @@ capnpc-zig.rpc.transport.tcp.runtime.shutdownFd: fn (Io, rpc.transport.tcp.strea
 capnpc-zig.rpc.transport.tcp.runtime: struct
 capnpc-zig.rpc.transport.tcp.server.ServerSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.server.ServerSession.conn: field rpc.transport.tcp.connection.Connection
+capnpc-zig.rpc.transport.tcp.server.ServerSession.embargo_rng: field Random.ChaCha
 capnpc-zig.rpc.transport.tcp.server.ServerSession.io: field Io
 capnpc-zig.rpc.transport.tcp.server.ServerSession.peer: field rpc.peer.mod.Peer
 capnpc-zig.rpc.transport.tcp.server.ServerSession.started: field bool

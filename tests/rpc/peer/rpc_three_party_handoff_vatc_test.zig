@@ -2261,3 +2261,80 @@ test "L6 fail-closed: a stored .promised target naming a vanished answer serves 
 // run. The frame-driven tests above cover the cross-peer promised serve; a
 // suppress-auto-finish call variant is future DX work (documented in
 // docs/supported-surface.md).
+
+// ============================================================================
+// L7: accept-embargo ids come from the installed entropy source (16 bytes on
+// the wire), with the legacy 8-byte counter as the no-source fallback (every
+// earlier embargo test in this file runs the fallback and still passes).
+// ============================================================================
+
+const TestEntropy = struct {
+    next: u8 = 0,
+
+    fn fill(ctx: *anyopaque, buf: []u8) void {
+        const self: *TestEntropy = castCtx(*TestEntropy, ctx);
+        for (buf) |*b| {
+            b.* = self.next;
+            self.next +%= 1;
+        }
+    }
+
+    fn source(self: *TestEntropy) peer_impl.EntropySource {
+        return .{ .ctx = self, .fill = TestEntropy.fill };
+    }
+};
+
+test "L7: a minted accept-embargo id is the entropy source's 16-byte stream on the wire" {
+    const allocator = std.testing.allocator;
+    var peers: SixPeers = undefined;
+    peers.init(allocator);
+    defer peers.deinitPeers();
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var index = ProvisionIndex.init(allocator, .{});
+    index.disableThreadAffinity();
+    defer index.deinit();
+    try peers.c_to_b.attachProvisionIndex(&index);
+    try peers.c_to_a.attachProvisionIndex(&index);
+
+    var setup = HandoffSetup{};
+    try setup.run(&peers, &net, "vatc-l7");
+    var pickup = VatcPickupHandler{ .allocator = allocator, .expected_promise_id = setup.promise_import };
+    defer pickup.deinit();
+    peers.a_to_b.setHandoffPickupHandler(&pickup, VatcPickupHandler.onPickup);
+
+    // The RECIPIENT's promise peer mints the embargo id — install the
+    // deterministic source there.
+    var entropy = TestEntropy{};
+    peers.a_to_b.setEntropySource(entropy.source());
+
+    // Force the embargo and hold the Accept so its frame can be inspected.
+    var pipelined = TolerantCall{};
+    _ = try peers.a_to_b.sendCall(setup.promise_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &pipelined, null, TolerantCall.onReturn);
+    peers.ac.buffer_accepts_to_right = true;
+    try setup.originate(&peers, "vatc-l7");
+
+    // THE WIRE ASSERTION: the Accept's embargo field is the 16-byte stream.
+    {
+        const frame = peers.ac.buffered_accept orelse return error.NoBufferedAccept;
+        var decoded = try protocol.DecodedMessage.init(allocator, frame);
+        defer decoded.deinit();
+        const accept = try decoded.asAccept();
+        const embargo = accept.embargo orelse return error.NoEmbargoOnAccept;
+        try std.testing.expectEqual(@as(usize, 16), embargo.len);
+        var expected: [16]u8 = undefined;
+        for (&expected, 0..) |*b, i| b.* = @intCast(i);
+        try std.testing.expectEqualSlices(u8, &expected, embargo);
+    }
+
+    // The handoff still completes end-to-end with the random id.
+    try peers.ac.releaseBufferedAccept();
+    try std.testing.expectEqualStrings("results", @tagName(pickup.ret_tag.?));
+    const accepted = pickup.carol_import_id orelse return error.NoAcceptedCap;
+    try peers.a_to_c.releaseImport(accepted, 1);
+    try setup.teardownImports(&peers);
+    try harness.expectNoProvideState(&peers.c_to_b);
+    try harness.expectNoProvideState(&peers.c_to_a);
+}
