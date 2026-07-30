@@ -113,7 +113,11 @@ fn l3L4InteropSkip(schema: Schema, backend: Backend, zig_is_client: bool) ?[]con
     if (schema != .l3_l4_interop) return null;
     if (backend == .go) return "SKIP(l3-go-runtime-blocked; see just e2e-l3-go)";
     if (backend != .cpp) return "SKIP(l3-l4-cpp-only)";
-    if (!zig_is_client) return "SKIP(l3-l4-zig-client-only)";
+    // Zig-as-VatC (hosting) is covered by its own lane, which drives the C++
+    // reference through BOTH client roles against a Zig two-peer host — a shape
+    // this matrix (one reference client, one Zig server, one schema) cannot
+    // express. See `just e2e-l3-vatc` / tools/e2e_l3_vatc.zig.
+    if (!zig_is_client) return "SKIP(l3-l4-zig-client-only; VatC hosting covered by just e2e-l3-vatc)";
     return null;
 }
 

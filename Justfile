@@ -131,6 +131,11 @@ e2e-skip-build:
 e2e-l3-cpp:
     just --justfile tests/e2e/Justfile test-l3-cpp
 
+# Run the cross-impl L3 HOSTING lane: the C++ reference drives the recipient
+# and introducer roles against a capnp-zig two-peer VatC host
+e2e-l3-vatc:
+    just --justfile tests/e2e/Justfile test-l3-vatc
+
 # Run the Go L3 handoff recon/source-blocker gate
 e2e-l3-go:
     just --justfile tests/e2e/Justfile test-l3-go

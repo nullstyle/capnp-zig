@@ -65,6 +65,7 @@ WORKDIR /app
 # Copy built binaries
 COPY --from=builder /build/e2e/cpp/build/e2e_server /app/bin/server
 COPY --from=builder /build/e2e/cpp/build/e2e_client /app/bin/client
+COPY --from=builder /build/e2e/cpp/build/l3_vatc_client /app/bin/l3_vatc_client
 
 # Schema files for reference
 COPY tests/e2e/schemas/ /app/schemas/

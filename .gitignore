@@ -19,3 +19,6 @@ e2e_runner
 .tmp/
 .worktrees/
 private/
+
+# Cross-impl hosting lane TAP output (tools/e2e_l3_vatc.zig)
+/.results/

@@ -60,3 +60,11 @@ add_executable(e2e_client
 )
 target_link_libraries(e2e_client CapnProto::capnp-rpc)
 target_include_directories(e2e_client PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# L3 VatC-hosting driver (plays vats A and B against a Zig VatC host)
+add_executable(l3_vatc_client
+  l3_vatc_client.cpp
+  ${CAPNP_SRCS}
+)
+target_link_libraries(l3_vatc_client CapnProto::capnp-rpc)
+target_include_directories(l3_vatc_client PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

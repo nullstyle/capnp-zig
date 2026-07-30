@@ -539,6 +539,49 @@ pub fn build(b: *std.Build) void {
     const install_e2e_l3_cpp_step = b.step("e2e-l3-cpp-install", "Build Zig/C++ L3 handoff e2e client (install only)");
     install_e2e_l3_cpp_step.dependOn(&b.addInstallArtifact(e2e_l3_cpp, .{}).step);
 
+    // Orchestrator for the cross-impl HOSTING lane (C++ drives A+B against the
+    // Zig VatC host binary below). Mirrors the e2e-l3-cpp lane, inverted.
+    const e2e_l3_vatc = b.addExecutable(.{
+        .name = "e2e-l3-vatc",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/e2e_l3_vatc.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const run_e2e_l3_vatc = b.addRunArtifact(e2e_l3_vatc);
+    run_e2e_l3_vatc.addPassthruArgs();
+
+    const e2e_l3_vatc_step = b.step("e2e-l3-vatc", "Run the C++ A+B -> Zig VatC hosting interop lane");
+    e2e_l3_vatc_step.dependOn(&run_e2e_l3_vatc.step);
+
+    const install_e2e_l3_vatc_step = b.step("e2e-l3-vatc-install", "Build the C++ -> Zig VatC hosting lane orchestrator (install only)");
+    install_e2e_l3_vatc_step.dependOn(&b.addInstallArtifact(e2e_l3_vatc, .{}).step);
+
+    const e2e_l3_vatc_host = b.addExecutable(.{
+        .name = "e2e-l3-vatc-host",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/e2e/zig/l3_vatc_host.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "io_backend_options", .module = io_backend_options_module },
+                .{ .name = "l3_l4_interop", .module = e2e_l3_l4_module },
+            },
+        }),
+    });
+
+    const run_e2e_l3_vatc_host = b.addRunArtifact(e2e_l3_vatc_host);
+    run_e2e_l3_vatc_host.addPassthruArgs();
+
+    const e2e_l3_vatc_host_step = b.step("e2e-l3-vatc-host", "Run Zig two-peer VatC host for the cross-impl L3 harness");
+    e2e_l3_vatc_host_step.dependOn(&run_e2e_l3_vatc_host.step);
+
+    const install_e2e_l3_vatc_host_step = b.step("e2e-l3-vatc-host-install", "Build Zig two-peer VatC host (install only)");
+    install_e2e_l3_vatc_host_step.dependOn(&b.addInstallArtifact(e2e_l3_vatc_host, .{}).step);
+
     const e2e_l4_zig = b.addExecutable(.{
         .name = "e2e-l4-zig",
         .root_module = b.createModule(.{

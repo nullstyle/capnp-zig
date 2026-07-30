@@ -25,6 +25,18 @@ case "$MODE" in
       exec sleep infinity
     fi
     ;;
+  l3-vatc-client)
+    # Cross-impl L3 HOSTING harness: this container plays vats A (recipient)
+    # and B (introducer) against a capnp-zig VatC host running on the docker
+    # HOST. Args: <host> <port> <scenario>.
+    echo "[entrypoint] Starting L3 VatC interop driver..."
+    if [ -x /app/bin/l3_vatc_client ]; then
+      exec /app/bin/l3_vatc_client "$@"
+    else
+      echo "[entrypoint] No l3_vatc_client binary found at /app/bin/l3_vatc_client"
+      exit 1
+    fi
+    ;;
   client)
     echo "[entrypoint] Starting RPC client..."
     if [ -x /app/bin/client ]; then

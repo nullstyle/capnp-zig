@@ -22,6 +22,11 @@ test-skip-build:
 test-l3-cpp:
     {{runner}} --backend=cpp --schema=l3_l4_interop --direction=zig-client
 
+# Cross-impl L3 HOSTING: the C++ reference drives BOTH client roles (recipient
+# + introducer) against a capnp-zig two-peer VatC host over real TCP.
+test-l3-vatc:
+    cd ../.. && zig build e2e-l3-vatc-host-install && zig build e2e-l3-vatc
+
 test-l3-cpp-skip-build:
     {{runner}} --skip-build --backend=cpp --schema=l3_l4_interop --direction=zig-client
 
