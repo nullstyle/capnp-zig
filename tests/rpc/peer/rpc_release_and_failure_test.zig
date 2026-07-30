@@ -569,7 +569,7 @@ test "peer handleFrame with obsolete_save tag sends unimplemented" {
     var builder = message.MessageBuilder.init(allocator);
     defer builder.deinit();
     var root = try builder.allocateStruct(1, 1);
-    root.writeUnionDiscriminant(0, @intFromEnum(protocol.MessageTag.obsoleteSave));
+    root.writeUnionDiscriminant(0, @backingInt(protocol.MessageTag.obsoleteSave));
     const bytes = try builder.toBytes();
     defer allocator.free(bytes);
 

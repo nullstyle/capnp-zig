@@ -167,7 +167,7 @@ pub const Connection = struct {
 
     pub fn assertThreadAffinity(self: *const Connection) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             const owner = self.owner_thread_id orelse return;
             const current = std.Thread.getCurrentId();
             if (current != owner) {

@@ -1,27 +1,24 @@
 name: Setup Zig (mise)
 description: >
-  Install the pinned Zig toolchain with mise. Replaces mlugg/setup-zig@v2,
-  which is a Node 20 action (deprecated, force-run on Node 24) and whose
-  build-cache save/restore poisoned CI when a cancelled run captured
-  .zig-cache mid-build. This is a composite action, so it has no Node runtime
-  to deprecate, and it caches nothing beyond what mise already caches for tool
-  installs — the build cache is rebuilt per job, which is what makes the
-  poisoning class structurally impossible.
+  Point Zig's caches at the workspace and assert that the toolchain on PATH is
+  the one `mise.toml` pins.
 
-  Requires `jdx/mise-action` to have run first (it installs mise and puts the
-  shim directory on PATH). That action MUST pin its `version:` — mise only
-  resolves explicit Zig dev-build tarball URLs (e.g. 0.17.0-dev.813+2153f8143;
-  `mise ls-remote zig` lists tagged releases only) in recent versions, and
-  mise-action's cache otherwise serves whatever mise a runner happened to cache
-  earlier. That silently differed per platform: this action's first CI run had
-  macOS on a new enough mise and Linux/Windows on 2026.6.1, which failed with
-  "Failed to resolve zig tarball URL".
+  There is deliberately no `version` input: `mise.toml` is the single Zig
+  version specifier for this repo, and `jdx/mise-action` has already installed
+  from it by the time this runs. A version input here would be a second place
+  to forget.
 
-inputs:
-  version:
-    description: Exact Zig version to install, e.g. 0.17.0-dev.813+2153f8143
-    required: false
-    default: 0.17.0-dev.813+2153f8143
+  Replaces mlugg/setup-zig@v2, which was a Node 20 action (deprecated,
+  force-run on Node 24) and whose cross-run .zig-cache save/restore poisoned CI
+  when a cancelled run captured that cache mid-build. A composite action has no
+  Node runtime to deprecate, and nothing here caches .zig-cache across runs, so
+  that failure class is structurally gone.
+
+  NOTE: `jdx/mise-action` must pin its `version:`. mise only resolves explicit
+  Zig dev-build tarball URLs (`mise ls-remote zig` lists tagged releases only)
+  in recent versions, and mise-action's cache otherwise serves whatever mise a
+  runner happened to cache earlier — which silently differed per platform and
+  failed on Linux/Windows while passing on macOS.
 
 runs:
   using: composite
@@ -36,18 +33,21 @@ runs:
         echo "ZIG_GLOBAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-cache" >> "$GITHUB_ENV"
         echo "ZIG_LOCAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-cache" >> "$GITHUB_ENV"
 
-    - name: Install pinned Zig via mise
-      shell: bash
-      run: mise use --global "zig@${{ inputs.version }}"
-
-    # Fail loudly here rather than let a version mismatch surface as a
-    # confusing compile error twenty minutes into the matrix.
-    - name: Verify the pinned toolchain is what is on PATH
+    # Compare PATH against the repo pin rather than against a copy of it, so
+    # this stays an assertion and never becomes a second specifier. Fails here
+    # instead of twenty minutes later as a confusing compile error.
+    - name: Verify PATH Zig matches the mise.toml pin
       shell: bash
       run: |
-        actual="$(zig version)"
-        echo "zig version: ${actual}"
-        if [ "${actual}" != "${{ inputs.version }}" ]; then
-          echo "::error::expected Zig ${{ inputs.version }} but PATH resolves ${actual}"
+        want="$(mise current zig)"
+        have="$(zig version)"
+        echo "mise.toml pins: ${want}"
+        echo "PATH provides:  ${have}"
+        if [ -z "${want}" ]; then
+          echo "::error::mise.toml pins no zig version ('mise current zig' returned empty)"
+          exit 1
+        fi
+        if [ "${want}" != "${have}" ]; then
+          echo "::error::mise.toml pins ${want} but PATH resolves ${have}"
           exit 1
         fi

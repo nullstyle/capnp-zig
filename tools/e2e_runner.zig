@@ -60,11 +60,11 @@ const Config = struct {
     schema_selected: [6]bool = .{ false, false, false, false, false, false },
 
     fn isBackendSelected(self: Config, b: Backend) bool {
-        return self.backend_selected[@intFromEnum(b)];
+        return self.backend_selected[@backingInt(b)];
     }
 
     fn isSchemaSelected(self: Config, s: Schema) bool {
-        return self.schema_selected[@intFromEnum(s)];
+        return self.schema_selected[@backingInt(s)];
     }
 };
 
@@ -466,13 +466,13 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !Config {
         }
         if (std.mem.startsWith(u8, arg, "--backend=")) {
             const b = try parseBackend(arg["--backend=".len..]);
-            cfg.backend_selected[@intFromEnum(b)] = true;
+            cfg.backend_selected[@backingInt(b)] = true;
             has_backend = true;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--schema=")) {
             const s = try parseSchema(arg["--schema=".len..]);
-            cfg.schema_selected[@intFromEnum(s)] = true;
+            cfg.schema_selected[@backingInt(s)] = true;
             has_schema = true;
             continue;
         }
@@ -483,7 +483,7 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !Config {
 
     if (!has_backend) {
         for (all_backends) |backend| {
-            cfg.backend_selected[@intFromEnum(backend)] = backendDefaultEnabled(backend);
+            cfg.backend_selected[@backingInt(backend)] = backendDefaultEnabled(backend);
         }
     }
     if (!has_schema) {
@@ -496,7 +496,7 @@ fn parseArgs(allocator: Allocator, args: std.process.Args) !Config {
 fn termExitCode(term: std.process.Child.Term) i32 {
     return switch (term) {
         .exited => |code| @as(i32, code),
-        .signal => |sig| @as(i32, @intCast(@intFromEnum(sig))) + 128,
+        .signal => |sig| @as(i32, @intCast(@backingInt(sig))) + 128,
         else => 1,
     };
 }

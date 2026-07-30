@@ -248,7 +248,7 @@ pub const Server = struct {
             self.loop_thread_id = std.Thread.getCurrentId();
             return;
         };
-        if (builtin.mode == .Debug) {
+        if (builtin.mode == .debug) {
             if (std.Thread.getCurrentId() != loop_tid) {
                 @panic("QUIC Server stepped from a thread other than the loop thread");
             }

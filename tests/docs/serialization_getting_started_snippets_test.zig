@@ -24,7 +24,7 @@ const AddressBook = struct {
             }
 
             pub fn getType(self: Reader) !PhoneType {
-                return @enumFromInt(self._reader.readU16(0));
+                return @fromBackingInt(@intCast(self._reader.readU16(0)));
             }
         };
 
@@ -40,7 +40,7 @@ const AddressBook = struct {
             }
 
             pub fn setType(self: *Builder, value: PhoneType) !void {
-                self._builder.writeU16(0, @intFromEnum(value));
+                self._builder.writeU16(0, @backingInt(value));
             }
         };
     };

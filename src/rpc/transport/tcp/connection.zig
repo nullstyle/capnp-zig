@@ -140,7 +140,7 @@ pub const Connection = struct {
     /// when `runtime_thread_checks` is set. Panics on violation.
     pub fn assertThreadAffinity(self: *const Connection) void {
         if (comptime builtin.target.os.tag == .freestanding) return;
-        if (comptime builtin.mode != .Debug) {
+        if (comptime builtin.mode != .debug) {
             if (!self.runtime_thread_checks) return;
         }
         const owner = self.owner_thread_id orelse return;

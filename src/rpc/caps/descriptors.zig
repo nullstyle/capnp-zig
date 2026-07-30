@@ -29,7 +29,7 @@ pub const OwnedPromisedAnswer = promised_answer.OwnedPromisedAnswer;
 /// referable variants are ever tagged; the enum ordinals (senderHosted=1,
 /// senderPromise=2, receiverHosted=3, receiverAnswer=4) fit in a `u4`.
 pub fn originCodeForTag(tag: protocol.CapDescriptorTag) u4 {
-    return @intCast(@intFromEnum(tag));
+    return @intCast(@backingInt(tag));
 }
 
 /// Recover the `CapDescriptorTag` from an origin code produced by

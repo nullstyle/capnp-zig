@@ -22,7 +22,7 @@ pub const Status = struct {
     reason_reveals_detail: bool = false,
 
     pub fn codeValue(self: Status) u64 {
-        return @intFromEnum(self.code);
+        return @backingInt(self.code);
     }
 };
 
@@ -94,7 +94,7 @@ pub const PreparedReason = struct {
 };
 
 pub fn codeValue(code: ApplicationCloseCode) u64 {
-    return @intFromEnum(code);
+    return @backingInt(code);
 }
 
 pub fn publicReason(code: ApplicationCloseCode) []const u8 {

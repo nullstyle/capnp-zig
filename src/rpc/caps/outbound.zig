@@ -96,7 +96,7 @@ pub const OutboundCapTable = struct {
     }
 
     fn key(tag: protocol.CapDescriptorTag, id: u32) u64 {
-        return (@as(u64, @intFromEnum(tag)) << 32) | id;
+        return (@as(u64, @backingInt(tag)) << 32) | id;
     }
 
     fn indexFor(self: *OutboundCapTable, tag: protocol.CapDescriptorTag, id: u32) !u32 {

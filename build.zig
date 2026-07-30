@@ -1016,7 +1016,7 @@ pub fn build(b: *std.Build) void {
     const test_lib_step = b.step("test-lib", "Run source module tests from src/lib.zig");
     test_lib_step.dependOn(&run_lib_tests.step);
 
-    const release_safe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    const release_safe_optimize: std.builtin.OptimizeMode = .safe;
     const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
         const release_safe_quic_zig_dep = b.lazyDependency("quic_zig", .{
             .target = target,

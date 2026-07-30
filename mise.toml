@@ -4,5 +4,15 @@ go = "1.26.0"
 just = "latest"
 uv = "latest"
 
-# Zig 0.17-dev is required by build.zig.zon. Keep Zig out of mise here because
-# active development uses a master/zvm-style toolchain supplied on PATH.
+# THE single Zig version specifier for this repo: CI and local development both
+# take the toolchain from here. CI's composite action verifies PATH against
+# `mise current zig` rather than repeating the number, and build.zig.zon holds a
+# FLOOR (minimum_zig_version), not a second pin.
+#
+# mise resolves explicit dev builds fine even though `mise ls-remote zig` lists
+# only tagged releases. Bumping Zig is this one line (plus the floor when it
+# genuinely moves).
+#
+# NOTE for local dev: if you manage Zig with zvm, its PATH entry wins over mise's
+# shims. Either drop zvm from PATH or run `mise exec -- zig ...` to match CI.
+zig = "0.17.0-dev.1509+bb296ab9b"

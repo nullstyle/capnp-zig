@@ -201,7 +201,7 @@ pub fn threadAffinityViolation(
     runtime_checks: bool,
     mode: std.builtin.OptimizeMode,
 ) bool {
-    if (mode != .Debug and !runtime_checks) return false;
+    if (mode != .debug and !runtime_checks) return false;
     const owner = owner_thread_id orelse return false;
     return current.value != owner.value;
 }
@@ -209,7 +209,7 @@ pub fn threadAffinityViolation(
 pub fn assertThreadAffinity(owner_thread_id: ?OwnerThreadId, runtime_checks: bool) void {
     if (comptime builtin.target.os.tag == .freestanding) return;
     // Skip the getCurrentId() read entirely when no check can fire.
-    if (comptime builtin.mode != .Debug) {
+    if (comptime builtin.mode != .debug) {
         if (!runtime_checks) return;
     }
     if (threadAffinityViolation(owner_thread_id, .{ .value = std.Thread.getCurrentId() }, runtime_checks, builtin.mode)) {

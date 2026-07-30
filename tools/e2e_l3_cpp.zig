@@ -43,7 +43,7 @@ const Scenario = enum(u16) {
     }
 
     fn token(self: Scenario, ordinal: u64) u64 {
-        return (@as(u64, @intFromEnum(self)) << 48) | ordinal;
+        return (@as(u64, @backingInt(self)) << 48) | ordinal;
     }
 };
 

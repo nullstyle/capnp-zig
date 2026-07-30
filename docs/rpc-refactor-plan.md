@@ -477,7 +477,9 @@ Scoped modernization decision: this branch now targets Zig 0.17-dev
 (`0.17.0-dev.813+2153f8143` validated locally; minimum declared in
 `build.zig.zon`) and no longer documents Zig 0.16 as a supported build target.
 `mise.toml` does not manage Zig because active development uses a
-master/zvm-style toolchain supplied on `PATH`. `std.Io.Evented` is wired through
+master/zvm-style toolchain supplied on `PATH`. **(Superseded 2026-07-30:
+`mise.toml` is now the single Zig version specifier for both CI and local
+development — see the README's Toolchain Support section.)** `std.Io.Evented` is wired through
 `src/io_backend.zig` on targets where Zig exposes it; unsupported targets return
 `error.EventedBackendUnsupported`. Transport wake/poll/scheduling behavior still
 needs end-to-end validation for each std Evented implementation.

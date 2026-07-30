@@ -159,8 +159,8 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
         queued_accept_count: usize = 0,
         queued_accept_bytes: usize = 0,
         /// Debug-only thread pin, recorded at first attach.
-        thread_id: if (builtin.mode == .Debug) ?std.Thread.Id else void =
-            if (builtin.mode == .Debug) null else {},
+        thread_id: if (builtin.mode == .debug) ?std.Thread.Id else void =
+            if (builtin.mode == .debug) null else {},
         thread_affinity_enabled: bool = true,
 
         pub fn init(allocator: std.mem.Allocator, limits: ProvisionIndexLimits) Self {
@@ -176,7 +176,7 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
         }
 
         pub fn assertThreadAffinity(self: *Self) void {
-            if (builtin.mode != .Debug) return;
+            if (builtin.mode != .debug) return;
             if (!self.thread_affinity_enabled) return;
             // wasm32-freestanding has no threads; skip the pin there (the
             // comptime guard pattern of src/rpc/peer/state.zig).

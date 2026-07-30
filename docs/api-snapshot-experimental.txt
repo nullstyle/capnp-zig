@@ -1465,7 +1465,7 @@ capnpc-zig.rpc.peer.state.ResolvedImport.embargoed: field bool = false
 capnpc-zig.rpc.peer.state.ResolvedImport: struct
 capnpc-zig.rpc.peer.state.assertThreadAffinity: fn (?rpc.peer.state.OwnerThreadId, bool) void
 capnpc-zig.rpc.peer.state.initialOwnerThreadId: fn () ?rpc.peer.state.OwnerThreadId
-capnpc-zig.rpc.peer.state.threadAffinityViolation: fn (?rpc.peer.state.OwnerThreadId, rpc.peer.state.OwnerThreadId, bool, lang.OptimizeMode) bool
+capnpc-zig.rpc.peer.state.threadAffinityViolation: fn (?rpc.peer.state.OwnerThreadId, rpc.peer.state.OwnerThreadId, bool, lang.Optimize) bool
 capnpc-zig.rpc.peer.state: struct
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.caller: variant void
 capnpc-zig.rpc.peer.third_party.ForwardedCallDestination.sendResultsToTag: fn (rpc.peer.third_party.ForwardedCallDestination) rpc.gen.capnp.rpc.Call.SendResultsTo.WhichTag

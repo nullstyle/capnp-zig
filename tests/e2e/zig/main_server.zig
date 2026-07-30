@@ -763,11 +763,11 @@ fn parseGameWorldFilter(query: game_world.AreaQuery.Reader) union(enum) {
     switch (discriminant) {
         1 => {
             const raw_kind = query._reader.readU16(6);
-            return .{ .by_kind = @enumFromInt(raw_kind) };
+            return .{ .by_kind = @fromBackingInt(@intCast(raw_kind)) };
         },
         2 => {
             const raw_faction = query._reader.readU16(6);
-            return .{ .by_faction = @enumFromInt(raw_faction) };
+            return .{ .by_faction = @fromBackingInt(@intCast(raw_faction)) };
         },
         else => return .all,
     }
@@ -1446,7 +1446,7 @@ fn onFilterByRarity(
     defer matches.deinit(service.allocator);
 
     for (inv.slots.items, 0..) |slot, idx| {
-        if (@intFromEnum(slot.rarity) >= @intFromEnum(min_rarity)) {
+        if (@backingInt(slot.rarity) >= @backingInt(min_rarity)) {
             try matches.append(service.allocator, idx);
         }
     }

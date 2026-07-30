@@ -37,7 +37,7 @@ pub fn define(
                 }
 
                 pub fn set(self: @This(), index: u32, value: EnumType) !void {
-                    try self._list.set(index, @intFromEnum(value));
+                    try self._list.set(index, @backingInt(value));
                 }
 
                 pub fn raw(self: @This()) MessageModule.U16ListBuilder {
