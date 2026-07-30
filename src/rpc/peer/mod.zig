@@ -50,6 +50,7 @@ const peer_question_state = @import("./peer_question_state.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
 const join_network = @import("../vat/join.zig");
+const vat_provisions = @import("../vat/provisions.zig");
 
 pub const errors = @import("./errors.zig");
 pub const state = @import("./state.zig");
@@ -174,6 +175,19 @@ const PendingCall = state.PendingCall;
 
 const ProvideTarget = state.ProvideTarget;
 const ProvideEntry = state.ProvideEntry;
+
+/// The record an accept peer keeps for each queued/parked cross-peer Accept.
+/// `embargo_key` is the accept peer's OWN dupe (its allocator), so no cleanup
+/// path ever hashes bytes owned by — and possibly freed with — the provision's
+/// embargo map.
+const CrossPeerAcceptRecord = struct {
+    /// UNCOUNTED back-link (INV-REC: the pending slot's / parked entry's +1
+    /// keeps the provision alive as long as this record exists).
+    provision: *ProvisionIndex.Provision,
+    /// Owned by THIS peer's allocator; null for a parked non-embargoed accept.
+    embargo_key: ?[]u8,
+    parked: bool,
+};
 const JoinKeyPart = state.JoinKeyPart;
 const JoinPartEntry = state.JoinPartEntry;
 const JoinState = state.JoinState;
@@ -537,6 +551,10 @@ pub const VatNetwork = vat_network.VatNetwork(Peer);
 pub const Introduction = vat_network.Introduction;
 pub const Introduced = vat_network.Introduced(Peer);
 pub const JoinNetwork = join_network.JoinNetwork(Peer);
+/// Experimental vat-wide L3 provision index (three-party HOSTING across
+/// multiple connections of one vat). See src/rpc/vat/provisions.zig.
+pub const ProvisionIndex = vat_provisions.ProvisionIndex(Peer);
+pub const ProvisionIndexLimits = vat_provisions.ProvisionIndexLimits;
 pub const Joined = join_network.Joined(Peer);
 
 /// Handle returned by `Peer.sendProvide`: the ids the caller needs to drive the
@@ -1360,6 +1378,20 @@ pub const Peer = struct {
     provides_by_question: std.AutoHashMap(u32, ProvideEntry),
     /// Active Provide operations keyed by serialized recipient for Accept lookup.
     provides_by_key: std.StringHashMap(u32),
+    /// Attached vat-wide provision index (BORROWED; back-linked via
+    /// `ProvisionIndex.attached_peers`). Null = all L3 host behavior is
+    /// exactly today's per-peer behavior. Set via `attachProvisionIndex`.
+    provision_index: ?*ProvisionIndex = null,
+    /// OWNER side of vat-wide provisions: Provide question id -> provision
+    /// object (+1 ref each). Lives BESIDE `provides_by_question` so
+    /// `ProvideEntry`'s shape and every generic helper that constructs it stay
+    /// untouched.
+    provisions_by_question: std.AutoHashMap(u32, *ProvisionIndex.Provision),
+    /// HOLDER side: queued/parked cross-peer Accept answer id -> record.
+    /// Records are UNCOUNTED back-links: the +1 lives in the provision's
+    /// pending slot / parked entry; a record exists IFF its slot/entry exists;
+    /// removing a record NEVER releases (invariant INV-REC).
+    cross_peer_pending_accepts: std.AutoHashMap(u32, CrossPeerAcceptRecord),
     /// ORIGINATION (mirror of the inbound provide tables): vine export id ->
     /// the paired held-open Provide question this peer originated. Keyed by the
     /// vine export minted on THIS connection; the Provide question it anchors
@@ -1603,6 +1635,10 @@ pub const Peer = struct {
     /// attach yet — WASM, unit tests, or manual frame injection via
     /// `handleFrame` and `setSendFrameOverride`. Pair it with a later
     /// `attachConnection` (or `attachTransport*`) before driving real traffic.
+    /// The provide-target type, re-exported for generics that are parameterized
+    /// over the peer type (vat/provisions.zig) without importing peer state.
+    pub const ProvideTargetType = ProvideTarget;
+
     pub fn initDetached(allocator: std.mem.Allocator) Peer {
         return initDetachedWithLimits(allocator, .{});
     }
@@ -1632,6 +1668,8 @@ pub const Peer = struct {
             .forwarded_tail_questions = std.AutoHashMap(u32, u32).init(allocator),
             .provides_by_question = std.AutoHashMap(u32, ProvideEntry).init(allocator),
             .provides_by_key = std.StringHashMap(u32).init(allocator),
+            .provisions_by_question = std.AutoHashMap(u32, *ProvisionIndex.Provision).init(allocator),
+            .cross_peer_pending_accepts = std.AutoHashMap(u32, CrossPeerAcceptRecord).init(allocator),
             .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
             .coupled_vines = .empty,
             .cross_peer_proxy_links = .empty,
@@ -1947,12 +1985,19 @@ pub const Peer = struct {
         // BEFORE this peer's memory is freed — so a later vine Release is a safe
         // no-op instead of a freed-peer deref. Must run before we return; running
         // it first keeps it independent of any error path below.
+        // Vat-wide provision teardown, split per the canonical procedure:
+        // infallible neutralize (sever the index back-link, move the owner map
+        // out, mark provisions closed, clear holder records) BEFORE
+        // forceCancelAllQuestions; the send-bearing drain AFTER it.
+        self.detachCrossPeerAcceptsOnHolderPeer();
+        var provision_teardown = self.neutralizeProvisionsOnOwnerPeer();
         self.neutralizeCoupledVinesOnProvidePeer();
         self.neutralizeCrossPeerProxiesOnSourcePeer();
         self.neutralizeCrossPeerJoinRelaysOnSourcePeer();
         self.neutralizeJoinAcceptHostLinks();
         _ = self.forceCancelAllQuestions(disconnected_reason, .disconnected);
         self.neutralizeJoinCoordinatorAcceptLinks();
+        self.drainClosedProvisionsOnOwnerPeer(&provision_teardown);
         peer_cleanup.deinitPendingCallMapOwned(
             @TypeOf(self.pending_promises),
             self.allocator,
@@ -2024,6 +2069,10 @@ pub const Peer = struct {
             &self.provides_by_question,
         );
         self.provides_by_key.deinit();
+        // The FRESH (post-neutralize) vat-provision maps: contents were moved
+        // out and drained above; only the backing stores remain.
+        self.provisions_by_question.deinit();
+        self.cross_peer_pending_accepts.deinit();
         // OutboundProvide entries own no heap memory (borrowed peer pointer +
         // plain ids). A live entry at teardown means a handoff was still in
         // flight — the paired Provide question is torn down with its own peer's
@@ -5316,6 +5365,535 @@ pub const Peer = struct {
         try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
     }
 
+    // ================= L3 vat-wide provision hosting (Experimental) =========
+    //
+    // Everything below implements the VatC hosting design (docs: FINAL-v2 as
+    // amended by its adversarial verdict). The canonical drain/teardown
+    // choreography is centralized here: failPendingAccept is the ONLY place a
+    // queued/parked accept's +1 is released, closeProvisionAsOwner is the ONLY
+    // owner-close procedure, and every send-bearing walk operates on a
+    // moved-out container, never a live map.
+
+    /// Attach this peer to a vat-wide provision index. Preconditions: not
+    /// already attached, and no pre-existing per-peer handoff state (the index
+    /// must see every provision from the first one).
+    pub fn attachProvisionIndex(self: *Peer, index: *ProvisionIndex) !void {
+        self.assertThreadAffinity();
+        index.assertThreadAffinity();
+        if (self.provision_index != null) return error.PeerAlreadyAttachedToProvisionIndex;
+        if (self.provides_by_question.count() != 0 or
+            self.pending_accepts_by_embargo.count() != 0)
+        {
+            return error.PeerAlreadyHasHandoffState;
+        }
+        try index.attached_peers.append(index.allocator, self);
+        self.provision_index = index;
+    }
+
+    /// Detach from the provision index. Symmetric precondition: no live
+    /// provisions owned by this peer and no queued cross-peer accepts — a
+    /// cleanly detached peer can re-attach (its handoff maps are empty).
+    pub fn detachProvisionIndex(self: *Peer) !void {
+        self.assertThreadAffinity();
+        const idx = self.provision_index orelse return;
+        if (self.provisions_by_question.count() != 0 or
+            self.cross_peer_pending_accepts.count() != 0)
+        {
+            return error.PeerHasActiveHandoffState;
+        }
+        var i: usize = 0;
+        while (i < idx.attached_peers.items.len) {
+            if (idx.attached_peers.items[i] == self) {
+                _ = idx.attached_peers.swapRemove(i);
+            } else i += 1;
+        }
+        self.provision_index = null;
+    }
+
+    /// Allocator-parameterized clone of a provide target (the provision owns
+    /// COPIES on the INDEX allocator; `Peer.cloneProvideTarget` clones on the
+    /// peer allocator and stays untouched).
+    fn cloneProvideTargetWith(allocator: std.mem.Allocator, target: *const ProvideTarget) !ProvideTarget {
+        return switch (target.*) {
+            .local => |t| .{ .local = t },
+            .promised => |promised| .{ .promised = try cap_table.OwnedPromisedAnswer.fromQuestionAndOps(
+                allocator,
+                promised.question_id,
+                promised.ops,
+            ) },
+        };
+    }
+
+    /// Roll back a handoff pin taken by a ladder that has NOT yet transferred
+    /// ownership (plain decrement, no destroy check — the pin was never
+    /// exposed). Never used after a transfer: the transferee releases.
+    fn rollbackHandoffExportRef(self: *Peer, id: u32) void {
+        var entry = self.exports.getEntry(id) orelse return;
+        if (entry.value_ptr.handoff_ref_count == 0) return;
+        entry.value_ptr.handoff_ref_count -= 1;
+    }
+
+    /// PHASE A of Provide registration into the vat index (OOM ladder: all
+    /// fallible work first, one infallible tail takes refs/flags/state).
+    /// Errors are rolled back by the caller (clearProvide + abort). `adopted`
+    /// is reserved for Accept-before-Provide adoption (parking landing).
+    fn registerProvisionForProvide(
+        self: *Peer,
+        idx: *ProvisionIndex,
+        provide_question_id: u32,
+        adopted: *?*ProvisionIndex.Provision,
+    ) !void {
+        idx.assertThreadAffinity();
+        adopted.* = null;
+        const entry = self.provides_by_question.getPtr(provide_question_id) orelse
+            return error.UnknownProvision;
+
+        if (idx.by_key.get(entry.recipient_key)) |_| {
+            // Vat-wide duplicate. (An `.awaiting` hit becomes adoption when
+            // Accept parking lands; until then no `.awaiting` provisions can
+            // exist.)
+            return error.DuplicateProvideRecipient;
+        }
+        if (idx.provision_count >= idx.limits.max_provisions) return error.ProvisionBudgetExceeded;
+        if (idx.provision_key_bytes + entry.recipient_key.len > idx.limits.max_provision_key_bytes)
+            return error.ProvisionBudgetExceeded;
+
+        // 1. Create (index allocator).
+        const prov = try idx.allocator.create(ProvisionIndex.Provision);
+        errdefer idx.allocator.destroy(prov);
+        prov.* = .{
+            .allocator = idx.allocator,
+            .recipient_key = &.{},
+            .embargoes = std.StringHashMap(ProvisionIndex.ProvisionEmbargo).init(idx.allocator),
+        };
+        errdefer prov.embargoes.deinit();
+        // 2. Own the key bytes.
+        prov.recipient_key = try idx.allocator.dupe(u8, entry.recipient_key);
+        errdefer idx.allocator.free(prov.recipient_key);
+        // 3. Own the target copy (index allocator — freed by Provision.release
+        //    with the matching allocator).
+        prov.target = try cloneProvideTargetWith(idx.allocator, &entry.target);
+        errdefer if (prov.target) |*t| t.deinit(idx.allocator);
+        // 4. Pin a sender-hosted target export for the provision's lifetime.
+        var pinned_export: ?u32 = null;
+        switch (entry.target) {
+            .local => |t| {
+                const tag = try cap_table.descriptors.tagForOriginCode(t.origin_code);
+                if (tag == .senderHosted or tag == .senderPromise) {
+                    try self.noteHandoffExportRef(t.cap_id);
+                    pinned_export = t.cap_id;
+                }
+            },
+            .promised => {},
+        }
+        errdefer if (pinned_export) |id| self.rollbackHandoffExportRef(id);
+        // 5. Index entry (key borrows prov.recipient_key — rule R3).
+        try idx.by_key.put(prov.recipient_key, prov);
+        errdefer _ = idx.by_key.remove(prov.recipient_key);
+        // 6. Owner map entry (peer allocator) — last fallible operation.
+        try self.provisions_by_question.put(provide_question_id, prov);
+        // 7. INFALLIBLE TAIL: refs, flags, state, counters.
+        prov.state = .active;
+        prov.owner = self;
+        prov.provide_question_id = provide_question_id;
+        prov.target_export_pinned = pinned_export != null;
+        prov.indexed = true;
+        prov.retain(); // the index's +1
+        prov.retain(); // the owner map's +1
+        idx.provision_count += 1;
+        idx.provision_key_bytes += prov.recipient_key.len;
+    }
+
+    /// Index-mode Accept path. The same-peer arm delegates to the EXACT legacy
+    /// orchestration call (byte-identical Returns and error strings); only the
+    /// cross-peer arm is new.
+    fn handleAcceptWithProvisionIndex(self: *Peer, idx: *ProvisionIndex, accept: protocol.Accept) !void {
+        const key_opt = try peer_provide_join_orchestration.captureAcceptProvisionForPeer(
+            Peer,
+            self,
+            accept,
+            peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+        );
+        defer if (key_opt) |bytes| self.allocator.free(bytes);
+        const key = key_opt orelse
+            return self.sendReturnException(accept.question_id, "unknown provision");
+        const prov = idx.by_key.get(key) orelse
+            return self.sendReturnException(accept.question_id, "unknown provision");
+
+        if (prov.owner == self and prov.state == .active) {
+            // Degenerate same-peer arm: the same function, arguments, and
+            // hooks as the no-index path.
+            return peer_provide_join_orchestration.handleAccept(
+                Peer,
+                ProvideEntry,
+                ProvideTarget,
+                self,
+                accept,
+                &self.provides_by_question,
+                &self.provides_by_key,
+                peer_provide_join_orchestration.captureAcceptProvisionForPeerFn(
+                    Peer,
+                    peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
+                ),
+                peer_finish.freeOwnedFrameForPeerFn(Peer),
+                Peer.queueEmbargoedAccept,
+                Peer.sendReturnProvidedTarget,
+                Peer.sendReturnException,
+            );
+        }
+
+        // Cross-peer arm. Embargoed accepts queue into the provision store at
+        // the embargo landing; until then fail closed with a pinned,
+        // observable exception (a hang-based RED is impossible: under sync
+        // transports a failed Accept settles before any Disembargo is sent).
+        if (accept.embargo != null) {
+            return self.sendReturnException(accept.question_id, "cross-peer embargoed accept unsupported");
+        }
+        prov.retain();
+        defer prov.release();
+        serveProvisionOnPeer(self, prov, accept.question_id) catch |err|
+            try self.sendReturnException(accept.question_id, @errorName(err));
+    }
+
+    /// Serve one accept from a provision on an arbitrary holder peer — the
+    /// core of cross-peer hosting. The Return carries senderHosted{proxy}
+    /// where the proxy (minted on the accept peer) forwards to the OWNER's
+    /// export, holding its own handoff pin so the accepted capability
+    /// outlives the provision's Finish.
+    fn serveProvisionOnPeer(accept_peer: *Peer, prov: *ProvisionIndex.Provision, answer_id: u32) !void {
+        const owner = prov.owner orelse
+            return accept_peer.sendReturnException(answer_id, "provision lost: provider connection closed");
+        if (owner == accept_peer) {
+            // Degenerate arm: byte-identical to today against the owner's
+            // LIVE ProvideEntry.
+            const entry = owner.provides_by_question.getPtr(prov.provide_question_id) orelse
+                return accept_peer.sendReturnException(answer_id, "unknown provision");
+            return accept_peer.sendReturnProvidedTarget(answer_id, &entry.target);
+        }
+
+        // Cross-peer arm: target-kind gate. A null target (an `.awaiting`
+        // provision that lost its owner) fails closed like an ownerless one.
+        const stored_target = prov.target orelse
+            return accept_peer.sendReturnException(answer_id, "provision lost: provider connection closed");
+        const source: cap_table.ResolvedCap = switch (stored_target) {
+            .local => |t| switch (try cap_table.descriptors.tagForOriginCode(t.origin_code)) {
+                .senderHosted, .senderPromise => .{ .exported = .{ .id = t.cap_id } },
+                .receiverHosted => return error.CrossPeerReceiverHostedTargetUnsupported,
+                else => return error.CrossPeerProvisionTargetUnsupported,
+            },
+            .promised => return error.CrossPeerPromisedTargetUnsupported,
+        };
+
+        // Pin the source export for the PROXY's lifetime (survives the
+        // provision's Finish). Ownership of this pin transfers AT the next
+        // call: the callee's pre-ctx errdefer arm or its ctx deinit releases
+        // it on ANY failure from here on — this caller performs NO pin
+        // rollback and NO destroy sweep of an export the serve does not own.
+        try owner.noteHandoffExportRef(source.exported.id);
+        const proxy_id = try accept_peer.addCrossPeerProxyExport(
+            owner,
+            source,
+            null,
+            source.exported.id,
+        );
+        errdefer accept_peer.destroyUnreferencedProxyExport(proxy_id);
+        try accept_peer.sendReturnSenderHostedCap(answer_id, proxy_id);
+    }
+
+    /// Single-capability Return whose payload content is a senderHosted cap
+    /// pointer at index 0 — the same shape as bootstrap returns, through the
+    /// same origin-tagged encode path and reserve/rollback machinery.
+    fn sendReturnSenderHostedCap(self: *Peer, answer_id: u32, export_id: u32) !void {
+        const BuildCtx = struct {
+            export_id: u32,
+            fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+                const ctx: *const @This() = castCtx(*const @This(), ctx_ptr);
+                var payload = try ret.payloadTyped();
+                var any = try payload.initContent();
+                try any.setCapabilityOriginTagged(
+                    cap_table.descriptors.originCodeForTag(.senderHosted),
+                    ctx.export_id,
+                );
+            }
+        };
+        var ctx = BuildCtx{ .export_id = export_id };
+        try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
+    }
+
+    // -- The canonical drain/teardown procedure ------------------------------
+
+    const DrainPosture = enum { fallible, best_effort };
+
+    fn DrainError(comptime posture: DrainPosture) type {
+        return switch (posture) {
+            .fallible => error{OutOfMemory},
+            .best_effort => error{},
+        };
+    }
+
+    /// THE one shared fail helper for a queued/parked accept. Input: a pending
+    /// ALREADY detached from its slot/list by the caller. Order is law: holder
+    /// record removed (and the accept peer's key dupe freed) BEFORE the send;
+    /// the single release of the pending's +1 AFTER the send (via defer, so it
+    /// drops exactly once even on an OOM re-raise). A reentrant Finish of the
+    /// accept question racing the send finds the record already gone — a
+    /// clean miss, never a double release.
+    fn failPendingAccept(
+        pending: ProvisionIndex.PendingAccept,
+        prov: *ProvisionIndex.Provision,
+        reason: []const u8,
+        comptime posture: DrainPosture,
+    ) DrainError(posture)!void {
+        if (pending.accept_peer.cross_peer_pending_accepts.fetchRemove(pending.answer_id)) |kv| {
+            if (kv.value.embargo_key) |k| pending.accept_peer.allocator.free(k);
+        }
+        defer prov.release();
+        pending.accept_peer.sendReturnException(pending.answer_id, reason) catch |err| {
+            if (posture == .fallible and err == error.OutOfMemory) return error.OutOfMemory;
+            log.debug("failPendingAccept: exception send for answer {} failed: {}", .{ pending.answer_id, err });
+        };
+    }
+
+    /// Drain a provision's embargo slots and parked accepts through
+    /// failPendingAccept, over MOVED-OUT containers (nested frames see the
+    /// fresh empty containers, and `.closed`-state guards forbid new
+    /// insertions). Under `.fallible`, an OOM mid-walk moves the residue back
+    /// so the owner-deinit drain can later complete it best-effort.
+    fn drainProvisionEntries(
+        prov: *ProvisionIndex.Provision,
+        reason: []const u8,
+        comptime posture: DrainPosture,
+    ) DrainError(posture)!void {
+        var owned_embargoes = prov.embargoes;
+        prov.embargoes = std.StringHashMap(ProvisionIndex.ProvisionEmbargo).init(prov.allocator);
+        prov.embargo_key_bytes = 0;
+        var owned_parked = prov.parked;
+        prov.parked = .empty;
+
+        var it = owned_embargoes.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.pending) |pending| {
+                entry.value_ptr.pending = null;
+                failPendingAccept(pending, prov, reason, posture) catch |err| {
+                    // Residue rule: restore both containers, re-raise. The
+                    // fresh maps are still empty (guaranteed by the `.closed`
+                    // guards), so plain moves are safe.
+                    prov.embargoes.deinit();
+                    prov.embargoes = owned_embargoes;
+                    var parked_tmp = prov.parked;
+                    parked_tmp.deinit(prov.allocator);
+                    prov.parked = owned_parked;
+                    return err;
+                };
+            }
+        }
+        var kit = owned_embargoes.keyIterator();
+        while (kit.next()) |k| prov.allocator.free(k.*);
+        owned_embargoes.deinit();
+
+        var i: usize = 0;
+        while (i < owned_parked.items.len) : (i += 1) {
+            const parked = owned_parked.items[i];
+            if (parked.embargo) |bytes| prov.allocator.free(bytes);
+            owned_parked.items[i].embargo = null;
+            failPendingAccept(
+                .{ .accept_peer = parked.accept_peer, .answer_id = parked.answer_id },
+                prov,
+                reason,
+                posture,
+            ) catch |err| {
+                // Residue: keep the not-yet-drained tail parked.
+                var rest: std.ArrayList(ProvisionIndex.ParkedAccept) = .empty;
+                rest.appendSlice(prov.allocator, owned_parked.items[i + 1 ..]) catch {
+                    // Cannot even keep the tail: fail it best-effort so no
+                    // accept is silently stranded, then fall through.
+                    for (owned_parked.items[i + 1 ..]) |tail| {
+                        if (tail.embargo) |bytes| prov.allocator.free(bytes);
+                        failPendingAccept(
+                            .{ .accept_peer = tail.accept_peer, .answer_id = tail.answer_id },
+                            prov,
+                            reason,
+                            .best_effort,
+                        ) catch {};
+                    }
+                    owned_parked.deinit(prov.allocator);
+                    return err;
+                };
+                owned_parked.deinit(prov.allocator);
+                var parked_tmp = prov.parked;
+                parked_tmp.deinit(prov.allocator);
+                prov.parked = rest;
+                return err;
+            };
+        }
+        owned_parked.deinit(prov.allocator);
+    }
+
+    const CloseOutcome = enum { closed_now, already_closed };
+
+    /// THE canonical owner close. Two entry contexts: Finish (`.fallible`,
+    /// `.release` the pin) and owner-deinit drain (`.best_effort`, `.abandon`
+    /// the pin — the export table dies with the peer). The `.closed`
+    /// transition is the OWNERSHIP TOKEN: exactly one caller observes
+    /// `.closed_now` and may drop the owner map entry + its +1; every nested
+    /// or duplicate entry sees `.already_closed` and must transfer NOTHING.
+    fn closeProvisionAsOwner(
+        self: *Peer,
+        idx: ?*ProvisionIndex,
+        prov: *ProvisionIndex.Provision,
+        comptime unpin: enum { release, abandon },
+        comptime posture: DrainPosture,
+    ) DrainError(posture)!CloseOutcome {
+        if (prov.state == .closed) return .already_closed;
+        prov.retain();
+        defer prov.release();
+        prov.state = .closed;
+        if (unpin == .release) {
+            if (prov.target_export_pinned) {
+                if (prov.target) |t| switch (t) {
+                    .local => |lt| self.releaseHandoffHeldExport(lt.cap_id),
+                    else => {},
+                };
+                prov.target_export_pinned = false;
+            }
+        }
+        prov.owner = null;
+        if (prov.indexed) {
+            if (idx) |i| {
+                _ = i.by_key.remove(prov.recipient_key);
+                i.provision_count -= 1;
+                i.provision_key_bytes -= prov.recipient_key.len;
+                prov.indexed = false;
+                prov.release(); // the index's +1
+            }
+        }
+        try drainProvisionEntries(prov, switch (posture) {
+            .fallible => "provision finished before disembargo",
+            .best_effort => "provision lost: provider connection closed",
+        }, posture);
+        return .closed_now;
+    }
+
+    /// Fallible Finish pre-step, called from handleFinish BEFORE the FinishOps
+    /// chain — UNGATED (the orelse-return is the gate: no-index peers have an
+    /// empty map; mid-deinit the live map is empty). The `.closed` early
+    /// return makes a nested duplicate Finish (the vine-release cascade) a
+    /// clean no-op that transfers nothing.
+    fn detachProvisionForFinish(self: *Peer, question_id: u32) !void {
+        const prov = self.provisions_by_question.get(question_id) orelse return;
+        if (prov.state == .closed) return;
+        const outcome = try self.closeProvisionAsOwner(self.provision_index, prov, .release, .fallible);
+        if (outcome != .closed_now) return;
+        // Only after the close COMPLETED (no residue): drop the map entry and
+        // the owner's +1.
+        _ = self.provisions_by_question.remove(question_id);
+        prov.release();
+    }
+
+    /// State threaded from the neutralize step of Peer.deinit to its drain
+    /// phase (after forceCancelAllQuestions).
+    const OwnerProvisionTeardown = struct {
+        saved_idx: ?*ProvisionIndex,
+        owned_provisions: std.AutoHashMap(u32, *ProvisionIndex.Provision),
+    };
+
+    /// Neutralize step (infallible; template-conformant: marks, moves, and
+    /// back-link removal only — no sends, no frees of shared state). Runs for
+    /// HOLDER-only peers too: the index self-removal must be unconditional.
+    fn neutralizeProvisionsOnOwnerPeer(self: *Peer) OwnerProvisionTeardown {
+        const saved_idx = self.provision_index;
+        if (saved_idx) |idx| {
+            var i: usize = 0;
+            while (i < idx.attached_peers.items.len) {
+                if (idx.attached_peers.items[i] == self) {
+                    _ = idx.attached_peers.swapRemove(i);
+                } else i += 1;
+            }
+            self.provision_index = null;
+        }
+        var owned = self.provisions_by_question;
+        self.provisions_by_question = std.AutoHashMap(u32, *ProvisionIndex.Provision).init(self.allocator);
+        var it = owned.valueIterator();
+        while (it.next()) |prov_ptr| {
+            const prov = prov_ptr.*;
+            prov.state = .closed;
+            prov.owner = null; // pin abandoned (the export table dies with us)
+        }
+        return .{ .saved_idx = saved_idx, .owned_provisions = owned };
+    }
+
+    /// Drain phase: send-bearing, runs AFTER forceCancelAllQuestions over the
+    /// moved-out snapshot. Exception Returns go to LIVE sibling peers.
+    fn drainClosedProvisionsOnOwnerPeer(self: *Peer, teardown: *OwnerProvisionTeardown) void {
+        _ = self;
+        var it = teardown.owned_provisions.valueIterator();
+        while (it.next()) |prov_ptr| {
+            const prov = prov_ptr.*;
+            prov.retain();
+            if (prov.indexed) {
+                if (teardown.saved_idx) |idx| {
+                    _ = idx.by_key.remove(prov.recipient_key);
+                    idx.provision_count -= 1;
+                    idx.provision_key_bytes -= prov.recipient_key.len;
+                    prov.indexed = false;
+                    prov.release(); // the index's +1
+                }
+            }
+            drainProvisionEntries(prov, "provision lost: provider connection closed", .best_effort) catch {};
+            prov.release(); // the transient guard
+            prov.release(); // the owner map's +1
+        }
+        teardown.owned_provisions.deinit();
+    }
+
+    /// Holder-peer neutralize: clear this peer's queued/parked cross-peer
+    /// accepts. Send-free and infallible, but must run BEFORE
+    /// forceCancelAllQuestions (whose Finishes can nest frames serving INTO
+    /// this half-dead peer). Releases the pending's +1 ONLY when a LIVE
+    /// slot/parked entry was actually cleared — a record whose slot was
+    /// already detached by a concurrent drain transfers nothing.
+    fn detachCrossPeerAcceptsOnHolderPeer(self: *Peer) void {
+        var owned = self.cross_peer_pending_accepts;
+        self.cross_peer_pending_accepts = std.AutoHashMap(u32, CrossPeerAcceptRecord).init(self.allocator);
+        var it = owned.iterator();
+        while (it.next()) |entry| {
+            const answer_id = entry.key_ptr.*;
+            const rec = entry.value_ptr.*;
+            const prov = rec.provision; // valid: the slot's +1 pins it (INV-REC)
+            var cleared_live = false;
+            if (rec.parked) {
+                var i: usize = 0;
+                while (i < prov.parked.items.len) : (i += 1) {
+                    const parked = prov.parked.items[i];
+                    if (parked.accept_peer == self and parked.answer_id == answer_id) {
+                        if (parked.embargo) |bytes| prov.allocator.free(bytes);
+                        _ = prov.parked.swapRemove(i);
+                        cleared_live = true;
+                        break;
+                    }
+                }
+            } else if (rec.embargo_key) |key| {
+                if (prov.embargoes.getPtr(key)) |emb| {
+                    if (emb.pending) |pending| {
+                        if (pending.accept_peer == self and pending.answer_id == answer_id) {
+                            emb.pending = null;
+                            cleared_live = true;
+                        }
+                    }
+                }
+                if (cleared_live) {
+                    if (prov.embargoes.fetchRemove(key)) |kv| {
+                        prov.embargo_key_bytes -= kv.key.len;
+                        prov.allocator.free(kv.key);
+                    }
+                }
+            }
+            if (rec.embargo_key) |k| self.allocator.free(k);
+            if (cleared_live) prov.release(); // the slot's/parked entry's +1
+        }
+        owned.deinit();
+    }
+
     fn noteOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
         try return_send.noteOutboundReturnCapRefsForPeer(
             Peer,
@@ -6358,6 +6936,11 @@ pub const Peer = struct {
 
     fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
         const qid = finish_msg.question_id;
+        // Vat-wide provision close (Finish of a Provide question) — UNGATED:
+        // the map lookup inside is the gate. Runs in this fallible context so
+        // an OOM in the fan-out propagates out of dispatch instead of being
+        // force-swallowed by the void FinishOps hook below.
+        try self.detachProvisionForFinish(qid);
         const was_active = self.active_inbound_questions.remove(qid);
         const was_resolving = self.resolving_answers.contains(qid);
         self.clearPendingJoinResultAnswer(qid);
@@ -7677,10 +8260,38 @@ pub const Peer = struct {
             makeProvideTarget,
             ProvideTarget.deinit,
         );
+
+        // Vat-wide registration (index mode only). On failure, roll the
+        // just-stored per-peer provide back, send ONE abort with the matched
+        // reason, and propagate the ORIGINAL error.
+        if (self.provision_index) |idx| {
+            var adopted: ?*ProvisionIndex.Provision = null;
+            self.registerProvisionForProvide(idx, provide.question_id, &adopted) catch |err| {
+                peer_provides_state.clearProvideForPeer(
+                    Peer,
+                    ProvideEntry,
+                    ProvideTarget,
+                    self,
+                    provide.question_id,
+                    ProvideTarget.deinit,
+                );
+                const reason: []const u8 = switch (err) {
+                    error.DuplicateProvideRecipient => "duplicate provide recipient",
+                    else => @errorName(err),
+                };
+                peer_outbound_control.sendAbortViaSendFrame(Peer, self, reason, Peer.sendFrameControl) catch |send_err| {
+                    log.debug("provide registration abort send failed: {}", .{send_err});
+                };
+                return err;
+            };
+            // Adoption drain (Accept-before-Provide) arrives with parking.
+            std.debug.assert(adopted == null);
+        }
     }
 
     fn handleAccept(self: *Peer, accept: protocol.Accept) !void {
         if (try self.tryHandleJoinAccept(accept)) return;
+        if (self.provision_index) |idx| return self.handleAcceptWithProvisionIndex(idx, accept);
         try peer_provide_join_orchestration.handleAccept(
             Peer,
             ProvideEntry,
