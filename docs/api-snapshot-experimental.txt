@@ -1541,6 +1541,7 @@ capnpc-zig.rpc.promises.promised_answer.ResolvedPromisedCap: union
 capnpc-zig.rpc.promises.promised_answer.cloneOpsFromPromised: fn (mem.Allocator, rpc.wire.protocol.PromisedAnswer) error{IndexOutOfBounds,InvalidDiscriminant,OutOfBounds,OutOfMemory,TransformTooLong}![]rpc.wire.protocol.PromisedAnswerOp
 capnpc-zig.rpc.promises.promised_answer.cloneOpsFromSlice: fn (mem.Allocator, []const rpc.wire.protocol.PromisedAnswerOp) error{OutOfMemory}![]rpc.wire.protocol.PromisedAnswerOp
 capnpc-zig.rpc.promises.promised_answer.resolvePromisedAnswer: fn (rpc.wire.protocol.Payload, rpc.wire.protocol.PromisedAnswerTransform) anyerror!rpc.promises.promised_answer.ResolvedPromisedCap
+capnpc-zig.rpc.promises.promised_answer.resolvePromisedAnswerOps: fn (rpc.wire.protocol.Payload, []const rpc.wire.protocol.PromisedAnswerOp) anyerror!rpc.promises.promised_answer.ResolvedPromisedCap
 capnpc-zig.rpc.promises.promised_answer: struct
 capnpc-zig.rpc.promises: struct
 capnpc-zig.rpc.testing: struct

@@ -382,10 +382,12 @@ const SixPeers = struct {
 /// Wire-honest grant: install `returner` as `host`'s bootstrap and have
 /// `remote` import the cap it returns (bootstrap, then a call whose Return
 /// carries the target — granting one wire reference).
+var last_bootstrap_question_id: u32 = 0;
+
 fn grantCapVia(host: *Peer, remote: *Peer, returner: *CapReturner) !u32 {
     _ = try host.setBootstrap(.{ .ctx = returner, .on_call = CapReturner.onCall });
     var boot_probe = CapImportProbe{};
-    _ = try remote.sendBootstrap(&boot_probe, CapImportProbe.onReturn);
+    last_bootstrap_question_id = try remote.sendBootstrap(&boot_probe, CapImportProbe.onReturn);
     const boot_import = boot_probe.import_id orelse return error.ReturnerNotGranted;
     var probe = CapImportProbe{};
     _ = try remote.sendCall(boot_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &probe, null, CapImportProbe.onReturn);
@@ -1899,3 +1901,363 @@ test "L4 teardown: owner deinit with a queued embargoed accept fails it loudly (
     try peers.a_to_b.releaseImport(setup.promise_import, 1);
     try peers.a_to_b.releaseImport(setup.introducer_import, 1);
 }
+
+// ============================================================================
+// L5: Accept-before-Provide parks (order-independent rendezvous), and the
+// Provide adopts the awaiting provision and drains its parked accepts.
+// ============================================================================
+
+test "L5: an early Accept parks; the Provide adopts and serves it (both orders, both embargo modes)" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const token = try host.mintToken(allocator, "l5-token");
+    defer allocator.free(token);
+
+    // Non-embargoed early Accept: parked, NO Return yet.
+    try host.injectAccept(allocator, 600, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(600));
+    try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+
+    // Embargoed early Accept parks alongside it on the SAME awaiting provision.
+    try host.injectAccept(allocator, 601, token, "early-e");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(601));
+    try std.testing.expectEqual(@as(usize, 2), host.index.parked_accept_count);
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+
+    // The Provide arrives: adoption serves the plain accept immediately and
+    // moves the embargoed one into the provision's embargo map.
+    try host.injectProvide(allocator, 60, carol_id, token);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(600));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(601));
+    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_count);
+    try std.testing.expectEqual(@as(usize, 1), host.index.queued_accept_count);
+
+    // Its Disembargo releases it like any queued accept.
+    try host.injectAcceptDisembargo(allocator, 60, "early-e");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(601));
+    try std.testing.expectEqual(@as(usize, 0), host.index.queued_accept_count);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+}
+
+test "L5 budget: park exhaustion is a distinguishable exception" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .max_parked_accepts = 1 });
+    defer host.deinitAll();
+
+    const token = try host.mintToken(allocator, "l5-budget");
+    defer allocator.free(token);
+
+    try host.injectAccept(allocator, 610, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(610));
+    try host.injectAccept(allocator, 611, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(611));
+}
+
+test "L5 V2-M5: cancelling the last parked accept unindexes and destroys the awaiting provision" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    const token = try host.mintToken(allocator, "l5-m5");
+    defer allocator.free(token);
+
+    try host.injectAccept(allocator, 620, token, "zz");
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+
+    // The acceptor cancels (Finish on the accept answer): the record clears,
+    // the awaiting provision loses its last parked accept and must die —
+    // not squat on the budget as an unadoptable zombie.
+    const finish_frame = try buildFinishFrame(allocator, 620);
+    defer allocator.free(finish_frame);
+    try host.peer.handleFrame(finish_frame);
+
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.provision_count);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+
+    // The token is fully reusable afterwards.
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    try host.injectProvide(allocator, 62, carol_id, token);
+    try host.injectAccept(allocator, 621, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(621));
+}
+
+test "L5 F-2: index deinit fails parked accepts; the acceptor's follow-up Finish is a clean miss" {
+    const allocator = std.testing.allocator;
+
+    var capture = FrameCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, FrameCapture.send);
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+    var dummy = Peer.initDetached(allocator);
+    dummy.disableThreadAffinity();
+    defer dummy.deinit();
+    try net.register("l5-f2", &dummy);
+    dummy.attachVatNetwork(net.network());
+
+    var index = ProvisionIndex.init(allocator, .{});
+    index.disableThreadAffinity();
+    try peer.attachProvisionIndex(&index);
+
+    const d_network = dummy.vat_network orelse return error.NoVatNetwork;
+    var introduction = try d_network.mintIntroduction(&dummy, "l5-f2");
+    defer introduction.deinit(allocator);
+    var token_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer token_msg.deinit();
+    const provision_ptr = try token_msg.getRootAnyPointer();
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    try builder.buildAccept(630, provision_ptr, "f2-bytes");
+    const accept_frame = try builder.finish();
+    builder.deinit();
+    defer allocator.free(accept_frame);
+    try peer.handleFrame(accept_frame);
+    try std.testing.expectEqual(@as(usize, 1), peer.cross_peer_pending_accepts.count());
+
+    // Index dies with the accept parked: the accept fails LOUDLY (delivered
+    // exception Return) and the holder record is removed BEFORE the send —
+    // so the natural follow-ups touch nothing freed.
+    index.deinit();
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), capture.returnFor(630));
+    try std.testing.expectEqual(@as(usize, 0), peer.cross_peer_pending_accepts.count());
+
+    // Follow-up 1: the acceptor Finishes the failed answer — clean miss.
+    const finish_frame = try buildFinishFrame(allocator, 630);
+    defer allocator.free(finish_frame);
+    try peer.handleFrame(finish_frame);
+    // Follow-up 2: peer deinit (in the test's defers) — no UAF, no leak,
+    // under std.testing.allocator.
+}
+
+// ============================================================================
+// L6: promised-answer provide targets serve cross-peer via OWNER-SIDE
+// re-resolution — the stored inbound-answer id is consumed only on the peer
+// whose answer table it names; no id ever crosses a connection.
+// ============================================================================
+
+test "L6: a promisedAnswer-TARGET Provide (settled answer cap) resolves at Provide time and serves cross-peer" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    // A sibling holder attached to the same index.
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    // Give the owner a RESOLVED inbound answer whose content is a cap:
+    // a bootstrap question (its Return carries the bootstrap export).
+    var carol = Carol{};
+    _ = try host.peer.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildBootstrap(7);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+
+    // Provide whose target is promisedAnswer{7} (empty transform = the
+    // bootstrap cap itself). Stored ops-based on the owner.
+    const token = try host.mintToken(allocator, "l6-token");
+    defer allocator.free(token);
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const recipient = try token_msg.getRootAnyPointer();
+        const frame = blk: {
+            var builder = protocol.MessageBuilder.init(allocator);
+            defer builder.deinit();
+            try builder.buildProvide(70, .{
+                .tag = .promisedAnswer,
+                .imported_cap = null,
+                .promised_answer = .{ .question_id = 7, .transform = .{ .list = null } },
+            }, recipient);
+            break :blk try builder.finish();
+        };
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+
+    // Cross-peer Accept on the sibling: the owner re-resolves its own answer
+    // to the bootstrap export, pins it, and mints a proxy on the holder.
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(700, provision, null);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try holder.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), holder_capture.returnFor(700));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_proxy_links.items.len);
+
+    // The single-peer promised path stays byte-identical (receiverAnswer
+    // re-emission): a same-peer Accept still serves through the legacy arm.
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(701, provision, null);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(701));
+}
+
+/// Manually assemble an `.active` provision with a stored `.promised` target
+/// (on the wire this shape arises only when the Provide's promisedAnswer
+/// target resolves to a PROMISE-valued cap — rare; the serve arm must handle
+/// it regardless). Takes the index + owner refs exactly like registration.
+fn installPromisedProvision(host: *FrameHost, token: []const u8, qid: u32, answer_qid: u32) !*ProvisionIndex.Provision {
+    const idx = &host.index;
+    const prov = try idx.allocator.create(ProvisionIndex.Provision);
+    prov.* = .{
+        .allocator = idx.allocator,
+        .recipient_key = try idx.allocator.dupe(u8, token),
+        .embargoes = std.StringHashMap(ProvisionIndex.ProvisionEmbargo).init(idx.allocator),
+        .state = .active,
+        .owner = &host.peer,
+        .provide_question_id = qid,
+        .target = .{ .promised = try cap_table.OwnedPromisedAnswer.fromQuestionAndOps(idx.allocator, answer_qid, &.{}) },
+        .indexed = true,
+    };
+    try idx.by_key.put(prov.recipient_key, prov);
+    try host.peer.provisions_by_question.put(qid, prov);
+    prov.retain(); // index +1
+    prov.retain(); // owner +1
+    idx.provision_count += 1;
+    idx.provision_key_bytes += prov.recipient_key.len;
+    return prov;
+}
+
+test "L6: a stored .promised target serves cross-peer by owner-side ops re-resolution" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    // A resolved inbound answer on the OWNER whose content is a cap
+    // (bootstrap answers persist for the connection lifetime).
+    var carol = Carol{};
+    _ = try host.peer.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+    {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildBootstrap(7);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+
+    const token = try host.mintToken(allocator, "l6-ops");
+    defer allocator.free(token);
+    _ = try installPromisedProvision(&host, token, 70, 7);
+
+    // Cross-peer Accept: the OWNER re-resolves its own answer via the stored
+    // ops (the id never crosses a connection), pins the resulting export, and
+    // mints the proxy on the holder.
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(750, provision, null);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try holder.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), holder_capture.returnFor(750));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_proxy_links.items.len);
+
+    // Owner Finish drains the provision.
+    {
+        const frame = try buildFinishFrame(allocator, 70);
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+}
+
+test "L6 fail-closed: a stored .promised target naming a vanished answer serves an exception, not a wedge" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    const token = try host.mintToken(allocator, "l6-gone");
+    defer allocator.free(token);
+    // Answer 99 does not exist (Finished/never-was) — the stored ops dangle.
+    _ = try installPromisedProvision(&host, token, 80, 99);
+
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(800, provision, null);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try holder.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), holder_capture.returnFor(800));
+
+    {
+        const frame = try buildFinishFrame(allocator, 80);
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+}
+
+// NOTE: a six-peer end-to-end with a promisedAnswer PROVIDED TARGET is not
+// expressible through the public origination API today: sendCall and
+// sendBootstrap auto-Finish their questions, clearing the resolved answer the
+// Provide would have to name before resolvePromiseExportToThirdParty could
+// run. The frame-driven tests above cover the cross-peer promised serve; a
+// suppress-auto-finish call variant is future DX work (documented in
+// docs/supported-surface.md).

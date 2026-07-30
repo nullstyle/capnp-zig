@@ -84,6 +84,38 @@ fn resolveOutboundCapIndex(cap_list: message.StructListReader, index: u32) !Reso
 
 /// Walk a promised-answer transform path through a results payload to find
 /// the referenced capability.
+/// The ops-slice twin of `resolvePromisedAnswer`: identical op semantics and
+/// the same transform bound, walking an owned `[]PromisedAnswerOp` instead of
+/// a reader-backed transform. Exists so stored provide targets (ops-based by
+/// construction) can be re-resolved on the peer that owns the answer without
+/// ever constructing a reader from ops.
+pub fn resolvePromisedAnswerOps(
+    payload: protocol.Payload,
+    ops: []const protocol.PromisedAnswerOp,
+) !ResolvedPromisedCap {
+    if (ops.len > protocol.max_promised_answer_transform_ops) return error.TransformTooLong;
+
+    var current = payload.content;
+    for (ops) |op| {
+        if (current.isNull()) return .none;
+        switch (op.tag) {
+            .noop => {},
+            .getPointerField => {
+                const struct_reader = try current.getStruct();
+                current = try struct_reader.readAnyPointer(op.pointer_index);
+            },
+        }
+    }
+
+    if (current.isNull()) return .none;
+    const cap = current.getCapability() catch |err| switch (err) {
+        error.InvalidPointer => return .none,
+        else => return err,
+    };
+    const cap_list = payload.cap_table orelse return error.MissingCapTable;
+    return resolveOutboundCapIndex(cap_list, cap.id);
+}
+
 pub fn resolvePromisedAnswer(
     payload: protocol.Payload,
     transform: protocol.PromisedAnswerTransform,

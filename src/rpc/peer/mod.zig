@@ -51,6 +51,7 @@ const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
 const join_network = @import("../vat/join.zig");
 const vat_provisions = @import("../vat/provisions.zig");
+const promises_promised_answer = @import("../promises/promised_answer.zig");
 
 pub const errors = @import("./errors.zig");
 pub const state = @import("./state.zig");
@@ -5448,11 +5449,38 @@ pub const Peer = struct {
         const entry = self.provides_by_question.getPtr(provide_question_id) orelse
             return error.UnknownProvision;
 
-        if (idx.by_key.get(entry.recipient_key)) |_| {
-            // Vat-wide duplicate. (An `.awaiting` hit becomes adoption when
-            // Accept parking lands; until then no `.awaiting` provisions can
-            // exist.)
-            return error.DuplicateProvideRecipient;
+        if (idx.by_key.get(entry.recipient_key)) |existing| {
+            if (existing.state != .awaiting) return error.DuplicateProvideRecipient;
+            // ADOPTION: early Accepts parked under this token — activate the
+            // awaiting provision in place. Errdefers restore `.awaiting` on
+            // any failure; parked entries are untouched in phase A.
+            const prov = existing;
+            prov.target = try cloneProvideTargetWith(idx.allocator, &entry.target);
+            errdefer if (prov.target) |*t| {
+                t.deinit(idx.allocator);
+                prov.target = null;
+            };
+            var pinned_export: ?u32 = null;
+            switch (entry.target) {
+                .local => |t| {
+                    const tag = try cap_table.descriptors.tagForOriginCode(t.origin_code);
+                    if (tag == .senderHosted or tag == .senderPromise) {
+                        try self.noteHandoffExportRef(t.cap_id);
+                        pinned_export = t.cap_id;
+                    }
+                },
+                .promised => {},
+            }
+            errdefer if (pinned_export) |id| self.rollbackHandoffExportRef(id);
+            try self.provisions_by_question.put(provide_question_id, prov);
+            // INFALLIBLE TAIL.
+            prov.state = .active;
+            prov.owner = self;
+            prov.provide_question_id = provide_question_id;
+            prov.target_export_pinned = pinned_export != null;
+            prov.retain(); // the owner map's +1
+            adopted.* = prov;
+            return;
         }
         if (idx.provision_count >= idx.limits.max_provisions) return error.ProvisionBudgetExceeded;
         if (idx.provision_key_bytes + entry.recipient_key.len > idx.limits.max_provision_key_bytes)
@@ -5517,8 +5545,24 @@ pub const Peer = struct {
         defer if (key_opt) |bytes| self.allocator.free(bytes);
         const key = key_opt orelse
             return self.sendReturnException(accept.question_id, "unknown provision");
-        const prov = idx.by_key.get(key) orelse
-            return self.sendReturnException(accept.question_id, "unknown provision");
+        const prov = idx.by_key.get(key) orelse {
+            // Accept-before-Provide: PARK (the rendezvous contract is
+            // order-independent; an Accept may be the first frame on a
+            // brand-new connection). A fresh `.awaiting` provision holds it.
+            self.parkAcceptBeforeProvide(idx, key, accept.question_id, accept.embargo) catch |err|
+                try self.convertParkErrorToReturn(accept.question_id, err);
+            return;
+        };
+
+        if (prov.state == .awaiting) {
+            // A sibling (or this peer) already parked accepts for this token:
+            // park alongside them.
+            prov.retain();
+            defer prov.release();
+            self.parkAcceptOntoAwaiting(idx, prov, accept.question_id, accept.embargo) catch |err|
+                try self.convertParkErrorToReturn(accept.question_id, err);
+            return;
+        }
 
         if (prov.owner == self and prov.state == .active) {
             // Degenerate same-peer arm: the same function, arguments, and
@@ -5658,6 +5702,164 @@ pub const Peer = struct {
             try self.convertQueueErrorToReturn(answer_id, err);
     }
 
+    fn convertParkErrorToReturn(self: *Peer, answer_id: u32, err: anyerror) !void {
+        switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ParkBudgetExceeded => try self.sendReturnException(answer_id, "provision park budget exhausted"),
+            error.DuplicateAcceptQuestionId => try self.sendReturnException(answer_id, "duplicate accept question id"),
+            else => try self.sendReturnException(answer_id, @errorName(err)),
+        }
+    }
+
+    /// Park an early Accept onto a freshly-created `.awaiting` provision.
+    /// Ladder discipline: all fallible work first, one infallible tail.
+    fn parkAcceptBeforeProvide(self: *Peer, idx: *ProvisionIndex, key: []const u8, answer_id: u32, embargo: ?[]const u8) !void {
+        if (idx.provision_count >= idx.limits.max_provisions) return error.ParkBudgetExceeded;
+        if (idx.provision_key_bytes + key.len > idx.limits.max_provision_key_bytes) return error.ParkBudgetExceeded;
+
+        const prov = try idx.allocator.create(ProvisionIndex.Provision);
+        errdefer idx.allocator.destroy(prov);
+        prov.* = .{
+            .allocator = idx.allocator,
+            .recipient_key = &.{},
+            .embargoes = std.StringHashMap(ProvisionIndex.ProvisionEmbargo).init(idx.allocator),
+        };
+        errdefer prov.embargoes.deinit();
+        prov.recipient_key = try idx.allocator.dupe(u8, key);
+        errdefer idx.allocator.free(prov.recipient_key);
+        try idx.by_key.put(prov.recipient_key, prov);
+        errdefer _ = idx.by_key.remove(prov.recipient_key);
+
+        // The awaiting provision is live and indexed from here; parking onto
+        // it either succeeds or destroys it again via the unwind above (its
+        // refcount is still zero, so no release choreography is needed).
+        prov.indexed = true;
+        errdefer prov.indexed = false;
+        try self.parkAcceptOntoAwaiting(idx, prov, answer_id, embargo);
+        // INFALLIBLE TAIL for the provision itself.
+        prov.retain(); // the index's +1
+        idx.provision_count += 1;
+        idx.provision_key_bytes += prov.recipient_key.len;
+    }
+
+    /// Park an early Accept onto an existing `.awaiting` provision.
+    fn parkAcceptOntoAwaiting(self: *Peer, idx: *ProvisionIndex, prov: *ProvisionIndex.Provision, answer_id: u32, embargo: ?[]const u8) !void {
+        std.debug.assert(prov.state == .awaiting);
+        if (self.cross_peer_pending_accepts.contains(answer_id)) return error.DuplicateAcceptQuestionId;
+        if (idx.parked_accept_count >= idx.limits.max_parked_accepts) return error.ParkBudgetExceeded;
+        const embargo_len: usize = if (embargo) |e| e.len else 0;
+        if (idx.parked_accept_bytes + embargo_len > idx.limits.max_parked_accept_bytes) return error.ParkBudgetExceeded;
+
+        const parked_embargo: ?[]u8 = if (embargo) |e| try idx.allocator.dupe(u8, e) else null;
+        errdefer if (parked_embargo) |b| idx.allocator.free(b);
+        const r_key: ?[]u8 = if (embargo) |e| try self.allocator.dupe(u8, e) else null;
+        errdefer if (r_key) |k| self.allocator.free(k);
+        try prov.parked.ensureUnusedCapacity(prov.allocator, 1);
+        try self.cross_peer_pending_accepts.put(answer_id, .{
+            .provision = prov,
+            .embargo_key = r_key,
+            .parked = true,
+        });
+
+        // INFALLIBLE TAIL.
+        prov.parked.appendAssumeCapacity(.{
+            .accept_peer = self,
+            .answer_id = answer_id,
+            .embargo = parked_embargo,
+        });
+        prov.retain(); // the parked entry's +1
+        idx.parked_accept_count += 1;
+        idx.parked_accept_bytes += embargo_len;
+    }
+
+    /// PHASE B of adoption: a Provide just activated an `.awaiting` provision;
+    /// drain its parked accepts. Every entry ends TERMINALLY handled (served /
+    /// queued / failed) before any error propagates; only a terminal OOM —
+    /// one where even the exception Return could not be built — re-raises,
+    /// after the walk.
+    fn drainAdoptedParkedAccepts(self: *Peer, prov: *ProvisionIndex.Provision) !void {
+        _ = self;
+        prov.retain();
+        defer prov.release();
+        var owned = prov.parked;
+        prov.parked = .empty;
+        defer owned.deinit(prov.allocator);
+        var terminal_oom = false;
+
+        for (owned.items) |parked| {
+            const accept_peer = parked.accept_peer;
+            if (parked.embargo) |embargo_bytes| {
+                // OWNERSHIP TRANSFER into the embargo map: the parked dupe
+                // becomes the map key (both index-allocator-owned), the
+                // parked +1 becomes the pending slot's +1, and the R-side
+                // record is mutated in place — nothing re-allocated.
+                const gop = prov.embargoes.getOrPut(embargo_bytes) catch {
+                    failAdoptedParkedEntry(prov, parked, &terminal_oom);
+                    continue;
+                };
+                if (gop.found_existing) {
+                    // A second parked accept reused live embargo bytes.
+                    prov.allocator.free(embargo_bytes);
+                    if (accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
+                        if (kv.value.embargo_key) |k| accept_peer.allocator.free(k);
+                    }
+                    accept_peer.sendReturnException(parked.answer_id, "duplicate embargo id") catch |err| {
+                        if (err == error.OutOfMemory) terminal_oom = true;
+                    };
+                    prov.release();
+                } else {
+                    gop.key_ptr.* = embargo_bytes;
+                    gop.value_ptr.* = .{
+                        .used_by_accept = true,
+                        .pending = .{ .accept_peer = accept_peer, .answer_id = parked.answer_id },
+                    };
+                    prov.embargo_key_bytes += embargo_bytes.len;
+                    if (accept_peer.cross_peer_pending_accepts.getPtr(parked.answer_id)) |rec| {
+                        rec.parked = false;
+                    }
+                    if (accept_peer.provision_index) |idx| {
+                        idx.parked_accept_count -= 1;
+                        idx.parked_accept_bytes -= embargo_bytes.len;
+                        idx.queued_accept_count += 1;
+                        idx.queued_accept_bytes += embargo_bytes.len;
+                    }
+                    // The parked +1 became the slot's +1: no release.
+                }
+            } else {
+                if (accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
+                    if (kv.value.embargo_key) |k| accept_peer.allocator.free(k);
+                }
+                if (accept_peer.provision_index) |idx| {
+                    idx.parked_accept_count -= 1;
+                }
+                serveProvisionOnPeer(accept_peer, prov, parked.answer_id) catch |serve_err| {
+                    accept_peer.sendReturnException(parked.answer_id, @errorName(serve_err)) catch |err| {
+                        if (err == error.OutOfMemory) terminal_oom = true;
+                    };
+                };
+                prov.release(); // the parked entry's +1
+            }
+        }
+        std.debug.assert(prov.parked.items.len == 0);
+        if (terminal_oom) return error.OutOfMemory;
+    }
+
+    /// Terminal failure of one adopted parked entry (OOM in its queueing).
+    fn failAdoptedParkedEntry(prov: *ProvisionIndex.Provision, parked: ProvisionIndex.ParkedAccept, terminal_oom: *bool) void {
+        if (parked.embargo) |b| prov.allocator.free(b);
+        if (parked.accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
+            if (kv.value.embargo_key) |k| parked.accept_peer.allocator.free(k);
+        }
+        if (parked.accept_peer.provision_index) |idx| {
+            idx.parked_accept_count -= 1;
+            if (parked.embargo) |b| idx.parked_accept_bytes -= b.len;
+        }
+        parked.accept_peer.sendReturnException(parked.answer_id, "OutOfMemory") catch |err| {
+            if (err == error.OutOfMemory) terminal_oom.* = true;
+        };
+        prov.release();
+    }
+
     /// Release (or pre-mark) one embargo on a provision — the host arm of a
     /// spec-form accept-Disembargo. Walks the provision's own embargo map,
     /// never any vat-wide or byte-keyed store; find-or-create leaves a
@@ -5727,6 +5929,10 @@ pub const Peer = struct {
                 while (i < prov.parked.items.len) : (i += 1) {
                     const parked = prov.parked.items[i];
                     if (parked.accept_peer == peer and parked.answer_id == question_id) {
+                        if (peer.provision_index) |idx| {
+                            idx.parked_accept_count -= 1;
+                            if (parked.embargo) |bytes| idx.parked_accept_bytes -= bytes.len;
+                        }
                         if (parked.embargo) |bytes| prov.allocator.free(bytes);
                         _ = prov.parked.swapRemove(i);
                         cleared_live = true;
@@ -5751,7 +5957,13 @@ pub const Peer = struct {
                 }
             }
             if (rec.embargo_key) |k| peer.allocator.free(k);
-            if (cleared_live) prov.release(); // the slot's/parked entry's +1
+            if (cleared_live) {
+                // An `.awaiting` provision that lost its last parked accept is
+                // unreachable garbage: unindex it while alive so it dies with
+                // the release below instead of squatting on the budget.
+                maybeUnindexEmptyAwaiting(peer, prov);
+                prov.release(); // the slot's/parked entry's +1
+            }
         }
         peer_embargo_accepts.clearPendingAcceptQuestionForPeer(
             Peer,
@@ -5787,7 +5999,28 @@ pub const Peer = struct {
                 .receiverHosted => return error.CrossPeerReceiverHostedTargetUnsupported,
                 else => return error.CrossPeerProvisionTargetUnsupported,
             },
-            .promised => return error.CrossPeerPromisedTargetUnsupported,
+            // OWNER-SIDE re-resolution: the stored ops name an inbound answer
+            // on the OWNER — the id is consumed only against the table it
+            // actually names, and no id ever crosses a connection. Chained
+            // promised results are followed to a fixed depth.
+            .promised => |promised| blk: {
+                var resolved = owner.resolveProvidePromisedOps(promised.question_id, promised.ops) catch
+                    return error.CrossPeerProvisionTargetUnavailable;
+                var depth: u8 = 0;
+                while (true) {
+                    switch (resolved) {
+                        .exported => |cap| break :blk .{ .exported = .{ .id = cap.id } },
+                        .imported => return error.CrossPeerReceiverHostedTargetUnsupported,
+                        .promised => |chained| {
+                            depth += 1;
+                            if (depth >= 4) return error.CrossPeerProvisionTargetUnsupported;
+                            resolved = owner.resolvePromisedAnswer(chained) catch
+                                return error.CrossPeerProvisionTargetUnavailable;
+                        },
+                        .none => return error.CrossPeerProvisionTargetUnavailable,
+                    }
+                }
+            },
         };
 
         // Pin the source export for the PROXY's lifetime (survives the
@@ -6084,6 +6317,10 @@ pub const Peer = struct {
                 while (i < prov.parked.items.len) : (i += 1) {
                     const parked = prov.parked.items[i];
                     if (parked.accept_peer == self and parked.answer_id == answer_id) {
+                        if (self.provision_index) |idx| {
+                            idx.parked_accept_count -= 1;
+                            if (parked.embargo) |bytes| idx.parked_accept_bytes -= bytes.len;
+                        }
                         if (parked.embargo) |bytes| prov.allocator.free(bytes);
                         _ = prov.parked.swapRemove(i);
                         cleared_live = true;
@@ -6115,9 +6352,28 @@ pub const Peer = struct {
                 }
                 self.allocator.free(k);
             }
-            if (cleared_live) prov.release(); // the slot's/parked entry's +1
+            if (cleared_live) {
+                maybeUnindexEmptyAwaiting(self, prov);
+                prov.release(); // the slot's/parked entry's +1
+            }
         }
         owned.deinit();
+    }
+
+    /// V2-M5: drop the index's ref on an `.awaiting` provision whose last
+    /// parked accept just went away (nothing can ever reach it again — an
+    /// adoption needs the index entry this removes). The caller still holds
+    /// the entry's +1, so the provision is alive throughout.
+    fn maybeUnindexEmptyAwaiting(peer: *Peer, prov: *ProvisionIndex.Provision) void {
+        if (prov.state != .awaiting) return;
+        if (prov.parked.items.len != 0) return;
+        if (!prov.indexed) return;
+        const idx = peer.provision_index orelse return;
+        _ = idx.by_key.remove(prov.recipient_key);
+        idx.provision_count -= 1;
+        idx.provision_key_bytes -= prov.recipient_key.len;
+        prov.indexed = false;
+        prov.release(); // the index's +1
     }
 
     fn noteOutboundReturnCapRefs(self: *Peer, ret: protocol.Return) !void {
@@ -6688,6 +6944,23 @@ pub const Peer = struct {
         defer decoded.deinit();
         if (decoded.tag != .@"return") return error.UnexpectedMessage;
         try self.handleReturn(frame, try decoded.asReturn());
+    }
+
+    /// Re-resolve a stored (ops-based) provide target against this peer's own
+    /// resolved-answer table — the id is consumed only on the peer whose
+    /// answer space it names; nothing reader-backed is constructed from ops.
+    fn resolveProvidePromisedOps(self: *Peer, question_id: u32, ops: []const protocol.PromisedAnswerOp) !cap_table.ResolvedCap {
+        const entry = self.resolved_answers.get(question_id) orelse return error.PromiseUnresolved;
+        var decoded = try protocol.DecodedMessage.init(self.allocator, entry.frame);
+        defer decoded.deinit();
+        const ret = try decoded.asReturn();
+        if (ret.tag != .results or ret.results == null) return error.PromisedAnswerMissing;
+        return switch (try promises_promised_answer.resolvePromisedAnswerOps(ret.results.?, ops)) {
+            .none => .none,
+            .exported_id => |id| .{ .exported = .{ .id = id } },
+            .imported_id => |id| .{ .imported = .{ .id = id } },
+            .promised => |promised| .{ .promised = promised },
+        };
     }
 
     fn resolvePromisedAnswer(self: *Peer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
@@ -8529,8 +8802,11 @@ pub const Peer = struct {
                 };
                 return err;
             };
-            // Adoption drain (Accept-before-Provide) arrives with parking.
-            std.debug.assert(adopted == null);
+            // PHASE B (adoption drain) runs OUTSIDE the rollback catch: the
+            // provision is active and may serve accepts — a Provide rollback
+            // would be wrong here. Only a terminal OOM re-raises, after every
+            // parked entry was terminally handled.
+            if (adopted) |prov| try self.drainAdoptedParkedAccepts(prov);
         }
     }
 

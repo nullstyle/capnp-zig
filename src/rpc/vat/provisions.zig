@@ -216,6 +216,23 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
                 prov.indexed = false;
                 self.provision_count -= 1;
                 self.provision_key_bytes -= prov.recipient_key.len;
+                if (prov.state == .awaiting) {
+                    // Parked accepts can never be adopted now: fail each one
+                    // through the canonical ordering — holder record removed
+                    // and its key freed BEFORE the exception Return, exactly
+                    // one ref released after.
+                    var owned_parked = prov.parked;
+                    prov.parked = .empty;
+                    for (owned_parked.items) |parked| {
+                        if (parked.embargo) |bytes| self.allocator.free(bytes);
+                        if (parked.accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
+                            if (kv.value.embargo_key) |k| parked.accept_peer.allocator.free(k);
+                        }
+                        parked.accept_peer.sendReturnException(parked.answer_id, "provision index destroyed") catch {};
+                        prov.release(); // the parked entry's +1
+                    }
+                    owned_parked.deinit(self.allocator);
+                }
                 prov.release(); // the index's +1
             }
             owned_by_key.deinit();
