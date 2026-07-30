@@ -53,11 +53,14 @@ test-fuzz-smoke`, `test-oom`, `test-resource-budgets` — all per push), and a
 nightly soak harness. New parser or protocol code is expected to come with
 bounds-checked accessors and regression coverage.
 
-**Coverage-guided fuzzing is currently not operational.** Fuzz targets exist for
-every untrusted-input surface (`zig build test-fuzz --fuzz`) and a nightly lane
-invokes them, but Zig master's experimental fuzzer aborts in its `maker` stage
-before fuzzing begins on the toolchain this project pins, so that lane has
-produced no coverage-guided signal. The nightly job now fails rather than
-reporting green when this happens, so the gap stays visible. Treat the
-deterministic fuzz smoke — not coverage-guided fuzzing — as the control that
-actually runs today.
+**Coverage-guided fuzzing runs nightly, on a lane-pinned toolchain.** Fuzz
+targets exist for every untrusted-input surface (`zig build test-fuzz --fuzz`)
+and the nightly lane runs them for a 10-minute window. Zig master's fuzzer is
+still experimental — on the repo's standard toolchain pin it aborts before
+producing any signal — so the fuzz lane alone is pinned to a snapshot whose
+fuzzer has been verified to fuzz the full window (see the fuzz job in
+`.github/workflows/nightly.yml` for the pin and its rationale). The job fails
+rather than reporting green if the fuzzer aborts before producing real signal,
+so a silent regression to "no fuzzing" stays visible. The per-push control
+remains the deterministic fuzz smoke (`zig build test-fuzz-smoke`);
+coverage-guided fuzzing is a nightly, non-blocking control.

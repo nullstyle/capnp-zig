@@ -43,9 +43,18 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
+      # This lane intentionally diverges from the repo's standard toolchain
+      # (0.17.0-dev.813, used by ci.yml and the other nightly jobs): dev.813's
+      # fuzzer maker aborts at startup ("start index 1 is larger than end
+      # index 0") before producing any signal. dev.1252 is the newest snapshot
+      # that both compiles this tree and fuzzes a full 10-minute window
+      # (probed 2026-07-30 on macOS + ubuntu). Snapshots at dev.1444+ rename
+      # std.builtin.OptimizeMode and no longer compile this tree; no fuzzer
+      # fixes landed in between, so bumping past dev.1252 buys nothing until
+      # the repo's standard toolchain moves past the rename.
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: 0.17.0-dev.1252+e4b325c19
 
       - name: Fuzz untrusted-input surfaces
         # timeout rc 124 = ran the full window without finding a crash.
@@ -68,7 +77,12 @@ jobs:
           FUZZ_WINDOW=600
           MIN_FUZZ_SECONDS=120
           started=$(date +%s)
-          timeout --kill-after=30 "$FUZZ_WINDOW" zig build test-fuzz --fuzz 2>&1 | tee fuzz.log
+          # -j1 caps the fuzzer at a single instance. With N instances the
+          # dev.1252 fuzzer's workers race creating the shared coverage file
+          # in .zig-cache/v/ and a loser can ABRT at init ("failed to open
+          # coverage file ...: FileNotFound"). One instance still fuzzes every
+          # fuzz test round-robin, so no target loses coverage.
+          timeout --kill-after=30 "$FUZZ_WINDOW" zig build test-fuzz --fuzz -j1 2>&1 | tee fuzz.log
           rc=${PIPESTATUS[0]}
           elapsed=$(( $(date +%s) - started ))
           echo "fuzzing ran for ${elapsed}s (rc=${rc})"
