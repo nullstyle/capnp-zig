@@ -5536,23 +5536,229 @@ pub const Peer = struct {
                     peer_third_party.captureAnyPointerPayloadForPeerFn(Peer, captureAnyPointerPayload),
                 ),
                 peer_finish.freeOwnedFrameForPeerFn(Peer),
-                Peer.queueEmbargoedAccept,
+                Peer.queueEmbargoedAcceptRouted,
                 Peer.sendReturnProvidedTarget,
                 Peer.sendReturnException,
             );
         }
 
-        // Cross-peer arm. Embargoed accepts queue into the provision store at
-        // the embargo landing; until then fail closed with a pinned,
-        // observable exception (a hang-based RED is impossible: under sync
-        // transports a failed Accept settles before any Disembargo is sent).
-        if (accept.embargo != null) {
-            return self.sendReturnException(accept.question_id, "cross-peer embargoed accept unsupported");
-        }
+        // Cross-peer arm.
         prov.retain();
         defer prov.release();
+        if (accept.embargo) |embargo| {
+            self.queueCrossPeerEmbargoedAccept(prov, accept.question_id, embargo) catch |err|
+                try self.convertQueueErrorToReturn(accept.question_id, err);
+            return;
+        }
         serveProvisionOnPeer(self, prov, accept.question_id) catch |err|
             try self.sendReturnException(accept.question_id, @errorName(err));
+    }
+
+    /// Convert a queue-ladder failure into the Accept's exception Return —
+    /// except OOM, which re-raises out of dispatch (dropping a rendezvous
+    /// marker silently would wedge the recipient; loud and terminal is the
+    /// rule).
+    fn convertQueueErrorToReturn(self: *Peer, answer_id: u32, err: anyerror) !void {
+        switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.DuplicateEmbargoId => try self.sendReturnException(answer_id, "duplicate embargo id"),
+            error.DuplicateAcceptQuestionId => try self.sendReturnException(answer_id, "duplicate accept question id"),
+            error.EmbargoBudgetExceeded, error.QueuedAcceptBudgetExceeded => try self.sendReturnException(answer_id, "provision queued-accept budget exhausted"),
+            error.ProvisionClosed => try self.sendReturnException(answer_id, "provision lost: provider connection closed"),
+            else => try self.sendReturnException(answer_id, @errorName(err)),
+        }
+    }
+
+    /// Remove one embargo entry from a provision, freeing its owned key.
+    fn eraseProvisionEmbargoEntry(prov: *ProvisionIndex.Provision, key_bytes: []const u8) void {
+        if (prov.embargoes.fetchRemove(key_bytes)) |kv| {
+            prov.embargo_key_bytes -= kv.key.len;
+            prov.allocator.free(kv.key);
+        }
+    }
+
+    /// Queue one embargoed accept into the provision's embargo map (single
+    /// pending slot per embargo id; find-or-create meets the
+    /// Disembargo-before-Accept race). Ladder discipline: ALL fallible work
+    /// first, one infallible tail takes the flags, slot, ref, and counters —
+    /// an OOM unwinds to zero residue (no half-queued accept, no second
+    /// Return, no unspent ref). `self` is the accept peer; it may equal the
+    /// owner (same-peer accepts on attached peers route here too).
+    fn queueCrossPeerEmbargoedAccept(
+        self: *Peer,
+        prov: *ProvisionIndex.Provision,
+        answer_id: u32,
+        embargo: []const u8,
+    ) !void {
+        if (prov.state != .active) return error.ProvisionClosed;
+        const idx = self.provision_index orelse return error.ProvisionClosed;
+        if (self.cross_peer_pending_accepts.contains(answer_id)) return error.DuplicateAcceptQuestionId;
+
+        const entry_exists = prov.embargoes.contains(embargo);
+        if (!entry_exists) {
+            if (prov.embargoes.count() >= idx.limits.max_embargoes_per_provision) return error.EmbargoBudgetExceeded;
+            if (prov.embargo_key_bytes + embargo.len > idx.limits.max_embargo_key_bytes_per_provision) return error.EmbargoBudgetExceeded;
+        }
+        if (idx.queued_accept_count >= idx.limits.max_queued_accepts) return error.QueuedAcceptBudgetExceeded;
+        if (idx.queued_accept_bytes + embargo.len > idx.limits.max_queued_accept_bytes) return error.QueuedAcceptBudgetExceeded;
+
+        const gop = try prov.embargoes.getOrPut(embargo);
+        var created_here = false;
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try prov.allocator.dupe(u8, embargo);
+            gop.value_ptr.* = .{};
+            prov.embargo_key_bytes += embargo.len;
+            created_here = true;
+        }
+        errdefer if (created_here) eraseProvisionEmbargoEntry(prov, embargo);
+
+        if (gop.value_ptr.used_by_accept) return error.DuplicateEmbargoId;
+        if (gop.value_ptr.disembargoed) {
+            // The Disembargo won the race: nothing to withhold — consume the
+            // tombstone and serve immediately.
+            eraseProvisionEmbargoEntry(prov, embargo);
+            return serveProvisionOnPeer(self, prov, answer_id);
+        }
+
+        const r_key = try self.allocator.dupe(u8, embargo);
+        errdefer self.allocator.free(r_key);
+        try self.cross_peer_pending_accepts.put(answer_id, .{
+            .provision = prov,
+            .embargo_key = r_key,
+            .parked = false,
+        });
+
+        // INFALLIBLE TAIL.
+        gop.value_ptr.used_by_accept = true;
+        gop.value_ptr.pending = .{ .accept_peer = self, .answer_id = answer_id };
+        prov.retain(); // the pending slot's +1
+        idx.queued_accept_count += 1;
+        idx.queued_accept_bytes += embargo.len;
+    }
+
+    /// Same-typed replacement for the `queue_embargoed_accept` hook VALUE on
+    /// index-attached peers: same-peer embargoed accepts route into the
+    /// provision store (per-provision keying) instead of the byte-keyed
+    /// legacy bucket — the byte-collision co-drain class dies with the dual
+    /// store. A miss NEVER falls back to the legacy queue (that would
+    /// silently repopulate the byte-keyed store).
+    fn queueEmbargoedAcceptRouted(
+        self: *Peer,
+        answer_id: u32,
+        provided_question_id: u32,
+        embargo: []const u8,
+    ) !void {
+        const prov = self.provisions_by_question.get(provided_question_id) orelse {
+            try self.sendReturnException(answer_id, "unknown provision");
+            return;
+        };
+        prov.retain();
+        defer prov.release();
+        self.queueCrossPeerEmbargoedAccept(prov, answer_id, embargo) catch |err|
+            try self.convertQueueErrorToReturn(answer_id, err);
+    }
+
+    /// Release (or pre-mark) one embargo on a provision — the host arm of a
+    /// spec-form accept-Disembargo. Walks the provision's own embargo map,
+    /// never any vat-wide or byte-keyed store; find-or-create leaves a
+    /// tombstone when the Disembargo arrives before its Accept. Consumed
+    /// entries are ERASED, so completed embargo ids are reusable.
+    fn releaseProvisionEmbargo(self: *Peer, prov: *ProvisionIndex.Provision, embargo: []const u8) !void {
+        if (prov.state == .closed) return;
+
+        if (!prov.embargoes.contains(embargo)) {
+            // Tombstone-create budget: only the introducer sends
+            // accept-Disembargos here, so exceeding the per-provision bound is
+            // that introducer misbehaving — abort loudly, never drop a
+            // rendezvous marker silently.
+            const over = if (self.provision_index) |idx|
+                prov.embargoes.count() >= idx.limits.max_embargoes_per_provision
+            else
+                false;
+            if (over) {
+                peer_outbound_control.sendAbortViaSendFrame(Peer, self, "provision embargo budget exhausted", Peer.sendFrameControl) catch |send_err| {
+                    log.debug("embargo budget abort send failed: {}", .{send_err});
+                };
+                return error.EmbargoBudgetExceeded;
+            }
+        }
+        const gop = try prov.embargoes.getOrPut(embargo);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try prov.allocator.dupe(u8, embargo);
+            gop.value_ptr.* = .{};
+            prov.embargo_key_bytes += embargo.len;
+        }
+        gop.value_ptr.disembargoed = true;
+        const pending = gop.value_ptr.pending orelse return; // tombstone kept until the Accept arrives
+        gop.value_ptr.pending = null; // detach: we inherit the slot's +1
+        prov.retain();
+        defer prov.release();
+        eraseProvisionEmbargoEntry(prov, embargo);
+
+        // Canonical fail/serve ordering: holder record removed (and the accept
+        // peer's key dupe freed) BEFORE the send.
+        if (pending.accept_peer.cross_peer_pending_accepts.fetchRemove(pending.answer_id)) |kv| {
+            if (kv.value.embargo_key) |k| pending.accept_peer.allocator.free(k);
+        }
+        if (pending.accept_peer.provision_index) |idx| {
+            idx.queued_accept_count -= 1;
+            idx.queued_accept_bytes -= embargo.len;
+        }
+        serveProvisionOnPeer(pending.accept_peer, prov, pending.answer_id) catch |err| {
+            pending.accept_peer.sendReturnException(pending.answer_id, @errorName(err)) catch |e2| {
+                log.debug("provision release: failed to fail accept {}: {}", .{ pending.answer_id, e2 });
+            };
+        };
+        prov.release(); // the pending slot's +1
+    }
+
+    /// FinishOps `clear_pending_accept_question` replacement (same fn type):
+    /// a Finish cancelling a queued cross-peer Accept clears the provision
+    /// slot — releasing the slot's +1 ONLY when a LIVE slot was actually
+    /// cleared (a record whose slot a concurrent drain already detached is a
+    /// clean miss) — then always falls through to the legacy per-peer path.
+    fn clearPendingAcceptQuestionRouted(peer: *Peer, question_id: u32) void {
+        if (peer.cross_peer_pending_accepts.fetchRemove(question_id)) |kv| {
+            const rec = kv.value;
+            const prov = rec.provision; // valid: the slot's +1 pins it (INV-REC)
+            var cleared_live = false;
+            if (rec.parked) {
+                var i: usize = 0;
+                while (i < prov.parked.items.len) : (i += 1) {
+                    const parked = prov.parked.items[i];
+                    if (parked.accept_peer == peer and parked.answer_id == question_id) {
+                        if (parked.embargo) |bytes| prov.allocator.free(bytes);
+                        _ = prov.parked.swapRemove(i);
+                        cleared_live = true;
+                        break;
+                    }
+                }
+            } else if (rec.embargo_key) |key| {
+                if (prov.embargoes.getPtr(key)) |emb| {
+                    if (emb.pending) |pending| {
+                        if (pending.accept_peer == peer and pending.answer_id == question_id) {
+                            emb.pending = null;
+                            cleared_live = true;
+                        }
+                    }
+                }
+                if (cleared_live) {
+                    if (peer.provision_index) |idx| {
+                        idx.queued_accept_count -= 1;
+                        idx.queued_accept_bytes -= key.len;
+                    }
+                    eraseProvisionEmbargoEntry(prov, key);
+                }
+            }
+            if (rec.embargo_key) |k| peer.allocator.free(k);
+            if (cleared_live) prov.release(); // the slot's/parked entry's +1
+        }
+        peer_embargo_accepts.clearPendingAcceptQuestionForPeer(
+            Peer,
+            PendingEmbargoedAccept,
+            peer,
+            question_id,
+        );
     }
 
     /// Serve one accept from a provision on an arbitrary holder peer — the
@@ -5645,7 +5851,19 @@ pub const Peer = struct {
         comptime posture: DrainPosture,
     ) DrainError(posture)!void {
         if (pending.accept_peer.cross_peer_pending_accepts.fetchRemove(pending.answer_id)) |kv| {
-            if (kv.value.embargo_key) |k| pending.accept_peer.allocator.free(k);
+            if (kv.value.embargo_key) |k| {
+                if (!kv.value.parked) {
+                    // Queued (non-parked) accepts carry the vat-wide budget;
+                    // adjust it where the record dies. Reachability is via the
+                    // accept peer's own index pointer — absent after index
+                    // death, an accepted (documented) counter skew.
+                    if (pending.accept_peer.provision_index) |idx| {
+                        idx.queued_accept_count -= 1;
+                        idx.queued_accept_bytes -= k.len;
+                    }
+                }
+                pending.accept_peer.allocator.free(k);
+            }
         }
         defer prov.release();
         pending.accept_peer.sendReturnException(pending.answer_id, reason) catch |err| {
@@ -5888,7 +6106,15 @@ pub const Peer = struct {
                     }
                 }
             }
-            if (rec.embargo_key) |k| self.allocator.free(k);
+            if (rec.embargo_key) |k| {
+                if (cleared_live and !rec.parked) {
+                    if (self.provision_index) |idx| {
+                        idx.queued_accept_count -= 1;
+                        idx.queued_accept_bytes -= k.len;
+                    }
+                }
+                self.allocator.free(k);
+            }
             if (cleared_live) prov.release(); // the slot's/parked entry's +1
         }
         owned.deinit();
@@ -6980,10 +7206,7 @@ pub const Peer = struct {
                 ProvideTarget.deinit,
                 JoinState.deinit,
             ),
-            .clear_pending_accept_question = peer_embargo_accepts.clearPendingAcceptQuestionForPeerFn(
-                Peer,
-                PendingEmbargoedAccept,
-            ),
+            .clear_pending_accept_question = Peer.clearPendingAcceptQuestionRouted,
             .take_forwarded_tail_question = peer_forward_orchestration.takeForwardedTailQuestionForPeerFn(Peer),
             // The tail Finish is only ever sent for a forwarded question held open
             // by finishForwardResolvedCall; neutralize that question here so a late
@@ -7749,6 +7972,28 @@ pub const Peer = struct {
                 Peer.sendReturnException,
             );
             return;
+        }
+
+        // HOST role, spec form: the Disembargo addresses the Provide question
+        // itself (promisedAnswer target in OUR answer space, no transform) —
+        // gated on the per-peer LOOKUP, never the index field, so a matched
+        // handoff keeps releasing after index death, and no-index peers
+        // simply miss (their map is empty) and fall through.
+        if (target.tag == .promisedAnswer) {
+            if (target.promised_answer) |pa| {
+                if (pa.transform.len() != 0) {
+                    peer_outbound_control.sendAbortViaSendFrame(Peer, self, "accept disembargo must not carry a transform", Peer.sendFrameControl) catch |send_err| {
+                        log.debug("disembargo transform abort send failed: {}", .{send_err});
+                    };
+                    return error.InvalidDisembargoTarget;
+                }
+                if (self.provisions_by_question.get(pa.question_id)) |prov| {
+                    try self.releaseProvisionEmbargo(prov, embargo);
+                    return;
+                }
+                // Unknown qid: fall through to the drop arm (a late/duplicate
+                // Disembargo after Finish is benign).
+            }
         }
 
         // INTRODUCER role: forward toward the host we originated the Provide on.

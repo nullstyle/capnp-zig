@@ -190,10 +190,16 @@ const VatcPickupHandler = struct {
     c_accept: ?*Peer = null,
     carol_export_id: ?u32 = null,
 
+    /// When set, `carol_calls_at_pickup` records how many calls Carol had
+    /// answered by pickup time (e-order: parked pre-resolution calls must
+    /// land BEFORE the release that fires the pickup).
+    carol_probe: ?*const Carol = null,
+
     fired: bool = false,
     ret_tag: ?protocol.ReturnTag = null,
     exception_reason: ?[]u8 = null,
     carol_import_id: ?u32 = null,
+    carol_calls_at_pickup: ?u32 = null,
     /// Mid-flight witnesses (valid when c_owner/c_accept were set).
     owner_provisions_at_pickup: ?usize = null,
     accept_provisions_at_pickup: ?usize = null,
@@ -222,6 +228,7 @@ const VatcPickupHandler = struct {
         if (self.c_accept) |c| self.accept_provisions_at_pickup = c.provisions_by_question.count();
         if (self.c_owner) |c| self.owner_legacy_provides_at_pickup = c.provides_by_question.count();
         if (self.c_accept) |c| self.accept_legacy_keys_at_pickup = c.provides_by_key.count();
+        if (self.carol_probe) |carol| self.carol_calls_at_pickup = carol.get_number_calls;
         if (self.c_owner) |c| {
             if (self.carol_export_id) |id| {
                 if (c.exports.get(id)) |entry| self.carol_handoff_refs_at_pickup = entry.handoff_ref_count;
@@ -260,23 +267,36 @@ const PairLink = struct {
     /// delivered (holds the handoff open across the left->right hop).
     buffer_accepts_to_right: bool = false,
     buffered_accept: ?[]u8 = null,
+    /// Same for a context.accept Disembargo (holds the embargo open).
+    buffer_disembargos_to_right: bool = false,
+    buffered_disembargo: ?[]u8 = null,
     allocator: std.mem.Allocator = std.testing.allocator,
 
     fn deinitBuffered(self: *PairLink) void {
         if (self.buffered_accept) |f| self.allocator.free(f);
         self.buffered_accept = null;
+        if (self.buffered_disembargo) |f| self.allocator.free(f);
+        self.buffered_disembargo = null;
     }
 
     fn leftSend(ctx: *anyopaque, frame: []const u8) anyerror!void {
         const self: *PairLink = castCtx(*PairLink, ctx);
         if (!self.forwarding) return;
-        if (self.buffer_accepts_to_right) {
+        if (self.buffer_accepts_to_right or self.buffer_disembargos_to_right) {
             var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
             defer decoded.deinit();
-            if (decoded.tag == .accept) {
+            if (self.buffer_accepts_to_right and decoded.tag == .accept) {
                 std.debug.assert(self.buffered_accept == null);
                 self.buffered_accept = try self.allocator.dupe(u8, frame);
                 return;
+            }
+            if (self.buffer_disembargos_to_right and decoded.tag == .disembargo) {
+                const dis = try decoded.asDisembargo();
+                if (dis.context_tag == .accept) {
+                    std.debug.assert(self.buffered_disembargo == null);
+                    self.buffered_disembargo = try self.allocator.dupe(u8, frame);
+                    return;
+                }
             }
         }
         if (self.right) |peer| try peer.handleFrame(frame);
@@ -291,6 +311,13 @@ const PairLink = struct {
     fn releaseBufferedAccept(self: *PairLink) !void {
         const frame = self.buffered_accept orelse return error.NoBufferedAccept;
         self.buffered_accept = null;
+        defer self.allocator.free(frame);
+        if (self.right) |peer| try peer.handleFrame(frame);
+    }
+
+    fn releaseBufferedDisembargo(self: *PairLink) !void {
+        const frame = self.buffered_disembargo orelse return error.NoBufferedDisembargo;
+        self.buffered_disembargo = null;
         defer self.allocator.free(frame);
         if (self.right) |peer| try peer.handleFrame(frame);
     }
@@ -376,6 +403,7 @@ const HandoffSetup = struct {
     introducer: Introducer = .{},
     introducer_import: u32 = 0,
     promise_import: u32 = 0,
+    provide_question_id: u32 = 0,
 
     fn run(self: *HandoffSetup, peers: *SixPeers, net: anytype, nonce: []const u8) !void {
         try net.register(nonce, &peers.a_to_c);
@@ -409,13 +437,14 @@ const HandoffSetup = struct {
             .imported_cap = self.carol_import_b,
             .promised_answer = null,
         };
-        _ = try peers.b_to_a.resolvePromiseExportToThirdParty(
+        const handle = try peers.b_to_a.resolvePromiseExportToThirdParty(
             self.promise_import,
             &peers.b_to_c,
             provided_target,
             recipient,
             introduction.to_contact,
         );
+        self.provide_question_id = handle.question_id;
     }
 
     fn teardownImports(self: *HandoffSetup, peers: *SixPeers) !void {
@@ -556,7 +585,7 @@ test "L3 witness: without a provision index, the two-peer VatC still answers unk
 // Cross-peer embargoed accepts fail closed (visibly) until the embargo landing.
 // ============================================================================
 
-test "L3 fail-closed: a cross-peer embargoed Accept is rejected with a pinned reason" {
+test "L4: a cross-peer embargoed handoff releases via the forwarded spec-form Disembargo" {
     const allocator = std.testing.allocator;
     var peers: SixPeers = undefined;
     peers.init(allocator);
@@ -574,7 +603,11 @@ test "L3 fail-closed: a cross-peer embargoed Accept is rejected with a pinned re
     var setup = HandoffSetup{};
     try setup.run(&peers, &net, "vatc-l3-embargoed");
 
-    var pickup = VatcPickupHandler{ .allocator = allocator, .expected_promise_id = setup.promise_import };
+    var pickup = VatcPickupHandler{
+        .allocator = allocator,
+        .expected_promise_id = setup.promise_import,
+        .carol_probe = &setup.carol,
+    };
     defer pickup.deinit();
     peers.a_to_b.setHandoffPickupHandler(&pickup, VatcPickupHandler.onPickup);
 
@@ -585,15 +618,33 @@ test "L3 fail-closed: a cross-peer embargoed Accept is rejected with a pinned re
 
     try setup.originate(&peers, "vatc-l3-embargoed");
 
-    // Fail-closed, loudly — this string is the embargo landing's RED hook.
+    // The full chain worked: Accept queued in the provision store on c_to_a,
+    // the recipient's Disembargo stashed at B until the parked-call replay,
+    // then forwarded in SPEC FORM to c_to_b, whose host arm resolved the
+    // Provide question -> provision -> its own embargo slot and released the
+    // withheld Return on the SIBLING peer.
     try std.testing.expect(pickup.fired);
-    try std.testing.expectEqualStrings("exception", @tagName(pickup.ret_tag.?));
-    try std.testing.expectEqualStrings("cross-peer embargoed accept unsupported", pickup.exception_reason.?);
+    try std.testing.expectEqualStrings("results", @tagName(pickup.ret_tag.?));
+    const accepted = pickup.carol_import_id orelse return error.NoAcceptedCap;
 
-    // The parked pipelined call still completed through the vine-forwarding
-    // fallback (issue #56) — partial progress, not to be mistaken for support.
+    // E-ORDER: the parked pre-resolution call reached Carol BEFORE the
+    // release fired the pickup (rpc.capnp:898-903).
+    try std.testing.expectEqual(@as(?u32, 1), pickup.carol_calls_at_pickup);
     try std.testing.expect(pipelined.returned);
+    try std.testing.expectEqual(@as(?u32, 42), pipelined.result_n);
 
+    // The accepted capability reaches the real Carol.
+    var call = TolerantCall{};
+    _ = try peers.a_to_c.sendCall(accepted, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &call, null, TolerantCall.onReturn);
+    try std.testing.expectEqual(@as(?u32, 42), call.result_n);
+    try std.testing.expectEqual(@as(u32, 2), setup.carol.get_number_calls);
+
+    // Nothing queued anywhere; counters back to zero.
+    try std.testing.expectEqual(@as(usize, 0), peers.c_to_a.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), index.queued_accept_count);
+    try std.testing.expectEqual(@as(usize, 0), index.queued_accept_bytes);
+
+    try peers.a_to_c.releaseImport(accepted, 1);
     try setup.teardownImports(&peers);
     try harness.expectNoProvideState(&peers.c_to_b);
     try harness.expectNoProvideState(&peers.c_to_a);
@@ -1423,4 +1474,428 @@ test "L3 ownership: provision internals live on the index allocator (promised-ta
     // Both allocators must report every byte returned to the right owner.
     try std.testing.expectEqual(std.heap.Check.ok, peer_gpa.deinit());
     try std.testing.expectEqual(std.heap.Check.ok, index_gpa.deinit());
+}
+
+// ============================================================================
+// F-3 composition: Finish-of-Provide while an embargoed accept is queued,
+// over sync links — the eager-fail exception Return triggers the recipient's
+// nested auto-Finish of the accept answer MID-FAN-OUT. The `.closed`
+// ownership token and the record-before-send ordering make it a clean miss.
+// ============================================================================
+
+test "L4: Finish while an embargoed accept is queued fails it eagerly; the nested auto-Finish is a clean miss" {
+    const allocator = std.testing.allocator;
+    var peers: SixPeers = undefined;
+    peers.init(allocator);
+    defer peers.deinitPeers();
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var index = ProvisionIndex.init(allocator, .{});
+    index.disableThreadAffinity();
+    defer index.deinit();
+    try peers.c_to_b.attachProvisionIndex(&index);
+    try peers.c_to_a.attachProvisionIndex(&index);
+
+    var setup = HandoffSetup{};
+    try setup.run(&peers, &net, "vatc-l4-finish");
+    var pickup = VatcPickupHandler{ .allocator = allocator, .expected_promise_id = setup.promise_import };
+    defer pickup.deinit();
+    peers.a_to_b.setHandoffPickupHandler(&pickup, VatcPickupHandler.onPickup);
+
+    // Force the embargo AND hold the forwarded Disembargo at the B->C hop so
+    // the accept stays queued.
+    var pipelined = TolerantCall{};
+    _ = try peers.a_to_b.sendCall(setup.promise_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &pipelined, null, TolerantCall.onReturn);
+    peers.bc.buffer_disembargos_to_right = true;
+    try setup.originate(&peers, "vatc-l4-finish");
+
+    // Queued: the accept is withheld on c_to_a, keyed in the provision.
+    try std.testing.expect(!pickup.fired);
+    try std.testing.expectEqual(@as(usize, 1), peers.c_to_a.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), index.queued_accept_count);
+
+    // The introducer Finishes the Provide (frame-injected — the wire event).
+    // The close fans out an exception Return to A over the LIVE a<->c link;
+    // A's runtime auto-Finishes the accept answer NESTED inside that
+    // delivery; the routed clear wrapper's fetchRemove MISSES (the fail
+    // helper removed the record before sending) — no panic, no double
+    // release, no UAF.
+    const finish_frame = try buildFinishFrame(allocator, setup.provide_question_id);
+    defer allocator.free(finish_frame);
+    try peers.c_to_b.handleFrame(finish_frame);
+
+    try std.testing.expect(pickup.fired);
+    try std.testing.expectEqualStrings("exception", @tagName(pickup.ret_tag.?));
+    try std.testing.expectEqualStrings("provision finished before disembargo", pickup.exception_reason.?);
+
+    // Zero residue: no queued accepts, no provision, pin released.
+    try std.testing.expectEqual(@as(usize, 0), peers.c_to_a.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), peers.c_to_b.provisions_by_question.count());
+    try std.testing.expectEqual(@as(usize, 0), index.by_key.count());
+    try std.testing.expectEqual(@as(usize, 0), index.queued_accept_count);
+    {
+        const entry = peers.c_to_b.exports.get(setup.carol_export_id) orelse return error.CarolGone;
+        try std.testing.expectEqual(@as(u32, 0), entry.handoff_ref_count);
+    }
+
+    // The buffered Disembargo arrives LATE: the provision is gone, the spec
+    // form misses in provisions_by_question — a benign drop, not a wedge.
+    try peers.bc.releaseBufferedDisembargo();
+
+    try setup.teardownImports(&peers);
+    try harness.expectNoProvideState(&peers.c_to_b);
+    try harness.expectNoProvideState(&peers.c_to_a);
+}
+
+// ============================================================================
+// Frame-driven embargo semantics on one attached peer: G12 (per-provision
+// scoping with colliding bytes), the Disembargo-before-Accept race,
+// duplicate embargo ids, id reuse after completion, and the queue budget.
+// ============================================================================
+
+const FrameCapture = struct {
+    allocator: std.mem.Allocator,
+    returns: std.ArrayList(struct { answer_id: u32, tag: protocol.ReturnTag }) = .empty,
+
+    fn deinit(self: *FrameCapture) void {
+        self.returns.deinit(self.allocator);
+    }
+
+    fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *FrameCapture = castCtx(*FrameCapture, ctx);
+        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+        defer decoded.deinit();
+        if (decoded.tag == .@"return") {
+            const ret = try decoded.asReturn();
+            try self.returns.append(self.allocator, .{ .answer_id = ret.answer_id, .tag = ret.tag });
+        }
+    }
+
+    fn returnFor(self: *const FrameCapture, answer_id: u32) ?protocol.ReturnTag {
+        for (self.returns.items) |r| {
+            if (r.answer_id == answer_id) return r.tag;
+        }
+        return null;
+    }
+};
+
+/// One attached peer with a captured wire, N provisions injected by frames.
+const FrameHost = struct {
+    peer: Peer,
+    capture: FrameCapture,
+    index: ProvisionIndex,
+    net: vat_network.LoopbackVatNetwork(Peer),
+    dummy: Peer,
+
+    fn init(self: *FrameHost, allocator: std.mem.Allocator, limits: peer_impl.ProvisionIndexLimits) !void {
+        self.capture = .{ .allocator = allocator };
+        self.peer = Peer.initDetached(allocator);
+        self.peer.disableThreadAffinity();
+        self.peer.setSendFrameOverride(&self.capture, FrameCapture.send);
+        self.index = ProvisionIndex.init(allocator, limits);
+        self.index.disableThreadAffinity();
+        try self.peer.attachProvisionIndex(&self.index);
+        self.net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+        self.dummy = Peer.initDetached(allocator);
+        self.dummy.disableThreadAffinity();
+        try self.net.register("frame-host", &self.dummy);
+        self.dummy.attachVatNetwork(self.net.network());
+    }
+
+    fn deinitAll(self: *FrameHost) void {
+        self.dummy.deinit();
+        self.net.deinit();
+        self.peer.deinit();
+        self.index.deinit();
+        self.capture.deinit();
+    }
+
+    /// Mint a fresh recipient token, returning its serialized bytes (owned).
+    fn mintToken(self: *FrameHost, allocator: std.mem.Allocator, nonce: []const u8) ![]u8 {
+        try self.net.register(nonce, &self.dummy);
+        const d_network = self.dummy.vat_network orelse return error.NoVatNetwork;
+        var introduction = try d_network.mintIntroduction(&self.dummy, nonce);
+        defer introduction.deinit(allocator);
+        return allocator.dupe(u8, introduction.to_await);
+    }
+
+    /// Inject Provide{qid, importedCap{export_id}, token}.
+    fn injectProvide(self: *FrameHost, allocator: std.mem.Allocator, qid: u32, export_id: u32, token: []const u8) !void {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const recipient = try token_msg.getRootAnyPointer();
+        const frame = try buildProvideFrame(allocator, qid, .{
+            .tag = .importedCap,
+            .imported_cap = export_id,
+            .promised_answer = null,
+        }, recipient);
+        defer allocator.free(frame);
+        try self.peer.handleFrame(frame);
+    }
+
+    /// Inject Accept{qid, token, embargo}.
+    fn injectAccept(self: *FrameHost, allocator: std.mem.Allocator, qid: u32, token: []const u8, embargo: ?[]const u8) !void {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(qid, provision, embargo);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try self.peer.handleFrame(frame);
+    }
+
+    /// Inject the spec-form accept-Disembargo naming a Provide question.
+    fn injectAcceptDisembargo(self: *FrameHost, allocator: std.mem.Allocator, provide_qid: u32, embargo: []const u8) !void {
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildDisembargoAccept(.{
+            .tag = .promisedAnswer,
+            .imported_cap = null,
+            .promised_answer = .{ .question_id = provide_qid, .transform = .{ .list = null } },
+        }, embargo);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try self.peer.handleFrame(frame);
+    }
+};
+
+test "L4 G12: colliding embargo bytes across two provisions release independently (per-provision scoping)" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var carol1 = Carol{};
+    const carol1_id = try host.peer.addExport(.{ .ctx = &carol1, .on_call = Carol.onCall });
+    var carol2 = Carol{};
+    const carol2_id = try host.peer.addExport(.{ .ctx = &carol2, .on_call = Carol.onCall });
+
+    const token1 = try host.mintToken(allocator, "g12-token-1");
+    defer allocator.free(token1);
+    const token2 = try host.mintToken(allocator, "g12-token-2");
+    defer allocator.free(token2);
+
+    try host.injectProvide(allocator, 10, carol1_id, token1);
+    try host.injectProvide(allocator, 11, carol2_id, token2);
+
+    // Two same-peer embargoed Accepts with EQUAL bytes — the collision that
+    // co-drained in a byte-keyed store.
+    const e = "\x00\x00\x00\x00\x00\x00\x00\x00";
+    try host.injectAccept(allocator, 100, token1, e);
+    try host.injectAccept(allocator, 101, token2, e);
+    try std.testing.expectEqual(@as(usize, 2), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(100));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(101));
+
+    // Disembargo naming provision #1 releases ONLY answer 100.
+    try host.injectAcceptDisembargo(allocator, 10, e);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(100));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(101));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+
+    // Disembargo naming provision #2 releases the other.
+    try host.injectAcceptDisembargo(allocator, 11, e);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(101));
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+}
+
+test "L4 mixed: same-peer and cross-peer accepts with colliding bytes stay independent" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    // A sibling holder peer attached to the same index.
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    var carol1 = Carol{};
+    const carol1_id = try host.peer.addExport(.{ .ctx = &carol1, .on_call = Carol.onCall });
+    var carol2 = Carol{};
+    const carol2_id = try host.peer.addExport(.{ .ctx = &carol2, .on_call = Carol.onCall });
+
+    const token_x = try host.mintToken(allocator, "mixed-x");
+    defer allocator.free(token_x);
+    const token_y = try host.mintToken(allocator, "mixed-y");
+    defer allocator.free(token_y);
+    try host.injectProvide(allocator, 20, carol1_id, token_x);
+    try host.injectProvide(allocator, 21, carol2_id, token_y);
+
+    const e = "same-bytes";
+    // X: same-peer embargoed accept (on the owner itself).
+    try host.injectAccept(allocator, 200, token_x, e);
+    // Y: CROSS-peer embargoed accept (arrives on the sibling holder).
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token_y);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(300, provision, e);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try holder.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), holder.cross_peer_pending_accepts.count());
+
+    // Disembargo naming Y (the cross-peer one): only answer 300 releases,
+    // on the HOLDER's wire.
+    try host.injectAcceptDisembargo(allocator, 21, e);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), holder_capture.returnFor(300));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(200));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+
+    // Disembargo naming X releases the same-peer one.
+    try host.injectAcceptDisembargo(allocator, 20, e);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(200));
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+}
+
+test "L4 race: a Disembargo arriving before its Accept leaves a tombstone; the Accept serves immediately" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const token = try host.mintToken(allocator, "race-token");
+    defer allocator.free(token);
+    try host.injectProvide(allocator, 30, carol_id, token);
+
+    const prov = host.peer.provisions_by_question.get(30) orelse return error.NoProvision;
+
+    // Disembargo FIRST (two independent connections make this real).
+    try host.injectAcceptDisembargo(allocator, 30, "early");
+    try std.testing.expectEqual(@as(usize, 1), prov.embargoes.count());
+
+    // The Accept then serves immediately and consumes the tombstone.
+    try host.injectAccept(allocator, 310, token, "early");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(310));
+    try std.testing.expectEqual(@as(usize, 0), prov.embargoes.count());
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+}
+
+test "L4 duplicates: a second Accept reusing live embargo bytes is rejected; consumed bytes are reusable" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const token = try host.mintToken(allocator, "dup-token");
+    defer allocator.free(token);
+    try host.injectProvide(allocator, 40, carol_id, token);
+
+    try host.injectAccept(allocator, 400, token, "ebytes");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(400));
+
+    // Duplicate while the entry lives: rejected, the original untouched.
+    try host.injectAccept(allocator, 401, token, "ebytes");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(401));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+
+    // Release consumes the entry...
+    try host.injectAcceptDisembargo(allocator, 40, "ebytes");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(400));
+
+    // ...and the bytes become reusable by a NEW embargoed Accept (C++ parity).
+    try host.injectAccept(allocator, 402, token, "ebytes");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(402));
+    try host.injectAcceptDisembargo(allocator, 40, "ebytes");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(402));
+}
+
+test "L4 budget: queued-accept exhaustion is a distinguishable exception, not a silent drop" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .max_queued_accepts = 1 });
+    defer host.deinitAll();
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const token = try host.mintToken(allocator, "budget-token");
+    defer allocator.free(token);
+    try host.injectProvide(allocator, 50, carol_id, token);
+
+    try host.injectAccept(allocator, 500, token, "e1");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(500));
+    try host.injectAccept(allocator, 501, token, "e2");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(501));
+
+    try host.injectAcceptDisembargo(allocator, 50, "e1");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(500));
+}
+
+// ============================================================================
+// Owner-first teardown with a QUEUED embargoed accept (the §10.1 wedge test):
+// the deinit drain fails the accept LOUDLY across the still-live sibling.
+// ============================================================================
+
+test "L4 teardown: owner deinit with a queued embargoed accept fails it loudly (no wedge)" {
+    const allocator = std.testing.allocator;
+    var peers: SixPeers = undefined;
+    peers.init(allocator);
+    defer {
+        peers.ab.forwarding = false;
+        peers.bc.forwarding = false;
+        peers.ac.forwarding = false;
+        peers.ab.deinitBuffered();
+        peers.bc.deinitBuffered();
+        peers.ac.deinitBuffered();
+        peers.a_to_b.deinit();
+        peers.a_to_c.deinit();
+        peers.b_to_a.deinit();
+        peers.b_to_c.deinit();
+        peers.c_to_a.deinit();
+        // c_to_b deinited mid-test.
+    }
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var index = ProvisionIndex.init(allocator, .{});
+    index.disableThreadAffinity();
+    defer index.deinit();
+    try peers.c_to_b.attachProvisionIndex(&index);
+    try peers.c_to_a.attachProvisionIndex(&index);
+
+    var setup = HandoffSetup{};
+    try setup.run(&peers, &net, "vatc-l4-tdown");
+    var pickup = VatcPickupHandler{ .allocator = allocator, .expected_promise_id = setup.promise_import };
+    defer pickup.deinit();
+    peers.a_to_b.setHandoffPickupHandler(&pickup, VatcPickupHandler.onPickup);
+
+    var pipelined = TolerantCall{};
+    _ = try peers.a_to_b.sendCall(setup.promise_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &pipelined, null, TolerantCall.onReturn);
+    peers.bc.buffer_disembargos_to_right = true;
+    try setup.originate(&peers, "vatc-l4-tdown");
+    try std.testing.expect(!pickup.fired);
+    try std.testing.expectEqual(@as(usize, 1), peers.c_to_a.cross_peer_pending_accepts.count());
+
+    // The owner dies with the accept queued. Its B-side link is severed (a
+    // real disconnect), but the SIBLING peers stay live: the deinit drain
+    // must deliver the exception Return through c_to_a -> A.
+    peers.bc.forwarding = false;
+    peers.c_to_b.deinit();
+
+    try std.testing.expect(pickup.fired);
+    try std.testing.expectEqualStrings("exception", @tagName(pickup.ret_tag.?));
+    try std.testing.expectEqualStrings("provision lost: provider connection closed", pickup.exception_reason.?);
+    try std.testing.expectEqual(@as(usize, 0), peers.c_to_a.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), index.by_key.count());
+
+    try peers.a_to_b.releaseImport(setup.promise_import, 1);
+    try peers.a_to_b.releaseImport(setup.introducer_import, 1);
 }
