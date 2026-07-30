@@ -157,6 +157,7 @@ ci:
     just check-evented
     zig build hardening
     zig build check-api
+    zig build api-closure
     zig build test-fuzz-smoke --summary all
     zig build test-resource-budgets --summary all
     zig build test-oom --summary all

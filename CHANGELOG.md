@@ -10,6 +10,36 @@
   below: expanding inferred error sets forces body analysis, which surfaced it
   immediately. The schema-validation suite now calls it, so it cannot rot again.
 
+- **The frozen Stable surface is now closed under its own signatures**, gated by
+  the new `zig build api-closure` on all three CI tiers. A Stable entry point
+  whose signature mentions an Experimental type is only nominally frozen: the
+  type can change shape under it at any 0.x bump while `check-api` stays green,
+  because the Stable *line* never moved.
+
+  The check's first run reported **14 violations**. Resolving them promoted the
+  types a consumer cannot avoid: `ConnectOptions` (needed by the frozen
+  `connect`/`connectHost`), `ServeOptions` and a narrowed `Listener` (`init` /
+  `close` / `getAddress` — the path both the getting-started guide and the
+  shipped example already use), and `Export` (needed by the frozen
+  `Peer.addExport` / `setBootstrap`). **Before this there was no fully-Stable way
+  to stand up a server**: `ServerSession.accept` required a `*Listener` that only
+  Experimental API could construct.
+
+  Two honest limits, recorded in `docs/supported-surface.md`. *Closure is not
+  constructibility* — the gate verifies a type named in a Stable signature is
+  frozen, not that a Stable constructor exists for it (found the hard way: my
+  first ablation removed `Listener.init` and the gate stayed green, because it
+  keys on the type's tier, not its members). And a method taking or returning its
+  own enclosing type is exempt by design, which keeps `ServerSession` frozen at
+  `.accept` plus its lifecycle rather than wholesale.
+
+  Ablation-verified: removing the `Listener` type promotion fails the gate with
+  `error.StableSurfaceNotClosed`.
+
+- Optional field defaults now render their **value** rather than "present":
+  `default_call_timeout_ms: ?u64 = 30000`, not `<non-null default>`. A 30s → 60s
+  change to a documented timeout would otherwise have passed the gate.
+
 - **`just check-generated` no longer diffs the experimental API snapshot.** That
   file is regenerated on every run by design and records target-dependent detail:
   `OwnerThreadId.value` is `std.Thread.Id`, which renders `u64` on macOS and

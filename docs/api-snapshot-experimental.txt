@@ -832,9 +832,6 @@ capnpc-zig.rpc.integration.worker_pool.WorkerPool.workers: field []rpc.integrati
 capnpc-zig.rpc.integration.worker_pool.WorkerPool: struct
 capnpc-zig.rpc.integration.worker_pool: struct
 capnpc-zig.rpc.integration: struct
-capnpc-zig.rpc.peer.Export.ctx: field *anyopaque
-capnpc-zig.rpc.peer.Export.on_call: field *const fn (*anyopaque, *rpc.peer.mod.Peer, rpc.wire.protocol.Call, *const rpc.caps.inbound.InboundCapTable) anyerror!void
-capnpc-zig.rpc.peer.Export: struct
 capnpc-zig.rpc.peer.HandoffPickupCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
 capnpc-zig.rpc.peer.Introduced.completion: field []u8
 capnpc-zig.rpc.peer.Introduced.peer: field *rpc.peer.mod.Peer
@@ -1636,12 +1633,12 @@ capnpc-zig.rpc.transport.tcp.ClientSession.user_on_close: field ?*const fn (?*an
 capnpc-zig.rpc.transport.tcp.ClientSession.user_on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession, anyerror) void
 capnpc-zig.rpc.transport.tcp.ConnectOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
 capnpc-zig.rpc.transport.tcp.ConnectOptions.ctx: field ?*anyopaque = null
-capnpc-zig.rpc.transport.tcp.ConnectOptions.default_call_timeout_ms: field ?u64 = <non-null default>
+capnpc-zig.rpc.transport.tcp.ConnectOptions.default_call_timeout_ms: field ?u64 = 30000
 capnpc-zig.rpc.transport.tcp.ConnectOptions.limits: field rpc.peer.state.PeerLimits = <default>
 capnpc-zig.rpc.transport.tcp.ConnectOptions.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.ConnectOptions.on_close: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession) void = null
 capnpc-zig.rpc.transport.tcp.ConnectOptions.on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession, anyerror) void = null
-capnpc-zig.rpc.transport.tcp.ConnectOptions.shutdown_drain_timeout_ms: field ?u64 = <non-null default>
+capnpc-zig.rpc.transport.tcp.ConnectOptions.shutdown_drain_timeout_ms: field ?u64 = 5000
 capnpc-zig.rpc.transport.tcp.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.Connection.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Connection.callback_depth: field usize = 0
@@ -1672,17 +1669,16 @@ capnpc-zig.rpc.transport.tcp.Listener.close_requested: field atomic.Value(bool) 
 capnpc-zig.rpc.transport.tcp.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
 capnpc-zig.rpc.transport.tcp.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.Listener.server: field Io.net.Server
-capnpc-zig.rpc.transport.tcp.Listener: struct
 capnpc-zig.rpc.transport.tcp.Runtime.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.Runtime: struct
 capnpc-zig.rpc.transport.tcp.ServeOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
 capnpc-zig.rpc.transport.tcp.ServeOptions.ctx: field ?*anyopaque = null
-capnpc-zig.rpc.transport.tcp.ServeOptions.default_call_timeout_ms: field ?u64 = <non-null default>
+capnpc-zig.rpc.transport.tcp.ServeOptions.default_call_timeout_ms: field ?u64 = 30000
 capnpc-zig.rpc.transport.tcp.ServeOptions.limits: field rpc.peer.state.PeerLimits = <default>
 capnpc-zig.rpc.transport.tcp.ServeOptions.observer: field ?rpc.events.Observer = null
 capnpc-zig.rpc.transport.tcp.ServeOptions.on_close: field ?*const fn (?*anyopaque, *rpc.transport.tcp.server.ServerSession) void = null
 capnpc-zig.rpc.transport.tcp.ServeOptions.on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.server.ServerSession, anyerror) void = null
-capnpc-zig.rpc.transport.tcp.ServeOptions.shutdown_drain_timeout_ms: field ?u64 = <non-null default>
+capnpc-zig.rpc.transport.tcp.ServeOptions.shutdown_drain_timeout_ms: field ?u64 = 5000
 capnpc-zig.rpc.transport.tcp.ServeOptions: struct
 capnpc-zig.rpc.transport.tcp.ServerSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.ServerSession.conn: field rpc.transport.tcp.connection.Connection
@@ -1716,15 +1712,6 @@ capnpc-zig.rpc.transport.tcp.client.ClientSession.peer: field rpc.peer.mod.Peer
 capnpc-zig.rpc.transport.tcp.client.ClientSession.user_ctx: field ?*anyopaque
 capnpc-zig.rpc.transport.tcp.client.ClientSession.user_on_close: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession) void
 capnpc-zig.rpc.transport.tcp.client.ClientSession.user_on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession, anyerror) void
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.ctx: field ?*anyopaque = null
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.default_call_timeout_ms: field ?u64 = <non-null default>
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.limits: field rpc.peer.state.PeerLimits = <default>
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.observer: field ?rpc.events.Observer = null
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.on_close: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession) void = null
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.client.ClientSession, anyerror) void = null
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions.shutdown_drain_timeout_ms: field ?u64 = <non-null default>
-capnpc-zig.rpc.transport.tcp.client.ConnectOptions: struct
 capnpc-zig.rpc.transport.tcp.client: struct
 capnpc-zig.rpc.transport.tcp.closeFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.connection.Connection.allocator: field mem.Allocator
@@ -1766,17 +1753,13 @@ capnpc-zig.rpc.transport.tcp.ipAddressToSockaddr: fn (Io.net.IpAddress) rpc.tran
 capnpc-zig.rpc.transport.tcp.runtime.Listener.accept: fn (*rpc.transport.tcp.runtime.Listener) error{BlockedByFirewall,Canceled,ConnectionAborted,ListenerClosed,NetworkDown,OutOfMemory,ProcessFdQuotaExceeded,ProtocolFailure,SocketNotListening,SystemFdQuotaExceeded,SystemResources,Unexpected,WouldBlock}!*rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.runtime.Listener.acceptFd: fn (*rpc.transport.tcp.runtime.Listener) error{BlockedByFirewall,Canceled,ConnectionAborted,ListenerClosed,NetworkDown,ProcessFdQuotaExceeded,ProtocolFailure,SocketNotListening,SystemFdQuotaExceeded,SystemResources,Unexpected,WouldBlock}!rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.Listener.allocator: field mem.Allocator
-capnpc-zig.rpc.transport.tcp.runtime.Listener.close: fn (*rpc.transport.tcp.runtime.Listener) void
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close_requested: field atomic.Value(bool) = <default>
 capnpc-zig.rpc.transport.tcp.runtime.Listener.conn_options: field rpc.transport.tcp.connection.Connection.Options
-capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress: fn (*const rpc.transport.tcp.runtime.Listener) Io.net.IpAddress
-capnpc-zig.rpc.transport.tcp.runtime.Listener.init: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.connection.Connection.Options) error{AddressFamilyUnsupported,AddressInUse,AddressUnavailable,Canceled,NetworkDown,OptionUnsupported,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,SocketModeUnsupported,SystemFdQuotaExceeded,SystemResources,Unexpected}!rpc.transport.tcp.runtime.Listener
 capnpc-zig.rpc.transport.tcp.runtime.Listener.initFd: fn (mem.Allocator, Io, rpc.transport.tcp.stream_transport.SocketFd, rpc.transport.tcp.connection.Connection.Options) rpc.transport.tcp.runtime.Listener
 capnpc-zig.rpc.transport.tcp.runtime.Listener.io: field Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.ioBackend: fn (*const rpc.transport.tcp.runtime.Listener) Io
 capnpc-zig.rpc.transport.tcp.runtime.Listener.listenHandle: fn (*const rpc.transport.tcp.runtime.Listener) rpc.transport.tcp.stream_transport.SocketFd
 capnpc-zig.rpc.transport.tcp.runtime.Listener.server: field Io.net.Server
-capnpc-zig.rpc.transport.tcp.runtime.Listener: struct
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.deinit: fn (*rpc.transport.tcp.runtime.Runtime) void
 capnpc-zig.rpc.transport.tcp.runtime.Runtime.init: fn (mem.Allocator) error{}!rpc.transport.tcp.runtime.Runtime
@@ -1793,15 +1776,6 @@ capnpc-zig.rpc.transport.tcp.runtime.ipAddressToSockaddr: fn (Io.net.IpAddress) 
 capnpc-zig.rpc.transport.tcp.runtime.setTcpNoDelay: fn (rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime.shutdownFd: fn (Io, rpc.transport.tcp.stream_transport.SocketFd) void
 capnpc-zig.rpc.transport.tcp.runtime: struct
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.ctx: field ?*anyopaque = null
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.default_call_timeout_ms: field ?u64 = <non-null default>
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.limits: field rpc.peer.state.PeerLimits = <default>
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.observer: field ?rpc.events.Observer = null
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.on_close: field ?*const fn (?*anyopaque, *rpc.transport.tcp.server.ServerSession) void = null
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.on_error: field ?*const fn (?*anyopaque, *rpc.transport.tcp.server.ServerSession, anyerror) void = null
-capnpc-zig.rpc.transport.tcp.server.ServeOptions.shutdown_drain_timeout_ms: field ?u64 = <non-null default>
-capnpc-zig.rpc.transport.tcp.server.ServeOptions: struct
 capnpc-zig.rpc.transport.tcp.server.ServerSession.allocator: field mem.Allocator
 capnpc-zig.rpc.transport.tcp.server.ServerSession.conn: field rpc.transport.tcp.connection.Connection
 capnpc-zig.rpc.transport.tcp.server.ServerSession.io: field Io

@@ -313,14 +313,21 @@ cooperating peer.
   `writeThirdPartyHosted` / `writeThirdPartyHostedNull`. A change to one of
   those functions' error behavior will not turn `check-api` red.
 
-- **The frozen surface is not closed under its own signatures.** Some Stable
-  entry points take Experimental parameter types — most consequentially
-  `ServerSession.accept`, which needs a `runtime.Listener` that no Stable API can
-  construct, so there is no fully-Stable path to stand up a server. A
-  closure check (fail when a Stable signature mentions an Experimental type) is
-  the intended next step; it was deliberately sequenced *after* the renderer work
-  above, because a closure walk cannot resolve the `anytype` parameters listed in
-  the previous item.
+- **The frozen surface IS now closed under its own signatures**, gated by
+  `zig build api-closure` on all three CI tiers. Its first run reported 14
+  violations; resolving them promoted the types a consumer cannot avoid —
+  `ConnectOptions`, `ServeOptions`, `Export`, and a narrowed `Listener`. Before
+  that, `ServerSession.accept` required a `*Listener` no Stable API could
+  construct, so the frozen server entry point was unusable on its own terms.
+
+  Two limits on what the check proves. **Closure is not constructibility**: it
+  verifies that a type named in a Stable signature is itself frozen, not that a
+  Stable *constructor* for it exists — `Listener.init` / `close` / `getAddress`
+  needed separate promotion for the entry point to actually be reachable, and a
+  future promotion could satisfy the gate while still leaving a type
+  unconstructible. And a method that takes or returns its own enclosing type is
+  exempt by design, which is what keeps `ServerSession` frozen at `.accept` plus
+  its lifecycle without freezing the struct wholesale.
 
 
 - **Inbound `Call.sendResultsTo = thirdParty` is refused by default.** Answering

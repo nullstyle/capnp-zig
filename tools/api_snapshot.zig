@@ -139,6 +139,11 @@ const stable_rules = [_]Rule{
     e("capnpc-zig.rpc.transport.tcp.client.ClientSession.requestStop"),
     e("capnpc-zig.rpc.transport.tcp.client.ClientSession.deinit"),
     e("capnpc-zig.rpc.transport.tcp.client.ClientSession.fromPeer"),
+    // PREFIX: a consumer cannot call the frozen `connect`/`connectHost` without
+    // constructing one of these, and it relies on their defaults, so the fields
+    // are part of the contract. Closing the frozen surface under its own
+    // signatures (`zig build api-closure`) is what surfaced them.
+    p("capnpc-zig.rpc.transport.tcp.client.ConnectOptions"),
     // The top-level `connect`/`connectHost` free-function aliases are the
     // documented one-call consumer entry and share ClientSession's signature.
     e("capnpc-zig.rpc.transport.tcp.connect"),
@@ -150,6 +155,21 @@ const stable_rules = [_]Rule{
     //     `tcp.ServerSession: struct` alias line is intentionally NOT frozen
     //     (the type is not frozen); members render under `tcp.server.*`. ---
     e("capnpc-zig.rpc.transport.tcp.server.ServerSession.accept"),
+    // PREFIX: `accept` is frozen and takes a `ServeOptions`, so a consumer must
+    // construct one and depends on its defaults.
+    p("capnpc-zig.rpc.transport.tcp.server.ServeOptions"),
+    // `accept` also takes a `*Listener`, and before this there was NO Stable way
+    // to obtain one — the frozen server entry point was unusable on its own
+    // terms. Narrowed exactly like `Connection`: the constructor, the address
+    // query and teardown are the documented consumer path (both
+    // docs/getting-started-rpc.md and examples/rpc_pingpong.zig call
+    // `Listener.init(allocator, io, address, .{})`). The raw-fd and
+    // handle-oriented members stay Experimental.
+    e("capnpc-zig.rpc.transport.tcp.runtime.Listener"),
+    e("capnpc-zig.rpc.transport.tcp.Listener"),
+    e("capnpc-zig.rpc.transport.tcp.runtime.Listener.init"),
+    e("capnpc-zig.rpc.transport.tcp.runtime.Listener.close"),
+    e("capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress"),
     e("capnpc-zig.rpc.transport.tcp.server.ServerSession.run"),
     e("capnpc-zig.rpc.transport.tcp.server.ServerSession.close"),
     e("capnpc-zig.rpc.transport.tcp.server.ServerSession.requestStop"),
@@ -230,6 +250,10 @@ const stable_rules = [_]Rule{
     // break. Contrast `Peer` itself, frozen exactly so its ~73 fields of
     // internal state stay out of the contract.
     p("capnpc-zig.rpc.peer.PeerLimits"),
+    // PREFIX: `Peer.addExport` / `setBootstrap` are frozen and both take an
+    // `Export`, so a consumer cannot serve anything without building one. Two
+    // fields, both already-frozen types.
+    p("capnpc-zig.rpc.peer.Export"),
 };
 
 fn matchesRule(comptime path: []const u8, comptime rules: []const Rule) bool {
@@ -381,14 +405,23 @@ fn defaultSuffix(
     comptime attrs: std.builtin.Type.Struct.FieldAttributes,
 ) []const u8 {
     const value = attrs.defaultValue(FieldType) orelse return "";
-    return switch (@typeInfo(FieldType)) {
-        .int, .comptime_int => " = " ++ std.fmt.comptimePrint("{d}", .{value}),
-        .float, .comptime_float => " = " ++ std.fmt.comptimePrint("{d}", .{value}),
-        .bool => " = " ++ (if (value) "true" else "false"),
-        .@"enum" => " = ." ++ @tagName(value),
-        .void => " = {}",
-        .optional => if (value == null) " = null" else " = <non-null default>",
-        else => " = <default>",
+    return " = " ++ renderValue(FieldType, value);
+}
+
+/// Render a comptime-known default. Optionals are unwrapped rather than reported
+/// as merely present: `default_call_timeout_ms: ?u64 = 30000` is a number
+/// consumers depend on, and collapsing it to "<non-null default>" would let a
+/// 30s → 60s change pass the gate. Aggregates render as `<default>` — their own
+/// fields are pinned separately by their own snapshot lines.
+fn renderValue(comptime T: type, comptime value: T) []const u8 {
+    return switch (@typeInfo(T)) {
+        .int, .comptime_int => std.fmt.comptimePrint("{d}", .{value}),
+        .float, .comptime_float => std.fmt.comptimePrint("{d}", .{value}),
+        .bool => if (value) "true" else "false",
+        .@"enum" => "." ++ @tagName(value),
+        .void => "{}",
+        .optional => |oi| if (value) |inner| renderValue(oi.child, inner) else "null",
+        else => "<default>",
     };
 }
 
@@ -530,6 +563,156 @@ comptime {
         @compileError("api_snapshot: rule(s) match no declaration — remove them or fix the path:" ++ dead);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Closure diagnostic: is the frozen surface closed under its own signatures?
+//
+// A Stable entry point whose signature mentions an Experimental type is only
+// nominally frozen: the type can change shape under it at any 0.x bump while
+// `check-api` stays green, because the Stable *line* never moved. Worse, when no
+// Stable API can construct that type, the frozen entry point is unusable on its
+// own terms.
+//
+// This is now a GATE (`zig build api-closure`, run in CI). It started as a
+// diagnostic: the first run reported 14 violations, and each was a real API
+// decision. Resolving them promoted the types a consumer cannot avoid —
+// `ConnectOptions`, `ServeOptions`, `Export`, and a narrowed `Listener` (before
+// which there was NO Stable way to obtain the `*Listener` that the frozen
+// `ServerSession.accept` requires, so the frozen server entry point was
+// unusable on its own terms). With the surface closed, gating it forces the next
+// such decision to happen at review time instead of accumulating silently.
+//
+// KNOWN BLIND SPOT: a generic parameter (`anytype`) has no type to resolve, so
+// such signatures are SKIPPED rather than cleared. See docs/supported-surface.md.
+// ---------------------------------------------------------------------------
+
+/// A container type the walk reached, plus whether any path reaching it is
+/// Stable. Re-exports mean one type can sit at several paths; reachable via a
+/// Stable path is what puts it in the contract.
+const TypeTier = struct { ty: type, stable: bool };
+
+fn collectTypes(
+    comptime T: type,
+    comptime path: []const u8,
+    comptime depth: usize,
+    comptime seen: *[]const type,
+    comptime out: *[]const TypeTier,
+) void {
+    if (depth >= max_depth) return;
+    if (contains(seen.*, T)) return;
+    seen.* = seen.* ++ [_]type{T};
+
+    for (std.meta.declarations(T)) |decl_name| {
+        const decl_path = path ++ "." ++ decl_name;
+        const D = @field(T, decl_name);
+        if (@TypeOf(D) != type) continue;
+        if (!isContainer(D)) continue;
+        out.* = out.* ++ [_]TypeTier{.{ .ty = D, .stable = tierIsStable(decl_path) }};
+        if (!foreignType(D)) collectTypes(D, decl_path, depth + 1, seen, out);
+    }
+}
+
+const type_tiers: []const TypeTier = blk: {
+    @setEvalBranchQuota(40_000_000);
+    var seen: []const type = &.{};
+    var out: []const TypeTier = &.{};
+    collectTypes(capnpc, "capnpc-zig", 0, &seen, &out);
+    break :blk out;
+};
+
+/// Strip the wrappers a signature puts around a nominal type.
+fn peel(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .pointer => |pi| peel(pi.child),
+        .optional => |oi| peel(oi.child),
+        .error_union => |eu| peel(eu.payload),
+        else => T,
+    };
+}
+
+/// `null` when the type is not one of ours (std type, primitive, ...).
+fn tierOfType(comptime T: type) ?bool {
+    const P = peel(T);
+    var found: ?bool = null;
+    for (type_tiers) |entry| {
+        if (entry.ty == P) {
+            if (entry.stable) return true; // any Stable path wins
+            found = false;
+        }
+    }
+    return found;
+}
+
+const Violation = struct { decl: []const u8, offender: []const u8, role: []const u8 };
+
+/// Walk again, this time checking each Stable function's signature. The check
+/// has to happen inside the walk: that is the only place a declaration and its
+/// snapshot path are both in hand.
+fn collectClosure(
+    comptime T: type,
+    comptime path: []const u8,
+    comptime depth: usize,
+    comptime seen: *[]const type,
+    comptime out: *[]const Violation,
+) void {
+    if (depth >= max_depth) return;
+    if (contains(seen.*, T)) return;
+    seen.* = seen.* ++ [_]type{T};
+
+    for (std.meta.declarations(T)) |decl_name| {
+        const decl_path = path ++ "." ++ decl_name;
+        const D = @field(T, decl_name);
+        const DType = @TypeOf(D);
+
+        if (DType == type) {
+            if (isContainer(D) and !foreignType(D)) {
+                collectClosure(D, decl_path, depth + 1, seen, out);
+            }
+            continue;
+        }
+        if (@typeInfo(DType) != .@"fn") continue;
+        if (!tierIsStable(decl_path)) continue;
+
+        const fn_info = @typeInfo(DType).@"fn";
+        if (fn_info.is_generic) continue;
+
+        // A method that takes or returns its OWN enclosing type is not a
+        // closure violation. `ServerSession.run(self: *ServerSession)` is the
+        // frozen method of a type deliberately frozen only at `.accept` and its
+        // lifecycle — the receiver is the same declaration cluster, not an
+        // unfrozen dependency a consumer must obtain elsewhere.
+        for (fn_info.param_types) |maybe_pt| {
+            const PT = maybe_pt orelse continue;
+            if (peel(PT) == T) continue;
+            if (tierOfType(PT)) |is_stable| {
+                if (!is_stable) out.* = out.* ++ [_]Violation{.{
+                    .decl = decl_path,
+                    .offender = @typeName(peel(PT)),
+                    .role = "parameter",
+                }};
+            }
+        }
+        if (fn_info.return_type) |RT| {
+            if (peel(RT) != T) {
+                if (tierOfType(RT)) |is_stable| {
+                    if (!is_stable) out.* = out.* ++ [_]Violation{.{
+                        .decl = decl_path,
+                        .offender = @typeName(peel(RT)),
+                        .role = "return",
+                    }};
+                }
+            }
+        }
+    }
+}
+
+const closure_violations: []const Violation = blk: {
+    @setEvalBranchQuota(40_000_000);
+    var seen: []const type = &.{};
+    var out: []const Violation = &.{};
+    collectClosure(capnpc, "capnpc-zig", 0, &seen, &out);
+    break :blk out;
+};
 
 /// Split the flat entry list into the two tiers at comptime.
 const stable_lines: []const []const u8 = blk: {
@@ -676,7 +859,7 @@ pub fn main(init: std.process.Init) !void {
     const allocator = gpa.allocator();
     const io = init.io;
 
-    var mode: enum { check, write } = .check;
+    var mode: enum { check, write, closure } = .check;
     var stable_path: []const u8 = stable_path_default;
     var experimental_path: []const u8 = experimental_path_default;
 
@@ -691,6 +874,8 @@ pub fn main(init: std.process.Init) !void {
             mode = .write;
         } else if (std.mem.eql(u8, arg, "--check")) {
             mode = .check;
+        } else if (std.mem.eql(u8, arg, "--closure")) {
+            mode = .closure;
         } else if (std.mem.eql(u8, arg, "--path")) {
             stable_path = iter.next() orelse return error.InvalidArgument;
         } else if (std.mem.eql(u8, arg, "--experimental-path")) {
@@ -701,12 +886,35 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    if (mode == .closure) {
+        if (closure_violations.len == 0) {
+            std.debug.print("api-closure: OK — the frozen surface is closed under its own signatures\n", .{});
+            return;
+        }
+        std.debug.print(
+            "api-closure: {d} Stable declaration(s) mention an Experimental type.\n" ++
+                "Each is an API decision: promote the type, or narrow the entry point.\n\n",
+            .{closure_violations.len},
+        );
+        for (closure_violations) |v| {
+            std.debug.print("  {s}\n    {s}: {s}\n", .{ v.decl, v.role, v.offender });
+        }
+        std.debug.print(
+            "\nNOTE: signatures with an `anytype` parameter are skipped — there is no\n" ++
+                "type to resolve until instantiation.\n",
+            .{},
+        );
+        return error.StableSurfaceNotClosed;
+    }
+
     const stable_rendered = try renderSnapshot(allocator, stable_lines, stable_header);
     defer allocator.free(stable_rendered);
     const experimental_rendered = try renderSnapshot(allocator, experimental_lines, experimental_header);
     defer allocator.free(experimental_rendered);
 
     switch (mode) {
+        // Handled above, before the snapshots are rendered.
+        .closure => unreachable,
         .write => {
             try writeFile(io, stable_path, stable_rendered);
             try writeFile(io, experimental_path, experimental_rendered);

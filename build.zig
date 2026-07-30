@@ -798,6 +798,15 @@ pub fn build(b: *std.Build) void {
     const run_api_snapshot_check = b.addRunArtifact(api_snapshot_tool);
     run_api_snapshot_check.addArg("--check");
     run_api_snapshot_check.setCwd(b.path("."));
+    // A gate. It began as a diagnostic (14 violations on the first run, each a
+    // genuine API decision); with those resolved, gating it forces the next such
+    // decision to surface at review time rather than accumulate silently.
+    const run_api_closure = b.addRunArtifact(api_snapshot_tool);
+    run_api_closure.addArg("--closure");
+    run_api_closure.setCwd(b.path("."));
+    const api_closure_step = b.step("api-closure", "Report Stable declarations whose signatures mention Experimental types");
+    api_closure_step.dependOn(&run_api_closure.step);
+
     const check_api_step = b.step("check-api", "Fail when the public API drifts from docs/api-snapshot.txt");
     check_api_step.dependOn(&run_api_snapshot_check.step);
 

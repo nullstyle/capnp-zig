@@ -86,6 +86,11 @@ jobs:
         # this is the gate that keeps it that way.
         run: zig build check-api --summary all
 
+      - name: Stable-surface closure check
+        # A frozen entry point whose signature mentions an Experimental type is
+        # only nominally frozen. This fails when one does.
+        run: zig build api-closure --summary all
+
       - name: Vendor RPC schema sync (check-rpc)
         if: runner.os == 'Linux'
         run: just src/rpc/check-rpc
