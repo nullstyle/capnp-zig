@@ -42,9 +42,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       # capnp gates ten serialization/codegen suites, which skip when it is
       # missing. Installing it on Linux only meant 26 tests silently skipped on
@@ -131,9 +129,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Check formatting
         run: just fmt-check
@@ -148,9 +144,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Check evented backend compilation
         run: zig build -Dio-backend=evented check --summary all
@@ -165,9 +159,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       # Package store cached separately from setup-zig's per-run cache; the
       # key is shared with nightly.yml's extended-gates job so nightly QUIC
@@ -216,9 +208,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Compile documentation snippet fixtures
         run: zig build test-docs-snippets --summary all
@@ -247,9 +237,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Compile-only check for ${{ matrix.target }}
         run: zig build check-compile -Dtarget=${{ matrix.target }} --summary all
@@ -273,9 +261,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Run hardening gate
         run: zig build hardening
@@ -305,9 +291,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Install Cap'n Proto compiler
         run: |
@@ -332,9 +316,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Run benchmark regression checks
         run: zig build -Doptimize=ReleaseFast bench-check
@@ -349,9 +331,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Build WASM host
         run: zig build wasm-host
@@ -366,9 +346,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Build ReleaseSafe
         run: zig build -Doptimize=ReleaseSafe
@@ -387,9 +365,7 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.0-dev.813+2153f8143
+      - uses: ./.github/actions/setup-zig
 
       - name: Run ReleaseSafe hardening tests
         run: zig build test-release-safe --summary all

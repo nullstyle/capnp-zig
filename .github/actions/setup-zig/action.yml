@@ -1,0 +1,47 @@
+name: Setup Zig (mise)
+description: >
+  Install the pinned Zig toolchain with mise. Replaces mlugg/setup-zig@v2,
+  which is a Node 20 action (deprecated, force-run on Node 24) and whose
+  build-cache save/restore poisoned CI when a cancelled run captured
+  .zig-cache mid-build. This is a composite action, so it has no Node runtime
+  to deprecate, and it caches nothing beyond what mise already caches for tool
+  installs — the build cache is rebuilt per job, which is what makes the
+  poisoning class structurally impossible.
+
+  Requires `jdx/mise-action` to have run first (it installs mise and puts the
+  shim directory on PATH).
+
+inputs:
+  version:
+    description: Exact Zig version to install, e.g. 0.17.0-dev.813+2153f8143
+    required: false
+    default: 0.17.0-dev.813+2153f8143
+
+runs:
+  using: composite
+  steps:
+    # mlugg/setup-zig pointed BOTH Zig cache dirs at the workspace. Keep that:
+    # `zig build --fetch=all` writes packages into the GLOBAL cache, and the
+    # `actions/cache` step that caches `.zig-cache/p` only sees them because of
+    # this. Dropping it would silently empty that cache rather than fail loudly.
+    - name: Point Zig caches at the workspace
+      shell: bash
+      run: |
+        echo "ZIG_GLOBAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-cache" >> "$GITHUB_ENV"
+        echo "ZIG_LOCAL_CACHE_DIR=${GITHUB_WORKSPACE}/.zig-cache" >> "$GITHUB_ENV"
+
+    - name: Install pinned Zig via mise
+      shell: bash
+      run: mise use --global "zig@${{ inputs.version }}"
+
+    # Fail loudly here rather than let a version mismatch surface as a
+    # confusing compile error twenty minutes into the matrix.
+    - name: Verify the pinned toolchain is what is on PATH
+      shell: bash
+      run: |
+        actual="$(zig version)"
+        echo "zig version: ${actual}"
+        if [ "${actual}" != "${{ inputs.version }}" ]; then
+          echo "::error::expected Zig ${{ inputs.version }} but PATH resolves ${actual}"
+          exit 1
+        fi
