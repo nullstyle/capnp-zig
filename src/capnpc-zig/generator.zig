@@ -2663,7 +2663,15 @@ pub const Generator = struct {
             },
             .interface => try self.allocator.dupe(u8, "message.Capability"),
             .any_pointer => try self.allocator.dupe(u8, "message.AnyPointerReader"),
-            else => unreachable,
+            // A schema.Type comes off a CodeGeneratorRequest parsed from stdin.
+            // `unreachable` here is a panic in Debug and undefined behaviour in
+            // ReleaseFast, on input this process does not control; an error is
+            // the honest response. `typeNameForConst` is private and appears in
+            // neither API snapshot, so widening its inferred error set is free.
+            // The sibling `types.zig:typeToZig` has the identical `else` arm but
+            // IS frozen Stable as `error{OutOfMemory}![]const u8`, so converting
+            // it has to wait for a snapshot ceremony.
+            else => error.UnsupportedConstType,
         };
     }
 

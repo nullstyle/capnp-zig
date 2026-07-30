@@ -88,6 +88,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first contact originally found — turns the lane red. It is also the only gate
   that would catch a vendored-submodule bump breaking conformance.
 
+- **The hardening gate now scans the compiler plugin.** `unsafe_dirs` covered
+  `src/serialization`, `src/rpc` and `src/wasm` but not `src/capnpc-zig`, so
+  every `catch unreachable`, `@panic` and unchecked optional unwrap in the code
+  generator was **invisible rather than reviewed** — in a component that parses
+  a `CodeGeneratorRequest` off stdin like everything else here. (The plugin was
+  already scanned for *disclosure* patterns, which is what made the omission
+  easy to miss.)
+
+  Proven by probe before fixing: a fresh `catch unreachable` added to
+  `generator.zig` left the gate reporting "Hardening gate passed". With the
+  directory added it reports the probe plus six genuine pre-existing sites.
+
+  `generator.typeNameForConst`'s `else => unreachable` on a schema-derived type
+  is now `error.UnsupportedConstType` — a panic in Debug and undefined behaviour
+  in ReleaseFast, on input this process does not control. Its sibling
+  `types.typeToZig` has the identical arm but is **frozen Stable** as
+  `error{OutOfMemory}![]const u8`, so converting it has to wait for a snapshot
+  ceremony; it carries an allowlist entry saying exactly that rather than
+  implying it was judged safe. The four remaining sites (one guarded
+  `ancestor_name`, three callback trampolines whose `ctx` is optional only to
+  satisfy the callback ABI) get reviewed entries with their reasoning.
+
 ### Documentation
 
 - **Three claims corrected, each of which overstated support in the direction

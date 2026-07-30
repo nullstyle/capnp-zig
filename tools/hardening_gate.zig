@@ -89,12 +89,40 @@ const allowlist = [_]Allow{
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only job intentionally runs optimized code for stable timing" },
     .{ .path = "Justfile", .kind = .unsafe_optimize, .needle = "zig build -Doptimize=ReleaseFast bench-check", .reason = "benchmark-only local recipe intentionally runs optimized code for stable timing" },
     .{ .path = ".github/workflows/ci.yml", .kind = .unsafe_optimize, .needle = "Run teardown-heavy RPC suites under ReleaseFast", .reason = "memory-safety lane: ReleaseFast is the only mode that leaves freed memory unpoisoned, so a use-after-free reached from a destructor is observable there and nowhere else -- it caught the HostPeer.deinit ordering bug that Debug and ReleaseSafe both passed. Runs no shipped artifact and gates no release; accepts that `unreachable` is UB in this mode, which is why the lane is scoped to RPC teardown suites rather than the whole tree" },
+
+    // Reviewed exceptions in the compiler plugin, surfaced the first time
+    // `src/capnpc-zig` was scanned for unsafe patterns (see `unsafe_dirs`).
+    // NOT converted, and the reason is a frozen signature rather than a
+    // judgement that it is safe: `TypeGenerator.typeToZig` is pinned Stable in
+    // docs/api-snapshot.txt as `error{OutOfMemory}![]const u8`, so returning a
+    // new error here drifts the freeze. Its private twin
+    // `generator.typeNameForConst` had the identical arm and WAS converted, to
+    // `error.UnsupportedConstType`. Scheduled for the next snapshot ceremony.
+    .{ .path = "src/capnpc-zig/types.zig", .kind = .unchecked_unreachable, .needle = "else => unreachable,", .reason = "identical arm to the converted typeNameForConst, but typeToZig's error set is frozen Stable; convert during the next api-snapshot ceremony" },
+    // `ancestor_name` is non-null on this branch by construction: the `else`
+    // arm is only taken when `interface_id_expr` is null, which the caller
+    // establishes only for an inherited method, and an inherited method always
+    // carries the ancestor whose name this is.
+    .{ .path = "src/capnpc-zig/generator.zig", .kind = .optional_unwrap, .needle = "{s}.interface_id\", .{ancestor_name.?}", .reason = "the null-interface_id_expr branch is reached only for an inherited method, which always has an ancestor name" },
+    // Callback trampolines. `ctx` is `?*anyopaque` only because the callback
+    // ABI demands it; every registration site passes `self`, and the pointer is
+    // never null for a constructed Generator.
+    .{ .path = "src/capnpc-zig/generator.zig", .kind = .optional_unwrap, .needle = "const generator: *const Generator = @ptrCast(@alignCast(ctx.?));", .reason = "callback trampoline: ctx is optional only to satisfy the callback ABI; every registration passes a live Generator" },
+    .{ .path = "src/capnpc-zig/generator.zig", .kind = .optional_unwrap, .needle = "const generator: *Generator = @ptrCast(@alignCast(ctx.?));", .reason = "callback trampoline: ctx is optional only to satisfy the callback ABI; every registration passes a live Generator" },
+    .{ .path = "src/capnpc-zig/generator.zig", .kind = .optional_unwrap, .needle = "const generator: *Generator = @ptrCast(@alignCast(ctx.?));", .reason = "second trampoline sharing the same line text; allowlist matching is one-for-one so it needs its own entry" },
 };
 
 const unsafe_dirs = [_][]const u8{
     "src/serialization",
     "src/rpc",
     "src/wasm",
+    // The compiler plugin was scanned for DISCLOSURE patterns
+    // (`disclosure_extra_dirs` below) but not for unsafe ones, so every
+    // `catch unreachable` / `@panic` in the code generator was invisible
+    // rather than reviewed. It parses attacker-supplied schemas from stdin
+    // like everything else here. Verified by probe: a fresh `catch
+    // unreachable` added to `generator.zig` left this gate reporting "passed".
+    "src/capnpc-zig",
 };
 
 const unsafe_files = [_][]const u8{
