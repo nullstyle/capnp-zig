@@ -34,7 +34,15 @@ jobs:
 
   fuzz:
     name: Coverage-guided fuzzing (10 minutes)
-    runs-on: ubuntu-latest
+    # arm64, not ubuntu-latest: on x86_64 the zig fuzzer's maker dies with
+    # "start index 1 is larger than end index 0" right after the fuzz phase
+    # starts, before any coverage-guided signal — reproduced on CI with both
+    # dev.813 (run 30533131144) and dev.1252 (run 30562797754), i.e. on both
+    # sides of the dev.1190 maker restructure. The same snapshot + command on
+    # aarch64-linux fuzzes a full 10-minute window cleanly (probed 2026-07-30,
+    # native ubuntu-24.04 container: 626s, zero infra panics, growing corpus).
+    # arm runners are free for public repos.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -43,15 +51,15 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      # This lane intentionally diverges from the repo's standard toolchain
-      # (0.17.0-dev.813, used by ci.yml and the other nightly jobs): dev.813's
-      # fuzzer maker aborts at startup ("start index 1 is larger than end
-      # index 0") before producing any signal. dev.1252 is the newest snapshot
-      # that both compiles this tree and fuzzes a full 10-minute window
-      # (probed 2026-07-30 on macOS + ubuntu). Snapshots at dev.1444+ rename
+      # This lane also intentionally diverges from the repo's standard
+      # toolchain (0.17.0-dev.813, used by ci.yml and the other nightly jobs):
+      # dev.1252 is the newest snapshot that both compiles this tree and
+      # fuzzes a full window. Snapshots at dev.1444+ rename
       # std.builtin.OptimizeMode and no longer compile this tree; no fuzzer
       # fixes landed in between, so bumping past dev.1252 buys nothing until
-      # the repo's standard toolchain moves past the rename.
+      # the repo's standard toolchain moves past the rename. Re-probe (600s+,
+      # cold cache, grep the log for panics — not just the exit code) before
+      # bumping either pin.
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0-dev.1252+e4b325c19
