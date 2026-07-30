@@ -88,6 +88,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first contact originally found — turns the lane red. It is also the only gate
   that would catch a vendored-submodule bump breaking conformance.
 
+- **CI runs the full suite under ReleaseSafe**, not the ten-binary
+  `test-release-safe` subset. That subset covered message, codegen, framing,
+  fuzz-smoke and two transport files — leaving most of the RPC runtime (peer,
+  caps, promises, vat, integration) never executed with safety checks on in an
+  optimized build. Ablation-verified in both directions: a deliberately failing
+  assertion added to `tests/rpc/peer/rpc_peer_test.zig` leaves
+  `zig build test-release-safe` **green**, and turns
+  `zig build test -Doptimize=ReleaseSafe` red. 1291 tests across 143 steps.
+  The narrow step remains for a quick local pass and for the nightly job.
+
 - **The hardening gate now scans the compiler plugin.** `unsafe_dirs` covered
   `src/serialization`, `src/rpc` and `src/wasm` but not `src/capnpc-zig`, so
   every `catch unreachable`, `@panic` and unchecked optional unwrap in the code

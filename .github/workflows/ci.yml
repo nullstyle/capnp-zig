@@ -405,8 +405,18 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
-      - name: Run ReleaseSafe hardening tests
-        run: zig build test-release-safe --summary all
+      # The FULL suite, not the ten-binary `test-release-safe` subset this
+      # replaces. That subset covered message/codegen/framing/fuzz-smoke and a
+      # couple of transport files, which left most of the RPC runtime -- peer,
+      # caps, promises, vat, integration -- never executed with safety checks
+      # on in an optimized build. Every test step takes its mode from the
+      # top-level `-Doptimize`, so this needs no parallel step wiring.
+      # Measured: 1291/1291 across 143 steps.
+      #
+      # `zig build test-release-safe` still exists for a quick local pass and
+      # for the nightly job.
+      - name: Run the full suite under ReleaseSafe
+        run: zig build test -Doptimize=ReleaseSafe --summary all
 
       # ReleaseFast, not for speed but because it is the only mode that does NOT
       # poison a freed pointer. A use-after-free reached from a destructor is
