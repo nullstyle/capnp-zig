@@ -442,7 +442,7 @@ test "generated Response.unwrap classifies by Exception.Type, not reason text" {
         const response = Response{ .exception = .{
             .reason = case.reason,
             .trace = "",
-            .type_value = @intFromEnum(case.ex_type),
+            .type_value = @backingInt(case.ex_type),
         } };
         try std.testing.expectError(case.expected, response.unwrap());
     }
@@ -496,14 +496,14 @@ test "generated BootstrapResponse.unwrap returns the client or a typed CallError
     const disconnected = Bootstrap.BootstrapResponse{ .exception = .{
         .reason = "peer went away",
         .trace = "",
-        .type_value = @intFromEnum(protocol.ExceptionType.disconnected),
+        .type_value = @backingInt(protocol.ExceptionType.disconnected),
     } };
     try std.testing.expectError(error.Disconnected, disconnected.unwrap());
 
     const remote = Bootstrap.BootstrapResponse{ .exception = .{
         .reason = "no bootstrap for you",
         .trace = "",
-        .type_value = @intFromEnum(protocol.ExceptionType.failed),
+        .type_value = @backingInt(protocol.ExceptionType.failed),
     } };
     try std.testing.expectError(error.RemoteException, remote.unwrap());
 

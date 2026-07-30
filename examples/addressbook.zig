@@ -221,7 +221,7 @@ pub const Person = struct {
             }
 
             pub fn setType(self: *@This(), value: Person.PhoneType) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                self._builder.writeU16(0, @as(u16, @backingInt(value)));
             }
         };
     };

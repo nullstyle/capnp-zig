@@ -1,7 +1,7 @@
 .{
     .name = .capnpc_zig,
     .version = "0.5.0",
-    .minimum_zig_version = "0.17.0-dev.813",
+    .minimum_zig_version = "0.17.0-dev.1509",
     .dependencies = .{
         .quic_zig = .{
             .url = "https://github.com/nullstyle/quic-zig/archive/28f1d96016f98115ee9f1484b2a54bd942a3da0e.tar.gz",

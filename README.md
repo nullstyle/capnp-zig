@@ -63,12 +63,17 @@ zig build test --summary all
 
 ## Toolchain Support
 
-This branch is built and tested with Zig `0.17.0-dev.813+2153f8143` (current
-master). Zig 0.16 is no longer a supported target for this branch; downstream
-consumers should use a compatible 0.17-dev snapshot until Zig 0.17 stabilizes.
-The local `mise.toml` intentionally does not manage Zig because current
-development is using a master/zvm-style toolchain rather than a resolvable mise
-release tarball; CI installs the same pinned snapshot via `mlugg/setup-zig`.
+The exact Zig toolchain is pinned in `mise.toml` — the single specifier for
+both CI and local development, tracking zig master. Read that file for the
+current value; it is deliberately not repeated here so it cannot go stale.
+`mise install` gets it; CI installs from the same file and asserts the
+toolchain on PATH matches it. `build.zig.zon` carries a floor
+(`minimum_zig_version`), not a second pin. Zig 0.16 is no longer a supported
+target for this branch; downstream consumers should use a compatible 0.17-dev
+snapshot until Zig 0.17 stabilizes.
+
+If you manage Zig with zvm, its PATH entry takes precedence over mise's shims —
+use `mise exec -- zig ...` to match CI exactly.
 
 Linux, macOS, and Windows are all first-class targets and development
 operating systems, gated per push in CI. The per-layer platform matrix

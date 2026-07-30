@@ -20,7 +20,7 @@ capnpc-zig is a pure Zig implementation of [Cap'n Proto](https://capnproto.org/)
 
 ## Build & Test Commands
 
-Requires **Zig 0.17-dev** on `PATH` (minimum declared in `build.zig.zon`; `mise.toml` manages helper tools only). This branch is currently validated with `0.17.0-dev.813+2153f8143` (zig master).
+Requires **Zig 0.17-dev**. The exact toolchain is pinned in `mise.toml` — the single version specifier for this repo, used by both CI and local development (`build.zig.zon` carries a floor, not a second pin). Run `mise install` to get it; if you manage Zig with zvm, note its PATH entry wins over mise's shims, so use `mise exec -- zig ...` to match CI exactly.
 
 | Task | Command |
 |---|---|

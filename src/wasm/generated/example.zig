@@ -23,7 +23,7 @@ pub const Person = struct {
             }
 
             pub fn get(self: @This(), index: u32) !EnumType {
-                return @enumFromInt(try self._list.get(index));
+                return @fromBackingInt(@intCast(try self._list.get(index)));
             }
 
             pub fn raw(self: @This()) message.U16ListReader {
@@ -41,7 +41,7 @@ pub const Person = struct {
             }
 
             pub fn set(self: @This(), index: u32, value: EnumType) !void {
-                try self._list.set(index, @intFromEnum(value));
+                try self._list.set(index, @backingInt(value));
             }
 
             pub fn raw(self: @This()) message.U16ListBuilder {
@@ -226,7 +226,7 @@ pub const Address = struct {
             }
 
             pub fn get(self: @This(), index: u32) !EnumType {
-                return @enumFromInt(try self._list.get(index));
+                return @fromBackingInt(@intCast(try self._list.get(index)));
             }
 
             pub fn raw(self: @This()) message.U16ListReader {
@@ -244,7 +244,7 @@ pub const Address = struct {
             }
 
             pub fn set(self: @This(), index: u32, value: EnumType) !void {
-                try self._list.set(index, @intFromEnum(value));
+                try self._list.set(index, @backingInt(value));
             }
 
             pub fn raw(self: @This()) message.U16ListBuilder {

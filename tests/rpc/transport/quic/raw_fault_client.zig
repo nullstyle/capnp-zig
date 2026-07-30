@@ -210,7 +210,7 @@ fn injectRawNativeFault(
             const control = try allocator.alloc(u8, quic.native.length_prefix_bytes + payload_len);
             defer allocator.free(control);
             std.mem.writeInt(u32, control[0..quic.native.length_prefix_bytes], @intCast(payload_len), .little);
-            control[quic.native.length_prefix_bytes] = @intFromEnum(quic.native.ControlFrameTag.inline_rpc);
+            control[quic.native.length_prefix_bytes] = @backingInt(quic.native.ControlFrameTag.inline_rpc);
             @memset(control[quic.native.length_prefix_bytes + 1 .. quic.native.length_prefix_bytes + quic.native.rpc_header_bytes], 0);
             @memset(control[quic.native.length_prefix_bytes + quic.native.rpc_header_bytes ..], 0xa5);
             try writeNativePreambleAndControl(client, control);

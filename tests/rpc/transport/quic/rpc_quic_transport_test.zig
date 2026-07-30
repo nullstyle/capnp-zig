@@ -94,8 +94,8 @@ test "quic transport exposes native Cap'n Proto RPC ALPN" {
 }
 
 test "quic transport exposes typed application close policy" {
-    try std.testing.expectEqual(@as(u64, 0), @intFromEnum(quic.ApplicationCloseCode.normal));
-    try std.testing.expectEqual(@as(u64, 0x434e_5001), @intFromEnum(quic.ApplicationCloseCode.frame_error));
+    try std.testing.expectEqual(@as(u64, 0), @backingInt(quic.ApplicationCloseCode.normal));
+    try std.testing.expectEqual(@as(u64, 0x434e_5001), @backingInt(quic.ApplicationCloseCode.frame_error));
 
     var reason_buf: [8]u8 = undefined;
     const prepared = quic.close.sanitizeReason(&reason_buf, "bad\nframe!");

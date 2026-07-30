@@ -880,70 +880,70 @@ test "RPC join encodes and decodes" {
 }
 
 test "RPC message tag ordinals match Cap'n Proto rpc.capnp" {
-    try std.testing.expectEqual(@as(u16, 0), @intFromEnum(protocol.MessageTag.unimplemented));
-    try std.testing.expectEqual(@as(u16, 1), @intFromEnum(protocol.MessageTag.abort));
-    try std.testing.expectEqual(@as(u16, 2), @intFromEnum(protocol.MessageTag.call));
-    try std.testing.expectEqual(@as(u16, 3), @intFromEnum(protocol.MessageTag.@"return"));
-    try std.testing.expectEqual(@as(u16, 4), @intFromEnum(protocol.MessageTag.finish));
-    try std.testing.expectEqual(@as(u16, 5), @intFromEnum(protocol.MessageTag.resolve));
-    try std.testing.expectEqual(@as(u16, 6), @intFromEnum(protocol.MessageTag.release));
-    try std.testing.expectEqual(@as(u16, 7), @intFromEnum(protocol.MessageTag.obsoleteSave));
-    try std.testing.expectEqual(@as(u16, 8), @intFromEnum(protocol.MessageTag.bootstrap));
-    try std.testing.expectEqual(@as(u16, 9), @intFromEnum(protocol.MessageTag.obsoleteDelete));
-    try std.testing.expectEqual(@as(u16, 10), @intFromEnum(protocol.MessageTag.provide));
-    try std.testing.expectEqual(@as(u16, 11), @intFromEnum(protocol.MessageTag.accept));
-    try std.testing.expectEqual(@as(u16, 12), @intFromEnum(protocol.MessageTag.join));
-    try std.testing.expectEqual(@as(u16, 13), @intFromEnum(protocol.MessageTag.disembargo));
-    try std.testing.expectEqual(@as(u16, 14), @intFromEnum(protocol.MessageTag.thirdPartyAnswer));
+    try std.testing.expectEqual(@as(u16, 0), @backingInt(protocol.MessageTag.unimplemented));
+    try std.testing.expectEqual(@as(u16, 1), @backingInt(protocol.MessageTag.abort));
+    try std.testing.expectEqual(@as(u16, 2), @backingInt(protocol.MessageTag.call));
+    try std.testing.expectEqual(@as(u16, 3), @backingInt(protocol.MessageTag.@"return"));
+    try std.testing.expectEqual(@as(u16, 4), @backingInt(protocol.MessageTag.finish));
+    try std.testing.expectEqual(@as(u16, 5), @backingInt(protocol.MessageTag.resolve));
+    try std.testing.expectEqual(@as(u16, 6), @backingInt(protocol.MessageTag.release));
+    try std.testing.expectEqual(@as(u16, 7), @backingInt(protocol.MessageTag.obsoleteSave));
+    try std.testing.expectEqual(@as(u16, 8), @backingInt(protocol.MessageTag.bootstrap));
+    try std.testing.expectEqual(@as(u16, 9), @backingInt(protocol.MessageTag.obsoleteDelete));
+    try std.testing.expectEqual(@as(u16, 10), @backingInt(protocol.MessageTag.provide));
+    try std.testing.expectEqual(@as(u16, 11), @backingInt(protocol.MessageTag.accept));
+    try std.testing.expectEqual(@as(u16, 12), @backingInt(protocol.MessageTag.join));
+    try std.testing.expectEqual(@as(u16, 13), @backingInt(protocol.MessageTag.disembargo));
+    try std.testing.expectEqual(@as(u16, 14), @backingInt(protocol.MessageTag.thirdPartyAnswer));
 }
 
 test "RPC protocol tags stay aligned with generated rpc.capnp bindings" {
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.unimplemented), @intFromEnum(protocol.MessageTag.unimplemented));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.abort), @intFromEnum(protocol.MessageTag.abort));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.call), @intFromEnum(protocol.MessageTag.call));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.@"return"), @intFromEnum(protocol.MessageTag.@"return"));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.finish), @intFromEnum(protocol.MessageTag.finish));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.resolve), @intFromEnum(protocol.MessageTag.resolve));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.release), @intFromEnum(protocol.MessageTag.release));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.obsoleteSave), @intFromEnum(protocol.MessageTag.obsoleteSave));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.bootstrap), @intFromEnum(protocol.MessageTag.bootstrap));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.obsoleteDelete), @intFromEnum(protocol.MessageTag.obsoleteDelete));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.provide), @intFromEnum(protocol.MessageTag.provide));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.accept), @intFromEnum(protocol.MessageTag.accept));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.join), @intFromEnum(protocol.MessageTag.join));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.disembargo), @intFromEnum(protocol.MessageTag.disembargo));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Message.WhichTag.thirdPartyAnswer), @intFromEnum(protocol.MessageTag.thirdPartyAnswer));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.unimplemented), @backingInt(protocol.MessageTag.unimplemented));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.abort), @backingInt(protocol.MessageTag.abort));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.call), @backingInt(protocol.MessageTag.call));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.@"return"), @backingInt(protocol.MessageTag.@"return"));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.finish), @backingInt(protocol.MessageTag.finish));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.resolve), @backingInt(protocol.MessageTag.resolve));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.release), @backingInt(protocol.MessageTag.release));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.obsoleteSave), @backingInt(protocol.MessageTag.obsoleteSave));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.bootstrap), @backingInt(protocol.MessageTag.bootstrap));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.obsoleteDelete), @backingInt(protocol.MessageTag.obsoleteDelete));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.provide), @backingInt(protocol.MessageTag.provide));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.accept), @backingInt(protocol.MessageTag.accept));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.join), @backingInt(protocol.MessageTag.join));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.disembargo), @backingInt(protocol.MessageTag.disembargo));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Message.WhichTag.thirdPartyAnswer), @backingInt(protocol.MessageTag.thirdPartyAnswer));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.results), @intFromEnum(protocol.ReturnTag.results));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.exception), @intFromEnum(protocol.ReturnTag.exception));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.canceled), @intFromEnum(protocol.ReturnTag.canceled));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.resultsSentElsewhere), @intFromEnum(protocol.ReturnTag.resultsSentElsewhere));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.takeFromOtherQuestion), @intFromEnum(protocol.ReturnTag.takeFromOtherQuestion));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Return.WhichTag.awaitFromThirdParty), @intFromEnum(protocol.ReturnTag.awaitFromThirdParty));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Return.WhichTag.results), @backingInt(protocol.ReturnTag.results));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Return.WhichTag.exception), @backingInt(protocol.ReturnTag.exception));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Return.WhichTag.canceled), @backingInt(protocol.ReturnTag.canceled));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Return.WhichTag.resultsSentElsewhere), @backingInt(protocol.ReturnTag.resultsSentElsewhere));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Return.WhichTag.takeFromOtherQuestion), @backingInt(protocol.ReturnTag.takeFromOtherQuestion));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Return.WhichTag.awaitFromThirdParty), @backingInt(protocol.ReturnTag.awaitFromThirdParty));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.MessageTarget.WhichTag.importedCap), @intFromEnum(protocol.MessageTargetTag.importedCap));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.MessageTarget.WhichTag.promisedAnswer), @intFromEnum(protocol.MessageTargetTag.promisedAnswer));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.MessageTarget.WhichTag.importedCap), @backingInt(protocol.MessageTargetTag.importedCap));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.MessageTarget.WhichTag.promisedAnswer), @backingInt(protocol.MessageTargetTag.promisedAnswer));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.none), @intFromEnum(protocol.CapDescriptorTag.none));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.senderHosted), @intFromEnum(protocol.CapDescriptorTag.senderHosted));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.senderPromise), @intFromEnum(protocol.CapDescriptorTag.senderPromise));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.receiverHosted), @intFromEnum(protocol.CapDescriptorTag.receiverHosted));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.receiverAnswer), @intFromEnum(protocol.CapDescriptorTag.receiverAnswer));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.CapDescriptor.WhichTag.thirdPartyHosted), @intFromEnum(protocol.CapDescriptorTag.thirdPartyHosted));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.CapDescriptor.WhichTag.none), @backingInt(protocol.CapDescriptorTag.none));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.CapDescriptor.WhichTag.senderHosted), @backingInt(protocol.CapDescriptorTag.senderHosted));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.CapDescriptor.WhichTag.senderPromise), @backingInt(protocol.CapDescriptorTag.senderPromise));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.CapDescriptor.WhichTag.receiverHosted), @backingInt(protocol.CapDescriptorTag.receiverHosted));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.CapDescriptor.WhichTag.receiverAnswer), @backingInt(protocol.CapDescriptorTag.receiverAnswer));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.CapDescriptor.WhichTag.thirdPartyHosted), @backingInt(protocol.CapDescriptorTag.thirdPartyHosted));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Resolve.WhichTag.cap), @intFromEnum(protocol.ResolveTag.cap));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Resolve.WhichTag.exception), @intFromEnum(protocol.ResolveTag.exception));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Resolve.WhichTag.cap), @backingInt(protocol.ResolveTag.cap));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Resolve.WhichTag.exception), @backingInt(protocol.ResolveTag.exception));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.PromisedAnswer.Op.WhichTag.noop), @intFromEnum(protocol.PromisedAnswerOpTag.noop));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.PromisedAnswer.Op.WhichTag.getPointerField), @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.PromisedAnswer.Op.WhichTag.noop), @backingInt(protocol.PromisedAnswerOpTag.noop));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.PromisedAnswer.Op.WhichTag.getPointerField), @backingInt(protocol.PromisedAnswerOpTag.getPointerField));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.caller), @intFromEnum(protocol.SendResultsToTag.caller));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.yourself), @intFromEnum(protocol.SendResultsToTag.yourself));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Call.SendResultsTo.WhichTag.thirdParty), @intFromEnum(protocol.SendResultsToTag.thirdParty));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Call.SendResultsTo.WhichTag.caller), @backingInt(protocol.SendResultsToTag.caller));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Call.SendResultsTo.WhichTag.yourself), @backingInt(protocol.SendResultsToTag.yourself));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Call.SendResultsTo.WhichTag.thirdParty), @backingInt(protocol.SendResultsToTag.thirdParty));
 
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Disembargo.Context.WhichTag.senderLoopback), @intFromEnum(protocol.DisembargoContextTag.senderLoopback));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Disembargo.Context.WhichTag.receiverLoopback), @intFromEnum(protocol.DisembargoContextTag.receiverLoopback));
-    try std.testing.expectEqual(@intFromEnum(rpc_capnp.Disembargo.Context.WhichTag.accept), @intFromEnum(protocol.DisembargoContextTag.accept));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Disembargo.Context.WhichTag.senderLoopback), @backingInt(protocol.DisembargoContextTag.senderLoopback));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Disembargo.Context.WhichTag.receiverLoopback), @backingInt(protocol.DisembargoContextTag.receiverLoopback));
+    try std.testing.expectEqual(@backingInt(rpc_capnp.Disembargo.Context.WhichTag.accept), @backingInt(protocol.DisembargoContextTag.accept));
 }
 
 test "RPC call manual and generated decode agree on key fields" {
@@ -1257,7 +1257,7 @@ test "RPC decoded message recognizes every defined message tag discriminant" {
         var builder = message.MessageBuilder.init(allocator);
         defer builder.deinit();
         var root = try builder.allocateStruct(1, 1);
-        root.writeUnionDiscriminant(0, @intFromEnum(tag));
+        root.writeUnionDiscriminant(0, @backingInt(tag));
         const bytes = try builder.toBytes();
         defer allocator.free(bytes);
 
@@ -1371,7 +1371,7 @@ test "Exception.type round-trips, including an unknown code" {
         .{ protocol.ExceptionType.overloaded, @as(u16, 1) },
         .{ protocol.ExceptionType.disconnected, @as(u16, 2) },
         .{ protocol.ExceptionType.unimplemented, @as(u16, 3) },
-        .{ @as(protocol.ExceptionType, @enumFromInt(999)), @as(u16, 999) },
+        .{ @as(protocol.ExceptionType, @fromBackingInt(@intCast(999))), @as(u16, 999) },
     }) |case| {
         var b = protocol.MessageBuilder.init(alloc);
         defer b.deinit();

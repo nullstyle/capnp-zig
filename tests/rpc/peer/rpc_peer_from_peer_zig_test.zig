@@ -5486,7 +5486,7 @@ test "locally synthesized exceptions carry the spec Exception.Type" {
         peer.deinit();
         try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), captured.tag);
         try std.testing.expectEqual(
-            @as(?u16, @intFromEnum(protocol.ExceptionType.disconnected)),
+            @as(?u16, @backingInt(protocol.ExceptionType.disconnected)),
             captured.type_value,
         );
     }
@@ -5515,7 +5515,7 @@ test "locally synthesized exceptions carry the spec Exception.Type" {
             Handlers.onReturn,
         );
         try std.testing.expectEqual(
-            @as(?u16, @intFromEnum(protocol.ExceptionType.failed)),
+            @as(?u16, @backingInt(protocol.ExceptionType.failed)),
             captured.type_value,
         );
     }

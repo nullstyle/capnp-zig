@@ -123,7 +123,7 @@ pub fn encodedHelloLen() usize {
 pub fn encodeHello(dest: []u8) !usize {
     if (dest.len < encodedHelloLen()) return error.NoSpaceLeft;
     std.mem.writeInt(u32, dest[0..length_prefix_bytes], common_header_bytes, .little);
-    dest[4] = @intFromEnum(ControlFrameTag.hello);
+    dest[4] = @backingInt(ControlFrameTag.hello);
     std.mem.writeInt(u16, dest[5..7], version, .little);
     dest[7] = 0;
     return encodedHelloLen();
@@ -142,7 +142,7 @@ pub fn encodeInlineRpc(
     const out = try allocator.alloc(u8, length_prefix_bytes + payload_len);
     errdefer allocator.free(out);
     std.mem.writeInt(u32, out[0..length_prefix_bytes], @intCast(payload_len), .little);
-    out[4] = @intFromEnum(ControlFrameTag.inline_rpc);
+    out[4] = @backingInt(ControlFrameTag.inline_rpc);
     @memset(out[5..8], 0);
     std.mem.writeInt(u64, out[8..16], sequence, .little);
     std.mem.copyForwards(u8, out[16..], frame);
@@ -162,7 +162,7 @@ pub fn encodeDataRpc(
     const out = try allocator.alloc(u8, length_prefix_bytes + data_rpc_payload_bytes);
     errdefer allocator.free(out);
     std.mem.writeInt(u32, out[0..length_prefix_bytes], data_rpc_payload_bytes, .little);
-    out[4] = @intFromEnum(ControlFrameTag.data_rpc);
+    out[4] = @backingInt(ControlFrameTag.data_rpc);
     @memset(out[5..8], 0);
     std.mem.writeInt(u64, out[8..16], sequence, .little);
     std.mem.writeInt(u64, out[16..24], stream_id, .little);
@@ -370,7 +370,7 @@ test "native QUIC control framer enforces rpc payload limits" {
 
         var empty_inline: [length_prefix_bytes + rpc_header_bytes]u8 = @splat(0);
         std.mem.writeInt(u32, empty_inline[0..length_prefix_bytes], rpc_header_bytes, .little);
-        empty_inline[length_prefix_bytes] = @intFromEnum(ControlFrameTag.inline_rpc);
+        empty_inline[length_prefix_bytes] = @backingInt(ControlFrameTag.inline_rpc);
         try framer.push(&empty_inline);
         try std.testing.expectError(error.InvalidFrame, framer.popFrame());
     }
@@ -411,7 +411,7 @@ test "native QUIC control framer enforces rpc payload limits" {
 
         var zero_len_data: [length_prefix_bytes + data_rpc_payload_bytes]u8 = @splat(0);
         std.mem.writeInt(u32, zero_len_data[0..length_prefix_bytes], data_rpc_payload_bytes, .little);
-        zero_len_data[length_prefix_bytes] = @intFromEnum(ControlFrameTag.data_rpc);
+        zero_len_data[length_prefix_bytes] = @backingInt(ControlFrameTag.data_rpc);
         try framer.push(&zero_len_data);
         try std.testing.expectError(error.InvalidFrame, framer.popFrame());
     }

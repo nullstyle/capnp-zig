@@ -1017,7 +1017,7 @@ fn writeExceptionType(ex: *rpc_capnp.Exception.Builder, ex_type: ExceptionType) 
     // enum, so reaching it via @enumFromInt on a relayed unknown code would be
     // illegal behavior. The data section is already allocated by initException /
     // initAbort, so this cannot fail.
-    ex._builder.writeU16(EXCEPTION_TYPE_OFFSET * 2, @intFromEnum(ex_type));
+    ex._builder.writeU16(EXCEPTION_TYPE_OFFSET * 2, @backingInt(ex_type));
 }
 
 /// An RPC exception with a human-readable reason, optional stack trace, and type code.
@@ -1029,7 +1029,7 @@ pub const Exception = struct {
     /// Decode `type_value` into the spec enum. Total: an unknown wire code maps
     /// to an unnamed tag, so a hostile or future value is safe to switch on.
     pub fn kind(self: Exception) ExceptionType {
-        return @enumFromInt(self.type_value);
+        return @fromBackingInt(@intCast(self.type_value));
     }
 
     fn fromReader(reader: message.StructReader) !Exception {
@@ -1241,7 +1241,7 @@ pub const MessageBuilder = struct {
         var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
         var ret_builder = try root_builder.initReturn();
         try ret_builder.setAnswerId(answer_id);
-        ret_builder._builder.writeU16(RETURN_DISCRIMINANT_OFFSET_BYTES, @intFromEnum(tag));
+        ret_builder._builder.writeU16(RETURN_DISCRIMINANT_OFFSET_BYTES, @backingInt(tag));
 
         return ReturnBuilder{ .ret = ret_builder._builder, .tag = tag };
     }

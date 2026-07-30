@@ -42,7 +42,7 @@ const Shape = struct {
 
         pub fn whichPerimeter(self: Reader) PerimeterTag {
             const discriminant = self._reader.readUnionDiscriminant(8);
-            return @enumFromInt(discriminant);
+            return @fromBackingInt(@intCast(discriminant));
         }
 
         pub fn getCircle(self: Reader) f64 {
@@ -73,17 +73,17 @@ const Shape = struct {
         }
 
         pub fn setCircle(self: *Builder, radius: f64) void {
-            self._builder.writeUnionDiscriminant(8, @intFromEnum(PerimeterTag.circle));
+            self._builder.writeUnionDiscriminant(8, @backingInt(PerimeterTag.circle));
             self._builder.writeU64(16, @bitCast(radius));
         }
 
         pub fn setSquare(self: *Builder, side: f64) void {
-            self._builder.writeUnionDiscriminant(8, @intFromEnum(PerimeterTag.square));
+            self._builder.writeUnionDiscriminant(8, @backingInt(PerimeterTag.square));
             self._builder.writeU64(16, @bitCast(side));
         }
 
         pub fn setRectangle(self: *Builder, description: []const u8) !void {
-            self._builder.writeUnionDiscriminant(8, @intFromEnum(PerimeterTag.rectangle));
+            self._builder.writeUnionDiscriminant(8, @backingInt(PerimeterTag.rectangle));
             try self._builder.writeText(0, description);
         }
     };
@@ -196,7 +196,7 @@ const Status = struct {
         }
 
         pub fn which(self: Reader) Tag {
-            return @enumFromInt(self._reader.readUnionDiscriminant(0));
+            return @fromBackingInt(@intCast(self._reader.readUnionDiscriminant(0)));
         }
 
         pub fn getRunning(self: Reader) u32 {
@@ -217,16 +217,16 @@ const Status = struct {
         }
 
         pub fn setIdle(self: *Builder) void {
-            self._builder.writeUnionDiscriminant(0, @intFromEnum(Tag.idle));
+            self._builder.writeUnionDiscriminant(0, @backingInt(Tag.idle));
         }
 
         pub fn setRunning(self: *Builder, progress: u32) void {
-            self._builder.writeUnionDiscriminant(0, @intFromEnum(Tag.running));
+            self._builder.writeUnionDiscriminant(0, @backingInt(Tag.running));
             self._builder.writeU32(4, progress);
         }
 
         pub fn setErrorCode(self: *Builder, code: u32) void {
-            self._builder.writeUnionDiscriminant(0, @intFromEnum(Tag.error_code));
+            self._builder.writeUnionDiscriminant(0, @backingInt(Tag.error_code));
             self._builder.writeU32(4, code);
         }
     };

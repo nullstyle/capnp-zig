@@ -38,7 +38,7 @@ test "promised answer getPointerField resolves to cap table entry" {
     var root = try transform_builder.allocateStruct(0, 1);
     var list = try root.writeStructList(0, 1, 1, 0);
     const op = try list.get(0);
-    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
+    op.writeUnionDiscriminant(0, @backingInt(protocol.PromisedAnswerOpTag.getPointerField));
     op.writeU16(2, 0);
 
     const transform_bytes = try transform_builder.toBytes();
@@ -91,7 +91,7 @@ test "promised answer getPointerField resolves senderPromise to exported cap" {
     var root = try transform_builder.allocateStruct(0, 1);
     var list = try root.writeStructList(0, 1, 1, 0);
     const op = try list.get(0);
-    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
+    op.writeUnionDiscriminant(0, @backingInt(protocol.PromisedAnswerOpTag.getPointerField));
     op.writeU16(2, 0);
 
     const transform_bytes = try transform_builder.toBytes();
@@ -148,7 +148,7 @@ test "promised answer getPointerField resolves receiverAnswer to promised cap" {
     var root = try transform_builder.allocateStruct(0, 1);
     var list = try root.writeStructList(0, 1, 1, 0);
     const op = try list.get(0);
-    op.writeUnionDiscriminant(0, @intFromEnum(protocol.PromisedAnswerOpTag.getPointerField));
+    op.writeUnionDiscriminant(0, @backingInt(protocol.PromisedAnswerOpTag.getPointerField));
     op.writeU16(2, 0);
 
     const transform_bytes = try transform_builder.toBytes();
