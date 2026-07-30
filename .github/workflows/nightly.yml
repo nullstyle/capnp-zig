@@ -21,10 +21,10 @@ jobs:
           submodules: recursive
 
       - uses: jdx/mise-action@v4
-
-      - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
 
       - name: Run soak harness (2 minutes, 8 workers)
         run: zig build soak -- --seconds 120 --workers 8
@@ -50,6 +50,8 @@ jobs:
           submodules: recursive
 
       - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.17
 
       # This lane also intentionally diverges from the repo's standard
       # toolchain (0.17.0-dev.813, used by ci.yml and the other nightly jobs):
@@ -60,7 +62,7 @@ jobs:
       # the repo's standard toolchain moves past the rename. Re-probe (600s+,
       # cold cache, grep the log for panics — not just the exit code) before
       # bumping either pin.
-      - uses: mlugg/setup-zig@v2
+      - uses: ./.github/actions/setup-zig
         with:
           version: 0.17.0-dev.1252+e4b325c19
 
@@ -129,10 +131,10 @@ jobs:
           submodules: recursive
 
       - uses: jdx/mise-action@v4
-
-      - uses: mlugg/setup-zig@v2
         with:
-          version: 0.17.0-dev.813+2153f8143
+          version: 2026.7.17
+
+      - uses: ./.github/actions/setup-zig
 
       # setup-zig's built-in cache saves a fresh per-job entry every run, so
       # CI churn evicts it from the repo's 10 GB quota long before the next
