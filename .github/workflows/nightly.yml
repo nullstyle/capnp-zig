@@ -140,7 +140,7 @@ jobs:
       # dependency manifest — shared with ci.yml's quic-transport lane, so
       # every push to main re-warms it.
       - name: Restore Zig package cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .zig-cache/p
           key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}

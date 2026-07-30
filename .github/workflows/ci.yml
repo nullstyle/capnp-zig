@@ -8,6 +8,18 @@ on:
 
 # Rapid pushes to a branch (or PR) supersede in-flight runs: cancel the older
 # run so the 11-job matrix does not pile up and starve runners.
+#
+# KNOWN FAILURE MODE (2026-07-30): a run cancelled here can still execute
+# setup-zig's post step and save a PARTIAL `.zig-cache`. Because restores are
+# prefix-matched, the next run inherits it, and Zig then hits a manifest that
+# claims a cached artifact which is not in the tarball:
+#     error: lld-link: could not open '.zig-cache\o\<hash>\compiler_rt.lib'
+# Worse, that run saves its own poisoned cache, so the failure self-perpetuates
+# across re-runs and later pushes — a re-run alone never clears it.
+# REMEDY: delete the entries and let the next run rebuild clean, e.g.
+#     gh cache list --json id,key | ... | gh cache delete <id>
+# (Windows hit this first because it links compiler_rt.lib explicitly; nothing
+# in the repo's own code was involved.)
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -161,7 +173,7 @@ jobs:
       # key is shared with nightly.yml's extended-gates job so nightly QUIC
       # runs inherit a warm cache from per-push CI.
       - name: Restore Zig package cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .zig-cache/p
           key: zig-packages-${{ runner.os }}-${{ hashFiles('build.zig.zon') }}
