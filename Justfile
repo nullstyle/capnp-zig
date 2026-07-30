@@ -184,6 +184,7 @@ ci:
     zig build test --summary all
     just e2e-self
     just e2e-zig
+    just e2e-l3-vatc
     zig build example-rpc
 
 # Regenerate every committed generated artifact and fail if any drifted from

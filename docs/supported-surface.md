@@ -75,7 +75,7 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 | Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. |
 | Constants (incl. struct/list/enum consts) | supported | Emitted as `pub const`; pointer-typed consts expose a `get()` reader. |
 | JSON / serde | descriptor only | `CAPNP_SCHEMA_MANIFEST_JSON` names the `capnp_<module>_<type>_to_json` / `_from_json` C-ABI symbols an *external* serde tool must supply; no `to_json` / `from_json` bodies are generated. |
-| Canonicalization | supported | `schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage` (schema-driven). No boolean `isCanonical` predicate — canonicalize-and-compare, or catch `error.NonCanonicalSegments`. |
+| Canonicalization | supported for equality, **not for signing** | `schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage`. **Schema-driven**, where the spec's is schema-free — so it emits only what the loaded schema knows about. Data a newer peer wrote for a field this schema lacks is **dropped**, and an upgraded list is re-encoded: the output can be a *different message*, not merely a re-laid-out one. Fine for canonicalize-and-compare between peers on the same schema; do not use it as a signing primitive. No boolean `isCanonical` predicate — canonicalize-and-compare, or catch `error.NonCanonicalSegments`. |
 | Cross-file `import` / `using` | supported | Correct relative `@import` for referenced types; only referenced imports are emitted. A `using` alias produces no declaration (frontend-resolved). |
 
 **Caveats worth pinning to memory:**
@@ -244,8 +244,14 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      it touches import accounting every flow shares.
   2. The vat (index/`Vat` + all enrolled peers) is **single-threaded**;
      `WorkerPool`-hosted multi-peer vats are unsupported, and pool peers keep
-     the legacy counter embargo ids (a shared CSPRNG across worker threads is
-     not thread-safe).
+     the legacy counter embargo ids. To be precise about the cause, because an
+     earlier revision of this list stated it wrongly: the pool does not share a
+     CSPRNG between workers, it installs **no** entropy source at all
+     (`src/rpc/integration/worker_pool.zig` never calls `setEntropySource`), so
+     a pool peer falls back to counter ids. The genuinely unsynchronised
+     sharing is `Vat.enroll` handing every enrolled peer a pointer to the one
+     `&self.rng` (`src/rpc/vat/host.zig:62`), which is sound only because a vat
+     is single-threaded.
   3. **Cross-implementation hosting is PROVEN against the C++ reference, and
      only against it.** `just e2e-l3-vatc` runs the vendored Cap'n Proto 2.0
      reference as vats A (recipient) and B (introducer) over real TCP against

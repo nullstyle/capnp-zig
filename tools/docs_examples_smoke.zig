@@ -49,8 +49,12 @@ const required_paths = [_][]const u8{
 
 const doc_forbidden = [_]Needle{
     .{ .needle = "capnpc.rpc.quic", .reason = "QUIC public API lives under capnpc.rpc.transport.quic" },
-    .{ .needle = "EventedBackendNotImplemented", .reason = "evented backend is supported where std.Io.Evented exists" },
-    .{ .needle = "placeholder for `std.Io.Evented`", .reason = "evented docs must describe the current supported selector" },
+    // The error is spelled `EventedBackendUnsupported`. Note this forbids a
+    // wrong ERROR NAME, not a claim that the backend works: at dev.1509 the
+    // evented selector compiles but has no socket vtable upstream, which
+    // docs/stability.md and README.md now say explicitly.
+    .{ .needle = "EventedBackendNotImplemented", .reason = "the selector's error is spelled EventedBackendUnsupported" },
+    .{ .needle = "placeholder for `std.Io.Evented`", .reason = "evented docs must describe the real selector, not a placeholder" },
     .{ .needle = "organized following the Cap'n Proto RPC specification levels", .reason = "RPC layout is domain-shaped now" },
     .{ .needle = "runtime.loop", .reason = "TCP examples should use std.Io and Connection.run()" },
     .{ .needle = "event loop thread", .reason = "TCP examples should refer to the connection owner thread" },

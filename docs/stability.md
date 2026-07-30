@@ -24,7 +24,7 @@ updated as phases land.
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
-| Evented `std.Io` backend | where zig exposes it | where zig exposes it | blocked upstream (`EventedBackendUnsupported`) |
+| Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
 | QUIC transport | experimental (`-Dquic=true`; CI-gated per push) | experimental (`-Dquic=true`; builds locally, **not exercised in CI** — the only `-Dquic=true` job is Linux) | not yet exercised in CI |
 
 Note on **Windows codegen**: the plugin itself builds and runs, but the
@@ -37,6 +37,17 @@ exactly that reason; the honest state is that this coverage is **absent**, not
 merely unmeasured. Closing it needs an `-I` include path threaded through the
 ~10 test files that currently hardcode their `capnp` argv. Until then, treat
 Windows codegen as unverified by CI.
+
+Note on the **Evented `std.Io` backend**: "compile-checked only" is the whole
+claim, and the limit is upstream, not here. At the pinned toolchain
+(`0.17.0-dev.1509`) `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and
+`std.Io.Uring` on Linux, and neither carries a working socket vtable — Dispatch
+implements `netClose` alone, Uring only `netBindIp` / `netClose` /
+`netShutdown`, and everything else (`netListenIp`, `netAccept`, `netConnectIp`,
+…) is an `...Unavailable` stub. Every RPC path is socket-based, so the selector
+compiles and then fails at runtime on a real connection. `zig build
+-Dio-backend=evented check` proves the selector still *builds*; it does not
+prove the backend works, and no lane executes it because none can.
 
 ## Stability Levels
 

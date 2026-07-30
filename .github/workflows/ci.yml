@@ -322,6 +322,20 @@ jobs:
       - name: Run Zig e2e gate
         run: just e2e-zig
 
+      # The cross-implementation Level-3 HOSTING proof: the vendored Cap'n Proto
+      # C++ reference drives the recipient and introducer roles over real TCP
+      # against a capnp-zig two-peer VatC host.
+      #
+      # It is folded into this job rather than given its own because this job
+      # already pays for docker and the cpp-rpc image, so the marginal cost is
+      # near zero. Before this step existed, the lane ran in NO workflow and in
+      # neither `just ci` nor `release-preflight` -- v0.6.0 shipped citing it as
+      # the evidence for cross-impl hosting while nothing executed it. It is
+      # also the only gate that would catch a vendored-submodule bump breaking
+      # conformance.
+      - name: Cross-impl L3 hosting gate (C++ drives A+B vs a Zig VatC host)
+        run: just e2e-l3-vatc
+
   bench-check:
     name: Benchmark regression check
     runs-on: ubuntu-latest

@@ -72,6 +72,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A caveat worth stating: `unreachable` is undefined behavior rather than a
   panic in this mode, so a failure here deserves reading before it is "fixed".
 
+- **The cross-implementation Level-3 hosting lane is now gated.**
+  `just e2e-l3-vatc` — in which the vendored Cap'n Proto C++ reference drives
+  the recipient and introducer roles over real TCP against a capnp-zig two-peer
+  VatC host — ran in **no workflow at all**, and in neither `just ci` nor
+  `release-preflight`. It existed only as a recipe someone had to remember to
+  type. v0.6.0 shipped citing it as the evidence for cross-implementation
+  hosting while nothing executed it. It now runs in the `e2e-zig` CI job, which
+  already pays for docker and the cpp-rpc image, so the marginal cost is close
+  to zero, and in `just ci`.
+
+  Ablation-verified rather than assumed, because "hollow gate" is exactly the
+  failure this is meant to end: drawing reflected-loopback question ids from
+  the outbound wire space again — the real defect that cross-implementation
+  first contact originally found — turns the lane red. It is also the only gate
+  that would catch a vendored-submodule bump breaking conformance.
+
+### Documentation
+
+- **Three claims corrected, each of which overstated support in the direction
+  that could bite a user.**
+
+  - `docs/supported-surface.md` listed canonicalization as plainly "supported".
+    Ours is **schema-driven** where the spec's is schema-free, so it emits only
+    what the loaded schema knows: data a newer peer wrote for an unknown field
+    is dropped, and an upgraded list is re-encoded. The output can be a
+    *different message*, which makes it unsafe as a signing primitive while
+    remaining fine for canonicalize-and-compare between peers sharing a schema.
+  - The `WorkerPool` entropy limitation gave the wrong **cause** — "a shared
+    CSPRNG across worker threads is not thread-safe". The pool shares nothing;
+    `src/rpc/integration/worker_pool.zig` never calls `setEntropySource` at all,
+    which is why pool peers fall back to counter ids. The genuinely
+    unsynchronised sharing is `Vat.enroll` handing every enrolled peer a pointer
+    to one `&self.rng`. This matters because the stated cause implies a hard
+    problem while the real one is small.
+  - The Evented `std.Io` backend was described as supported wherever Zig
+    exposes it. It **compiles and then fails at runtime on any socket**: at the
+    pinned toolchain `std.Io.Evented` is `Dispatch` on macOS (only `netClose`
+    implemented) and `Uring` on Linux (only `netBindIp` / `netClose` /
+    `netShutdown`), with `netListenIp`, `netAccept` and `netConnectIp` all
+    `...Unavailable` stubs. Every RPC path is socket-based. The platform matrix
+    now reads "compile-checked only — no sockets", and README and
+    `docs/stability.md` say why, upstream.
+
 ## [0.6.0] - 2026-07-30
 
 capnp-zig can now act as **VatC — the host** — in a Cap'n Proto Level-3

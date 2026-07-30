@@ -336,11 +336,19 @@ zig build example-rpc -Dio-backend=evented        # explicit Evented where suppo
 ```
 
 Use `just check-evented` (or `zig build -Dio-backend=evented check`) as the
-supported no-link compile gate for the Evented selector on targets where Zig
-exposes `std.Io.Evented`.
+compile gate for the Evented selector on targets where Zig exposes
+`std.Io.Evented`.
 
-Evented socket behavior depends on Zig's platform backend implementation; the
-selector itself now lives behind `src/io_backend.zig`.
+**The Evented selector compiles, but it cannot yet carry RPC**, and the reason
+is upstream rather than here. At the pinned toolchain (`0.17.0-dev.1509`),
+`std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and `std.Io.Uring` on
+Linux, and neither has a working socket vtable: Dispatch implements only
+`netClose`, and Uring only `netBindIp` / `netClose` / `netShutdown` — every
+other entry, including `netListenIp`, `netAccept`, and `netConnectIp`, is an
+`...Unavailable` stub. Since every RPC path is socket-based, selecting
+`.evented` for a real connection fails at runtime. Treat this selector as
+compile-checked plumbing awaiting upstream, not as a supported transport; the
+selector itself lives behind `src/io_backend.zig`.
 
 ### Running the RPC Example
 
