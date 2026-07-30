@@ -9,7 +9,13 @@ description: >
   poisoning class structurally impossible.
 
   Requires `jdx/mise-action` to have run first (it installs mise and puts the
-  shim directory on PATH).
+  shim directory on PATH). That action MUST pin its `version:` — mise only
+  resolves explicit Zig dev-build tarball URLs (e.g. 0.17.0-dev.813+2153f8143;
+  `mise ls-remote zig` lists tagged releases only) in recent versions, and
+  mise-action's cache otherwise serves whatever mise a runner happened to cache
+  earlier. That silently differed per platform: this action's first CI run had
+  macOS on a new enough mise and Linux/Windows on 2026.6.1, which failed with
+  "Failed to resolve zig tarball URL".
 
 inputs:
   version:
