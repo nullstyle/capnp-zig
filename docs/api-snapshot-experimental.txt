@@ -994,6 +994,7 @@ capnpc-zig.rpc.peer.Peer.loopback_questions: field hash_map.HashMap(u32,void,has
 capnpc-zig.rpc.peer.Peer.loopback_result_stash: field hash_map.HashMap(u32,[]u8,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.next_accept_embargo_id: field u64 = 0
 capnpc-zig.rpc.peer.Peer.next_embargo_id: field u32 = 0
+capnpc-zig.rpc.peer.Peer.next_loopback_question_id: field u32 = 4294967295
 capnpc-zig.rpc.peer.Peer.next_question_id: field u32 = 0
 capnpc-zig.rpc.peer.Peer.next_third_party_answer_id: field u32 = 1073741824
 capnpc-zig.rpc.peer.Peer.observer: field ?rpc.events.Observer = null

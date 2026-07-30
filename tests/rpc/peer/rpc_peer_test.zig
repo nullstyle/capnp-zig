@@ -1642,6 +1642,85 @@ test "peer init attaches connection immediately" {
     try std.testing.expect(peer.hasAttachedTransport());
 }
 
+// Regression: a REFLECTED (loopback) call must not draw its question id from
+// the same space the REMOTE picks inbound question ids from.
+//
+// `sendCallResolved(.exported)` synthesizes a `Call` frame and feeds it back
+// into this peer's own `handleFrame`, so the id it carries also becomes an
+// inbound answer id. Outbound question ids and inbound answer ids are
+// INDEPENDENT namespaces on the wire — both sides legally start at 0 — so a
+// loopback id taken from `next_question_id` collides with any live inbound
+// answer on the same id and `handleCall` rejects the reflected frame with
+// `DuplicateQuestionId`. Cross-impl contact found this: the C++ reference held
+// its answer 0 open (Return sent, `Finish` not yet) while a cross-peer proxy
+// reflected the peer's first loopback call, also id 0.
+test "loopback call id does not collide with a live inbound answer id" {
+    const allocator = std.testing.allocator;
+
+    const CountingHandler = struct {
+        fn onCall(
+            ctx: *anyopaque,
+            called_peer: *Peer,
+            call: protocol.Call,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const calls: *usize = @ptrCast(@alignCast(ctx));
+            calls.* += 1;
+            try called_peer.sendReturnException(call.question_id, "answered");
+        }
+    };
+    const Callback = struct {
+        fn onReturn(ctx: *anyopaque, _: *Peer, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
+            const returns: *usize = @ptrCast(@alignCast(ctx));
+            returns.* += 1;
+        }
+    };
+
+    var conn: Connection = undefined;
+    var peer = Peer.init(allocator, &conn);
+    defer peer.deinit();
+
+    var calls: usize = 0;
+    const export_id = try peer.addExport(.{
+        .ctx = &calls,
+        .on_call = CountingHandler.onCall,
+    });
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    // The remote opens question id 0 and is answered, but sends no Finish yet:
+    // answer 0 stays live in this peer's INBOUND namespace.
+    var inbound_builder = protocol.MessageBuilder.init(allocator);
+    defer inbound_builder.deinit();
+    var inbound_call = try inbound_builder.beginCall(0, 0x1234, 1);
+    try inbound_call.setTargetImportedCap(export_id);
+    _ = try inbound_call.initCapTableTyped(0);
+    const inbound_frame = try inbound_builder.finish();
+    defer allocator.free(inbound_frame);
+    try peer.handleFrame(inbound_frame);
+    try std.testing.expectEqual(@as(usize, 1), calls);
+
+    // A loopback call on our OWN export must still be deliverable.
+    var returns: usize = 0;
+    const loopback_qid = try peer.sendCallResolved(
+        .{ .exported = .{ .id = export_id } },
+        0x1234,
+        1,
+        &returns,
+        null,
+        Callback.onReturn,
+    );
+
+    try std.testing.expect(loopback_qid != 0);
+    try std.testing.expectEqual(@as(usize, 2), calls);
+    try std.testing.expectEqual(@as(usize, 1), returns);
+}
+
 test {
     _ = @import("rpc_peer_semantic_helpers_test.zig");
 }

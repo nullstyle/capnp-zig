@@ -1525,6 +1525,14 @@ pub const Peer = struct {
 
     /// Monotonically increasing question ID counter.
     next_question_id: u32 = 0,
+    /// Descending cursor for REFLECTED (loopback) question ids — see
+    /// `allocateLoopbackQuestion`. Loopback Call frames are fed back into this
+    /// peer's own `handleFrame`, so their id also lands in the inbound answer
+    /// namespace, which the REMOTE owns. Every implementation hands out wire
+    /// question ids ascending from 0, so drawing loopback ids from the top of
+    /// the space keeps the two apart; nothing carrying one of these ids is ever
+    /// written to a socket.
+    next_loopback_question_id: u32 = std.math.maxInt(u32),
     /// Monotonically increasing embargo ID counter.
     next_embargo_id: u32 = 0,
     /// Monotonically increasing counter for Level-3 three-party handoff
@@ -4305,7 +4313,7 @@ pub const Peer = struct {
                     ctx,
                     build,
                     on_return,
-                    Peer.allocateQuestion,
+                    Peer.allocateLoopbackQuestion,
                     Peer.handleFrame,
                 );
             },
@@ -7055,8 +7063,56 @@ pub const Peer = struct {
         return self.allocateQuestionWithRestore(ctx, on_return, false);
     }
 
+    /// Allocate the question id for a REFLECTED (loopback) call — one whose
+    /// synthesized `Call` frame `sendCallToExport` feeds straight back into this
+    /// peer's own `handleFrame` instead of writing it to the transport.
+    ///
+    /// On the wire, outbound question ids and inbound answer ids are INDEPENDENT
+    /// namespaces: both peers legally start at 0. Reflection merges them — the
+    /// id we picked as an outbound question also becomes an inbound answer id in
+    /// `active_inbound_questions`/`resolved_answers`. Drawing loopback ids from
+    /// `next_question_id` therefore collides with whatever the remote happens to
+    /// have open, and `handleCall` rejects the reflected frame with
+    /// `DuplicateQuestionId`. Cross-impl contact hit exactly that: the C++
+    /// reference held its answer 0 open (awaiting `Finish`) while a cross-peer
+    /// proxy reflected its first loopback call, also id 0.
+    ///
+    /// Loopback ids are drawn from the TOP of the space, descending, skipping
+    /// anything live in either namespace. No frame carrying one of these ids is
+    /// ever written to a socket, and every implementation (this one included)
+    /// hands out wire question ids ascending from 0, so the two stay apart.
+    fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        const scan_start = self.next_loopback_question_id;
+        while (self.questions.contains(self.next_loopback_question_id) or
+            (try self.inboundQuestionIdInUse(self.next_loopback_question_id)))
+        {
+            self.next_loopback_question_id -%= 1;
+            if (self.next_loopback_question_id == scan_start) return error.QuestionIdExhausted;
+        }
+        const question_id = try self.allocateQuestionFrom(
+            &self.next_loopback_question_id,
+            ctx,
+            on_return,
+            true,
+        );
+        // The shared allocator advances its cursor upward; walk it back down so
+        // loopback ids keep descending from the top of the space.
+        self.next_loopback_question_id = question_id -% 1;
+        return question_id;
+    }
+
     fn allocateQuestionWithRestore(
         self: *Peer,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+        restore_on_return_error: bool,
+    ) !u32 {
+        return self.allocateQuestionFrom(&self.next_question_id, ctx, on_return, restore_on_return_error);
+    }
+
+    fn allocateQuestionFrom(
+        self: *Peer,
+        cursor: *u32,
         ctx: *anyopaque,
         on_return: QuestionCallback,
         restore_on_return_error: bool,
@@ -7074,7 +7130,7 @@ pub const Peer = struct {
         const question_id = try peer_question_state.allocateQuestion(
             Question,
             &self.questions,
-            &self.next_question_id,
+            cursor,
             .{
                 .ctx = ctx,
                 .on_return = on_return,
