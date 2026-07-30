@@ -25,7 +25,17 @@
   connection. Teardown is leak-free with either peer or the index dying
   first.
 
-  **Proven Zig↔Zig only, and deliberately not everything:** `receiverHosted`
+  **Cross-implementation hosting is now proven against the C++ reference**
+  (`just e2e-l3-vatc`): the vendored Cap'n Proto 2.0 drives vats A and B over
+  real TCP against a Zig two-peer VatC across four scenarios, with both sides
+  asserting. That first contact also found a genuine host defect — reflected
+  (loopback) call question ids were drawn from the outbound wire space, which
+  reflection merges with the remote-owned inbound answer space, so our own
+  reflected frame could collide with the remote's live answer id and be
+  rejected as a duplicate. Fixed by drawing loopback ids from a separate
+  descending space; no Zig↔Zig test had exposed it.
+
+  **Otherwise proven Zig↔Zig only, and deliberately not everything:** `receiverHosted`
   provide targets fail closed cross-peer (the wire-honest deferred-Release
   import pin is specified but unlanded); vats are single-threaded
   (`WorkerPool` excluded); **cross-implementation hosting is unproven** — no

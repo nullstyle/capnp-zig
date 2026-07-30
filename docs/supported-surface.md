@@ -246,12 +246,24 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      `WorkerPool`-hosted multi-peer vats are unsupported, and pool peers keep
      the legacy counter embargo ids (a shared CSPRNG across worker threads is
      not thread-safe).
-  3. **Cross-implementation hosting is unproven.** No reference implementation
-     can currently drive the recipient/introducer roles against a capnp-zig
-     host (go-capnp's 3PH is `TODO`, the C++ lane exercises capnp-zig as
-     A/B against a C++ host, not the reverse). The host arm accepts the
-     spec-form Disembargo and byte-normalized tokens, so it is *designed* for
-     foreign peers, but the claim is analytic until a bespoke harness exists.
+  3. **Cross-implementation hosting is PROVEN against the C++ reference, and
+     only against it.** `just e2e-l3-vatc` runs the vendored Cap'n Proto 2.0
+     reference as vats A (recipient) and B (introducer) over real TCP against
+     a capnp-zig two-peer VatC host: C++ emits the Provide, the
+     `thirdPartyHosted` resolve, the Accept, and the spec-form forwarded
+     accept-Disembargo; the Zig host registers the provision on one peer,
+     serves the Accept cross-peer from the sibling, releases the embargoed
+     Accept on the Disembargo, and drains leak-free. Four scenarios (happy,
+     embargo, unknown-token, disconnect) assert on both sides. **Still
+     unproven:** every other implementation (go-capnp's 3PH is `TODO`,
+     Rust/Python adapters are two-party only), and — even for C++ —
+     `receiverHosted` targets (fail closed, see 1), redirected returns /
+     `ThirdPartyAnswer` (absent from the vendored C++), and Accept-before-
+     Provide *parking under a real Provide* (the C++ driver cannot
+     deterministically force that ordering; parking keeps its Zig↔Zig
+     coverage). First contact found and fixed one genuine host defect —
+     reflected-loopback question ids collided with the remote's inbound answer
+     ids — which no Zig↔Zig test had exposed.
   4. A promisedAnswer **provided target** whose answer cap is settled resolves
      to a concrete stored target at Provide time (serves cross-peer); the
      stored-`.promised` form (promise-valued answer caps) serves via owner-side
