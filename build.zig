@@ -1066,6 +1066,44 @@ pub fn build(b: *std.Build) void {
     if (run_release_safe_rpc_quic_connection_internal_tests) |step| test_release_safe_step.dependOn(step);
     test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);
 
+    // ReleaseFast lane. This exists because of a specific class the other lanes
+    // structurally cannot see: a use-after-free reached from a DESTRUCTOR.
+    //
+    // `HostPeer.deinit` freed the queue that `Peer.deinit`'s own Finish/Release
+    // sends then appended to. Debug and ReleaseSafe both poison the freed
+    // ArrayList handle, and these suites happened never to trip a safety check
+    // on the poisoned value, so all 981 tests passed. ReleaseFast leaves the
+    // freed pointer intact, the append lands in freed memory, and
+    // `SafeAllocator`'s free-fill check catches it. No lane ran ReleaseFast, so
+    // the bug was invisible for as long as it existed.
+    //
+    // Scoped deliberately to the teardown-heavy RPC suites rather than the whole
+    // tree: those are where destructors do real work (cancel questions, release
+    // imports, drain provisions), and running everything here would buy little
+    // for the wall-clock. Note this lane is about MEMORY SAFETY, not assertions
+    // -- `unreachable` is UB rather than a panic here, so a failure in this lane
+    // deserves reading before it is "fixed".
+    const release_fast_optimize: std.builtin.OptimizeMode = .fast;
+    const release_fast_lib_module = b.addModule("capnpc-zig-release-fast", .{
+        .root_source_file = b.path(lib_root),
+        .target = target,
+        .optimize = release_fast_optimize,
+        .imports = &.{},
+    });
+    release_fast_lib_module.addImport("capnpc-zig", release_fast_lib_module);
+    addQuicImport(release_fast_lib_module, null);
+
+    const run_release_fast_rpc_host_peer_tests = addLibTest(b, "tests/rpc/integration/rpc_host_peer_test.zig", target, release_fast_optimize, release_fast_lib_module);
+    const run_release_fast_rpc_persistence_reconnect_tests = addPersistenceLibTest(b, "tests/rpc/integration/rpc_persistence_reconnect_test.zig", target, release_fast_optimize, release_fast_lib_module);
+    const run_release_fast_rpc_peer_tests = addLibTest(b, "tests/rpc/peer/rpc_peer_test.zig", target, release_fast_optimize, release_fast_lib_module);
+    const run_release_fast_rpc_vatc_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_vatc_test.zig", target, release_fast_optimize, release_fast_lib_module);
+
+    const test_release_fast_step = b.step("test-release-fast", "Run teardown-heavy RPC suites under ReleaseFast, where a use-after-free in a destructor is not masked by safety poisoning");
+    test_release_fast_step.dependOn(run_release_fast_rpc_host_peer_tests);
+    test_release_fast_step.dependOn(run_release_fast_rpc_persistence_reconnect_tests);
+    test_release_fast_step.dependOn(run_release_fast_rpc_peer_tests);
+    test_release_fast_step.dependOn(run_release_fast_rpc_vatc_tests);
+
     // Test step runs all tests
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(test_serialization_step);

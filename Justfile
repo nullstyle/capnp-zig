@@ -67,6 +67,13 @@ test-docs-snippets-quic:
 test-release-safe:
     zig build test-release-safe --summary all
 
+# Run teardown-heavy RPC suites under ReleaseFast. This is a MEMORY-SAFETY lane,
+# not a performance one: ReleaseFast is the only mode that leaves a freed
+# pointer intact, so a use-after-free reached from a destructor shows up here
+# and nowhere else.
+test-release-fast:
+    zig build test-release-fast --summary all
+
 # Run raw-frame RPC security e2e tests
 test-e2e-security:
     zig build test-e2e-security --summary all
@@ -170,6 +177,7 @@ ci:
     zig build test-docs-snippets --summary all
     zig build docs-smoke --summary all
     zig build test-release-safe --summary all
+    zig build test-release-fast --summary all
     just ci-quic
     just src/rpc/check-rpc
     just check-generated

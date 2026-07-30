@@ -393,3 +393,11 @@ jobs:
 
       - name: Run ReleaseSafe hardening tests
         run: zig build test-release-safe --summary all
+
+      # ReleaseFast, not for speed but because it is the only mode that does NOT
+      # poison a freed pointer. A use-after-free reached from a destructor is
+      # invisible in Debug and ReleaseSafe -- `HostPeer.deinit` freed the queue
+      # that `Peer.deinit`'s own Finish/Release sends appended to, and all 981
+      # tests passed anyway until this lane existed.
+      - name: Run teardown-heavy RPC suites under ReleaseFast
+        run: zig build test-release-fast --summary all

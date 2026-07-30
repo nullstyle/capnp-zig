@@ -92,6 +92,18 @@ pub const HostPeer = struct {
 
     pub fn deinit(self: *HostPeer) void {
         self.peer.assertThreadAffinity();
+        // `Peer.deinit` is SEND-BEARING: `forceCancelAllQuestions` emits Finish
+        // frames and `releaseAllImports` emits Release frames whenever a send
+        // path is available, and `ensureOverride` has installed one that lands
+        // in `self.outgoing`. So the peer must be torn down BEFORE the queues
+        // its override writes into, or those sends append to freed storage.
+        //
+        // That ordering bug was invisible for as long as it existed: in Debug
+        // and ReleaseSafe `ArrayList.deinit` poisons the handle, and the tests
+        // that reach it happened not to trip a safety check, while ReleaseFast
+        // leaves the freed pointer intact so the append silently lands in
+        // freed memory. `SafeAllocator` caught it only under ReleaseFast.
+        self.peer.deinit();
         self.clearOutgoing();
         self.outgoing.deinit(self.allocator);
         self.clearHostCalls();
@@ -100,7 +112,6 @@ pub const HostPeer = struct {
         var record_it = self.pending_host_call_param_imports.valueIterator();
         while (record_it.next()) |ids| self.allocator.free(ids.*);
         self.pending_host_call_param_imports.deinit();
-        self.peer.deinit();
     }
 
     pub fn start(

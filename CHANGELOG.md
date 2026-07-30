@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Use-after-free in `HostPeer` teardown.** `Peer.deinit` is send-bearing —
+  `forceCancelAllQuestions` emits `Finish` frames and `releaseAllImports` emits
+  `Release` frames whenever a send path is available — and `HostPeer` installs
+  exactly such a path, a `setSendFrameOverride` callback that appends into its
+  own `outgoing` queue. But `HostPeer.deinit` freed that queue *first* and tore
+  the peer down last, so every teardown-time frame was appended to freed
+  storage. The peer is now destroyed before the queues its override writes into.
+
+  It survived this long because no lane could see it. In Debug and ReleaseSafe
+  `ArrayList.deinit` poisons the handle, and these suites happened never to trip
+  a safety check on the poisoned value, so all 981 tests passed; ReleaseFast
+  leaves the freed pointer intact, the append lands in still-mapped freed
+  memory, and only `SafeAllocator`'s free-fill check notices. Ablation-verified
+  in both directions: restoring the old order reproduces exactly 8 crashing
+  tests with `panic: write after free`, all on the same 144-byte allocation.
+
+### Added
+
+- **A `test-release-fast` lane** (`zig build test-release-fast`, `just
+  test-release-fast`), wired into `just ci` and the per-OS CI Test job. It is a
+  memory-safety lane rather than a performance one: ReleaseFast is the only mode
+  that does not poison freed memory, which makes it the only mode where a
+  use-after-free reached from a *destructor* is observable. Scoped to the
+  teardown-heavy RPC suites, where destructors do real work (cancel questions,
+  release imports, drain provisions). Proven to have teeth — reverting the fix
+  above turns this lane red.
+
+  A caveat worth stating: `unreachable` is undefined behavior rather than a
+  panic in this mode, so a failure here deserves reading before it is "fixed".
+
 ## [0.6.0] - 2026-07-30
 
 capnp-zig can now act as **VatC — the host** — in a Cap'n Proto Level-3
