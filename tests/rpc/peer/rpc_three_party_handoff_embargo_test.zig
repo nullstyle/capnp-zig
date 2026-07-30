@@ -298,6 +298,13 @@ const Link = struct {
     buffer_b_to_c_accept_disembargo: bool = false,
     buffered_disembargo: ?[]u8 = null,
 
+    /// V2-M3 fault injection: after delivering a Resolve frame from B to A,
+    /// deliver a synthetic Release for this promise export back INTO b_to_a —
+    /// destroying the promise export while `resolvePromiseExportToThirdParty`
+    /// is still between its Resolve send and its post-send re-fetch, forcing
+    /// the `error.UnknownExport` path with a Disembargo already stashed.
+    inject_promise_release_after_resolve: ?u32 = null,
+
     fn init(allocator: std.mem.Allocator) Link {
         return .{
             .allocator = allocator,
@@ -335,6 +342,19 @@ const Link = struct {
         const self: *Link = castCtx(*Link, ctx);
         if (!self.forwarding) return;
         if (self.a_to_b) |peer| try peer.handleFrame(frame);
+
+        if (self.inject_promise_release_after_resolve) |promise_id| {
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .resolve) return;
+            self.inject_promise_release_after_resolve = null;
+            var builder = protocol.MessageBuilder.init(self.allocator);
+            defer builder.deinit();
+            try builder.buildRelease(promise_id, 1);
+            const release_frame = try builder.finish();
+            defer self.allocator.free(release_frame);
+            if (self.b_to_a) |peer| try peer.handleFrame(release_frame);
+        }
     }
 
     fn bToCSend(ctx: *anyopaque, frame: []const u8) anyerror!void {
@@ -627,6 +647,464 @@ test "three-party handoff embargo: pipelined call reaches C before the post-pick
     _ = handle;
 
     // Every provision drained on C; no dangling third-party marks or imports.
+    try harness.expectNoProvideState(&c);
+    try std.testing.expectEqual(@as(usize, 0), c.pending_accepts_by_embargo.count());
+}
+
+// -- L1: the introducer must forward the accept-Disembargo in the SPEC form ---
+//
+// rpc.capnp:899 has the introducer forward the recipient's Disembargo to the
+// host addressed to the PROVIDE QUESTION (a promisedAnswer target in the B<->C
+// answer space) — the recipient's original importedCap target names an id in
+// the A<->B space and is meaningless on the B<->C hop. The vendored C++ host
+// (rpc.c++ handleDisembargo) resolves the target against its answer table, so
+// forwarding the unrewritten form also breaks Zig-introducer -> C++-host.
+
+test "L1: forwarded accept-Disembargo targets promisedAnswer(provide question), no transform" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    defer b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-embargo-nonce-l1-form";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_b.attachVatNetwork(net.network());
+
+    var carol = Carol{};
+    _ = try c.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+
+    var carol_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&carol_probe, CarolImportProbe.onReturn);
+    const carol_import_id = carol_probe.carol_import_id orelse return error.CarolBootstrapFailed;
+
+    var introducer = Introducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse return error.IntroducerBootstrapFailed;
+
+    var promise_call = PromiseCall{};
+    _ = try a_to_b.sendCall(introducer_import_id, 0x1234_5678_9abc_def0, 0, &promise_call, null, PromiseCall.onReturn);
+    const promise_import_id = promise_call.promise_import_id orelse return error.PromiseNotImportedByA;
+
+    var pickup = PickupHandler{ .expected_promise_id = promise_import_id };
+    a_to_b.setHandoffPickupHandler(&pickup, PickupHandler.onPickup);
+
+    // In-flight pipelined call: forces the embargo, so a Disembargo IS forwarded.
+    var pipelined_ping = PingCall{ .n = 1 };
+    _ = try a_to_b.sendCall(
+        promise_import_id,
+        PING_INTERFACE_ID,
+        PING_METHOD_ID,
+        &pipelined_ping,
+        PingCall.build,
+        PingCall.onReturn,
+    );
+
+    // Buffer the forwarded Disembargo so we can inspect the frame itself.
+    link.buffer_b_to_c_accept_disembargo = true;
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = carol_import_id,
+        .promised_answer = null,
+    };
+
+    const handle = try b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        provided_target,
+        recipient,
+        introduction.to_contact,
+    );
+
+    // *** THE L1 ASSERTIONS: decode the forwarded frame off the B->C link. ***
+    const frame = link.buffered_disembargo orelse return error.NoForwardedDisembargo;
+    var decoded = try protocol.DecodedMessage.init(allocator, frame);
+    defer decoded.deinit();
+    const dis = try decoded.asDisembargo();
+    try std.testing.expectEqual(protocol.DisembargoContextTag.accept, dis.context_tag);
+    // Spec form: the target is the Provide question in the B<->C answer space.
+    // RED today: the introducer carries the recipient's importedCap target
+    // through unchanged (mod.zig forwardAcceptDisembargo doc comment says so).
+    try std.testing.expectEqual(protocol.MessageTargetTag.promisedAnswer, dis.target.tag);
+    const pa = dis.target.promised_answer orelse return error.MissingPromisedAnswerTarget;
+    try std.testing.expectEqual(handle.question_id, pa.question_id);
+    try std.testing.expectEqual(@as(u32, 0), pa.transform.len());
+
+    // Release + drain so the test stays leak-free.
+    try link.releaseBufferedDisembargo();
+    try std.testing.expect(pickup.fired);
+    const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
+    try a_to_c.releaseImport(accepted_carol_id, 1);
+    try a_to_b.releaseImport(promise_import_id, 1);
+    try b_to_c.releaseImport(carol_import_id, 1);
+    try a_to_b.releaseImport(introducer_import_id, 1);
+
+    try harness.expectNoProvideState(&c);
+    try std.testing.expectEqual(@as(usize, 0), c.pending_accepts_by_embargo.count());
+}
+
+// -- L1: e-order under a synchronous link, with a realistic pickup handler ----
+//
+// A real application calls the picked-up capability immediately. Under a
+// synchronous in-process link, HEAD forwards the accept-Disembargo BEFORE
+// `replayResolvedPromiseExport` forwards the parked pre-resolution calls, so
+// the pickup (and any direct call it makes) runs before the parked calls reach
+// Carol — post-handoff calls overtake pre-handoff calls: an e-order violation
+// the buffered variant above cannot see. The fix (M-11) stashes the forwarded
+// Disembargo on the coupling until the replay has run.
+
+const DirectCallPickupHandler = struct {
+    expected_promise_id: u32,
+    carol_import_id: ?u32 = null,
+    fired: bool = false,
+    direct_ping: PingCall = .{ .n = 2 },
+
+    fn onPickup(
+        ctx_ptr: *anyopaque,
+        _: *Peer, // promise_peer (a_to_b)
+        promise_id: u32,
+        accept_peer: *Peer, // a_to_c
+        ret: protocol.Return,
+        accept_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *DirectCallPickupHandler = castCtx(*DirectCallPickupHandler, ctx_ptr);
+        self.fired = true;
+        if (promise_id != self.expected_promise_id) return error.UnexpectedPromiseId;
+        if (ret.tag != .results) return error.UnexpectedAcceptReturn;
+        const payload = ret.results orelse return error.MissingAcceptPayload;
+        var mutable_caps: *cap_table.InboundCapTable = @constCast(accept_caps);
+        const cap = try payload.content.getCapability();
+        const resolved = try mutable_caps.resolveCapability(cap);
+        try mutable_caps.retainCapability(cap);
+        self.carol_import_id = switch (resolved) {
+            .imported => |imp| imp.id,
+            else => return error.AcceptedCarolNotImported,
+        };
+        // The first thing a real app does: call the capability it just received.
+        _ = try accept_peer.sendCall(
+            self.carol_import_id.?,
+            PING_INTERFACE_ID,
+            PING_METHOD_ID,
+            &self.direct_ping,
+            PingCall.build,
+            PingCall.onReturn,
+        );
+    }
+};
+
+test "L1: a post-Resolve failure still flushes the stashed accept-Disembargo (V2-M3)" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    defer b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-embargo-nonce-l1-m3";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_b.attachVatNetwork(net.network());
+
+    var carol = Carol{};
+    _ = try c.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+
+    var carol_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&carol_probe, CarolImportProbe.onReturn);
+    const carol_import_id = carol_probe.carol_import_id orelse return error.CarolBootstrapFailed;
+
+    var introducer = Introducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse return error.IntroducerBootstrapFailed;
+
+    var promise_call = PromiseCall{};
+    _ = try a_to_b.sendCall(introducer_import_id, 0x1234_5678_9abc_def0, 0, &promise_call, null, PromiseCall.onReturn);
+    const promise_import_id = promise_call.promise_import_id orelse return error.PromiseNotImportedByA;
+
+    var pickup = PickupHandler{ .expected_promise_id = promise_import_id };
+    a_to_b.setHandoffPickupHandler(&pickup, PickupHandler.onPickup);
+
+    // In-flight pipelined call: forces the embargo so a Disembargo is stashed.
+    var pipelined_ping = PingCall{ .n = 1 };
+    _ = try a_to_b.sendCall(
+        promise_import_id,
+        PING_INTERFACE_ID,
+        PING_METHOD_ID,
+        &pipelined_ping,
+        PingCall.build,
+        PingCall.onReturn,
+    );
+
+    // FAULT INJECTION: right after the Resolve frame is delivered to A (with
+    // the recipient's Disembargo now STASHED on the coupling), a synthetic
+    // Release destroys the promise export on b_to_a — so the post-send
+    // re-fetch inside `resolvePromiseExportToThirdParty` fails with
+    // error.UnknownExport BEFORE the parked-call replay runs.
+    link.inject_promise_release_after_resolve = introducer.promise_export_id orelse return error.NoPromiseExport;
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = carol_import_id,
+        .promised_answer = null,
+    };
+
+    try std.testing.expectError(error.UnknownExport, b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        provided_target,
+        recipient,
+        introduction.to_contact,
+    ));
+
+    // *** THE V2-M3 ASSERTION: the error path FLUSHED the stashed Disembargo,
+    // so C released the embargoed Accept and A's pickup completed — the
+    // recipient is NOT left hanging behind a stranded stash. ***
+    try std.testing.expect(pickup.fired);
+    const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
+
+    // The accepted capability is genuinely usable despite the failed resolve.
+    var direct_ping = PingCall{ .n = 2 };
+    _ = try a_to_c.sendCall(
+        accepted_carol_id,
+        PING_INTERFACE_ID,
+        PING_METHOD_ID,
+        &direct_ping,
+        PingCall.build,
+        PingCall.onReturn,
+    );
+    try std.testing.expectEqual(@as(?u32, 2), direct_ping.result_n);
+
+    // Teardown. A's own release of the promise import meets an already-
+    // destroyed export on B (benign warn); everything else drains normally.
+    try a_to_c.releaseImport(accepted_carol_id, 1);
+    try a_to_b.releaseImport(promise_import_id, 1);
+    try b_to_c.releaseImport(carol_import_id, 1);
+    try a_to_b.releaseImport(introducer_import_id, 1);
+
+    try harness.expectNoProvideState(&c);
+    try std.testing.expectEqual(@as(usize, 0), c.pending_accepts_by_embargo.count());
+}
+
+test "L1: parked pre-resolution calls reach Carol before a pickup-driven direct call (unbuffered sync link)" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    defer b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-embargo-nonce-l1-eorder";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_b.attachVatNetwork(net.network());
+
+    var carol = Carol{};
+    _ = try c.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+
+    var carol_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&carol_probe, CarolImportProbe.onReturn);
+    const carol_import_id = carol_probe.carol_import_id orelse return error.CarolBootstrapFailed;
+
+    var introducer = Introducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse return error.IntroducerBootstrapFailed;
+
+    var promise_call = PromiseCall{};
+    _ = try a_to_b.sendCall(introducer_import_id, 0x1234_5678_9abc_def0, 0, &promise_call, null, PromiseCall.onReturn);
+    const promise_import_id = promise_call.promise_import_id orelse return error.PromiseNotImportedByA;
+
+    var pickup = DirectCallPickupHandler{ .expected_promise_id = promise_import_id };
+    a_to_b.setHandoffPickupHandler(&pickup, DirectCallPickupHandler.onPickup);
+
+    // The parked pre-resolution call (forces the embargo AND is the e-order LHS).
+    var pipelined_ping = PingCall{ .n = 1 };
+    _ = try a_to_b.sendCall(
+        promise_import_id,
+        PING_INTERFACE_ID,
+        PING_METHOD_ID,
+        &pipelined_ping,
+        PingCall.build,
+        PingCall.onReturn,
+    );
+    try std.testing.expect(!pipelined_ping.returned);
+
+    // NO buffering: the link delivers everything synchronously, like a real
+    // in-process transport. The e-order guarantee must hold on the wire alone.
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+
+    const provided_target = protocol.MessageTarget{
+        .tag = .importedCap,
+        .imported_cap = carol_import_id,
+        .promised_answer = null,
+    };
+
+    _ = try b_to_a.resolvePromiseExportToThirdParty(
+        promise_import_id,
+        &b_to_c,
+        provided_target,
+        recipient,
+        introduction.to_contact,
+    );
+
+    // Everything settled synchronously: pickup fired, both pings returned.
+    try std.testing.expect(pickup.fired);
+    try std.testing.expect(pipelined_ping.returned);
+    try std.testing.expect(pickup.direct_ping.returned);
+
+    // *** THE E-ORDER ASSERTIONS (rpc.capnp:898-903). ***
+    // RED today, twice over: the introducer forwards the Disembargo BEFORE the
+    // parked-call replay, so (a) the pickup's direct call lands at Carol first,
+    // and (b) by the time the replay runs, the completed handoff has already
+    // released the vine and nulled the promise's resolution target, so the
+    // parked call is not forwarded at all — it returns an EXCEPTION
+    // (result_n stays null) and never reaches Carol (ping_parked_seq null).
+    // Optional-typed expectEquals so the RED prints the divergence instead of
+    // crashing on a null unwrap.
+    try std.testing.expectEqual(@as(?u32, 1), pipelined_ping.result_n);
+    try std.testing.expectEqual(@as(?u32, 2), pickup.direct_ping.result_n);
+    try std.testing.expectEqual(@as(?u32, 1), carol.ping_parked_seq);
+    try std.testing.expectEqual(@as(?u32, 2), carol.ping_direct_seq);
+    try std.testing.expect(carol.ping_parked_seq.? < carol.ping_direct_seq.?);
+
+    // Teardown.
+    const accepted_carol_id = pickup.carol_import_id orelse return error.AutoPickupDidNotResolve;
+    try a_to_c.releaseImport(accepted_carol_id, 1);
+    try a_to_b.releaseImport(promise_import_id, 1);
+    try b_to_c.releaseImport(carol_import_id, 1);
+    try a_to_b.releaseImport(introducer_import_id, 1);
+
     try harness.expectNoProvideState(&c);
     try std.testing.expectEqual(@as(usize, 0), c.pending_accepts_by_embargo.count());
 }

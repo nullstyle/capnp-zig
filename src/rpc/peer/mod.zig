@@ -1159,6 +1159,38 @@ const OutboundProvide = struct {
     /// that case the vine keeps its rejecting behavior, since there is no
     /// unambiguous single import on `provide_peer` to forward to.
     provided_import_id: ?u32 = null,
+    /// E-ORDER (rpc.capnp:898-903): true once `replayResolvedPromiseExport` has
+    /// forwarded this coupling's parked pre-resolution calls (or the resolve
+    /// path is past the point where any could exist). Until then a
+    /// `context.accept` Disembargo from the recipient must NOT be forwarded to
+    /// the host: under a synchronous transport the forward would release the
+    /// host's embargoed Accept — delivering the pickup and any post-pickup
+    /// direct calls — BEFORE the parked calls reach the host, inverting e-order
+    /// and (worse) completing the handoff so the vine teardown strands the
+    /// parked calls entirely.
+    replay_flushed: bool = false,
+    /// The recipient's forwarded accept-Disembargo, held while `replay_flushed`
+    /// is false. Duped embargo bytes, owned by the INTRODUCER peer's allocator;
+    /// freed on flush or with the coupling. Single slot: one Disembargo per
+    /// handoff is the protocol shape, so a second stash while occupied is
+    /// dropped with a log rather than queued.
+    stashed_accept_disembargo: ?[]u8 = null,
+
+    /// Stash the recipient's accept-Disembargo until the parked-call replay has
+    /// run (see `replay_flushed`).
+    fn stashAcceptDisembargo(op: *OutboundProvide, allocator: std.mem.Allocator, embargo: []const u8) !void {
+        if (op.stashed_accept_disembargo != null) {
+            log.warn("second accept-disembargo stashed before replay; dropping duplicate", .{});
+            return;
+        }
+        op.stashed_accept_disembargo = try allocator.dupe(u8, embargo);
+    }
+
+    /// Free the stash slot (coupling teardown). Idempotent.
+    fn deinitStash(op: *OutboundProvide, allocator: std.mem.Allocator) void {
+        if (op.stashed_accept_disembargo) |stash| allocator.free(stash);
+        op.stashed_accept_disembargo = null;
+    }
 };
 
 /// Liveness back-link recorded on the host-of-provided-cap peer (B↔C) for each
@@ -1994,6 +2026,7 @@ pub const Peer = struct {
                 if (entry.value_ptr.provide_peer) |pp| {
                     pp.deregisterCoupledVine(self, entry.key_ptr.*);
                 }
+                entry.value_ptr.deinitStash(self.allocator);
             }
         }
         self.outbound_provides.deinit();
@@ -3883,6 +3916,7 @@ pub const Peer = struct {
         // Provide we just sent so VatC does not leak the provision.
         var origination_owned = true;
         errdefer if (origination_owned) {
+            if (self.outbound_provides.getPtr(handle.vine_id)) |op| op.deinitStash(self.allocator);
             _ = self.outbound_provides.remove(handle.vine_id);
             self.caps.clearThirdPartyHosted(handle.vine_id);
             self.releaseVineExport(handle.vine_id);
@@ -3940,6 +3974,14 @@ pub const Peer = struct {
         rollback_wire_ref = false;
         origination_owned = false;
 
+        // The Resolve is on the wire: the recipient's synchronous auto-pickup
+        // may already have sent back a `context.accept` Disembargo, which
+        // `handleAcceptDisembargo` STASHED on the coupling (e-order: it must
+        // not reach the host before the parked-call replay below). From here,
+        // EVERY exit — including the two error returns below — must flush the
+        // stash, or the recipient's embargoed Accept hangs forever.
+        errdefer self.flushStashedAcceptDisembargo(handle.vine_id);
+
         // Re-fetch the promise entry: the vine insert above may have rehashed
         // `self.exports`, invalidating the pointer captured during validation.
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
@@ -3956,6 +3998,12 @@ pub const Peer = struct {
         promise_entry.value_ptr.resolved = .{ .exported = .{ .id = handle.vine_id } };
         self.caps.clearExportPromise(promise_id);
         try self.replayResolvedPromiseExport(promise_id, promise_entry.value_ptr.resolved.?);
+
+        // Parked pre-resolution calls are now on their way to the host; the
+        // recipient's Disembargo (if one was stashed during the Resolve send)
+        // may follow them. This also arms immediate forwarding for any later
+        // Disembargo on this coupling.
+        self.flushStashedAcceptDisembargo(handle.vine_id);
 
         log.debug("resolved promise export {} to third party via vine {}", .{ promise_id, handle.vine_id });
         return handle;
@@ -6404,6 +6452,10 @@ pub const Peer = struct {
             if (!self.exports.contains(release.id)) {
                 // Vine fully released. Drop the coupling and its handoff mark,
                 // then Finish the held-open Provide question on its own peer.
+                // Free the stash from the LIVE entry (not the pre-release
+                // snapshot): nested delivery during the release may have
+                // stashed or flushed since the snapshot was taken.
+                if (self.outbound_provides.getPtr(release.id)) |op| op.deinitStash(self.allocator);
                 _ = self.outbound_provides.remove(release.id);
                 self.caps.clearThirdPartyHosted(release.id);
                 // If this vine anchored a promise-export resolution
@@ -7059,9 +7111,22 @@ pub const Peer = struct {
         // INTRODUCER role: forward toward the host we originated the Provide on.
         if (target.tag == .importedCap) {
             if (target.imported_cap) |promise_export_id| {
-                if (self.findOriginatedProvideForPromise(promise_export_id)) |provide_peer| {
-                    try self.forwardAcceptDisembargo(provide_peer, target, embargo);
-                    return;
+                if (self.findOriginatedProvideForPromise(promise_export_id)) |op| {
+                    if (op.provide_peer) |provide_peer| {
+                        // E-ORDER (M-11): hold the forward until the parked
+                        // pre-resolution calls have been replayed toward the
+                        // host, or the released Accept overtakes them.
+                        if (!op.replay_flushed) {
+                            try op.stashAcceptDisembargo(self.allocator, embargo);
+                            return;
+                        }
+                        // Copy out of the map entry before sending: the nested
+                        // delivery may mutate `outbound_provides` and
+                        // invalidate `op`.
+                        const provide_question_id = op.provide_question_id;
+                        try self.forwardAcceptDisembargo(provide_peer, provide_question_id, embargo);
+                        return;
+                    }
                 }
             }
         }
@@ -7073,31 +7138,57 @@ pub const Peer = struct {
     }
 
     /// If this peer originated a three-party handoff by resolving the promise
-    /// EXPORT `promise_export_id` to a third party, return the connection the
-    /// paired `Provide` was sent on (the host-of-provided-cap peer, B↔C).
-    /// Otherwise null — this peer is not the introducer for that promise.
-    fn findOriginatedProvideForPromise(self: *Peer, promise_export_id: u32) ?*Peer {
+    /// EXPORT `promise_export_id` to a third party, return that coupling.
+    /// Otherwise null — this peer is not the introducer for that promise. The
+    /// returned pointer aliases the `outbound_provides` map entry: copy what
+    /// you need out of it before any send (nested delivery can mutate the map).
+    fn findOriginatedProvideForPromise(self: *Peer, promise_export_id: u32) ?*OutboundProvide {
         var it = self.outbound_provides.valueIterator();
         while (it.next()) |op| {
-            // A null provide_peer means the host-of-provided-cap peer already
-            // deinited (BUG #55 neutralization); there is nothing to forward to,
-            // so skip it exactly as if no coupling existed.
-            if (op.resolved_promise_export_id == promise_export_id) return op.provide_peer;
+            if (op.resolved_promise_export_id == promise_export_id) return op;
         }
         return null;
     }
 
-    /// Forward a `context.accept` Disembargo to the capability host (VatC) on the
-    /// connection this introducer (VatB) sent the paired `Provide` on. The target
-    /// is carried through unchanged; VatC keys the release solely on the embargo
-    /// bytes (see `handleAcceptDisembargo`), so the target is informational only
-    /// on the B↔C hop.
-    fn forwardAcceptDisembargo(_: *Peer, provide_peer: *Peer, target: protocol.MessageTarget, embargo: []const u8) !void {
+    /// Forward a `context.accept` Disembargo to the capability host (VatC) on
+    /// the connection this introducer (VatB) sent the paired `Provide` on. The
+    /// recipient's original target names its promise import in the A↔B id space
+    /// and is meaningless on this hop; per rpc.capnp:899 (and matching the C++
+    /// reference host, which resolves the target against its answer table) the
+    /// forwarded frame is REWRITTEN to address the Provide question itself: a
+    /// promisedAnswer target in the B↔C answer space, with no transform.
+    fn forwardAcceptDisembargo(_: *Peer, provide_peer: *Peer, provide_question_id: u32, embargo: []const u8) !void {
         provide_peer.assertThreadAffinity();
+        const target = protocol.MessageTarget{
+            .tag = .promisedAnswer,
+            .imported_cap = null,
+            .promised_answer = .{ .question_id = provide_question_id, .transform = .{ .list = null } },
+        };
         var builder = protocol.MessageBuilder.init(provide_peer.allocator);
         defer builder.deinit();
         try builder.buildDisembargoAccept(target, embargo);
         try provide_peer.sendBuilder(&builder);
+    }
+
+    /// Flush (or arm) the accept-Disembargo path for a resolve-originated
+    /// coupling: mark the parked-call replay as done, and if a Disembargo was
+    /// stashed while the replay was pending, forward it now. Called on BOTH the
+    /// success path of `resolvePromiseExportToThirdParty` (after the replay)
+    /// and its post-Resolve error paths — once the Resolve is on the wire, a
+    /// stashed Disembargo must never be stranded (the recipient's Accept would
+    /// hang forever behind it). Best-effort: a forward failure is logged, not
+    /// propagated.
+    fn flushStashedAcceptDisembargo(self: *Peer, vine_id: u32) void {
+        const op = self.outbound_provides.getPtr(vine_id) orelse return;
+        op.replay_flushed = true;
+        const stash = op.stashed_accept_disembargo orelse return;
+        op.stashed_accept_disembargo = null;
+        defer self.allocator.free(stash);
+        const provide_peer = op.provide_peer orelse return;
+        const provide_question_id = op.provide_question_id;
+        self.forwardAcceptDisembargo(provide_peer, provide_question_id, stash) catch |err| {
+            log.warn("failed to flush stashed accept-disembargo for vine {}: {}", .{ vine_id, err });
+        };
     }
 
     fn makeProvideTarget(self: *Peer, resolved: cap_table.ResolvedCap) !ProvideTarget {
