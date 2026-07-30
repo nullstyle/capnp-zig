@@ -47,6 +47,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "promise_entry.value_ptr.resolved.?", .reason = "resolvePromiseExportToThirdParty: set to .exported{vine_id} immediately above, guarded by earlier resolved==null check" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "entry.cap.?", .reason = "resolved import cap is checked before dispatch" },
     .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "guarded by Return tag/results presence check" },
+    .{ .path = "src/rpc/peer/mod.zig", .kind = .optional_unwrap, .needle = "ret.results.?", .reason = "resolveProvidePromisedOps: guarded by the identical tag/results presence check as resolvePromisedAnswer directly below" },
     .{ .path = "src/rpc/peer/peer_cap_lifecycle.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag path" },
     .{ .path = "src/rpc/peer/peer_transport_callbacks.zig", .kind = .optional_unwrap, .needle = "conn.context().?", .reason = "transport callback only installed with context" },
     .{ .path = "src/rpc/peer/return/peer_return_orchestration.zig", .kind = .optional_unwrap, .needle = "ret.results.?.cap_table", .reason = "guarded by Return results tag/path check" },
