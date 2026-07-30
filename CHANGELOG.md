@@ -104,6 +104,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that can carry RPC today — see the Evented note above. The compile check is
   kept as a cheap cross-check that the evented selector still builds.
 
+- **CI runs the full suite under ReleaseSafe**, not the ten-binary
+  `test-release-safe` subset. That subset covered message, codegen, framing,
+  fuzz-smoke and two transport files — leaving most of the RPC runtime (peer,
+  caps, promises, vat, integration) never executed with safety checks on in an
+  optimized build. Ablation-verified both ways: a deliberately failing assertion
+  in `tests/rpc/peer/rpc_peer_test.zig` leaves `zig build test-release-safe`
+  **green** and turns `zig build test -Doptimize=ReleaseSafe` red. The narrow
+  step remains for a quick local pass and for the nightly job.
+
+- **The OOM-injection harness was unsound, and the ReleaseSafe lane found it on
+  its first run.** `L4 Join proxy relay rolls back state under OOM injection`
+  failed under ReleaseSafe on both amd64 tiers while passing on macOS and
+  linux-aarch64. The rollback code was never at fault — all 34 injected failures
+  rolled back cleanly, with no leak and no swallowed OOM.
+
+  `std.testing.checkAllAllocationFailures` shares **one** backing allocator
+  across every fail-index iteration, which couples the runs through residual
+  heap state. `FailingAllocator` bumps `alloc_index` only in `alloc`, while
+  `resize`/`remap` bump a separate counter it never fails — so a buffer that
+  needs a fresh `alloc` on a cold heap can grow *in place* on a warm one. One
+  allocation disappears, the last fail index is never reached, and a perfectly
+  deterministic function is reported as `NondeterministicMemoryUsage`. Measured
+  on ubuntu-latest: reference run 35 allocations; iteration 34 made 34
+  allocations and 6 resizes with no failure induced — exactly one anomaly, at
+  the last index only, because for every earlier index the injected failure
+  fires first. It is platform-dependent because in-place growth is an
+  allocator/heap-layout decision.
+
+  `harness.checkAllAllocationFailuresIsolated` gives each iteration a pristine
+  `DebugAllocator`, which removes the coupling and keeps per-iteration leak
+  detection. With a fresh heap every time, an unreached fail index becomes a
+  real signal instead of an artifact. Worth stating plainly: the previous
+  arrangement could silently under-test rollback paths on any platform where
+  growth happens in place.
+
+- **A lane that actually executes an `std.Io` backend selector.** The
+  `evented-check` job ran `zig build -Dio-backend=evented check`, which verified
+  nothing that plain `zig build check` did not already: `-Dio-backend` is a
+  `[]const u8` compared at *runtime* by `io_backend.parseKind`, so all three
+  arms of `Backend.init` are semantically analysed in every configuration.
+  Ablation-proven — breaking the `.evented` arm turns plain `zig build check`
+  red with no flag passed at all.
+
+  What was missing was any lane that *executes* a selector. `just
+  check-selector` / `zig build -Dio-backend=threaded e2e-self` now runs the RPC
+  e2e over an explicitly chosen backend, in CI and in `just ci`. Its own
+  ablation: making `parseKind("threaded")` return null leaves the old compile
+  check **green** and turns the new lane red. `.threaded` is the only selector
+  that can carry RPC today — see the Evented note above. The compile check is
+  kept as a cheap cross-check that the evented selector still builds.
+
 ### Known issues
 
 - **`L4 Join proxy relay rolls back state under OOM injection` fails under

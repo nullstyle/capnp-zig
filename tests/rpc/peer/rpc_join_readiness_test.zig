@@ -2857,7 +2857,12 @@ fn crossPeerJoinRelayOomImpl(allocator: std.mem.Allocator) !void {
 }
 
 test "L4 Join proxy relay rolls back state under OOM injection" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, crossPeerJoinRelayOomImpl, .{});
+    // Isolated backing allocator per iteration. `std.testing.
+    // checkAllAllocationFailures` shares one across every fail index, and that
+    // coupling reported this deterministic impl as NondeterministicMemoryUsage
+    // under ReleaseSafe on both amd64 tiers while passing on macOS and
+    // linux-aarch64. See the helper for the measured evidence.
+    try harness.checkAllAllocationFailuresIsolated(crossPeerJoinRelayOomImpl, .{});
 }
 
 test "L4 JoinResult send failure drains pending direct Accept state" {

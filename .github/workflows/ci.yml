@@ -442,8 +442,8 @@ jobs:
       # fuzz-smoke and two transport files, so most of the RPC runtime -- peer,
       # caps, promises, vat, integration -- is still never executed with safety
       # checks on in an optimized build.
-      - name: Run ReleaseSafe hardening tests
-        run: zig build test-release-safe --summary all
+      - name: Run the full suite under ReleaseSafe
+        run: zig build test -Doptimize=ReleaseSafe --summary all
 
       # ReleaseFast, not for speed but because it is the only mode that does NOT
       # poison a freed pointer. A use-after-free reached from a destructor is
