@@ -295,6 +295,14 @@ const CrossPeerProxyContext = struct {
     source_peer: ?*Peer,
     target: cap_table.ResolvedCap,
     release_source_import_id: ?u32 = null,
+    /// A handoff-held pin on a SOURCE-peer export that this proxy owns and
+    /// releases exactly once in deinit (ownership transfers AT the
+    /// `addCrossPeerProxyExport` call, success or failure — the caller never
+    /// rolls it back afterwards). Keeps the proxied export alive across the
+    /// introducer's Finish + the remote's wire Releases; abandoned (nulled,
+    /// never released) if the source peer dies first, same rule as
+    /// `release_source_import_id`.
+    release_source_export_pin_id: ?u32 = null,
 
     fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *CrossPeerProxyContext = @ptrCast(@alignCast(ctx_ptr));
@@ -304,6 +312,9 @@ const CrossPeerProxyContext = struct {
                 source_peer.releaseImport(import_id, 1) catch |err| {
                     log.debug("cross-peer proxy: failed to release source import {}: {}", .{ import_id, err });
                 };
+            }
+            if (ctx.release_source_export_pin_id) |pin_id| {
+                source_peer.releaseHandoffHeldExport(pin_id);
             }
         }
         allocator.destroy(ctx);
@@ -2499,7 +2510,8 @@ pub const Peer = struct {
         const entry = self.exports.getPtr(id) orelse return;
         if (entry.ref_count != 0 or
             entry.answer_ref_count != 0 or
-            entry.promise_ref_count != 0)
+            entry.promise_ref_count != 0 or
+            entry.handoff_ref_count != 0)
         {
             return;
         }
@@ -4531,16 +4543,26 @@ pub const Peer = struct {
         source_peer: *Peer,
         target: cap_table.ResolvedCap,
         release_source_import_id: ?u32,
+        release_source_export_pin_id: ?u32,
     ) !u32 {
         self.assertThreadAffinity();
+        // OWNERSHIP: both source-peer leases (the retained import ref and the
+        // handoff export pin) transfer to this call — on success the ctx's
+        // deinit releases each exactly once; on failure the errdefer below
+        // does. The caller must NEVER roll either back after invoking.
         var proxy_ctx: ?*CrossPeerProxyContext = null;
         errdefer {
             if (proxy_ctx) |ctx| {
                 CrossPeerProxyContext.deinit(self.allocator, ctx);
-            } else if (release_source_import_id) |import_id| {
-                source_peer.releaseImport(import_id, 1) catch |err| {
-                    log.debug("cross-peer proxy: failed to release source import {} after allocation failure: {}", .{ import_id, err });
-                };
+            } else {
+                if (release_source_import_id) |import_id| {
+                    source_peer.releaseImport(import_id, 1) catch |err| {
+                        log.debug("cross-peer proxy: failed to release source import {} after allocation failure: {}", .{ import_id, err });
+                    };
+                }
+                if (release_source_export_pin_id) |pin_id| {
+                    source_peer.releaseHandoffHeldExport(pin_id);
+                }
             }
         }
 
@@ -4551,6 +4573,7 @@ pub const Peer = struct {
             .source_peer = source_peer,
             .target = target,
             .release_source_import_id = release_source_import_id,
+            .release_source_export_pin_id = release_source_export_pin_id,
         };
 
         const id = try self.addExportWithDeinit(
@@ -4573,7 +4596,7 @@ pub const Peer = struct {
 
     fn destroyUnreferencedExport(self: *Peer, id: u32) void {
         const entry = self.exports.get(id) orelse return;
-        if (entry.ref_count != 0 or entry.answer_ref_count != 0 or entry.promise_ref_count != 0) return;
+        if (entry.ref_count != 0 or entry.answer_ref_count != 0 or entry.promise_ref_count != 0 or entry.handoff_ref_count != 0) return;
 
         const removed = self.exports.fetchRemove(id) orelse return;
         self.caps.clearExport(id);
@@ -4632,6 +4655,7 @@ pub const Peer = struct {
             ctx.inbound_peer,
             entry,
             release_source_import_id,
+            null,
         );
         errdefer ctx.outbound_peer.destroyUnreferencedProxyExport(proxy_id);
         try ctx.created_proxy_ids.append(ctx.outbound_peer.allocator, proxy_id);
@@ -5587,6 +5611,39 @@ pub const Peer = struct {
             &self.exports,
             id,
         );
+    }
+
+    /// Take one handoff-held (Release-immune) reference on an export. See the
+    /// `handoff_ref_count` field doc on `ExportEntry`.
+    fn noteHandoffExportRef(self: *Peer, id: u32) !void {
+        try peer_cap_lifecycle.noteHandoffExportRef(
+            ExportEntry,
+            &self.exports,
+            id,
+        );
+    }
+
+    /// Release one handoff-held reference; destroys the entry only when every
+    /// ref class is zero AND the entry was wire-granted at least once (so a
+    /// Provide+Finish cycle can never destroy an app-held, never-emitted
+    /// export). Best-effort by design: unknown id / underflow are logged.
+    fn releaseHandoffHeldExport(self: *Peer, id: u32) void {
+        const promise_target = self.promiseTargetOf(id);
+        const import_target = self.promiseImportTargetOf(id);
+        peer_cap_lifecycle.releaseHandoffHeldExport(
+            Peer,
+            ExportEntry,
+            PendingCall,
+            self,
+            self.allocator,
+            &self.exports,
+            &self.pending_export_promises,
+            self.bootstrap_export_id,
+            id,
+            peer_cap_lifecycle.clearExportForPeerFn(Peer),
+            pending_calls.deinitPendingCallOwnedFrameForPeerFn(Peer, PendingCall),
+        );
+        self.finalizeExportRelease(id, promise_target, import_target);
     }
 
     fn rollbackPromiseExportRef(self: *Peer, id: u32) void {
@@ -6579,6 +6636,9 @@ pub const Peer = struct {
                     if (proxy_ctx.source_peer == self) {
                         proxy_ctx.source_peer = null;
                         proxy_ctx.release_source_import_id = null;
+                        // Abandon (never release): the pinned export lives on
+                        // this dying peer; its entry is freed with the peer.
+                        proxy_ctx.release_source_export_pin_id = null;
                     }
                 }
             }
@@ -8373,8 +8433,22 @@ pub const Peer = struct {
             source_peer: *Peer,
             target: cap_table.ResolvedCap,
             release_source_import_id: ?u32,
+            release_source_export_pin_id: ?u32,
         ) !u32 {
-            return Peer.addCrossPeerProxyExport(self, source_peer, target, release_source_import_id);
+            return Peer.addCrossPeerProxyExport(self, source_peer, target, release_source_import_id, release_source_export_pin_id);
+        }
+
+        /// Take a handoff-held (Release-immune) pin on one of this peer's
+        /// exports — the lease a caller passes to `addCrossPeerProxyExport` as
+        /// `release_source_export_pin_id`.
+        pub fn noteHandoffExportRef(self: *Peer, id: u32) !void {
+            return Peer.noteHandoffExportRef(self, id);
+        }
+
+        /// Release a handoff-held pin directly (tests that never hand it to a
+        /// proxy).
+        pub fn releaseHandoffHeldExport(self: *Peer, id: u32) void {
+            Peer.releaseHandoffHeldExport(self, id);
         }
 
         pub fn releaseVineExport(self: *Peer, vine_id: u32) void {

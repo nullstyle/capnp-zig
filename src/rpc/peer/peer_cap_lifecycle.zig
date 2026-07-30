@@ -81,6 +81,10 @@ pub fn noteExportRef(
 ) !void {
     var entry = exports.getEntry(id) orelse return error.UnknownExport;
     entry.value_ptr.ref_count = std.math.add(u32, entry.value_ptr.ref_count, 1) catch return error.RefCountOverflow;
+    // The entry is now (or was already) known to the wire; from here on a
+    // fully-drained entry is destroyable. Entries never granted to the wire
+    // are app-owned and survive handoff unpinning (releaseHandoffHeldExport).
+    entry.value_ptr.wire_ref_granted = true;
 }
 
 /// Take one answer-held reference on an export: the resolved answer that
@@ -108,6 +112,77 @@ pub fn notePromiseExportRef(
 ) !void {
     var entry = exports.getEntry(id) orelse return error.UnknownExport;
     entry.value_ptr.promise_ref_count = std.math.add(u32, entry.value_ptr.promise_ref_count, 1) catch return error.RefCountOverflow;
+}
+
+/// Take one handoff-held reference on an export: a live provision pinning this
+/// export as its target, or a cross-peer provision proxy forwarding to it,
+/// owns this reference. Tracked separately from every other class so an
+/// inbound Release can never spend it — the wire never granted it.
+pub fn noteHandoffExportRef(
+    comptime ExportEntryType: type,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    id: u32,
+) !void {
+    var entry = exports.getEntry(id) orelse return error.UnknownExport;
+    entry.value_ptr.handoff_ref_count = std.math.add(u32, entry.value_ptr.handoff_ref_count, 1) catch return error.RefCountOverflow;
+}
+
+/// Release one handoff-held reference on an export. Destroys the entry only
+/// when every ref class is zero AND the entry was granted to the wire at
+/// least once (`wire_ref_granted`): without that guard, Provide+Finish naming
+/// a zero-wire-ref app-held export would become a remote destroy primitive —
+/// pin at Provide (all counters 0->1), unpin at Finish (1->0), entry
+/// destroyed, id recyclable, and the app's later use of the id silently names
+/// a different capability. Never fails: an unknown id or underflow is a
+/// logged no-op, matching the other release paths' posture.
+pub fn releaseHandoffHeldExport(
+    comptime PeerType: type,
+    comptime ExportEntryType: type,
+    comptime PendingCallType: type,
+    peer: *PeerType,
+    allocator: std.mem.Allocator,
+    exports: *std.AutoHashMap(u32, ExportEntryType),
+    pending_export_promises: *std.AutoHashMap(u32, std.ArrayList(PendingCallType)),
+    bootstrap_export_id: ?u32,
+    id: u32,
+    clear_export: *const fn (*PeerType, u32) void,
+    deinit_pending_call: *const fn (*PeerType, *PendingCallType, std.mem.Allocator) void,
+) void {
+    var entry = exports.getEntry(id) orelse {
+        log.warn("handoff-held release for unknown export id={}", .{id});
+        return;
+    };
+    if (entry.value_ptr.handoff_ref_count == 0) {
+        log.warn("handoff-held release underflow for export id={}", .{id});
+        return;
+    }
+    entry.value_ptr.handoff_ref_count -= 1;
+
+    // Bootstrap export entry persists for the connection lifetime (see
+    // releaseExport); only its counters move.
+    if (bootstrap_export_id) |bootstrap_id| {
+        if (bootstrap_id == id) return;
+    }
+
+    if (entry.value_ptr.ref_count == 0 and
+        entry.value_ptr.answer_ref_count == 0 and
+        entry.value_ptr.promise_ref_count == 0 and
+        entry.value_ptr.handoff_ref_count == 0 and
+        entry.value_ptr.wire_ref_granted)
+    {
+        destroyExportEntry(
+            PeerType,
+            ExportEntryType,
+            PendingCallType,
+            peer,
+            allocator,
+            exports,
+            pending_export_promises,
+            id,
+            clear_export,
+            deinit_pending_call,
+        );
+    }
 }
 
 fn destroyExportEntry(
@@ -173,11 +248,13 @@ pub fn releaseExport(
     entry.value_ptr.ref_count -= count;
     // Destruction requires ALL ref classes at zero: a Release only spends wire
     // references, so an export pinned by a still-unfinished resolved answer
-    // (answer_ref_count > 0) or by a live promise export that resolved to it
-    // (promise_ref_count > 0) survives for dispatch until that holder releases.
+    // (answer_ref_count > 0), by a live promise export that resolved to it
+    // (promise_ref_count > 0), or by a live provision/cross-peer handoff proxy
+    // (handoff_ref_count > 0) survives for dispatch until that holder releases.
     if (entry.value_ptr.ref_count == 0 and
         entry.value_ptr.answer_ref_count == 0 and
-        entry.value_ptr.promise_ref_count == 0)
+        entry.value_ptr.promise_ref_count == 0 and
+        entry.value_ptr.handoff_ref_count == 0)
     {
         destroyExportEntry(
             PeerType,
@@ -228,7 +305,8 @@ pub fn releaseAnswerHeldExport(
 
     if (entry.value_ptr.ref_count == 0 and
         entry.value_ptr.answer_ref_count == 0 and
-        entry.value_ptr.promise_ref_count == 0)
+        entry.value_ptr.promise_ref_count == 0 and
+        entry.value_ptr.handoff_ref_count == 0)
     {
         destroyExportEntry(
             PeerType,
@@ -280,7 +358,8 @@ pub fn releasePromiseHeldExport(
 
     if (entry.value_ptr.ref_count == 0 and
         entry.value_ptr.answer_ref_count == 0 and
-        entry.value_ptr.promise_ref_count == 0)
+        entry.value_ptr.promise_ref_count == 0 and
+        entry.value_ptr.handoff_ref_count == 0)
     {
         destroyExportEntry(
             PeerType,
@@ -662,6 +741,8 @@ const TestExportEntry = struct {
     ref_count: u32,
     answer_ref_count: u32 = 0,
     promise_ref_count: u32 = 0,
+    handoff_ref_count: u32 = 0,
+    wire_ref_granted: bool = false,
 };
 
 const TestPendingCall = struct {

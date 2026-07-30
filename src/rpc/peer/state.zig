@@ -95,6 +95,22 @@ pub fn ExportEntry(comptime ExportType: type) type {
         /// references to it. Released only when the promise export that took it
         /// is itself destroyed; a Release message cannot touch these.
         promise_ref_count: u32 = 0,
+        /// Handoff-held references (L3 three-party hosting): one per live
+        /// provision whose pinned target is this export, plus one per live
+        /// cross-peer provision proxy forwarding to it. Like answer_ref_count
+        /// and promise_ref_count, a purely local lease: an inbound Release can
+        /// never touch it, and it never corresponds to an outbound wire
+        /// reference — so a hostile over-release stays a DETECTED
+        /// ReleaseCountExceeded rather than a silent destroy of a pinned
+        /// export.
+        handoff_ref_count: u32 = 0,
+        /// Set the first time a wire reference is granted on this entry
+        /// (`noteExportRef`). An entry that was NEVER wire-referenced is
+        /// app-owned — today no wire message can destroy such an entry, and
+        /// the handoff unpin path must not become the first one that can:
+        /// `releaseHandoffHeldExport` destroys only entries that were granted
+        /// to the wire at least once.
+        wire_ref_granted: bool = false,
         is_promise: bool = false,
         resolved: ?cap_table.ResolvedCap = null,
     };

@@ -2029,11 +2029,13 @@ test "L4 Join relays through transparent proxy exports and accepts direct cap" {
         &b_to_d,
         .{ .imported = .{ .id = d_via_b_export } },
         null,
+        null,
     );
     const c_proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
         &c_to_a,
         &b_to_d,
         .{ .imported = .{ .id = d_via_b_export } },
+        null,
         null,
     );
 
@@ -2113,6 +2115,7 @@ test "L4 Join proxy relay sends downstream Finish when upstream finishes first" 
         &source,
         .{ .imported = .{ .id = 123 } },
         null,
+        null,
     );
 
     const join_frame = try buildJoinFrame(allocator, 42, proxy_export, 0x4c02, 1, 0);
@@ -2168,6 +2171,7 @@ test "L4 Join proxy relay keeps retry state when downstream Finish send fails" {
         &owner,
         &source,
         .{ .imported = .{ .id = 124 } },
+        null,
         null,
     );
 
@@ -2225,6 +2229,7 @@ test "L4 Join proxy relay fails cleanly when source peer is unavailable" {
         &source,
         .{ .imported = .{ .id = 321 } },
         null,
+        null,
     );
     source.deinit();
 
@@ -2258,6 +2263,7 @@ test "L4 Join proxy relay downstream send failure drains relay state" {
         &owner,
         &source,
         .{ .imported = .{ .id = 444 } },
+        null,
         null,
     );
 
@@ -2294,6 +2300,7 @@ test "L4 Join proxy relay rejects unsupported source target without relay state"
         &source,
         .{ .exported = .{ .id = 448 } },
         null,
+        null,
     );
 
     const join_frame = try buildJoinFrame(allocator, 58, proxy_export, 0x4c10, 1, 0);
@@ -2329,6 +2336,7 @@ test "L4 Join proxy relay downstream Return relay failure drains relay state" {
         &owner,
         &source,
         .{ .imported = .{ .id = 445 } },
+        null,
         null,
     );
 
@@ -2376,6 +2384,7 @@ test "L4 Join proxy relay downstream exception relay failure drains relay state"
         &owner,
         &source,
         .{ .imported = .{ .id = 446 } },
+        null,
         null,
     );
 
@@ -2425,6 +2434,7 @@ test "L4 Join proxy relay unexpected downstream Return drains relay state" {
         &source,
         .{ .imported = .{ .id = 447 } },
         null,
+        null,
     );
 
     const join_frame = try buildJoinFrame(allocator, 56, proxy_export, 0x4c0e, 1, 0);
@@ -2469,6 +2479,7 @@ test "L4 Join proxy relay owner teardown finishes downstream question" {
         &source,
         .{ .imported = .{ .id = 777 } },
         null,
+        null,
     );
 
     const join_frame = try buildJoinFrame(allocator, 46, proxy_export, 0x4c06, 1, 0);
@@ -2509,6 +2520,7 @@ test "L4 Join proxy relay owner teardown neutralizes downstream question when Fi
         &owner,
         &source,
         .{ .imported = .{ .id = 780 } },
+        null,
         null,
     );
 
@@ -2557,6 +2569,7 @@ test "L4 Join proxy relay source teardown neutralizes owner backlink" {
         &source,
         .{ .imported = .{ .id = 778 } },
         null,
+        null,
     );
 
     const join_frame = try buildJoinFrame(allocator, 47, proxy_export, 0x4c07, 1, 0);
@@ -2592,6 +2605,7 @@ test "L4 Join proxy relay source teardown after Return drains on upstream Finish
         &owner,
         &source,
         .{ .imported = .{ .id = 779 } },
+        null,
         null,
     );
 
@@ -2645,6 +2659,7 @@ test "L4 Join proxy relay preserves releaseResultCaps on upstream Finish after R
         &owner,
         &source,
         .{ .imported = .{ .id = 781 } },
+        null,
         null,
     );
 
@@ -2700,6 +2715,7 @@ test "L4 Join proxy relay retries downstream Finish failure after Return" {
         &owner,
         &source,
         .{ .imported = .{ .id = 782 } },
+        null,
         null,
     );
 
@@ -2768,11 +2784,13 @@ test "L4 Join proxy relay propagates downstream target mismatch" {
         &source,
         .{ .imported = .{ .id = export_a } },
         null,
+        null,
     );
     const proxy_b = try peer_test_hooks.addCrossPeerProxyExport(
         &owner,
         &source,
         .{ .imported = .{ .id = export_b } },
+        null,
         null,
     );
 
@@ -2810,6 +2828,7 @@ fn crossPeerJoinRelayOomImpl(allocator: std.mem.Allocator) !void {
         &owner,
         &source,
         .{ .imported = .{ .id = 555 } },
+        null,
         null,
     );
 
