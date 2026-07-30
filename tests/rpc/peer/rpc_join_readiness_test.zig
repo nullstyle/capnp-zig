@@ -2857,7 +2857,16 @@ fn crossPeerJoinRelayOomImpl(allocator: std.mem.Allocator) !void {
 }
 
 test "L4 Join proxy relay rolls back state under OOM injection" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, crossPeerJoinRelayOomImpl, .{});
+    // TEMPORARY DIAGNOSTIC (branch debug/relsafe-oom-verdict): surface WHICH
+    // verdict checkAllAllocationFailures returns. It fails under ReleaseSafe on
+    // ubuntu-latest and windows-latest but the CI log prints no assertion text,
+    // and the three verdicts mean very different things:
+    //   SwallowedOutOfMemoryError / MemoryLeakDetected -> a real rollback defect
+    //   NondeterministicMemoryUsage                    -> a test problem
+    std.testing.checkAllAllocationFailures(std.testing.allocator, crossPeerJoinRelayOomImpl, .{}) catch |err| {
+        std.debug.print("\n>>> CHECKALL VERDICT: {s}\n", .{@errorName(err)});
+        return err;
+    };
 }
 
 test "L4 JoinResult send failure drains pending direct Accept state" {
