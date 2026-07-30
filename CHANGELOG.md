@@ -35,14 +35,30 @@
   rejected as a duplicate. Fixed by drawing loopback ids from a separate
   descending space; no Zig↔Zig test had exposed it.
 
-  **Otherwise proven Zig↔Zig only, and deliberately not everything:** `receiverHosted`
-  provide targets fail closed cross-peer (the wire-honest deferred-Release
-  import pin is specified but unlanded); vats are single-threaded
-  (`WorkerPool` excluded); **cross-implementation hosting is unproven** — no
-  reference implementation can currently drive the recipient/introducer roles
-  against a capnp-zig host, so conformance to the C++ host behavior is
-  analytic (built against the vendored `rpc.c++` reference), not empirical.
-  See `docs/supported-surface.md` for the full limitation list.
+  **Deliberately not everything:** `receiverHosted` provide targets fail closed
+  cross-peer (the wire-honest deferred-Release import pin is specified but
+  unlanded); vats are single-threaded (`WorkerPool` excluded); and beyond the
+  C++ reference, **cross-implementation hosting remains unproven** — no other
+  implementation can currently drive the recipient/introducer roles against a
+  capnp-zig host (go-capnp's 3PH is `TODO`; the Rust/Python adapters are
+  two-party only). See `docs/supported-surface.md` for the full limitation
+  list.
+
+### Changed
+
+- **Vendored Cap'n Proto bumped to the `v2` tip** (`ba3d1f6b` → `f8498184`,
+  185 commits). The old pin was a six-month-old commit that upstream's `v2`
+  branch had moved well past. `rpc.capnp` is unchanged by the bump, so the
+  mirrored `src/rpc/capnp/rpc.capnp` stays byte-identical and no generated
+  code moves. KJ made `kj::Exception` non-copyable in this range, so the two
+  e2e C++ drivers now use `e.clone()` where they used `kj::cp(e)` — upstream's
+  own prescribed migration. Both L3 interop lanes were re-run against a fully
+  rebuilt image: `e2e-l3-vatc` 12/12 and `e2e-l3-cpp` PASS(60).
+
+  Note this tracks an **unreleased** line: there is no 2.0 tag, and the 3PH
+  surface every L3 interop lane depends on does not exist in the latest stable
+  release (1.5.0 has none of the rendezvous types or `VatNetwork` hooks), so
+  pinning to a stable tag would mean deleting that evidence.
 
 ### Fixed
 
