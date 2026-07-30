@@ -2857,16 +2857,24 @@ fn crossPeerJoinRelayOomImpl(allocator: std.mem.Allocator) !void {
 }
 
 test "L4 Join proxy relay rolls back state under OOM injection" {
-    // TEMPORARY DIAGNOSTIC (branch debug/relsafe-oom-verdict): surface WHICH
-    // verdict checkAllAllocationFailures returns. It fails under ReleaseSafe on
-    // ubuntu-latest and windows-latest but the CI log prints no assertion text,
-    // and the three verdicts mean very different things:
-    //   SwallowedOutOfMemoryError / MemoryLeakDetected -> a real rollback defect
-    //   NondeterministicMemoryUsage                    -> a test problem
-    std.testing.checkAllAllocationFailures(std.testing.allocator, crossPeerJoinRelayOomImpl, .{}) catch |err| {
-        std.debug.print("\n>>> CHECKALL VERDICT: {s}\n", .{@errorName(err)});
-        return err;
-    };
+    // TEMPORARY DIAGNOSTIC (branch debug/relsafe-oom-verdict).
+    // checkAllAllocationFailures reported NondeterministicMemoryUsage on amd64
+    // tiers: a later run allocated FEWER times than the reference run. Measure
+    // the count over several identical runs to see the variance directly.
+    var counts: [6]usize = undefined;
+    for (&counts) |*c| {
+        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+        try crossPeerJoinRelayOomImpl(fa.allocator());
+        c.* = fa.alloc_index;
+    }
+    std.debug.print("\n>>> ALLOC COUNTS: {any}\n", .{counts});
+    for (counts[1..]) |c| {
+        if (c != counts[0]) {
+            std.debug.print(">>> NONDETERMINISTIC: {d} vs {d}\n", .{ counts[0], c });
+            return error.MeasuredNondeterminism;
+        }
+    }
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, crossPeerJoinRelayOomImpl, .{});
 }
 
 test "L4 JoinResult send failure drains pending direct Accept state" {
