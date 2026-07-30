@@ -370,14 +370,17 @@ test "peer_return_orchestration handles missing question via callback" {
             return error.TestUnexpectedResult;
         }
 
-        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) void {
+        // handleReturn() takes the auto-finish and regular-return hooks as
+        // `anyerror!void`, so these fakes must be fallible even though they
+        // never fail.
+        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) !void {
             _ = state;
             _ = question;
             _ = answer_id;
             _ = no_finish_needed;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
             _ = state;
             _ = question;
             _ = ret;
@@ -482,14 +485,16 @@ test "peer_return_orchestration regular path invokes regular handler and deinit"
             return error.TestUnexpectedResult;
         }
 
-        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) void {
+        // Fallible hook signatures: handleReturn() takes `anyerror!void`
+        // callbacks. These fakes only count calls, so they never fail.
+        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) !void {
             _ = question;
             _ = answer_id;
             _ = no_finish_needed;
             state.finish_calls += 1;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
             _ = inbound;
             std.testing.expectEqual(@as(u32, 9), question.marker) catch unreachable;
             std.testing.expectEqual(protocol.ReturnTag.canceled, ret.tag) catch unreachable;
@@ -600,14 +605,17 @@ test "peer_return_orchestration accept path invokes accept handler and maybe-fin
             state.accept_calls += 1;
         }
 
-        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) void {
+        // Fallible hook signatures: handleReturn() takes `anyerror!void`
+        // callbacks. The assertions still panic through `catch unreachable` so a
+        // mismatch is reported at the call site rather than as a return error.
+        fn maybeFinish(state: *State, question: Question, answer_id: u32, no_finish_needed: bool) !void {
             std.testing.expectEqual(@as(u32, 9), question.marker) catch unreachable;
             std.testing.expectEqual(@as(u32, 3), answer_id) catch unreachable;
             std.testing.expect(no_finish_needed) catch unreachable;
             state.finish_calls += 1;
         }
 
-        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) void {
+        fn handleRegular(state: *State, question: Question, ret: protocol.Return, inbound: *const Inbound) !void {
             _ = question;
             _ = ret;
             _ = inbound;
@@ -1123,7 +1131,11 @@ test "peer_return_orchestration handleReturnRegularForPeerFn applies adopted ans
         saw_answer_id: u32 = 0,
         finish_calls: usize = 0,
         release_calls: usize = 0,
-        on_error: ?*const fn (peer: *@This(), err: anyerror) void = onError,
+        // peer_return_dispatch.reportNonfatalErrorForPeer() invokes the hook as
+        // `cb(peer.callback_ctx, peer, err)`, mirroring Peer's callback shape,
+        // so the fake needs both the ctx slot and the 3-argument signature.
+        callback_ctx: ?*anyopaque = null,
+        on_error: ?*const fn (ctx: ?*anyopaque, peer: *@This(), err: anyerror) void = onError,
 
         fn init(allocator: std.mem.Allocator) @This() {
             return .{
@@ -1135,9 +1147,14 @@ test "peer_return_orchestration handleReturnRegularForPeerFn applies adopted ans
             self.adopted_third_party_answers.deinit();
         }
 
-        fn onError(peer: *@This(), err: anyerror) void {
+        fn onError(ctx: ?*anyopaque, peer: *@This(), err: anyerror) void {
+            _ = ctx;
             _ = peer;
-            _ = err;
+            // Discard through a pointer (`_ = &err`, the idiom std uses in
+            // `debug.simple_panic.unwrapError`): a plain `_ = err;` is rejected
+            // because discarding a value of error-set type is a compile error.
+            // The assertion here is that this path is never reached at all.
+            _ = &err;
             unreachable;
         }
 
@@ -1199,7 +1216,9 @@ test "peer_return_orchestration handleReturnRegularForPeerFn applies adopted ans
         PeerState.releaseInboundCaps,
         PeerState.sendFinish,
     );
-    handle_regular(&peer, question, ret, &inbound);
+    // The returned hook is `anyerror!void`; propagate rather than ignore so a
+    // dispatch failure fails the test instead of being silently swallowed.
+    try handle_regular(&peer, question, ret, &inbound);
 
     try std.testing.expectEqual(@as(usize, 1), peer.callback_calls);
     try std.testing.expectEqual(@as(u32, 42), peer.saw_answer_id);

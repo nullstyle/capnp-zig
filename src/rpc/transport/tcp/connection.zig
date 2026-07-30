@@ -1118,10 +1118,23 @@ test "connection handleRead reports malformed frame errors" {
     };
 
     var state = Harness.State{};
+    // A real Transport rather than `undefined`. `handleRead`'s terminal-error
+    // path runs `invokeTerminalError` -> `transport.shutdown()`, which reads
+    // the io vtable and closes the write queue; against an undefined transport
+    // that is a segfault dereferencing `io.vtable`. These two tests were
+    // written before `invokeTerminalError` shut the transport down, and never
+    // compiled afterwards, so nothing caught the drift.
+    //
+    // The socket is pre-marked closed so `shutdown` skips `netShutdown` and
+    // `deinit` skips `close` -- the sentinel fd is never handed to the OS.
+    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
+    transport.fd_closed.store(true, .release);
+    defer transport.deinit();
+
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = transport,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,
@@ -1138,6 +1151,16 @@ test "connection handleRead reports malformed frame errors" {
     try std.testing.expect(conn.on_message == null);
     try std.testing.expect(conn.on_error == null);
 }
+
+/// A socket handle that is never handed to the OS. Used by the `handleRead`
+/// terminal-error tests, whose transports are constructed already-closed so
+/// the fd is only ever compared, never operated on. Comptime-selected because
+/// `net.Socket.Handle` is an integer fd on POSIX and a pointer HANDLE on
+/// Windows.
+const invalid_socket_handle: std.Io.net.Socket.Handle = switch (@typeInfo(std.Io.net.Socket.Handle)) {
+    .pointer => @ptrFromInt(std.math.maxInt(usize)),
+    else => -1,
+};
 
 test "connection handleRead rejects oversized frame headers" {
     const allocator = std.testing.allocator;
@@ -1158,10 +1181,23 @@ test "connection handleRead rejects oversized frame headers" {
     };
 
     var state = Harness.State{};
+    // A real Transport rather than `undefined`. `handleRead`'s terminal-error
+    // path runs `invokeTerminalError` -> `transport.shutdown()`, which reads
+    // the io vtable and closes the write queue; against an undefined transport
+    // that is a segfault dereferencing `io.vtable`. These two tests were
+    // written before `invokeTerminalError` shut the transport down, and never
+    // compiled afterwards, so nothing caught the drift.
+    //
+    // The socket is pre-marked closed so `shutdown` skips `netShutdown` and
+    // `deinit` skips `close` -- the sentinel fd is never handed to the OS.
+    var transport = try transport_mod.Transport.init(allocator, std.testing.io, .{ .handle = invalid_socket_handle }, 64);
+    transport.fd_closed.store(true, .release);
+    defer transport.deinit();
+
     var conn = Connection{
         .allocator = allocator,
         .io = std.testing.io,
-        .transport = undefined,
+        .transport = transport,
         .framer = framing.Framer.init(allocator),
         .ctx = &state,
         .on_message = Harness.onMessage,

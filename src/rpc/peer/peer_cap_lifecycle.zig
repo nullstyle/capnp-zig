@@ -724,7 +724,12 @@ test "peer_cap_lifecycle releaseResultCaps releases sender-hosted and sender-pro
     var cap_list = try ret.initCapTableTyped(3);
 
     protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), 10);
-    protocol.CapDescriptor.writeNone(try cap_list.get(1));
+    // Index 1 is an explicit `.none` descriptor: releaseResultCaps must skip it
+    // and still reach index 2. `protocol.CapDescriptor` exposes no `none`
+    // writer (there is no payload to encode), so set the union tag through the
+    // generated builder, the same way protocol.writeCapDescriptorGenerated does.
+    var none_desc = try cap_list.get(1);
+    try none_desc.setNone({});
     protocol.CapDescriptor.writeSenderPromise(try cap_list.get(2), 11);
     const frame = try builder.finish();
     defer std.testing.allocator.free(frame);
@@ -1067,7 +1072,10 @@ test "peer_cap_lifecycle noteAnswerHeldResultCaps notes exports and rolls back o
     var ret = try builder.beginReturn(3, .results);
     var cap_list = try ret.initCapTableTyped(3);
     protocol.CapDescriptor.writeSenderHosted(try cap_list.get(0), 21);
-    protocol.CapDescriptor.writeNone(try cap_list.get(1));
+    // Same as above: an explicit `.none` slot between the two ref-taking
+    // descriptors, so the walk has to skip it and keep going to index 2.
+    var none_desc = try cap_list.get(1);
+    try none_desc.setNone({});
     protocol.CapDescriptor.writeSenderPromise(try cap_list.get(2), 22);
     const frame = try builder.finish();
     defer std.testing.allocator.free(frame);

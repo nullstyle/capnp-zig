@@ -288,7 +288,13 @@ test "peer_forward_orchestration buildForwardCallPlan maps modes to sendResultsT
     }
 
     {
-        var state = State{ .payload_to_return = "third-party-destination" };
+        // `capture_payload` returns an OWNED, mutable payload (`?[]u8`), so the
+        // fake hook needs a mutable backing buffer — a string literal is a
+        // `*const [N:0]u8` and will not coerce to `[]u8`. A stack array is
+        // enough: `buildForwardCallPlan` only threads the slice into the plan,
+        // it never writes to or frees it.
+        var payload_buf = "third-party-destination".*;
+        var state = State{ .payload_to_return = &payload_buf };
         const plan = try buildForwardCallPlan(
             State,
             &state,
@@ -455,6 +461,15 @@ test "peer_forward_orchestration forwardResolvedCallForPeerFn maps control mode 
             .tag = .caller,
             .third_party = null,
         },
+        // `protocol.Call` gained the three spec flag bits; none of them are
+        // defaulted. This test only exercises the mode mapping performed by
+        // `forwardResolvedCallForPeerFn` — the call message is passed through
+        // untouched (the fake sink discards it) — so the flags stay at the
+        // neutral "plain caller call, no tail permission, ordinary pipelining"
+        // values, matching the `.caller` `send_results_to` above.
+        .allow_third_party_tail = false,
+        .no_promise_pipelining = false,
+        .only_promise_pipeline = false,
     };
     const inbound = InboundCaps{};
 

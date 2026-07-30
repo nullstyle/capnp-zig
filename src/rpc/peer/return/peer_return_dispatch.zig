@@ -423,7 +423,9 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
         allocator: std.mem.Allocator,
         clear_calls: usize = 0,
         send_calls: usize = 0,
-        await_text: []const u8 = "",
+        // Owned, not borrowed -- same reason as `reason` in the exception
+        // test below: `send`'s DecodedMessage dies on return.
+        await_text: ?[]u8 = null,
     };
 
     const Hooks = struct {
@@ -440,7 +442,7 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
             const ret = try decoded.asReturn();
             try std.testing.expectEqual(protocol.ReturnTag.awaitFromThirdParty, ret.tag);
             const await_ptr = ret.accept_from_third_party orelse return error.MissingThirdPartyPayload;
-            state.await_text = try await_ptr.getText();
+            state.await_text = try state.allocator.dupe(u8, try await_ptr.getText());
         }
     };
 
@@ -454,6 +456,7 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
     var state = State{
         .allocator = std.testing.allocator,
     };
+    defer if (state.await_text) |t| std.testing.allocator.free(t);
     try sendReturnAcceptFromThirdPartyForPeer(
         State,
         &state,
@@ -465,7 +468,7 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
 
     try std.testing.expectEqual(@as(usize, 1), state.clear_calls);
     try std.testing.expectEqual(@as(usize, 1), state.send_calls);
-    try std.testing.expectEqualStrings("loopback-await", state.await_text);
+    try std.testing.expectEqualStrings("loopback-await", state.await_text orelse return error.MissingAwaitText);
 }
 
 test "peer_return_dispatch sendReturnExceptionForPeer clears routing and sends exception payload" {
@@ -475,7 +478,13 @@ test "peer_return_dispatch sendReturnExceptionForPeer clears routing and sends e
         send_calls: usize = 0,
         clear_answer_id: u32 = 0,
         sent_answer_id: u32 = 0,
-        reason: []const u8 = "",
+        // Owned, not borrowed. `send` decodes the frame into a locally-scoped
+        // `DecodedMessage` and destroys it on return, so a slice into it
+        // dangles by the time the assertions below run. Storing the borrow is
+        // what these never-compiled tests did, and it read back as
+        // `UUUUUUUUUU` -- SafeAllocator's 0x55 free-fill -- the moment they
+        // were first executed.
+        reason: ?[]u8 = null,
     };
 
     const Hooks = struct {
@@ -492,18 +501,28 @@ test "peer_return_dispatch sendReturnExceptionForPeer clears routing and sends e
             const ret = try decoded.asReturn();
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
-            state.reason = ex.reason;
+            // The retryability signal has to survive the round trip too, not
+            // just the reason text. `.failed` is ordinal 0, so asserting a
+            // non-zero type is what keeps this from passing vacuously if the
+            // frame builder ever stopped writing Exception.type.
+            try std.testing.expectEqual(protocol.ExceptionType.disconnected, ex.kind());
+            state.reason = try state.allocator.dupe(u8, ex.reason);
         }
     };
 
     var state = State{
         .allocator = std.testing.allocator,
     };
+    defer if (state.reason) |r| std.testing.allocator.free(r);
     try sendReturnExceptionForPeer(
         State,
         &state,
         46,
         "send-failed",
+        // A failed send is a lost connection, so this exercises the typed
+        // (non-default) arm of sendReturnExceptionForPeer rather than the
+        // `.failed` fallback that plain `Peer.sendReturnException` supplies.
+        .disconnected,
         Hooks.clear,
         Hooks.send,
     );
@@ -512,7 +531,7 @@ test "peer_return_dispatch sendReturnExceptionForPeer clears routing and sends e
     try std.testing.expectEqual(@as(usize, 1), state.send_calls);
     try std.testing.expectEqual(@as(u32, 46), state.clear_answer_id);
     try std.testing.expectEqual(@as(u32, 46), state.sent_answer_id);
-    try std.testing.expectEqualStrings("send-failed", state.reason);
+    try std.testing.expectEqualStrings("send-failed", state.reason orelse return error.MissingReason);
 }
 
 test "peer_return_dispatch sendReturnTakeFromOtherQuestionForPeer clears routing and sends question id" {
@@ -609,7 +628,11 @@ test "peer_return_dispatch dispatchQuestionReturn reports callback failures" {
     var state = State{};
     const question = Question{ .marker = 7 };
     const inbound = InboundCaps{ .marker = 5 };
-    dispatchQuestionReturn(
+    // `try`, not `expectError`: the whole point of dispatchQuestionReturn is
+    // that a non-OOM callback failure is swallowed and handed to the nonfatal
+    // reporter, so this call must SUCCEED while report_calls goes up. Only
+    // error.OutOfMemory propagates.
+    try dispatchQuestionReturn(
         State,
         Question,
         InboundCaps,
@@ -661,10 +684,17 @@ test "peer_return_dispatch dispatchQuestionReturnForPeerFn calls question callba
         callback_calls: usize = 0,
         report_calls: usize = 0,
         saw_marker: u32 = 0,
-        on_error: ?*const fn (peer: *@This(), err: anyerror) void = onError,
+        saw_ctx: ?*anyopaque = null,
+        // reportNonfatalErrorForPeer reads BOTH of these off the peer and calls
+        // `on_error(callback_ctx, peer, err)` — the same (ctx, peer, err) shape
+        // the real `Peer.on_error` hook has. A stand-in peer therefore needs the
+        // ctx field as well as the hook.
+        callback_ctx: ?*anyopaque = null,
+        on_error: ?*const fn (ctx: ?*anyopaque, peer: *@This(), err: anyerror) void = onError,
 
-        fn onError(peer: *@This(), err: anyerror) void {
+        fn onError(ctx: ?*anyopaque, peer: *@This(), err: anyerror) void {
             std.testing.expectEqual(error.TestExpectedError, err) catch unreachable;
+            peer.saw_ctx = ctx;
             peer.report_calls += 1;
         }
     };
@@ -698,7 +728,11 @@ test "peer_return_dispatch dispatchQuestionReturnForPeerFn calls question callba
     };
 
     var marker: u32 = 7;
-    var peer = PeerState{};
+    // Deliberately a different object from the question's ctx, so the
+    // assertion below proves the PEER's callback_ctx (not the question's)
+    // is what reaches on_error.
+    var error_ctx: u8 = 0;
+    var peer = PeerState{ .callback_ctx = &error_ctx };
     const question = Question{
         .ctx = &marker,
         .on_return = Hooks.onReturn,
@@ -706,11 +740,13 @@ test "peer_return_dispatch dispatchQuestionReturnForPeerFn calls question callba
     const inbound = InboundCaps{ .marker = 5 };
 
     const dispatch = dispatchQuestionReturnForPeerFn(PeerState, Question, InboundCaps);
-    dispatch(&peer, question, ret, &inbound);
+    // Succeeds: the callback's non-OOM failure is reported, not propagated.
+    try dispatch(&peer, question, ret, &inbound);
 
     try std.testing.expectEqual(@as(usize, 1), peer.callback_calls);
     try std.testing.expectEqual(@as(usize, 1), peer.report_calls);
     try std.testing.expectEqual(@as(u32, 12), peer.saw_marker);
+    try std.testing.expectEqual(@as(?*anyopaque, &error_ctx), peer.saw_ctx);
 }
 
 test "peer_return_dispatch releaseInboundCapsForPeerFn passes mutable copy to peer method" {
@@ -745,9 +781,16 @@ test "peer_return_dispatch maybeSendAutoFinishForPeerFn routes send-finish error
         finish_calls: usize = 0,
         error_calls: usize = 0,
         fail_finish: bool = false,
-        on_error: ?*const fn (peer: *@This(), err: anyerror) void = onError,
+        // reportNonfatalErrorForPeer calls `on_error(callback_ctx, peer, err)`,
+        // matching the real `Peer` hook, so the stand-in peer carries a ctx
+        // field. This test is about finish routing, not ctx plumbing (that is
+        // covered by the dispatchQuestionReturnForPeerFn test above), so the
+        // ctx stays null and is ignored by the hook.
+        callback_ctx: ?*anyopaque = null,
+        on_error: ?*const fn (ctx: ?*anyopaque, peer: *@This(), err: anyerror) void = onError,
 
-        fn onError(peer: *@This(), err: anyerror) void {
+        fn onError(ctx: ?*anyopaque, peer: *@This(), err: anyerror) void {
+            _ = ctx;
             std.testing.expectEqual(error.TestExpectedError, err) catch unreachable;
             peer.error_calls += 1;
         }
@@ -763,17 +806,19 @@ test "peer_return_dispatch maybeSendAutoFinishForPeerFn routes send-finish error
     var peer = PeerState{};
     const maybe_finish = maybeSendAutoFinishForPeerFn(PeerState, Question, PeerState.sendFinish);
 
-    maybe_finish(&peer, .{}, 10, false);
+    try maybe_finish(&peer, .{}, 10, false);
     try std.testing.expectEqual(@as(usize, 1), peer.finish_calls);
     try std.testing.expectEqual(@as(usize, 0), peer.error_calls);
 
     peer.fail_finish = true;
-    maybe_finish(&peer, .{}, 11, false);
+    // Still `try`: a non-OOM send-finish failure is routed to on_error rather
+    // than propagated, which is exactly what the error_calls bump below proves.
+    try maybe_finish(&peer, .{}, 11, false);
     try std.testing.expectEqual(@as(usize, 2), peer.finish_calls);
     try std.testing.expectEqual(@as(usize, 1), peer.error_calls);
 
-    maybe_finish(&peer, .{ .is_loopback = true }, 12, false);
-    maybe_finish(&peer, .{ .suppress_auto_finish = true }, 13, false);
-    maybe_finish(&peer, .{}, 14, true);
+    try maybe_finish(&peer, .{ .is_loopback = true }, 12, false);
+    try maybe_finish(&peer, .{ .suppress_auto_finish = true }, 13, false);
+    try maybe_finish(&peer, .{}, 14, true);
     try std.testing.expectEqual(@as(usize, 2), peer.finish_calls);
 }

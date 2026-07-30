@@ -413,6 +413,12 @@ test "peer_call_orchestration routeCallTarget enforces required target payloads"
             .tag = .caller,
             .third_party = null,
         },
+        // Routing only depends on `target`; the three call hint bits are set to
+        // their schema defaults (false, i.e. what a Call decodes to when the
+        // sender leaves the bits clear) so they stay out of the way here.
+        .allow_third_party_tail = false,
+        .no_promise_pipelining = false,
+        .only_promise_pipeline = false,
     };
     const imported_target = try routeCallTarget(imported);
     try std.testing.expectEqual(@as(u32, 77), imported_target.imported);
@@ -434,6 +440,9 @@ test "peer_call_orchestration routeCallTarget enforces required target payloads"
             .tag = .caller,
             .third_party = null,
         },
+        .allow_third_party_tail = false,
+        .no_promise_pipelining = false,
+        .only_promise_pipeline = false,
     };
     try std.testing.expectError(error.MissingCallTarget, routeCallTarget(bad_imported));
 }
@@ -493,6 +502,11 @@ test "peer_call_orchestration dispatchImportedTargetPlan invokes handler and not
             .tag = .caller,
             .third_party = null,
         },
+        // Plain caller-returned call: none of the hint bits are exercised by
+        // dispatchImportedTargetPlan, so they carry their schema default.
+        .allow_third_party_tail = false,
+        .no_promise_pipelining = false,
+        .only_promise_pipeline = false,
     };
     const inbound = InboundCaps{};
 
@@ -596,6 +610,9 @@ test "peer_call_orchestration handleResolvedExportedCallForPeerFn reports unknow
             .tag = .caller,
             .third_party = null,
         },
+        .allow_third_party_tail = false,
+        .no_promise_pipelining = false,
+        .only_promise_pipeline = false,
     };
     const inbound = InboundCaps{};
 
@@ -658,6 +675,11 @@ test "peer_call_orchestration handleCallForPeer routes imported and promised tar
                 .tag = .caller,
                 .third_party = null,
             },
+            // Only the target discriminant steers handleCallForPeer; hint bits
+            // stay at their schema default.
+            .allow_third_party_tail = false,
+            .no_promise_pipelining = false,
+            .only_promise_pipeline = false,
         },
         Hooks.imported,
         Hooks.promised,
@@ -674,7 +696,10 @@ test "peer_call_orchestration handleCallForPeer routes imported and promised tar
                 .imported_cap = null,
                 .promised_answer = .{
                     .question_id = 9,
-                    .transform = .{ .segment = &.{}, .byte_offset = 0 },
+                    // Empty transform: `PromisedAnswerTransform` now wraps an
+                    // optional struct-list reader, and a null list is the
+                    // zero-op transform this test wants.
+                    .transform = .{ .list = null },
                 },
             },
             .interface_id = 0,
@@ -687,6 +712,9 @@ test "peer_call_orchestration handleCallForPeer routes imported and promised tar
                 .tag = .caller,
                 .third_party = null,
             },
+            .allow_third_party_tail = false,
+            .no_promise_pipelining = false,
+            .only_promise_pipeline = false,
         },
         Hooks.imported,
         Hooks.promised,

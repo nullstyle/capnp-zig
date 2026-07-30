@@ -376,7 +376,12 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
         }
 
         fn reportNonfatal(peer: *FakePeer, err: anyerror) void {
-            _ = err;
+            // This fake only counts reports; the assertion below is that the
+            // count stays 0, so the specific error is deliberately unused.
+            // Discard through a pointer (`_ = &err`, the same idiom std uses in
+            // `debug.simple_panic.unwrapError`): a plain `_ = err;` is rejected
+            // because discarding a value of error-set type is a compile error.
+            _ = &err;
             peer.nonfatal_count += 1;
         }
     };

@@ -74,7 +74,13 @@ test "peer_return_frames buildReturnTagFrame encodes requested tag" {
 }
 
 test "peer_return_frames buildReturnExceptionFrame encodes reason" {
-    const frame = try buildReturnExceptionFrame(std.testing.allocator, 71, "bad");
+    // `ex_type` is deliberately NOT `.failed` here: `failed` is ordinal 0, which
+    // is also what an unwritten `Exception.type` field reads back as, so
+    // asserting on it could not tell "the caller's type was encoded" from "the
+    // field was never touched". `.overloaded` (ordinal 1) makes the round trip
+    // observable while leaving the reason/tag/answer-id checks — this test's
+    // original subject — exactly as they were.
+    const frame = try buildReturnExceptionFrame(std.testing.allocator, 71, "bad", .overloaded);
     defer std.testing.allocator.free(frame);
 
     var decoded = try protocol.DecodedMessage.init(std.testing.allocator, frame);
@@ -84,6 +90,7 @@ test "peer_return_frames buildReturnExceptionFrame encodes reason" {
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
     const ex = ret.exception orelse return error.MissingException;
     try std.testing.expectEqualStrings("bad", ex.reason);
+    try std.testing.expectEqual(protocol.ExceptionType.overloaded, ex.kind());
 }
 
 test "peer_return_frames buildReturnTakeFromOtherQuestionFrame encodes referenced question id" {

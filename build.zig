@@ -661,6 +661,12 @@ pub fn build(b: *std.Build) void {
         .imports = &.{},
     });
     addQuicImport(lib_tests_module, quic_zig_module);
+    // The checked-in generated code under src/rpc/gen/ imports the library by
+    // its MODULE name (`@import("capnpc-zig")`), the way a consumer would. The
+    // self-import makes that resolve when the library is its own test root --
+    // `lib_module` already does this, and without it here the generated files
+    // cannot be analysed, which silently excludes their tests.
+    lib_tests_module.addImport("capnpc-zig", lib_tests_module);
     const lib_tests = b.addTest(.{
         .root_module = lib_tests_module,
     });

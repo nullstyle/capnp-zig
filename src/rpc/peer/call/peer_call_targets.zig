@@ -135,9 +135,14 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
         }
     };
 
+    // Neither the planner nor the fake hooks above inspect the transform, so
+    // this only has to be a well-formed PromisedAnswer carrying an empty
+    // transform path. `PromisedAnswerTransform` wraps an optional struct-list
+    // reader, and an absent list is the empty path (`len() == 0`) — the same
+    // thing the older raw segment/offset pair expressed.
     const promised = protocol.PromisedAnswer{
         .question_id = 1,
-        .transform = .{ .segment = &.{}, .byte_offset = 0 },
+        .transform = .{ .list = null },
     };
 
     {

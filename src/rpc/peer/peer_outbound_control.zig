@@ -426,7 +426,13 @@ test "peer_outbound_control sendReleaseForPeerFn builds release message" {
     var state = State{
         .allocator = std.testing.allocator,
     };
-    const send_builder = sendBuilderForPeerFn(State, Hooks.sendFrame);
+    // `sendBuilderForPeerFn` yields a function pointer that IS comptime-known,
+    // but a plain `const` binding in a runtime scope stores it as a runtime
+    // value, which the `comptime send_builder` parameter of
+    // `sendReleaseForPeerFn` rejects ("unable to resolve comptime value").
+    // Forcing the initializer with `comptime` keeps the binding comptime-known
+    // while preserving the two-step composition this test exercises.
+    const send_builder = comptime sendBuilderForPeerFn(State, Hooks.sendFrame);
     const send_release = sendReleaseForPeerFn(State, send_builder);
     try send_release(&state, 77, 3);
 
@@ -460,8 +466,11 @@ test "peer_outbound_control sendFinishForPeerFn clears early-cancel flag" {
     var state = State{
         .allocator = std.testing.allocator,
     };
-    const send_builder = sendBuilderForPeerFn(State, Hooks.sendFrame);
-    const send_finish_with_flags = sendFinishWithFlagsForPeerFn(State, send_builder);
+    // Both intermediate callbacks feed `comptime` parameters of the next
+    // factory, so each binding must stay comptime-known (see the note in the
+    // sendReleaseForPeerFn test above).
+    const send_builder = comptime sendBuilderForPeerFn(State, Hooks.sendFrame);
+    const send_finish_with_flags = comptime sendFinishWithFlagsForPeerFn(State, send_builder);
     const send_finish = sendFinishForPeerFn(State, send_finish_with_flags);
     try send_finish(&state, 91, true);
 
@@ -475,7 +484,15 @@ test "peer_outbound_control sendAbortForPeerFn builds abort message" {
     const State = struct {
         allocator: std.mem.Allocator,
         calls: usize = 0,
-        reason: []const u8 = "",
+        // A decoded `Exception.reason` borrows the frame bytes, and `sendBuilder`
+        // frees the frame as soon as the send hook returns, so the reason has to
+        // be copied out rather than aliased for the assertion below.
+        reason_buf: [64]u8 = undefined,
+        reason_len: usize = 0,
+
+        fn reason(self: *const @This()) []const u8 {
+            return self.reason_buf[0..self.reason_len];
+        }
     };
 
     const Hooks = struct {
@@ -485,19 +502,23 @@ test "peer_outbound_control sendAbortForPeerFn builds abort message" {
             defer decoded.deinit();
             try std.testing.expectEqual(protocol.MessageTag.abort, decoded.tag);
             const abort = try decoded.asAbort();
-            state.reason = abort.exception.reason;
+            try std.testing.expect(abort.exception.reason.len <= state.reason_buf.len);
+            @memcpy(state.reason_buf[0..abort.exception.reason.len], abort.exception.reason);
+            state.reason_len = abort.exception.reason.len;
         }
     };
 
     var state = State{
         .allocator = std.testing.allocator,
     };
-    const send_builder = sendBuilderForPeerFn(State, Hooks.sendFrame);
+    // `sendAbortForPeerFn` takes the builder callback as a `comptime` parameter
+    // (see the note in the sendReleaseForPeerFn test above).
+    const send_builder = comptime sendBuilderForPeerFn(State, Hooks.sendFrame);
     const send_abort = sendAbortForPeerFn(State, send_builder);
     try send_abort(&state, "fatal");
 
     try std.testing.expectEqual(@as(usize, 1), state.calls);
-    try std.testing.expectEqualStrings("fatal", state.reason);
+    try std.testing.expectEqualStrings("fatal", state.reason());
 }
 
 test "peer_outbound_control sendFinishViaSendFrameForPeerFn composes finish callbacks" {

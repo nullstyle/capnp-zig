@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **179 `test` blocks under `src/rpc` were never compiled, let alone run.**
+  `src/rpc/mod.zig` re-exports through namespace *structs*; Zig analyses a
+  container's declarations lazily, so nothing forced the files behind them to be
+  analysed, and a file that is never analysed contributes no tests. The library's
+  own test root collected 148 tests out of 349 present in `src/`.
+
+  Proven with a canary rather than by inspection: a
+  `test { try std.testing.expect(false); }` added to `src/rpc/peer/mod.zig` left
+  `zig build test` exiting **0** without ever mentioning it. With the fix in
+  place the same canary fails, which is what says the mechanism works.
+  `std.testing.refAllDecls` is not sufficient on its own — it stops at those
+  namespace structs, and the recursive variant it used to pair with no longer
+  exists in std — so `src/rpc/mod.zig` now carries a bounded declaration walk.
+  The library test root goes from **148 to 310** collected tests.
+
+  Compiling them for the first time surfaced 24 compile errors across 9 files,
+  all API drift in the tests rather than defects in shipping code, plus four
+  genuine test failures that had been dormant:
+
+  - Two `connection handleRead` tests built a `Connection` with
+    `.transport = undefined` and segfaulted dereferencing the io vtable.
+    `invokeTerminalError` gained a `transport.shutdown()` call after those tests
+    were written, and nothing ever compiled them again.
+  - Two `peer_return_dispatch` tests stored a `[]const u8` borrowed from a
+    `DecodedMessage` their own hook destroyed on return, then asserted on it
+    afterwards. They read back as `UUUUUUUUUU` — `SafeAllocator`'s `0x55`
+    free-fill — which is to say these tests had a use-after-free of their own.
+
+  The checked-in generated code under `src/rpc/gen/` also could not be analysed
+  by the library test root, because it imports the library by module name the
+  way a consumer does; the test module now self-imports as `capnpc-zig`, matching
+  what `lib_module` already did.
+
 - **Use-after-free in `HostPeer` teardown.** `Peer.deinit` is send-bearing —
   `forceCancelAllQuestions` emits `Finish` frames and `releaseAllImports` emits
   `Release` frames whenever a send path is available — and `HostPeer` installs
