@@ -2857,36 +2857,12 @@ fn crossPeerJoinRelayOomImpl(allocator: std.mem.Allocator) !void {
 }
 
 test "L4 Join proxy relay rolls back state under OOM injection" {
-    // TEMPORARY DIAGNOSTIC (branch debug/relsafe-oom-verdict).
-    // Reimplements checkAllAllocationFailures' loop with instrumentation, to
-    // find WHICH fail_index sees no induced failure and how many allocs the
-    // run actually made. Hypothesis: `alloc_index` is bumped only by `alloc`,
-    // while `resize`/`remap` bump a separate counter that this harness never
-    // fails -- so a buffer that grows in place on one iteration but needs a
-    // fresh alloc on another shifts the count, and whether in-place growth
-    // succeeds depends on residual heap state.
-    var ref = std.testing.FailingAllocator.init(std.testing.allocator, .{});
-    try crossPeerJoinRelayOomImpl(ref.allocator());
-    const needed = ref.alloc_index;
-    std.debug.print("\n>>> reference allocs = {d}\n", .{needed});
-
-    var anomalies: usize = 0;
-    for (0..needed) |fail_index| {
-        var fa = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
-        if (crossPeerJoinRelayOomImpl(fa.allocator())) |_| {
-            std.debug.print(
-                ">>> ANOMALY fail_index={d} induced={} alloc_index={d} resize_index={d} allocs={d} deallocs={d}\n",
-                .{ fail_index, fa.has_induced_failure, fa.alloc_index, fa.resize_index, fa.allocations, fa.deallocations },
-            );
-            anomalies += 1;
-            if (anomalies >= 5) break;
-        } else |err| switch (err) {
-            error.OutOfMemory => {},
-            else => |e| return e,
-        }
-    }
-    std.debug.print(">>> anomalies = {d}\n", .{anomalies});
-    try std.testing.expectEqual(@as(usize, 0), anomalies);
+    // Isolated backing allocator per iteration. `std.testing.
+    // checkAllAllocationFailures` shares one across every fail index, and that
+    // coupling reported this deterministic impl as NondeterministicMemoryUsage
+    // under ReleaseSafe on both amd64 tiers while passing on macOS and
+    // linux-aarch64. See the helper for the measured evidence.
+    try harness.checkAllAllocationFailuresIsolated(crossPeerJoinRelayOomImpl, .{});
 }
 
 test "L4 JoinResult send failure drains pending direct Accept state" {

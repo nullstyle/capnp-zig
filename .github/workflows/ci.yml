@@ -442,14 +442,8 @@ jobs:
       # fuzz-smoke and two transport files, so most of the RPC runtime -- peer,
       # caps, promises, vat, integration -- is still never executed with safety
       # checks on in an optimized build.
-      - name: Run ReleaseSafe hardening tests
-        run: zig build test-release-safe --summary all
-
-      # TEMPORARY DIAGNOSTIC (branch debug/relsafe-oom-verdict): run the suite
-      # that fails under ReleaseSafe on amd64 tiers, with the test instrumented
-      # to print its checkAllAllocationFailures verdict. Not for main.
-      - name: DEBUG join-readiness under ReleaseSafe
-        run: zig build test-rpc-peer -Doptimize=ReleaseSafe --summary all
+      - name: Run the full suite under ReleaseSafe
+        run: zig build test -Doptimize=ReleaseSafe --summary all
 
       # ReleaseFast, not for speed but because it is the only mode that does NOT
       # poison a freed pointer. A use-after-free reached from a destructor is
