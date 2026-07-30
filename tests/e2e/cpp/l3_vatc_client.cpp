@@ -249,7 +249,7 @@ public:
   kj::Promise<kj::Maybe<kj::Own<capnp::IncomingRpcMessage>>> receiveIncomingMessage() override {
     return kj::evalLater([this]() -> kj::Promise<kj::Maybe<kj::Own<capnp::IncomingRpcMessage>>> {
       KJ_IF_SOME(e, readCancelReason) {
-        return kj::cp(e);
+        return e.clone();
       }
       kj::Array<kj::OwnFd> fdSpace = nullptr;
       auto promise = readCanceler.wrap(messageStream->tryReadMessage(fdSpace, receiveOptions));
@@ -321,9 +321,9 @@ private:
           return connection.messageStream->writeMessage(selfRef->message.getSegmentsForOutput())
               .attach(kj::mv(selfRef));
         }).catch_([&connection = connection](kj::Exception&& e) {
-          connection.readCancelReason = kj::cp(e);
+          connection.readCancelReason = e.clone();
           if (!connection.readCanceler.isEmpty()) {
-            connection.readCanceler.cancel(kj::cp(e));
+            connection.readCanceler.cancel(e.clone());
           }
           kj::throwRecoverableException(kj::mv(e));
         }).eagerlyEvaluate(nullptr);
