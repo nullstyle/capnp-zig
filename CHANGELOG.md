@@ -1,5 +1,39 @@
 ## [Unreleased]
 
+### Added
+
+- **A multi-connection vat can now HOST Level-3 three-party handoffs (the VatC
+  role), Experimental.** The spec's canonical topology puts `Provide` on the
+  introducer↔host connection and `Accept` on the recipient↔host connection —
+  different `Peer`s of one vat — and every per-peer table previously answered
+  such an Accept with `"unknown provision"` (a witness test keeps that failure
+  pinned). The new vat-wide `rpc.vat.provisions.ProvisionIndex` holds
+  refcounted, connection-independent provision objects (the C++ reference's
+  ThirdPartyExchangeValue analogue); the accepted capability is served as a
+  proxy export on the accept peer pinned to the owner's export by a new
+  Release-immune `handoff_ref_count` ref class, so it survives the
+  introducer's Finish, and hostile over-release stays a detected protocol
+  error. Embargoed accepts queue in per-provision slots released by the
+  spec-form accept-`Disembargo` (promisedAnswer target naming the Provide
+  question — the introducer now emits that form, ordered after the
+  parked-call replay so e-order holds under synchronous transports, where the
+  old ordering both inverted e-order and stranded the parked calls).
+  Accept-before-Provide parks and is adopted by the later Provide; stored
+  promised targets re-resolve on the owner; accept-embargo ids are 16 random
+  bytes from a fail-closed `randomSecure`-seeded source on tcp sessions; the
+  `rpc.peer.Vat` facade owns the index + CSPRNG with one `enroll(peer)` per
+  connection. Teardown is leak-free with either peer or the index dying
+  first.
+
+  **Proven Zig↔Zig only, and deliberately not everything:** `receiverHosted`
+  provide targets fail closed cross-peer (the wire-honest deferred-Release
+  import pin is specified but unlanded); vats are single-threaded
+  (`WorkerPool` excluded); **cross-implementation hosting is unproven** — no
+  reference implementation can currently drive the recipient/introducer roles
+  against a capnp-zig host, so conformance to the C++ host behavior is
+  analytic (built against the vendored `rpc.c++` reference), not empirical.
+  See `docs/supported-surface.md` for the full limitation list.
+
 ### Fixed
 
 - **`schema_validation.canonicalizeMessage` did not compile.** It is `pub` and

@@ -2338,3 +2338,62 @@ test "L7: a minted accept-embargo id is the entropy source's 16-byte stream on t
     try harness.expectNoProvideState(&peers.c_to_b);
     try harness.expectNoProvideState(&peers.c_to_a);
 }
+
+// ============================================================================
+// L8: the Vat facade — one object per vat: enroll a peer per connection.
+// ============================================================================
+
+test "L8 Vat: entropy is mandatory (seed or io), enrollment wires index + entropy, handoff works" {
+    const allocator = std.testing.allocator;
+
+    // Neither seed nor io: refused.
+    try std.testing.expectError(error.EntropyUnavailable, peer_impl.Vat.init(allocator, .{}));
+
+    var peers: SixPeers = undefined;
+    peers.init(allocator);
+    defer peers.deinitPeers();
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var vat = try peer_impl.Vat.init(allocator, .{ .seed = @as([32]u8, @splat(7)) });
+    vat.disableThreadAffinity();
+    defer vat.deinit();
+    try vat.enroll(&peers.c_to_b);
+    try vat.enroll(&peers.c_to_a);
+    // Double-enroll refused.
+    try std.testing.expectError(error.PeerAlreadyAttachedToProvisionIndex, vat.enroll(&peers.c_to_b));
+
+    var setup = HandoffSetup{};
+    try setup.run(&peers, &net, "vatc-l8");
+    var pickup = VatcPickupHandler{ .allocator = allocator, .expected_promise_id = setup.promise_import };
+    defer pickup.deinit();
+    peers.a_to_b.setHandoffPickupHandler(&pickup, VatcPickupHandler.onPickup);
+    try setup.originate(&peers, "vatc-l8");
+
+    try std.testing.expectEqualStrings("results", @tagName(pickup.ret_tag.?));
+    const accepted = pickup.carol_import_id orelse return error.NoAcceptedCap;
+    var call = TolerantCall{};
+    _ = try peers.a_to_c.sendCall(accepted, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &call, null, TolerantCall.onReturn);
+    try std.testing.expectEqual(@as(?u32, 42), call.result_n);
+
+    // Deterministic seed => deterministic stream: two fresh Vats with the
+    // same seed produce identical bytes (the L7 wire test pins how a minted
+    // id reaches the frame; this pins the seed seam).
+    var vat2 = try peer_impl.Vat.init(allocator, .{ .seed = @as([32]u8, @splat(9)) });
+    vat2.disableThreadAffinity();
+    defer vat2.deinit();
+    var vat3 = try peer_impl.Vat.init(allocator, .{ .seed = @as([32]u8, @splat(9)) });
+    vat3.disableThreadAffinity();
+    defer vat3.deinit();
+    var a: [16]u8 = undefined;
+    var b: [16]u8 = undefined;
+    vat2.rng.random().bytes(&a);
+    vat3.rng.random().bytes(&b);
+    try std.testing.expectEqualSlices(u8, &a, &b);
+
+    try peers.a_to_c.releaseImport(accepted, 1);
+    try setup.teardownImports(&peers);
+    try harness.expectNoProvideState(&peers.c_to_b);
+    try harness.expectNoProvideState(&peers.c_to_a);
+}

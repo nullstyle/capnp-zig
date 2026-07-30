@@ -1175,6 +1175,18 @@ capnpc-zig.rpc.peer.TransportCloseFn: type = *const fn (*anyopaque) void
 capnpc-zig.rpc.peer.TransportIsClosingFn: type = *const fn (*anyopaque) bool
 capnpc-zig.rpc.peer.TransportSendFn: type = *const fn (*anyopaque, []const u8) anyerror!void
 capnpc-zig.rpc.peer.TransportStartFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Vat.Options.io: field ?Io = null
+capnpc-zig.rpc.peer.Vat.Options.limits: field rpc.vat.provisions.ProvisionIndexLimits = <default>
+capnpc-zig.rpc.peer.Vat.Options.seed: field ?[32]u8 = null
+capnpc-zig.rpc.peer.Vat.Options: struct
+capnpc-zig.rpc.peer.Vat.deinit: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Vat.disableThreadAffinity: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Vat.enroll: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer), *rpc.peer.mod.Peer) error{OutOfMemory,PeerAlreadyAttachedToProvisionIndex,PeerAlreadyHasHandoffState}!void
+capnpc-zig.rpc.peer.Vat.index: field rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.Vat.init: fn (mem.Allocator, rpc.vat.host.Vat(rpc.peer.mod.Peer).Options) error{Canceled,EntropyUnavailable}!rpc.vat.host.Vat(rpc.peer.mod.Peer)
+capnpc-zig.rpc.peer.Vat.rng: field Random.ChaCha
+capnpc-zig.rpc.peer.Vat.withdraw: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer), *rpc.peer.mod.Peer) error{PeerHasActiveHandoffState}!void
+capnpc-zig.rpc.peer.Vat: struct
 capnpc-zig.rpc.peer.VatNetwork.ConnectToIntroducedFn: type = *const fn (*anyopaque, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!rpc.vat.network.Introduced(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.VatNetwork.IntroducedType.completion: field []u8
 capnpc-zig.rpc.peer.VatNetwork.IntroducedType.deinit: fn (*rpc.vat.network.Introduced(rpc.peer.mod.Peer), mem.Allocator) void
@@ -1905,6 +1917,8 @@ capnpc-zig.rpc.transport.tcp.stream.Transport: struct
 capnpc-zig.rpc.transport.tcp.stream: struct
 capnpc-zig.rpc.transport.tcp: struct
 capnpc-zig.rpc.transport: struct
+capnpc-zig.rpc.vat.host.Vat: fn (comptime type) type
+capnpc-zig.rpc.vat.host: struct
 capnpc-zig.rpc.vat.join.AddressedJoinNetwork: fn (comptime type) type
 capnpc-zig.rpc.vat.join.DecodedJoinResult.join_id: field u32
 capnpc-zig.rpc.vat.join.DecodedJoinResult.provision: field []const u8

@@ -51,6 +51,7 @@ const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
 const join_network = @import("../vat/join.zig");
 const vat_provisions = @import("../vat/provisions.zig");
+const vat_host = @import("../vat/host.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
 
 pub const errors = @import("./errors.zig");
@@ -556,6 +557,9 @@ pub const JoinNetwork = join_network.JoinNetwork(Peer);
 /// multiple connections of one vat). See src/rpc/vat/provisions.zig.
 pub const ProvisionIndex = vat_provisions.ProvisionIndex(Peer);
 pub const ProvisionIndexLimits = vat_provisions.ProvisionIndexLimits;
+/// Experimental multi-connection vat facade (owns the provision index + the
+/// accept-embargo CSPRNG; one `enroll(peer)` per connection).
+pub const Vat = vat_host.Vat(Peer);
 
 /// Experimental source of random bytes for accept-embargo ids (rpc.capnp
 /// requires "globally-unique ... chosen at random with enough entropy").

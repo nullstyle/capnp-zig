@@ -218,6 +218,50 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   A↔C++ path, and every case asserts local Provide/Accept/vine/embargo state
   drains. Do not depend on the L3 surface for production interop without exact
   pins.
+- **Level 3 — HOSTING across multiple connections (VatC role):** as of this
+  change a vat whose `Provide` and `Accept` arrive on **different peers** can
+  serve the handoff (Experimental). The pieces: a vat-wide
+  `rpc.vat.provisions.ProvisionIndex` (refcounted, connection-independent
+  provision objects; the index is consulted only at Provide registration,
+  Accept lookup, and parking — release/Finish/teardown never touch it, so
+  index-first death cannot wedge a matched handoff), `Peer.attachProvisionIndex`
+  / `detachProvisionIndex`, the `rpc.peer.Vat` facade (owns the index + the
+  accept-embargo CSPRNG; `enroll` one peer per connection), a Release-immune
+  `handoff_ref_count` export ref class pinning provided/proxied targets, the
+  spec-form accept-`Disembargo` host arm (promisedAnswer target naming the
+  Provide question; per-provision embargo slots with find-or-create for the
+  Disembargo-before-Accept race), Accept-before-Provide **parking** with
+  adoption, owner-side re-resolution for stored promised targets, the
+  introducer's forwarded Disembargo rewritten to the spec form and ordered
+  after the parked-call replay, and entropy-backed 16-byte embargo ids
+  (fail-closed seeding). **Known limitations, honestly:**
+  1. `receiverHosted` provide targets (the host provided a capability it
+     *imports* from the introducer) **fail closed cross-peer** with a pinned
+     exception. The wire-honest lift needs deferred-Release import pinning
+     (specified in the design's L9: retention under `handoff_pin_count`,
+     withhold-in-send-callback, exact deferred emission, unpin-time
+     resolved-import cleanup, fallible unpin) and deliberately did not ship —
+     it touches import accounting every flow shares.
+  2. The vat (index/`Vat` + all enrolled peers) is **single-threaded**;
+     `WorkerPool`-hosted multi-peer vats are unsupported, and pool peers keep
+     the legacy counter embargo ids (a shared CSPRNG across worker threads is
+     not thread-safe).
+  3. **Cross-implementation hosting is unproven.** No reference implementation
+     can currently drive the recipient/introducer roles against a capnp-zig
+     host (go-capnp's 3PH is `TODO`, the C++ lane exercises capnp-zig as
+     A/B against a C++ host, not the reverse). The host arm accepts the
+     spec-form Disembargo and byte-normalized tokens, so it is *designed* for
+     foreign peers, but the claim is analytic until a bespoke harness exists.
+  4. A promisedAnswer **provided target** whose answer cap is settled resolves
+     to a concrete stored target at Provide time (serves cross-peer); the
+     stored-`.promised` form (promise-valued answer caps) serves via owner-side
+     ops re-resolution to a fixed chain depth of 4, and fails closed beyond it
+     or when the answer vanished. There is no public way today to originate a
+     handoff over a promisedAnswer target whose answer is still open
+     (`sendCall` auto-Finishes; a suppress-auto-finish call variant is future
+     DX work).
+  5. Parked accepts have count/byte budgets but **no TTL**; a stranger can hold
+     park slots until its connection dies.
 - **Level 4 (Join):** a guarded Zig↔Zig runtime pilot is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
   `Peer.sendJoinExperimental` can originate raw Join parts, and inbound `Join`

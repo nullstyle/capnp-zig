@@ -28,6 +28,7 @@ pub const vat = struct {
     pub const network = @import("./vat/network.zig");
     pub const join = @import("./vat/join.zig");
     pub const provisions = @import("./vat/provisions.zig");
+    pub const host = @import("./vat/host.zig");
 };
 
 pub fn Transport(comptime quic_impl: type, comptime include_tcp: bool) type {
