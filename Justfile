@@ -167,6 +167,7 @@ ci:
     just fmt-check
     just check
     just check-evented
+    just check-selector
     zig build hardening
     zig build check-api
     zig build api-closure
@@ -319,6 +320,15 @@ check:
 # Check RPC entry points against the explicit Evented Io backend where supported
 check-evented:
     zig build -Dio-backend=evented check --summary all
+
+# Execute the RPC e2e over an explicitly selected Io backend. This is the lane
+# with teeth: `-Dio-backend` is a []const u8 compared at RUNTIME by
+# io_backend.parseKind, so `check` alone analyses all three arms in every
+# configuration and a compile check proves nothing about selection. `.threaded`
+# is the only selector that can carry RPC today -- std.Io.Evented has no working
+# socket vtable upstream at the pinned toolchain (docs/stability.md).
+check-selector:
+    zig build -Dio-backend=threaded e2e-self --summary all
 
 # Check optional QUIC-enabled build graph
 check-quic:

@@ -88,6 +88,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first contact originally found — turns the lane red. It is also the only gate
   that would catch a vendored-submodule bump breaking conformance.
 
+- **A lane that actually executes an `std.Io` backend selector.** The
+  `evented-check` job ran `zig build -Dio-backend=evented check`, which verified
+  nothing that plain `zig build check` did not already: `-Dio-backend` is a
+  `[]const u8` compared at *runtime* by `io_backend.parseKind`, so all three
+  arms of `Backend.init` are semantically analysed in every configuration.
+  Ablation-proven — breaking the `.evented` arm turns plain `zig build check`
+  red with no flag passed at all.
+
+  What was missing was any lane that *executes* a selector. `just
+  check-selector` / `zig build -Dio-backend=threaded e2e-self` now runs the RPC
+  e2e over an explicitly chosen backend, in CI and in `just ci`. Its own
+  ablation: making `parseKind("threaded")` return null leaves the old compile
+  check **green** and turns the new lane red. `.threaded` is the only selector
+  that can carry RPC today — see the Evented note above. The compile check is
+  kept as a cheap cross-check that the evented selector still builds.
+
 - **CI runs the full suite under ReleaseSafe**, not the ten-binary
   `test-release-safe` subset. That subset covered message, codegen, framing,
   fuzz-smoke and two transport files — leaving most of the RPC runtime (peer,

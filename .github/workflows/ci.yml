@@ -152,6 +152,26 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
+      # This job used to run `zig build -Dio-backend=evented check`, which
+      # verified nothing that plain `zig build check` did not already.
+      # `-Dio-backend` is a `[]const u8` compared at RUNTIME by
+      # `io_backend.parseKind`, so all three arms of `Backend.init` are
+      # semantically analysed in EVERY configuration. Proven by ablation:
+      # breaking the `.evented` arm turns plain `zig build check` red with no
+      # flag passed at all.
+      #
+      # What was missing was any lane that EXECUTES a selector. `.threaded` is
+      # the one that can actually carry RPC today — `std.Io.Evented` has no
+      # working socket vtable upstream at the pinned toolchain (see
+      # docs/stability.md), so an evented execution lane is not yet possible.
+      # Ablation for this one: making `parseKind("threaded")` return null leaves
+      # the old compile check green and turns this lane red.
+      - name: Execute the RPC e2e over the threaded Io selector
+        run: zig build -Dio-backend=threaded e2e-self --summary all
+
+      # Kept as a cross-check that the evented selector still *builds* where Zig
+      # exposes it. Cheap, and it documents the intent of the -Dio-backend
+      # surface even though `check` subsumes it.
       - name: Check evented backend compilation
         run: zig build -Dio-backend=evented check --summary all
 
