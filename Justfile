@@ -196,8 +196,33 @@ check-generated:
     # stays in the diff — `zig build check-api` enforces that on all three tiers.
     git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
+# Assert the Zig on PATH is the one mise.toml pins — the same check
+# .github/actions/setup-zig makes, so a local gate proves the same thing CI's
+# does. Deliberately compares PATH against `mise current zig` rather than
+# holding a copy of the version: mise.toml stays the single specifier.
+#
+# This exists because the mismatch is easy to have and invisible without it:
+# zvm installs its shim at ~/.zvm/bin/zig, which shadows mise's on PATH, so
+# `just release-preflight` can gate a release on a toolchain CI never runs.
+# `mise exec -- zig ...` (or putting `$(mise where zig)/bin` first) is the fix.
+check-toolchain:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="$(mise current zig)"
+    have="$(zig version)"
+    if [ -z "$want" ]; then
+      echo "ERROR: mise.toml pins no zig version ('mise current zig' returned empty)"; exit 1
+    fi
+    if [ "$want" != "$have" ]; then
+      echo "ERROR: mise.toml pins ${want} but PATH resolves ${have}"
+      echo "       run: PATH=\"\$(mise where zig)/bin:\$PATH\" just <recipe>"
+      exit 1
+    fi
+    echo "zig ${have} matches the mise.toml pin"
+
 # Complete local release preflight, including heavier CI build/regression jobs
 release-preflight:
+    just check-toolchain
     just ci
     just wasm-build
     just bench-check
@@ -212,6 +237,7 @@ preflight: release-preflight
 # half of that lesson (.github/workflows/release.yml is the detective half).
 # Usage: just release-tag 0.5.0 "one-line theme"
 release-tag VERSION THEME="":
+    just check-toolchain
     test -z "$(git status --porcelain)" || { echo "ERROR: worktree is dirty — commit or stash first"; exit 1; }
     test "$(cat build.zig.zon | sed -n 's/.*\.version = "\(.*\)".*/\1/p')" = "{{VERSION}}" || { echo "ERROR: build.zig.zon version does not match {{VERSION}} — run the RELEASING.md sweep first"; exit 1; }
     zig build docs-smoke

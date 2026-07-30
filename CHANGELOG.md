@@ -1,4 +1,39 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
+
+## [0.6.0] - 2026-07-30
+
+capnp-zig can now act as **VatC — the host** — in a Cap'n Proto Level-3
+three-party handoff, proven cross-implementation against the C++ reference. The
+release also carries the three protocol fixes and the freeze-gate work that had
+been sitting unreleased behind it.
+
+Twenty-seven commits since v0.5.0, this cut included. It also repairs the
+changelog itself: `6460319`
+prepended a second `## [Unreleased]` heading over the file's title twelve
+commits ago, stranding the preamble mid-file and hiding three protocol fixes
+below a section boundary most readers would never scroll past.
+
+### Breaking
+
+- **The minimum Zig version moves from `0.17.0-dev.813` to
+  `0.17.0-dev.1509`.** `mise.toml` is now the single version specifier for this
+  repository; `build.zig.zon`'s `.minimum_zig_version` states the floor rather
+  than acting as a second pin.
+
+  **Migration:** install `0.17.0-dev.1509+bb296ab9b` or newer — `mise install`
+  reads the pin directly. Two source-level changes arrive with the jump and may
+  touch your own code: `std.builtin.OptimizeMode`'s tags are now lowercase
+  (`.debug`, not `.Debug`), and `zig fmt` rewrites `@intFromEnum`/`@enumFromInt`
+  on a packed struct's backing integer to `@backingInt`/`@fromBackingInt`. If
+  you manage Zig with zvm, its PATH entry wins over mise's shims — use
+  `mise exec -- zig ...` to match CI exactly.
 
 ### Added
 
@@ -44,6 +79,13 @@
   two-party only). See `docs/supported-surface.md` for the full limitation
   list.
 
+- Additive entries on the frozen Stable surface (`docs/api-snapshot.txt`,
+  689 → 695 declarations, nothing removed or changed):
+  `Message.resolveStructListPointer`, `StructListLayout`,
+  `protocol.ExceptionType`, `protocol.Exception.kind`,
+  `protocol.MessageBuilder.buildAbortTyped`, and
+  `protocol.ReturnBuilder.setExceptionTyped`.
+
 ### Changed
 
 - **Vendored Cap'n Proto bumped to the `v2` tip** (`ba3d1f6b` → `f8498184`,
@@ -60,101 +102,34 @@
   release (1.5.0 has none of the rendezvous types or `VatNetwork` hooks), so
   pinning to a stable tag would mean deleting that evidence.
 
-### Fixed
+- **One Zig version specifier, and CI installs from it.** Zig had been pinned
+  in three places that drifted independently: `mlugg/setup-zig`'s `version:`
+  input (repeated across fifteen call sites), `build.zig.zon`'s
+  `.minimum_zig_version`, and the nightly fuzz lane's private override. CI now
+  installs Zig with `mise`, and the local composite action *asserts* `PATH`
+  against `mise current zig` instead of carrying a copy of the version — so a
+  mismatch fails in seconds with both values printed, rather than twenty
+  minutes later as a confusing compile error. It also retires the last Node 20
+  action in the workflows.
 
-- **`schema_validation.canonicalizeMessage` did not compile.** It is `pub` and
-  part of the **frozen Stable surface**, and it returned `[]const u8` from a
-  `![]u8` signature — but nothing in the tree called it, so its body had never
-  been type-checked and the mismatch sat there undetected. Any consumer calling
-  it got a compile error inside the library. Found by closing the error-set hole
-  below: expanding inferred error sets forces body analysis, which surfaced it
-  immediately. The schema-validation suite now calls it, so it cannot rot again.
+  Two failure modes closed along the way, each of which had already cost a red
+  CI run. `jdx/mise-action` must pin its own `version:`: unpinned, its cache
+  served a different mise per platform, and older mise cannot resolve a
+  dev-build tarball URL — which failed on Linux and Windows while passing on
+  macOS. And nothing caches `.zig-cache` across runs any more, because
+  `setup-zig`'s cross-run save/restore poisoned CI whenever a *cancelled* run
+  captured that cache mid-build; since every poisoned run re-saved it, re-runs
+  failed identically and the entries had to be deleted by hand.
 
-- **The frozen Stable surface is now closed under its own signatures**, gated by
-  the new `zig build api-closure` on all three CI tiers. A Stable entry point
-  whose signature mentions an Experimental type is only nominally frozen: the
-  type can change shape under it at any 0.x bump while `check-api` stays green,
-  because the Stable *line* never moved.
+  The nightly fuzz lane's private `dev.1252` pin went with it. That lane's real
+  fix was moving to an arm64 runner — the Zig fuzzer's `maker` stage aborts on
+  x86_64 on every toolchain tried, dev.813 and dev.1252 alike.
 
-  The check's first run reported **14 violations**. Resolving them promoted the
-  types a consumer cannot avoid: `ConnectOptions` (needed by the frozen
-  `connect`/`connectHost`), `ServeOptions` and a narrowed `Listener` (`init` /
-  `close` / `getAddress` — the path both the getting-started guide and the
-  shipped example already use), and `Export` (needed by the frozen
-  `Peer.addExport` / `setBootstrap`). **Before this there was no fully-Stable way
-  to stand up a server**: `ServerSession.accept` required a `*Listener` that only
-  Experimental API could construct.
-
-  Two honest limits, recorded in `docs/supported-surface.md`. *Closure is not
-  constructibility* — the gate verifies a type named in a Stable signature is
-  frozen, not that a Stable constructor exists for it (found the hard way: my
-  first ablation removed `Listener.init` and the gate stayed green, because it
-  keys on the type's tier, not its members). And a method taking or returning its
-  own enclosing type is exempt by design, which keeps `ServerSession` frozen at
-  `.accept` plus its lifecycle rather than wholesale.
-
-  Ablation-verified: removing the `Listener` type promotion fails the gate with
-  `error.StableSurfaceNotClosed`.
-
-- Optional field defaults now render their **value** rather than "present":
-  `default_call_timeout_ms: ?u64 = 30000`, not `<non-null default>`. A 30s → 60s
-  change to a documented timeout would otherwise have passed the gate.
-
-- **`just check-generated` no longer diffs the experimental API snapshot.** That
-  file is regenerated on every run by design and records target-dependent detail:
-  `OwnerThreadId.value` is `std.Thread.Id`, which renders `u64` on macOS and
-  `u32` on Linux, so a committed copy can never match on all three tiers. Once
-  field rendering started capturing types, this turned the Linux drift check red
-  for a difference that is not an API change. The **Stable** file stays in the
-  diff — it must be target-stable, and `zig build check-api` proves that by
-  running on all three OSes.
-
-- **The API freeze gate now pins struct fields, defaults, enum ordinals, and
-  error sets.** `tools/api_snapshot.zig` walked `declarations` only, so every
-  frozen struct was pinned by *name alone*: changing
-  `Connection.Options.read_buffer_size`'s default, removing a field from
-  `PeerLimits`, or reordering a union passed `check-api` green. Separately, 325
-  of the frozen lines (nearly half) rendered their inferred error set as the
-  self-referential `@typeInfo(...).error_union.error_set` expression, which is
-  **identical no matter what the set contains** — so adding, removing, or
-  renaming an error on that half of the Stable surface was invisible while
-  breaking every consumer's `catch |err| switch (err)`.
-
-  Now: fields render with their default *values*, unions render their variants,
-  enums render their ordinals (which matters for wire enums), and inferred error
-  sets expand to sorted `error{...}` lists. Opaque error-set lines dropped from
-  **325 to 9**. `PeerLimits` moved from an exact to a prefix rule so its fields
-  join the contract — it is a config struct whose defaults consumers rely on,
-  unlike `Peer` itself, which stays exact so its ~73 fields of internal state
-  stay out.
-
-  Ablation-verified, both dimensions: changing a field default produces
-  `read_buffer_size: field usize = 65536` → `= 32768` drift, and adding an error
-  to a Stable inferred set produces the expanded-set diff. Both were silent
-  before.
-
-  Stable declaration count goes 695 → **1282**. That is one large reviewed diff
-  from newly-captured detail, not new API: no declaration was added or removed.
-
-- **Three `stable_rules` entries named declarations that do not exist** —
-  `Peer.run`, `Peer.close`, and `ClientSession.adoptOwnerThread` — so the freeze
-  scope documented a `Peer` run/close lifecycle that was never implemented (the
-  nearest real method is the Experimental `closeAttachedTransport`). A new
-  comptime assertion requires every rule to match at least one real declaration;
-  it found all three on its first run, and makes the rules list self-validating
-  against typos in future promotions.
-
-### Documentation
-
-- `docs/supported-surface.md` records the two residual freeze holes rather than
-  implying the gate is now complete: nine Stable signatures remain unpinned
-  beyond their arity because they are *generic* (Zig cannot resolve an inferred
-  error set through an `anytype` parameter until instantiation — asking is a
-  compile error), and the frozen surface is still **not closed under its own
-  signatures**, most consequentially `ServerSession.accept`, which needs a
-  `Listener` no Stable API can construct. The closure check is the intended next
-  step and was deliberately sequenced after this work, since a closure walk
-  cannot resolve those `anytype` parameters either.
+  `just check-toolchain` makes the same assertion locally, and
+  `release-preflight` and `release-tag` now run it first. Cutting this release
+  is what motivated it: zvm installs its shim at `~/.zvm/bin/zig`, which
+  shadows mise's on `PATH`, so the local preflight was about to gate a release
+  on a toolchain CI never runs.
 
 - **The benchmark regression gate can now actually fire.** `bench/baselines.json`
   carried a global `max_regression_pct: 500.0` while the wall-clock baselines had
@@ -208,25 +183,6 @@
   evidenced. `docs/stability.md` now says so and records what closing it needs
   (an `-I` include path threaded through the ~10 test files that hardcode their
   `capnp` argv).
-
-### Documentation
-
-- Corrected two `docs/stability.md` claims this work disproved, in opposite
-  directions. The bench note called the pipelined throughput case "stable within
-  ~3%" and the reliable signal; it is the **widest-variance** case of the
-  fourteen at 1.75× across 5 runs. Conversely, both `stability.md` and
-  `supported-surface.md` claimed the cross-implementation e2e matrix runs on a
-  local Docker host only — it in fact runs **per push** on the Linux tier via the
-  `e2e-zig` job, so the project was understating its strongest interop evidence.
-  `tests/hardening/toolchain_gate_test.zig` now states that it covers committed
-  fixtures only and points at the CI step that asserts the tool.
-
-nges to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
 
 ### Fixed
 
@@ -369,14 +325,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the old primitive-list encoding and the evolved struct-list encoding
   canonicalize to identical bytes.
 
-### Added
+- **`schema_validation.canonicalizeMessage` did not compile.** It is `pub` and
+  part of the **frozen Stable surface**, and it returned `[]const u8` from a
+  `![]u8` signature — but nothing in the tree called it, so its body had never
+  been type-checked and the mismatch sat there undetected. Any consumer calling
+  it got a compile error inside the library. Found by closing the error-set hole
+  below: expanding inferred error sets forces body analysis, which surfaced it
+  immediately. The schema-validation suite now calls it, so it cannot rot again.
 
-- Additive entries on the frozen Stable surface (`docs/api-snapshot.txt`,
-  689 → 695 declarations, nothing removed or changed):
-  `Message.resolveStructListPointer`, `StructListLayout`,
-  `protocol.ExceptionType`, `protocol.Exception.kind`,
-  `protocol.MessageBuilder.buildAbortTyped`, and
-  `protocol.ReturnBuilder.setExceptionTyped`.
+- **The frozen Stable surface is now closed under its own signatures**, gated by
+  the new `zig build api-closure` on all three CI tiers. A Stable entry point
+  whose signature mentions an Experimental type is only nominally frozen: the
+  type can change shape under it at any 0.x bump while `check-api` stays green,
+  because the Stable *line* never moved.
+
+  The check's first run reported **14 violations**. Resolving them promoted the
+  types a consumer cannot avoid: `ConnectOptions` (needed by the frozen
+  `connect`/`connectHost`), `ServeOptions` and a narrowed `Listener` (`init` /
+  `close` / `getAddress` — the path both the getting-started guide and the
+  shipped example already use), and `Export` (needed by the frozen
+  `Peer.addExport` / `setBootstrap`). **Before this there was no fully-Stable way
+  to stand up a server**: `ServerSession.accept` required a `*Listener` that only
+  Experimental API could construct.
+
+  Two honest limits, recorded in `docs/supported-surface.md`. *Closure is not
+  constructibility* — the gate verifies a type named in a Stable signature is
+  frozen, not that a Stable constructor exists for it (found the hard way: my
+  first ablation removed `Listener.init` and the gate stayed green, because it
+  keys on the type's tier, not its members). And a method taking or returning its
+  own enclosing type is exempt by design, which keeps `ServerSession` frozen at
+  `.accept` plus its lifecycle rather than wholesale.
+
+  Ablation-verified: removing the `Listener` type promotion fails the gate with
+  `error.StableSurfaceNotClosed`.
+
+- Optional field defaults now render their **value** rather than "present":
+  `default_call_timeout_ms: ?u64 = 30000`, not `<non-null default>`. A 30s → 60s
+  change to a documented timeout would otherwise have passed the gate.
+
+- **`just check-generated` no longer diffs the experimental API snapshot.** That
+  file is regenerated on every run by design and records target-dependent detail:
+  `OwnerThreadId.value` is `std.Thread.Id`, which renders `u64` on macOS and
+  `u32` on Linux, so a committed copy can never match on all three tiers. Once
+  field rendering started capturing types, this turned the Linux drift check red
+  for a difference that is not an API change. The **Stable** file stays in the
+  diff — it must be target-stable, and `zig build check-api` proves that by
+  running on all three OSes.
+
+- **The API freeze gate now pins struct fields, defaults, enum ordinals, and
+  error sets.** `tools/api_snapshot.zig` walked `declarations` only, so every
+  frozen struct was pinned by *name alone*: changing
+  `Connection.Options.read_buffer_size`'s default, removing a field from
+  `PeerLimits`, or reordering a union passed `check-api` green. Separately, 325
+  of the frozen lines (nearly half) rendered their inferred error set as the
+  self-referential `@typeInfo(...).error_union.error_set` expression, which is
+  **identical no matter what the set contains** — so adding, removing, or
+  renaming an error on that half of the Stable surface was invisible while
+  breaking every consumer's `catch |err| switch (err)`.
+
+  Now: fields render with their default *values*, unions render their variants,
+  enums render their ordinals (which matters for wire enums), and inferred error
+  sets expand to sorted `error{...}` lists. Opaque error-set lines dropped from
+  **325 to 9**. `PeerLimits` moved from an exact to a prefix rule so its fields
+  join the contract — it is a config struct whose defaults consumers rely on,
+  unlike `Peer` itself, which stays exact so its ~73 fields of internal state
+  stay out.
+
+  Ablation-verified, both dimensions: changing a field default produces
+  `read_buffer_size: field usize = 65536` → `= 32768` drift, and adding an error
+  to a Stable inferred set produces the expanded-set diff. Both were silent
+  before.
+
+  Stable declaration count goes 695 → **1282**. That is one large reviewed diff
+  from newly-captured detail, not new API: no declaration was added or removed.
+
+- **Three `stable_rules` entries named declarations that do not exist** —
+  `Peer.run`, `Peer.close`, and `ClientSession.adoptOwnerThread` — so the freeze
+  scope documented a `Peer` run/close lifecycle that was never implemented (the
+  nearest real method is the Experimental `closeAttachedTransport`). A new
+  comptime assertion requires every rule to match at least one real declaration;
+  it found all three on its first run, and makes the rules list self-validating
+  against typos in future promotions.
+
+### Documentation
+
+- `docs/supported-surface.md` records the freeze gate's residual holes rather
+  than implying it is now complete: nine Stable signatures remain unpinned
+  beyond their arity because they are *generic* (Zig cannot resolve an inferred
+  error set through an `anytype` parameter until it is instantiated — asking is
+  a compile error), and the closure check proves that a type named in a Stable
+  signature is *frozen*, not that a Stable constructor for it exists.
+
+- Corrected two `docs/stability.md` claims this work disproved, in opposite
+  directions. The bench note called the pipelined throughput case "stable within
+  ~3%" and the reliable signal; it is the **widest-variance** case of the
+  fourteen at 1.75× across 5 runs. Conversely, both `stability.md` and
+  `supported-surface.md` claimed the cross-implementation e2e matrix runs on a
+  local Docker host only — it in fact runs **per push** on the Linux tier via the
+  `e2e-zig` job, so the project was understating its strongest interop evidence.
+  `tests/hardening/toolchain_gate_test.zig` now states that it covers committed
+  fixtures only and points at the CI step that asserts the tool.
+
+- The struct-list limitation in `docs/supported-surface.md` contradicted its own
+  body: it was titled "Reading a `List(Struct)` from data encoded as a struct
+  list is not supported" — which describes the ordinary, fully supported case —
+  while the paragraph beneath correctly described the *inverse* direction
+  (reading a struct list back as a primitive list). Retitled. The closing
+  sentence of that section also claimed no active limitation remained, directly
+  under a list of four.
 
 ## [0.5.0] - 2026-07-29
 
@@ -1410,7 +1466,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/nullstyle/capnp-zig/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nullstyle/capnp-zig/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/nullstyle/capnp-zig/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/nullstyle/capnp-zig/compare/v0.2.0...v0.3.0

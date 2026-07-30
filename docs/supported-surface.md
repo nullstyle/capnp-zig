@@ -1,7 +1,7 @@
-# Supported Surface (v0.5.0)
+# Supported Surface (v0.6.0)
 
 This is the authoritative statement of what `capnpc-zig` promises a consumer at
-v0.5.0 — which modules are stable, what the RPC implementation conforms to, the
+v0.6.0 — which modules are stable, what the RPC implementation conforms to, the
 error contract, and the known limitations you are opting into. It is the single
 source of truth; where other docs disagree, this file wins.
 
@@ -12,7 +12,7 @@ and [`CHANGELOG.md`](../CHANGELOG.md) (what changed).
 
 The project is pre-1.0. Per semver, **0.x minor bumps may break the API** — and
 they will, deliberately, for anything marked Experimental below. Pin an exact
-version (`zig fetch --save …#v0.5.0`) and read the CHANGELOG before bumping.
+version (`zig fetch --save …#v0.6.0`) and read the CHANGELOG before bumping.
 
 - **Stable** (serialization + codegen + the two-party RPC core): the Stable
   surface is **frozen and CI-gated**. It is pinned by
@@ -347,7 +347,7 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `just e2e-l3-go` confirms Go has generated Join/twoparty shapes but no
   runtime dispatch for `Message.join`. Experimental; exact-pin only.
 
-## Known limitations (v0.5.0)
+## Known limitations (v0.6.0)
 
 Each of these is a defined, non-corrupting behavior — safe to tag with, listed so
 you know exactly what you are relying on. None is a leak/UAF/hang against a
@@ -401,17 +401,17 @@ cooperating peer.
   with their own exception `Return`, because this vat never observes the results
   it would need in order to resolve them.
 
-- **Reading a `List(Struct)` from data encoded as a struct list is not
-  supported.** The *forward* direction of the list-upgrade rule works: a list
-  encoded with any element size except one bit decodes as a struct list, so a
-  peer that evolved `List(UInt32)` into `List(SomeStruct)` can read old data. The
-  inverse — an old binary reading a correctly-encoded struct list as
-  `List(UInt32)` — is not implemented. Only half the compatibility guarantee is
-  in place.
+- **Reading a struct list as a *primitive* list is not supported.** The
+  *forward* direction of the list-upgrade rule works: a list encoded with any
+  element size except one bit decodes as a struct list, so a peer that evolved
+  `List(UInt32)` into `List(SomeStruct)` can read old data. The inverse — an old
+  binary reading a correctly-encoded struct list back as `List(UInt32)` — is not
+  implemented. Only half the compatibility guarantee is in place.
 
 The forwarded-return intermediary case that shipped as the one remaining active
-v0.3.0 limitation is resolved on main; no active limitation is currently
-documented for the frozen two-party surface. Historical resolved items are listed
+v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is
+either a Level-3 surface or a serialization compatibility gap; the frozen
+two-party RPC surface has no active limitation. Historical resolved items are listed
 below so release-to-release behavior changes stay auditable.
 
 ### Resolved since v0.3.0
