@@ -115,6 +115,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The inverse direction of the list-upgrade rule: a struct list now decodes
+  back as the primitive or pointer list an older schema declares.** The forward
+  direction landed earlier (any element size except one bit decodes as a struct
+  list, so a peer that evolved `List(UInt32)` into `List(SomeStruct)` reads old
+  data). The other half — the *old* binary reading the correctly-encoded struct
+  list the evolved peer now writes back as `List(UInt32)` — was rejected with
+  `error.InvalidPointer`. Both reference implementations accept it, so capnp-zig
+  was rejecting messages every other implementation reads.
+
+  `StructReader.readU8List` / `readI8List` / `readU16List` / `readI16List` /
+  `readU32List` / `readI32List` / `readF32List` / `readU64List` / `readI64List` /
+  `readF64List` / `readTextList` / `readPointerList` now accept element size
+  C = 7, resolving it through the inline-composite path. That routing is the
+  whole difficulty: a C = 7 list pointer's D field is a **word** count, not an
+  element count, and its content offset addresses the **tag** word, so merely
+  relaxing the element-size check yields a reader with the wrong length anchored
+  one word early — no error, just wrong data.
+
+  Preconditions follow the C++ reference (`layout.c++`, `readListPointer`) and
+  are the amplification mitigation, not politeness: a primitive list requires a
+  non-empty data section, a pointer list requires at least one pointer, and a
+  struct list is never readable as `List(Bool)`. A struct list carrying no data
+  at all would otherwise synthesize readable elements for free, and a
+  pointer-only one would hand pointer words back as data. Text, Data and
+  `List(Bool)` are unchanged — C++ requires byte elements for the blobs and
+  hard-fails composite-as-bit, so relaxing those would diverge from the
+  reference rather than converge with it.
+
+  Elements are strided by the whole struct, so the list readers carry a
+  `stride_bytes` field (0 = the element type's natural stride; defaulted, so
+  existing literals and checked-in generated code are unaffected).
+  `U8ListReader.slice` now fails with `error.InvalidPointer` for such a list:
+  its bytes are one struct apart, so no contiguous slice of the segment holds
+  them and only them; `get` still works element by element. The pointer arm adds
+  the element's data-section length before reading the pointer word — the offset
+  go-capnp's `TextList.At` omits while its own `PointerList.At` applies it, so
+  that arm was verified against the C++ reference only.
+
+  Not covered: the same direction one level down. `PointerListReader.getU32List`
+  and friends, and `AnyPointerReader.getPointerList`, still reject a struct list,
+  which affects nested `List(List(UInt32))` and type-erased access rather than
+  ordinary fields. Recorded in `docs/supported-surface.md`.
+
+  Three ablations, each pinned by a different test: reading at the natural width
+  instead of the struct stride turns five tests red with value mismatches from
+  the second element on; taking the base and count from the plain list
+  resolution turns six red, including `expected 3, found 6` on a
+  two-data-word fixture where the element and word counts differ; and dropping
+  the data-section precondition lets a pointer-only struct list be read as
+  `List(UInt32)`.
+
+  Stable surface: `stride_bytes` on twelve list readers, plus
+  `U8ListReader.slice` gaining `InvalidPointer`. No `read*List` signature
+  changed — the inline-composite resolver's `InvalidInlineCompositePointer` is
+  folded into the plain path's `error.InvalidPointer` rather than widening a
+  frozen error set.
+
 - **A `test-release-fast` lane** (`zig build test-release-fast`, `just
   test-release-fast`), wired into `just ci` and the per-OS CI Test job. It is a
   memory-safety lane rather than a performance one: ReleaseFast is the only mode

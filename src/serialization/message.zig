@@ -464,6 +464,81 @@ pub const StructListLayout = struct {
     }
 };
 
+/// Per-element view of a list being read as a list of primitives or pointers.
+///
+/// Deliberately not public: it exists only to let one resolver serve every
+/// `StructReader.read*List` entry point, and every field it carries is already
+/// reachable through the readers those entry points return.
+const ElementListView = struct {
+    segment_id: u32,
+    /// Byte offset of element 0's *first read unit* — the element itself for a
+    /// primitive list, the element's first pointer word for a pointer list.
+    elements_offset: usize,
+    element_count: u32,
+    /// Distance between consecutive elements in BYTES, or 0 for the natural,
+    /// tightly packed stride of the element type.
+    stride_bytes: u32,
+};
+
+/// The inverse of the list-upgrade rule: decode a correctly encoded struct list
+/// (element size C = 7) as the primitive or pointer list an older schema
+/// declares for the same field.
+///
+/// The forward rule (`StructListLayout.fromUpgradedList`) lets a peer that
+/// evolved `List(UInt32)` into `List(SomeStruct)` read old data. This is the
+/// direction the *old* binary needs: it must read the struct list the evolved
+/// peer now writes. Both reference implementations accept it, so rejecting it
+/// rejects messages every other implementation reads.
+///
+/// The preconditions are the amplification mitigation, not politeness, and are
+/// taken from the C++ reference (`layout.c++`, `readListPointer`, the
+/// `checkElementSize` switch over `expectedElementSize`): a primitive list needs
+/// a non-empty data section, a pointer list needs at least one pointer, and a
+/// bit list is never satisfiable from a struct list. Without them a struct list
+/// carrying no data at all would synthesize readable elements for free.
+///
+/// `data_words >= 1` also means every element carries at least eight bytes of
+/// data, so no primitive read — eight bytes wide at most — can reach past an
+/// element's data section into its pointers. That is why C++ checks whole words
+/// here rather than comparing against the requested element width, and why this
+/// does the same.
+fn downgradeInlineCompositeList(
+    list: InlineCompositeList,
+    expected_element_size: u3,
+) !ElementListView {
+    const data_bytes = @as(u32, list.data_words) * 8;
+    const elements_offset = switch (expected_element_size) {
+        // C++ hard-fails this one ("upgrading boolean lists to structs is no
+        // longer supported"); matching it is convergence, not politeness.
+        1 => return error.InvalidPointer,
+        2, 3, 4, 5 => blk: {
+            if (list.data_words == 0) return error.InvalidPointer;
+            break :blk list.elements_offset;
+        },
+        // An element's pointer section starts after its data section. This
+        // `+ data_bytes` is exactly what go-capnp's `TextList.At` omits (while
+        // its own `PointerList.At` applies it), so go reads the wrong word
+        // here; the C++ reference is the only cross-check for this arm.
+        6 => blk: {
+            if (list.pointer_words == 0) return error.InvalidPointer;
+            break :blk try checkedAddUsize(list.elements_offset, @as(usize, data_bytes));
+        },
+        // Void and struct lists never route through here: `readVoidList` and
+        // `readStructList` have their own paths. Answered defensively rather
+        // than with `unreachable` so a future caller cannot turn a reachable
+        // path into undefined behavior.
+        0, 7 => return error.InvalidPointer,
+    };
+    return .{
+        .segment_id = list.segment_id,
+        .elements_offset = elements_offset,
+        .element_count = list.element_count,
+        // The struct's total size, which is what separates consecutive
+        // elements. Non-zero: both surviving arms require a non-empty section.
+        .stride_bytes = data_bytes + @as(u32, list.pointer_words) * 8,
+    };
+}
+
 /// A capability pointer index, used in the RPC layer to reference entries
 /// in the message's capability table.
 pub const Capability = struct {
@@ -1588,11 +1663,18 @@ pub const StructReader = struct {
     /// well as `VoidListReader` (which carries only `element_count`). Used by
     /// generated getters as the default for an unset (null-pointer) list field.
     pub fn emptyList(self: StructReader, comptime ListReader: type) ListReader {
+        // `undefined` plus selective assignment: every field this type has must
+        // be named below, defaults do not apply, and a field left out is read
+        // uninitialised rather than defaulted.
         var reader: ListReader = undefined;
         reader.element_count = 0;
         if (@hasField(ListReader, "message")) reader.message = self.message;
         if (@hasField(ListReader, "segment_id")) reader.segment_id = self.segment_id;
         if (@hasField(ListReader, "elements_offset")) reader.elements_offset = 0;
+        // 0 = the element type's natural stride. Nothing is readable from an
+        // empty list, but leaving this undefined is undefined behavior, not a
+        // harmless don't-care.
+        if (@hasField(ListReader, "stride_bytes")) reader.stride_bytes = 0;
         return reader;
     }
 
@@ -1763,30 +1845,94 @@ pub const StructReader = struct {
         return self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
     }
 
-    /// Read a list of text (string) pointers from the given pointer index.
-    pub fn readTextList(self: StructReader, pointer_index: usize) !TextListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 6) return error.InvalidPointer;
+    /// Resolve the list pointer at `pointer_index` for reading as a list of
+    /// `expected_element_size` elements, accepting both encodings a conformant
+    /// peer may have used: a list pointer that already carries that element
+    /// size, and — per the inverse of the list-upgrade rule — a struct list
+    /// (C = 7) whose elements are wide enough to satisfy the request.
+    ///
+    /// Text, Data and `List(Bool)` deliberately do not come through here: the
+    /// C++ reference requires `ElementSize::BYTE` for the blobs and hard-fails
+    /// composite-as-bit, so relaxing those would diverge from the reference
+    /// rather than converge with it.
+    fn resolveElementListAt(
+        self: StructReader,
+        pointer_index: usize,
+        expected_element_size: u3,
+    ) !ElementListView {
+        const pointers = self.getPointerSection();
+        const pointer_offset = try pointerIndexByteOffset(pointer_index);
+        try bounds.checkBounds(pointers, pointer_offset, 8);
+
+        const pointer_data = pointers[pointer_offset..][0..8];
+        const pointer_word = std.mem.readInt(u64, pointer_data, .little);
+        if (pointer_word == 0) return error.InvalidPointer;
+
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
+
+        // The probe — not `resolveListPointer` — decides whether this is an
+        // inline-composite list, for the same reason the upgrade direction uses
+        // it: for a double-far in the layout this builder writes,
+        // `resolvePointer` yields the struct *tag* word (pointer type 0), so
+        // `resolveListPointer` would report a valid struct list as a non-list.
+        //
+        // A probe *failure* is deliberately swallowed rather than propagated:
+        // the plain path below then produces exactly the error it produced
+        // before this rule existed, so no malformed pointer changes diagnosis.
+        if (self.message.structListIsInlineComposite(pointer_word, 3) catch false) {
+            // Must go through the inline-composite resolver, never
+            // `resolveListPointer`: for C = 7 the latter reports the pointer's
+            // D field (a WORD count, not an element count) and a content offset
+            // pointing at the TAG word rather than at the elements, which
+            // yields a reader with the wrong length anchored one word early —
+            // no error, just wrong data.
+            const list = self.message.resolveInlineCompositeList(
+                self.segment_id,
+                absolute_pointer_pos,
+                pointer_word,
+            ) catch |err| switch (err) {
+                // Folded into the plain path's error name on purpose: to a
+                // caller asking for `List(UInt32)` this is an unusable list
+                // pointer, and a new name would widen a frozen error set.
+                error.InvalidInlineCompositePointer => return error.InvalidPointer,
+                else => |e| return e,
+            };
+            return downgradeInlineCompositeList(list, expected_element_size);
+        }
+
+        const list = try self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
+        if (list.element_size != expected_element_size) return error.InvalidPointer;
+
+        const total_bytes = try listContentBytes(list.element_size, list.element_count);
+        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
 
         return .{
-            .message = self.message,
             .segment_id = list.segment_id,
             .elements_offset = list.content_offset,
             .element_count = list.element_count,
+            .stride_bytes = 0,
         };
+    }
+
+    /// Build a 4-field list reader plus its stride from a resolved view.
+    fn elementListReader(self: StructReader, comptime ReaderType: type, view: ElementListView) ReaderType {
+        return .{
+            .message = self.message,
+            .segment_id = view.segment_id,
+            .elements_offset = view.elements_offset,
+            .element_count = view.element_count,
+            .stride_bytes = view.stride_bytes,
+        };
+    }
+
+    /// Read a list of text (string) pointers from the given pointer index.
+    pub fn readTextList(self: StructReader, pointer_index: usize) !TextListReader {
+        return self.elementListReader(TextListReader, try self.resolveElementListAt(pointer_index, 6));
     }
 
     /// Read a list of pointers (type-erased) from the given pointer index.
     pub fn readPointerList(self: StructReader, pointer_index: usize) !PointerListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 6) return error.InvalidPointer;
-
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
+        return self.elementListReader(PointerListReader, try self.resolveElementListAt(pointer_index, 6));
     }
 
     /// Read a nested struct from the given pointer index.
@@ -1841,28 +1987,23 @@ pub const StructReader = struct {
 
     /// Read a `List(UInt8)` from the given pointer index.
     pub fn readU8List(self: StructReader, pointer_index: usize) !U8ListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 2) return error.InvalidPointer;
-
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
-
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
+        return self.elementListReader(U8ListReader, try self.resolveElementListAt(pointer_index, 2));
     }
 
     /// Cast a list reader to a different element type with the same layout.
     /// Used to reinterpret unsigned list readers as signed/float variants.
+    ///
+    /// `stride_bytes` must be carried across: this is the one construction site
+    /// that copies an already-resolved reader, so dropping it here would leave
+    /// `readI32List` and friends reading a downgraded struct list at the
+    /// natural 4-byte stride while `readU32List` read it correctly.
     fn castListReader(comptime Target: type, source: anytype) Target {
         return .{
             .message = source.message,
             .segment_id = source.segment_id,
             .elements_offset = source.elements_offset,
             .element_count = source.element_count,
+            .stride_bytes = source.stride_bytes,
         };
     }
 
@@ -1873,18 +2014,7 @@ pub const StructReader = struct {
 
     /// Read a `List(UInt16)` from the given pointer index.
     pub fn readU16List(self: StructReader, pointer_index: usize) !U16ListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 3) return error.InvalidPointer;
-
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
-
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
+        return self.elementListReader(U16ListReader, try self.resolveElementListAt(pointer_index, 3));
     }
 
     /// Read a `List(Int16)` from the given pointer index.
@@ -1894,18 +2024,7 @@ pub const StructReader = struct {
 
     /// Read a `List(UInt32)` from the given pointer index.
     pub fn readU32List(self: StructReader, pointer_index: usize) !U32ListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 4) return error.InvalidPointer;
-
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
-
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
+        return self.elementListReader(U32ListReader, try self.resolveElementListAt(pointer_index, 4));
     }
 
     /// Read a `List(Int32)` from the given pointer index.
@@ -1920,18 +2039,7 @@ pub const StructReader = struct {
 
     /// Read a `List(UInt64)` from the given pointer index.
     pub fn readU64List(self: StructReader, pointer_index: usize) !U64ListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 5) return error.InvalidPointer;
-
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
-
-        return .{
-            .message = self.message,
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-        };
+        return self.elementListReader(U64ListReader, try self.resolveElementListAt(pointer_index, 5));
     }
 
     /// Read a `List(Int64)` from the given pointer index.

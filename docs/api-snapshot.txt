@@ -119,6 +119,7 @@ capnpc-zig.message.F32ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.F32ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(f32,serialization.message.Message)) u32
 capnpc-zig.message.F32ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.F32ListReader.segment_id: field u32
+capnpc-zig.message.F32ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.F32ListReader: struct
 capnpc-zig.message.F64ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.F64ListBuilder.element_count: field u32
@@ -133,6 +134,7 @@ capnpc-zig.message.F64ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.F64ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(f64,serialization.message.Message)) u32
 capnpc-zig.message.F64ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.F64ListReader.segment_id: field u32
+capnpc-zig.message.F64ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.F64ListReader: struct
 capnpc-zig.message.I16ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.I16ListBuilder.element_count: field u32
@@ -147,6 +149,7 @@ capnpc-zig.message.I16ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.I16ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(i16,serialization.message.Message)) u32
 capnpc-zig.message.I16ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I16ListReader.segment_id: field u32
+capnpc-zig.message.I16ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I16ListReader: struct
 capnpc-zig.message.I32ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.I32ListBuilder.element_count: field u32
@@ -161,6 +164,7 @@ capnpc-zig.message.I32ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.I32ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(i32,serialization.message.Message)) u32
 capnpc-zig.message.I32ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I32ListReader.segment_id: field u32
+capnpc-zig.message.I32ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I32ListReader: struct
 capnpc-zig.message.I64ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.I64ListBuilder.element_count: field u32
@@ -175,6 +179,7 @@ capnpc-zig.message.I64ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.I64ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(i64,serialization.message.Message)) u32
 capnpc-zig.message.I64ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I64ListReader.segment_id: field u32
+capnpc-zig.message.I64ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I64ListReader: struct
 capnpc-zig.message.I8ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.I8ListBuilder.element_count: field u32
@@ -189,6 +194,7 @@ capnpc-zig.message.I8ListReader.get: fn (serialization.message.list_readers.defi
 capnpc-zig.message.I8ListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).I8ListReader) u32
 capnpc-zig.message.I8ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.I8ListReader.segment_id: field u32
+capnpc-zig.message.I8ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.I8ListReader: struct
 capnpc-zig.message.InlineCompositeList.data_words: field u16
 capnpc-zig.message.InlineCompositeList.element_count: field u32
@@ -312,6 +318,7 @@ capnpc-zig.message.PointerListReader.getU8List: fn (serialization.message.list_r
 capnpc-zig.message.PointerListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader) u32
 capnpc-zig.message.PointerListReader.message: field *const serialization.message.Message
 capnpc-zig.message.PointerListReader.segment_id: field u32
+capnpc-zig.message.PointerListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.PointerListReader: struct
 capnpc-zig.message.StructBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.StructBuilder.clearPointer: fn (serialization.message.struct_builder.define(serialization.message.MessageBuilder,serialization.message.AnyPointerBuilder,serialization.message.StructListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).TextListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).U8ListBuilder,serialization.message.list_builders.define(serialization.message.MessageBuilder).I8ListBuilder,serialization.message.list_readers.PrimitiveListBuilder(u16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i16,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f32,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(u64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(i64,serialization.message.MessageBuilder),serialization.message.list_readers.PrimitiveListBuilder(f64,serialization.message.MessageBuilder),serialization.message.list_builders.define(serialization.message.MessageBuilder).BoolListBuilder,serialization.message.Capability,@as(*const fn (u32) anyerror!u64, @ptrCast(&serialization.message.makeCapabilityPointer)),@as(*const fn (i32, u3, u32) anyerror!u64, @ptrCast(&serialization.message.makeListPointer)),@as(*const fn (bool, u32, u32) anyerror!u64, @ptrCast(&serialization.message.makeFarPointer))).StructBuilder, usize) void
@@ -456,6 +463,7 @@ capnpc-zig.message.TextListReader.getStrict: fn (serialization.message.list_read
 capnpc-zig.message.TextListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).TextListReader) u32
 capnpc-zig.message.TextListReader.message: field *const serialization.message.Message
 capnpc-zig.message.TextListReader.segment_id: field u32
+capnpc-zig.message.TextListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.TextListReader: struct
 capnpc-zig.message.U16ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.U16ListBuilder.element_count: field u32
@@ -470,6 +478,7 @@ capnpc-zig.message.U16ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.U16ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(u16,serialization.message.Message)) u32
 capnpc-zig.message.U16ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U16ListReader.segment_id: field u32
+capnpc-zig.message.U16ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U16ListReader: struct
 capnpc-zig.message.U32ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.U32ListBuilder.element_count: field u32
@@ -484,6 +493,7 @@ capnpc-zig.message.U32ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.U32ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(u32,serialization.message.Message)) u32
 capnpc-zig.message.U32ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U32ListReader.segment_id: field u32
+capnpc-zig.message.U32ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U32ListReader: struct
 capnpc-zig.message.U64ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.U64ListBuilder.element_count: field u32
@@ -498,6 +508,7 @@ capnpc-zig.message.U64ListReader.get: fn (serialization.message.list_readers.Pri
 capnpc-zig.message.U64ListReader.len: fn (serialization.message.list_readers.PrimitiveListReader(u64,serialization.message.Message)) u32
 capnpc-zig.message.U64ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U64ListReader.segment_id: field u32
+capnpc-zig.message.U64ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U64ListReader: struct
 capnpc-zig.message.U8ListBuilder.builder: field *serialization.message.MessageBuilder
 capnpc-zig.message.U8ListBuilder.element_count: field u32
@@ -513,7 +524,8 @@ capnpc-zig.message.U8ListReader.get: fn (serialization.message.list_readers.defi
 capnpc-zig.message.U8ListReader.len: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).U8ListReader) u32
 capnpc-zig.message.U8ListReader.message: field *const serialization.message.Message
 capnpc-zig.message.U8ListReader.segment_id: field u32
-capnpc-zig.message.U8ListReader.slice: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).U8ListReader) error{OutOfBounds}![]const u8
+capnpc-zig.message.U8ListReader.slice: fn (serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).U8ListReader) error{InvalidPointer,OutOfBounds}![]const u8
+capnpc-zig.message.U8ListReader.stride_bytes: field u32 = 0
 capnpc-zig.message.U8ListReader: struct
 capnpc-zig.message.VoidListBuilder.element_count: field u32
 capnpc-zig.message.VoidListBuilder.len: fn (serialization.message.list_builders.define(serialization.message.MessageBuilder).VoidListBuilder) u32

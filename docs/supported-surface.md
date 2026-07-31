@@ -446,12 +446,23 @@ cooperating peer.
   with their own exception `Return`, because this vat never observes the results
   it would need in order to resolve them.
 
-- **Reading a struct list as a *primitive* list is not supported.** The
-  *forward* direction of the list-upgrade rule works: a list encoded with any
-  element size except one bit decodes as a struct list, so a peer that evolved
-  `List(UInt32)` into `List(SomeStruct)` can read old data. The inverse — an old
-  binary reading a correctly-encoded struct list back as `List(UInt32)` — is not
-  implemented. Only half the compatibility guarantee is in place.
+- **Reading a struct list as a primitive or pointer list works on a struct's own
+  fields, not through the nested/type-erased list readers.** Both directions of
+  the list-upgrade rule are implemented for `StructReader.read*List`: a list of
+  any element size except one bit decodes as a struct list (so a peer that
+  evolved `List(UInt32)` into `List(SomeStruct)` reads old data), and a
+  correctly-encoded struct list decodes back as `List(UInt8/16/32/64)`,
+  `List(Text)` or a pointer list (so a binary still on the old schema reads what
+  the evolved peer writes). Element preconditions follow the C++ reference: a
+  primitive list needs a non-empty data section, a pointer list needs at least
+  one pointer, a struct list is never readable as `List(Bool)`, and Text and
+  Data still require byte elements. `U8ListReader.slice` fails with
+  `error.InvalidPointer` on such a list — its bytes are one struct apart, so no
+  contiguous slice holds them. What is *not* implemented is the same
+  struct-list-to-primitive direction one level down: `PointerListReader.getU32List`
+  and friends, and `AnyPointerReader.getPointerList`, still reject a struct list
+  with `error.InvalidPointer`. That affects nested lists (`List(List(UInt32))`)
+  and type-erased access, not ordinary fields.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is

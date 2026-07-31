@@ -11,10 +11,23 @@ fn WireType(comptime T: type) type {
     };
 }
 
+/// Distance between consecutive elements of a list reader.
+///
+/// `stride_bytes` is 0 for a list stored in its own encoding, where elements are
+/// packed at their natural width. It is non-zero only for a struct list being
+/// read back as the primitive or pointer list an older schema declares (the
+/// inverse of the Cap'n Proto list-upgrade rule), where consecutive elements are
+/// separated by the whole struct — data section plus pointer section — and not
+/// by the width actually being read.
+fn elementStride(stride_bytes: u32, natural_bytes: usize) usize {
+    if (stride_bytes != 0) return @as(usize, stride_bytes);
+    return natural_bytes;
+}
+
 /// Generic list reader for primitive types >= 2 bytes (u16..u64, i16..i64, f32, f64).
-/// The struct layout (message, segment_id, elements_offset, element_count) is
-/// identical for every instantiation, so callers can coerce between readers of
-/// the same width via simple struct-literal copies.
+/// The struct layout (message, segment_id, elements_offset, element_count,
+/// stride_bytes) is identical for every instantiation, so callers can coerce
+/// between readers of the same width via simple struct-literal copies.
 pub fn PrimitiveListReader(comptime T: type, comptime MessageType: type) type {
     const byte_size = @sizeOf(T);
 
@@ -23,6 +36,10 @@ pub fn PrimitiveListReader(comptime T: type, comptime MessageType: type) type {
         segment_id: u32,
         elements_offset: usize,
         element_count: u32,
+        /// See `elementStride`. Defaulted so existing four-field literals —
+        /// including the ones in checked-in generated code — keep compiling
+        /// and keep meaning "natural stride".
+        stride_bytes: u32 = 0,
 
         pub fn len(self: @This()) u32 {
             return self.element_count;
@@ -30,8 +47,11 @@ pub fn PrimitiveListReader(comptime T: type, comptime MessageType: type) type {
 
         pub fn get(self: @This(), index: u32) !T {
             if (index >= self.element_count) return error.IndexOutOfBounds;
-            const offset = self.elements_offset + @as(usize, index) * byte_size;
+            const offset = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, byte_size);
             const segment = self.message.segments[self.segment_id];
+            // Checks `byte_size`, not the stride: for a downgraded struct list
+            // the bytes past the element's data section belong to that
+            // element's pointers, and are never read here.
             try bounds.checkBounds(segment, offset, byte_size);
             const raw = std.mem.readInt(WireType(T), segment[offset..][0..byte_size], .little);
             return @bitCast(raw);
@@ -129,8 +149,12 @@ pub fn define(
         pub const TextListReader = struct {
             message: *const MessageType,
             segment_id: u32,
+            /// Byte offset of the first text pointer. For a downgraded struct
+            /// list that is element 0's *pointer section*, not its start.
             elements_offset: usize,
             element_count: u32,
+            /// See `elementStride`.
+            stride_bytes: u32 = 0,
 
             pub fn len(self: TextListReader) u32 {
                 return self.element_count;
@@ -138,7 +162,7 @@ pub fn define(
 
             pub fn get(self: TextListReader, index: u32) ![]const u8 {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, 8);
                 const segment = self.message.segments[self.segment_id];
                 try bounds.checkBounds(segment, pointer_pos, 8);
 
@@ -171,6 +195,8 @@ pub fn define(
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
+            /// See `elementStride`.
+            stride_bytes: u32 = 0,
 
             pub fn len(self: U8ListReader) u32 {
                 return self.element_count;
@@ -178,13 +204,20 @@ pub fn define(
 
             pub fn get(self: U8ListReader, index: u32) !u8 {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index);
+                const offset = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, 1);
                 const segment = self.message.segments[self.segment_id];
                 try bounds.checkOffset(segment, offset);
                 return segment[offset];
             }
 
+            /// The list's bytes as one contiguous slice.
+            ///
+            /// Fails with `error.InvalidPointer` for a downgraded struct list:
+            /// there its elements are separated by the rest of each struct, so
+            /// no contiguous slice of the segment holds them and only them.
+            /// `get` still works element by element.
             pub fn slice(self: U8ListReader) ![]const u8 {
+                if (self.stride_bytes != 0) return error.InvalidPointer;
                 const segment = self.message.segments[self.segment_id];
                 try bounds.checkBounds(segment, self.elements_offset, @as(usize, self.element_count));
                 return segment[self.elements_offset .. self.elements_offset + @as(usize, self.element_count)];
@@ -196,6 +229,8 @@ pub fn define(
             segment_id: u32,
             elements_offset: usize,
             element_count: u32,
+            /// See `elementStride`.
+            stride_bytes: u32 = 0,
 
             pub fn len(self: I8ListReader) u32 {
                 return self.element_count;
@@ -203,7 +238,7 @@ pub fn define(
 
             pub fn get(self: I8ListReader, index: u32) !i8 {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const offset = self.elements_offset + @as(usize, index);
+                const offset = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, 1);
                 const segment = self.message.segments[self.segment_id];
                 try bounds.checkOffset(segment, offset);
                 return @bitCast(segment[offset]);
@@ -256,8 +291,12 @@ pub fn define(
         pub const PointerListReader = struct {
             message: *const MessageType,
             segment_id: u32,
+            /// Byte offset of the first pointer. For a downgraded struct list
+            /// that is element 0's *pointer section*, not its start.
             elements_offset: usize,
             element_count: u32,
+            /// See `elementStride`.
+            stride_bytes: u32 = 0,
 
             pub fn len(self: PointerListReader) u32 {
                 return self.element_count;
@@ -265,7 +304,7 @@ pub fn define(
 
             fn readPointer(self: PointerListReader, index: u32) !struct { pos: usize, word: u64 } {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
-                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                const pointer_pos = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, 8);
                 const segment = self.message.segments[self.segment_id];
                 try bounds.checkBounds(segment, pointer_pos, 8);
                 const pointer_word = std.mem.readInt(u64, segment[pointer_pos..][0..8], .little);
