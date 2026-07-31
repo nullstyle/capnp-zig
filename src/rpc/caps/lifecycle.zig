@@ -208,14 +208,6 @@ pub const CapTable = struct {
         }
         if (entry.value_ptr.ref_count == 0) return false;
         entry.value_ptr.ref_count = 0;
-        // RETENTION under a handoff pin: wire references are exhausted, but a
-        // live handoff pin keeps the entry AND returns false — for cleanup
-        // purposes the import is NOT released. Firing the resolved-import
-        // cleanup eagerly here would recurse through releaseResolvedCap into
-        // another import's refs mid-handoff; the unpin
-        // (Peer.releaseHandoffImportPin) performs the deferred removal +
-        // cleanup instead.
-        if (entry.value_ptr.handoff_pin_count > 0) return false;
         // Wire references are exhausted. Keep the entry alive if a promise-held
         // pin still leases it; otherwise remove it. Either way the wire side is
         // fully released (return true) so the Release frame is still sent once.
@@ -236,114 +228,15 @@ pub const CapTable = struct {
         entry.value_ptr.promise_ref_count = std.math.add(u32, entry.value_ptr.promise_ref_count, 1) catch return error.RefCountOverflow;
     }
 
-    /// Take a handoff pin on an import: a live provision whose receiverHosted
-    /// target this import is (the Provide-time pin), or a cross-peer proxy
-    /// forwarding to it (the serve-time pin), leases the import so the
-    /// introducer draining its own wire refs between Provide and Accept cannot
-    /// destroy the capability the provision still has to serve. Unlike the
-    /// promise pin, a handoff pin ALSO withholds outbound Release frames while
-    /// it lives (`deferReleaseWhilePinned`): a receiverHosted descriptor grants
-    /// no transferable wire reference, so the withheld count is the only thing
-    /// keeping the far-side export alive across the handoff window. The import
-    /// must already exist.
-    pub fn noteHandoffImportPin(self: *CapTable, remote_id: u32) error{ RefCountOverflow, UnknownImport }!void {
-        var entry = self.imports.getEntry(remote_id) orelse return error.UnknownImport;
-        entry.value_ptr.handoff_pin_count = std.math.add(u32, entry.value_ptr.handoff_pin_count, 1) catch return error.RefCountOverflow;
-    }
-
-    /// Roll back a handoff pin taken by an OOM ladder that has NOT yet
-    /// transferred ownership: a plain decrement — no deferred emission, no
-    /// removal check. Safe exactly because the ladder between the note and
-    /// this rollback performs no import releases, so nothing can have
-    /// accumulated into `deferred_release` under this pin. Never used after a
-    /// transfer: the transferee unpins via `releaseHandoffImportPin`.
-    pub fn rollbackHandoffImportPin(self: *CapTable, remote_id: u32) void {
-        var entry = self.imports.getEntry(remote_id) orelse return;
-        if (entry.value_ptr.handoff_pin_count == 0) return;
-        entry.value_ptr.handoff_pin_count -= 1;
-    }
-
-    /// WITHHOLD seam helper for the peer's `send_release` callback: when
-    /// `remote_id` is pinned by a live handoff (`handoff_pin_count > 0`), fold
-    /// `count` into the entry's deferred wire-release tally and return true —
-    /// the caller must NOT emit a Release frame now. Otherwise return false
-    /// and leave the entry untouched (an import alive on `promise_ref_count`
-    /// alone still releases eagerly). The deferred tally is emitted — and
-    /// zeroed — by the peer at the last unpin (`releaseHandoffImportPin`).
-    pub fn deferReleaseWhilePinned(self: *CapTable, remote_id: u32, count: u32) error{RefCountOverflow}!bool {
-        var entry = self.imports.getEntry(remote_id) orelse return false;
-        if (entry.value_ptr.handoff_pin_count == 0) return false;
-        entry.value_ptr.deferred_release = std.math.add(u32, entry.value_ptr.deferred_release, count) catch return error.RefCountOverflow;
-        return true;
-    }
-
-    pub const HandoffImportUnpin = struct {
-        /// This call dropped the LAST handoff pin; `deferred_release` below was
-        /// taken (and zeroed on the entry) and must be emitted by the caller.
-        last_pin_released: bool,
-        /// Withheld wire-release count taken by this unpin (0 unless
-        /// `last_pin_released`).
-        deferred_release: u32,
-    };
-
-    /// Bookkeeping half of the handoff unpin (the peer emits the frame): drop
-    /// one pin; when the LAST pin drops, take — and zero — the deferred
-    /// wire-release tally, whether or not the emission that follows succeeds.
-    /// A second pin/unpin cycle therefore starts from 0: no stale re-emission,
-    /// no ReleaseCountExceeded at a compliant introducer, no wrong-object
-    /// decrement after id recycling. Never removes the entry — removal (and
-    /// the resolved-import cleanup retention deferred) happens via
-    /// `removeImportIfFullyReleased` AFTER the caller's emission, so a send
-    /// that reenters the table never sees a half-removed entry. Unknown id /
-    /// underflow are warn-only no-ops, matching the other release paths.
-    pub fn releaseHandoffImportPin(self: *CapTable, remote_id: u32) HandoffImportUnpin {
-        var entry = self.imports.getEntry(remote_id) orelse {
-            log.warn("handoff unpin for unknown import id={}", .{remote_id});
-            return .{ .last_pin_released = false, .deferred_release = 0 };
-        };
-        if (entry.value_ptr.handoff_pin_count == 0) {
-            log.warn("handoff unpin underflow for import id={}", .{remote_id});
-            return .{ .last_pin_released = false, .deferred_release = 0 };
-        }
-        entry.value_ptr.handoff_pin_count -= 1;
-        if (entry.value_ptr.handoff_pin_count != 0) {
-            return .{ .last_pin_released = false, .deferred_release = 0 };
-        }
-        const deferred = entry.value_ptr.deferred_release;
-        entry.value_ptr.deferred_release = 0;
-        return .{ .last_pin_released = true, .deferred_release = deferred };
-    }
-
-    /// Removal half of the handoff unpin: after the deferred emission, remove
-    /// the entry iff no wire refs, promise pins, or handoff pins remain.
-    /// Returns true when removed here — the caller must then perform the same
-    /// resolved-import cleanup the generic release path performs on removal
-    /// (retention-under-pin deferred exactly that cleanup). Re-checks the live
-    /// entry state rather than trusting a pre-send snapshot, so a send
-    /// callback that reentered the table cannot desynchronize the check.
-    pub fn removeImportIfFullyReleased(self: *CapTable, remote_id: u32) bool {
-        const entry = self.imports.getEntry(remote_id) orelse return false;
-        if (entry.value_ptr.ref_count != 0) return false;
-        if (entry.value_ptr.promise_ref_count != 0) return false;
-        if (entry.value_ptr.handoff_pin_count != 0) return false;
-        _ = self.imports.remove(remote_id);
-        return true;
-    }
-
     /// Release one promise-held pin taken by `notePromiseImportRef`. Removes the
-    /// import entry once no wire references and no other pins — promise OR
-    /// handoff — remain. Never sends a wire Release (the pin was never a wire
-    /// reference); returns true iff the entry was removed here. An entry still
-    /// leased by a handoff pin survives; its removal (and deferred-Release
-    /// emission) belongs to the handoff unpin.
+    /// import entry once no wire references and no other pins remain. Never sends
+    /// a wire Release (the pin was never a wire reference); returns true iff the
+    /// entry was removed here.
     pub fn releasePromiseImportRef(self: *CapTable, remote_id: u32) bool {
         var entry = self.imports.getEntry(remote_id) orelse return false;
         if (entry.value_ptr.promise_ref_count == 0) return false;
         entry.value_ptr.promise_ref_count -= 1;
-        if (entry.value_ptr.promise_ref_count == 0 and
-            entry.value_ptr.ref_count == 0 and
-            entry.value_ptr.handoff_pin_count == 0)
-        {
+        if (entry.value_ptr.promise_ref_count == 0 and entry.value_ptr.ref_count == 0) {
             _ = self.imports.remove(remote_id);
             return true;
         }
@@ -384,18 +277,6 @@ const ImportEntry = struct {
     /// Promise-held pins: local lifetime leases taken when one of our promise
     /// exports resolves to this import (see `notePromiseImportRef`). NOT wire
     /// references — releasing a pin never sends a Release. The entry survives
-    /// while any count is non-zero.
+    /// while either count is non-zero.
     promise_ref_count: u32 = 0,
-    /// Handoff pins: leases taken by a live provision whose receiverHosted
-    /// target this import is, or by a cross-peer proxy forwarding to it (see
-    /// `noteHandoffImportPin`). While non-zero the entry is retained AND every
-    /// outbound wire Release for this import is WITHHELD into
-    /// `deferred_release` — a receiverHosted grant carries no transferable
-    /// wire reference, so an eagerly-emitted Release would let the introducer
-    /// destroy the very capability a pending Accept still has to reach.
-    handoff_pin_count: u32 = 0,
-    /// Wire-release count withheld while `handoff_pin_count > 0`, emitted as
-    /// one Release frame (and zeroed) when the last handoff pin drops. Keeps
-    /// granted == released across the handoff window.
-    deferred_release: u32 = 0,
 };

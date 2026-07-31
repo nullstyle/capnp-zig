@@ -47,22 +47,20 @@ const Scenario = enum {
     disconnect,
     // The C++ driver provides a still-PIPELINED (promisedAnswer-target) cap
     // that ultimately re-resolves to a cap this host only IMPORTS (a cap the
-    // introducer itself hosts). With the receiverHosted lift the host SERVES
-    // these Accepts: the import is kept alive by a handoff pin whose
-    // deferred-Release accounting withholds outbound Releases across the
-    // handoff window, and the accepted cap proxies back to the introducer's
-    // own capability. These scenarios previously asserted the fail-closed
-    // refusal (`CrossPeerReceiverHostedTargetUnsupported`); this is the
-    // rewrite that came due when the lift landed.
+    // introducer itself hosts). Cross-peer serving of receiver-hosted
+    // targets is unsupported, so the Accept must be refused FAIL-CLOSED with
+    // `CrossPeerReceiverHostedTargetUnsupported` — these scenarios assert
+    // that current behavior and must be rewritten when the receiverHosted
+    // lift lands.
     //   pipelined-provide       one-hop echo: the promisedAnswer target
     //                           resolves at Provide time -> stored
-    //                           .local{receiverHosted} -> served through the
-    //                           Provide-time import pin (lift site 1).
+    //                           .local{receiverHosted} -> fail-closed at the
+    //                           serve's direct target-kind gate (site 1).
     //   pipelined-provide-chain chained echo-of-pipelined: Provide-time
     //                           resolution yields a chained receiverAnswer ->
     //                           stored .promised ops -> serve-time owner-side
-    //                           re-resolution -> .imported -> served through
-    //                           the serve-time import pin (lift site 2).
+    //                           re-resolution -> .imported -> fail-closed at
+    //                           the re-resolution arm (site 2).
     pipelined_provide,
     pipelined_provide_chain,
 
@@ -289,16 +287,6 @@ const EchoReturner = struct {
             id: u32,
             fn build(bctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
                 const bself: *const @This() = castCtx(*const @This(), bctx);
-                // The retain above KEEPS the caller's param grant: say so on
-                // the wire. Leaving `releaseParamCaps` at its wire default
-                // TRUE makes the C++ caller retire its param export while
-                // this host still counts a live import ref on it — exactly
-                // the far-side death that would strand the receiverHosted
-                // provide target these scenarios hand off (the accepted
-                // proxy's forwarded call would then hit "Message target is
-                // not a current export ID"). Observed empirically against
-                // the reference implementation.
-                ret.setReleaseParamCaps(false);
                 var payload = try ret.payloadTyped();
                 var any = try payload.initContent();
                 try any.setCapabilityOriginTagged(bself.origin, bself.id);
@@ -926,6 +914,13 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
                 conn.probe_ctx = &sampler;
                 conn.probe_fn = Sampler.hook;
                 conn.wire_probes = &wire_probes;
+                if (args.scenario.isPipelinedProvide()) {
+                    // Reveal the real exception name on the wire so the C++
+                    // recipient can assert the fail-closed refusal BY NAME
+                    // (the default policy sanitizes every outbound Return
+                    // exception to "host call failed").
+                    conn.host.setErrorDisclosurePolicy(.{ .reveal_details = true });
+                }
                 conn.host.start(null, null, null);
                 tap.diag("accepted connection {d}", .{inited});
             }
@@ -1009,31 +1004,21 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
         // re-resolves to a cap this host only imports. Assert the wire shape
         // (the Provide target arrived as promisedAnswer — C++ did not
         // shorten), the STORED form the Provide-time resolution took (which
-        // pins WHICH lift site served the Accept), that the serve really
-        // happened cross-peer, that the accepted cap reached the DRIVER's
-        // capability (host Carol untouched), and that the driver's release
-        // ceremony drained everything. The 43-vs-42 result value is asserted
-        // driver-side.
+        // pins WHICH fail-closed site served the refusal), and that no proxy
+        // export was minted. The exception NAME is asserted driver-side (it
+        // is the wire-visible Return exception reason).
         .pipelined_provide, .pipelined_provide_chain => {
             tap.ok(probes.provide_seen, "a Provide registered a provision in the vat index");
             tap.ok(wire_probes.provide_promised_answer, "the Provide target ARRIVED as promisedAnswer (C++ did not shorten)");
             tap.ok(!wire_probes.provide_imported_cap, "no importedCap-target Provide was observed");
             if (args.scenario == .pipelined_provide) {
-                tap.ok(probes.stored_local_receiver_hosted, "Provide-time resolution stored .local{receiverHosted} (lift site 1)");
+                tap.ok(probes.stored_local_receiver_hosted, "Provide-time resolution stored .local{receiverHosted} (fail-closed site 1)");
                 tap.ok(!probes.stored_promised, "no .promised target was stored in the one-hop shape");
             } else {
-                tap.ok(probes.stored_promised, "Provide-time resolution stored .promised ops (serve-time re-resolution, lift site 2)");
+                tap.ok(probes.stored_promised, "Provide-time resolution stored .promised ops (serve-time re-resolution, site 2)");
                 tap.ok(!probes.stored_local_receiver_hosted, "no .local{receiverHosted} target was stored in the chained shape");
             }
-            tap.ok(probes.proxy_seen, "the Accept was SERVED cross-peer (proxy export minted on the sibling)");
-            tap.ok(carol.calls == 0, "host Carol was never invoked (the accepted cap reached the driver's own capability)");
-            tap.ok(drainedTransient(&vat, conns[0..inited], tap, args.scenario.name()), "all transient handoff state drained");
-            // The driver performs the full release ceremony, so the RELEASE
-            // path must have destroyed the proxy — asserted strictly, like
-            // `happy`.
-            const links = liveProxyLinks(conns[0..inited]);
-            if (links != 0) tap.diag("residue [{s}] cross_peer_proxy_links = {d} after the driver's Release ceremony", .{ args.scenario.name(), links });
-            tap.ok(links == 0, "the recipient's Release destroyed the cross-peer proxy export");
+            tap.ok(!probes.proxy_seen, "the Accept was refused fail-closed (no cross-peer proxy export minted)");
         },
         .disconnect => {
             tap.ok(drainedTransient(&vat, conns[0..inited], tap, "disconnect"), "transient handoff state drained after abrupt disconnect");

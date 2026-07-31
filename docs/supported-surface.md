@@ -235,27 +235,13 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   introducer's forwarded Disembargo rewritten to the spec form and ordered
   after the parked-call replay, and entropy-backed 16-byte embargo ids
   (fail-closed seeding). **Known limitations, honestly:**
-  1. **LIFTED (was: fail closed).** `receiverHosted` provide targets (the host
-     provided a capability it *imports* from the introducer) are now **served
-     cross-peer** via deferred-Release import pinning — exactly the design's
-     L9/L17 mechanism: the import entry is retained under a `handoff_pin_count`
-     lease taken at Provide registration (stored `.local{receiverHosted}`
-     targets) or at serve time (stored `.promised` targets re-resolving to an
-     import), every outbound wire Release for a pinned import is WITHHELD into
-     a `deferred_release` tally (a `receiverHosted` descriptor grants no
-     transferable wire reference, so the withheld count is the only thing
-     keeping the introducer-side export alive across the [Provide, serve)
-     window), and the last unpin emits the accumulated count as one exact
-     Release — granted == released across the whole handoff, just later.
-     Embargoed accepts of such targets complete at Disembargo time through the
-     same serve. Residual honest constraints: a stored-`.promised` target whose
-     re-resolved import has since died still fails closed
-     (`CrossPeerProvisionTargetUnavailable` — the lift serves live targets, it
-     does not resurrect dead ones), and an introducer-side service that
-     RETAINS the provided cap it received as a call param must declare
-     `releaseParamCaps = false` on its Return (the wire-honest statement of
-     that retention), or the introducer legitimately retires the export the
-     handoff needs.
+  1. `receiverHosted` provide targets (the host provided a capability it
+     *imports* from the introducer) **fail closed cross-peer** with a pinned
+     exception. The wire-honest lift needs deferred-Release import pinning
+     (specified in the design's L9: retention under `handoff_pin_count`,
+     withhold-in-send-callback, exact deferred emission, unpin-time
+     resolved-import cleanup, fallible unpin) and deliberately did not ship —
+     it touches import accounting every flow shares.
   2. The vat (index/`Vat` + all enrolled peers) is **single-threaded**;
      `WorkerPool`-hosted multi-peer vats are unsupported, and pool peers keep
      the legacy counter embargo ids. To be precise about the cause, because an
@@ -273,17 +259,14 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      `thirdPartyHosted` resolve, the Accept, and the spec-form forwarded
      accept-Disembargo; the Zig host registers the provision on one peer,
      serves the Accept cross-peer from the sibling, releases the embargoed
-     Accept on the Disembargo, and drains leak-free. Six scenarios (happy,
-     embargo, unknown-token, disconnect, pipelined-provide,
-     pipelined-provide-chain) assert on both sides — the last two are the
-     `receiverHosted` lift proven against the reference: C++ introduces a
-     still-pipelined cap that re-resolves to C++'s own local capability, and
-     the accepted cap must reach it (both stored forms, site 1 and site 2).
-     **Still unproven:** every other implementation (go-capnp's 3PH is `TODO`,
+     Accept on the Disembargo, and drains leak-free. Four scenarios (happy,
+     embargo, unknown-token, disconnect) assert on both sides. **Still
+     unproven:** every other implementation (go-capnp's 3PH is `TODO`,
      Rust/Python adapters are two-party only), and — even for C++ —
-     redirected returns / `ThirdPartyAnswer` (absent from the vendored C++),
-     and Accept-before-Provide *parking under a real Provide* (the C++ driver
-     cannot deterministically force that ordering; parking keeps its Zig↔Zig
+     `receiverHosted` targets (fail closed, see 1), redirected returns /
+     `ThirdPartyAnswer` (absent from the vendored C++), and Accept-before-
+     Provide *parking under a real Provide* (the C++ driver cannot
+     deterministically force that ordering; parking keeps its Zig↔Zig
      coverage). First contact found and fixed one genuine host defect —
      reflected-loopback question ids collided with the remote's inbound answer
      ids — which no Zig↔Zig test had exposed.

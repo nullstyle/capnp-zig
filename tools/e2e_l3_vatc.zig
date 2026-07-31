@@ -36,13 +36,13 @@ const scenarios = [_][]const u8{
     "embargo",
     "unknown-token",
     "disconnect",
-    // receiverHosted lift cells: the C++ driver provides a still-pipelined
+    // Fail-closed cells: the C++ driver provides a still-pipelined
     // (promisedAnswer-target) cap that re-resolves to a cap the host only
-    // imports; the host must SERVE the Accept via deferred-Release import
-    // pinning on both the stored `.local{receiverHosted}` form
-    // (pipelined-provide, lift site 1) and the stored-.promised serve-time
-    // re-resolution (pipelined-provide-chain, lift site 2) — the accepted
-    // cap must reach the DRIVER's own capability (43, not host-Carol's 42).
+    // imports; the host must refuse the Accept with
+    // `CrossPeerReceiverHostedTargetUnsupported` on both the direct
+    // target-kind gate (pipelined-provide) and the stored-.promised
+    // serve-time re-resolution (pipelined-provide-chain). Rewrite when the
+    // receiverHosted lift lands.
     "pipelined-provide",
     "pipelined-provide-chain",
 };

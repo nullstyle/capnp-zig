@@ -98,16 +98,6 @@ const experimental_overrides = [_]Rule{
     // three methods above. Excluded for consistency with the L3 arc even though
     // it sits inside the otherwise-Stable `caps.table` subtree.
     p("capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord"),
-    // The L17 receiverHosted-lift import-pin machinery (handoff pins with
-    // deferred-Release accounting). Level-3 handoff surface living on the
-    // otherwise-Stable `CapTable`, held out of the frozen contract exactly
-    // like the thirdPartyHosted trio above.
-    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteHandoffImportPin"),
-    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.rollbackHandoffImportPin"),
-    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.deferReleaseWhilePinned"),
-    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.releaseHandoffImportPin"),
-    e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.removeImportIfFullyReleased"),
-    p("capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin"),
 };
 
 // NOTE ON `rpc.wire.protocol.*` third-party encoders: symbols like

@@ -87,15 +87,6 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
             /// close; abandoned (left set, never released) at owner
             /// neutralization (rule R5 — the export table dies with the peer).
             target_export_pinned: bool = false,
-            /// True when this provision holds a handoff pin on the owner's
-            /// IMPORT of a receiverHosted target (noteHandoffImportPin).
-            /// SEPARATE from `target_export_pinned` on purpose: import and
-            /// export ids share one numeric space per connection, and a
-            /// single flag would unpin the WRONG TABLE by a colliding bare
-            /// id. Released (with its deferred wire Release) on the
-            /// `.finished` close; abandoned at owner neutralization — the
-            /// import table dies with the peer.
-            target_import_pinned: bool = false,
             /// True while `ProvisionIndex.by_key` holds this object (+1 ref).
             indexed: bool = false,
             /// Per-provision embargo map, keyed by an OWNED dupe of the raw
