@@ -137,25 +137,42 @@ pub const CapDescriptor = struct {
         generated.setReceiverHosted(id) catch unreachable;
     }
 
-    pub fn writeReceiverAnswer(builder: anytype, question_id: u32, ops: []const PromisedAnswerOp) !void {
-        var generated = asGeneratedBuilder(builder);
+    // The three fallible descriptor writers below take a CONCRETE
+    // `message.StructBuilder` rather than `anytype`. A generic parameter leaves
+    // two holes in the frozen API snapshot: the renderer cannot resolve a
+    // generic function's inferred error set (it emits an opaque marker that is
+    // identical for every set), and `api-closure` skips generic signatures
+    // outright. Pinning the parameter closes both. Callers holding a generated
+    // `rpc_capnp.CapDescriptor.Builder` pass its `._builder` field.
+    //
+    // The infallible `writeSenderHosted`/`writeSenderPromise`/
+    // `writeReceiverHosted` above keep `anytype` (via `asGeneratedBuilder`):
+    // they return plain `void`, so neither hole applies to them.
+    pub fn writeReceiverAnswer(builder: message.StructBuilder, question_id: u32, ops: []const PromisedAnswerOp) !void {
+        var generated = rpc_capnp.CapDescriptor.Builder.wrap(builder);
         var promised_builder = try generated.initReceiverAnswer();
         try writePromisedAnswerOpsGenerated(&promised_builder, question_id, ops);
     }
 
-    pub fn writeThirdPartyHostedNull(builder: anytype, vine_id: u32) !void {
-        var generated = asGeneratedBuilder(builder);
+    pub fn writeThirdPartyHostedNull(builder: message.StructBuilder, vine_id: u32) !void {
+        var generated = rpc_capnp.CapDescriptor.Builder.wrap(builder);
         var third_builder = try generated.initThirdPartyHosted();
         try third_builder.setVineId(vine_id);
         try third_builder.setIdNull();
     }
 
+    /// NOTE: this one resolves to `anyerror` even when instantiated, because
+    /// `message.cloneAnyPointer` is declared `anyerror!void` (it recurses across
+    /// a type-erased boundary whose helpers are `@ptrCast` to `anyerror`
+    /// signatures). De-genericizing the builder parameter still pins the
+    /// parameter types and clears the `api-closure` skip, but the error set
+    /// cannot be tightened from here.
     pub fn writeThirdPartyHosted(
-        builder: anytype,
+        builder: message.StructBuilder,
         third_party_id: message.AnyPointerReader,
         vine_id: u32,
     ) !void {
-        var generated = asGeneratedBuilder(builder);
+        var generated = rpc_capnp.CapDescriptor.Builder.wrap(builder);
         var third_builder = try generated.initThirdPartyHosted();
         try third_builder.setVineId(vine_id);
         const id_any = try third_builder.initId();

@@ -371,7 +371,7 @@ fn storeResolvedReceiverAnswer(peer: *Peer, answer_id: u32, receiver_answer_id: 
     try any.setCapability(.{ .id = 0 });
     var cap_list = try ret.initCapTableTyped(1);
     const entry = try cap_list.get(0);
-    try protocol.CapDescriptor.writeReceiverAnswer(entry, receiver_answer_id, &.{});
+    try protocol.CapDescriptor.writeReceiverAnswer(entry._builder, receiver_answer_id, &.{});
     const frame_const = try builder.finish();
     defer peer.allocator.free(frame_const);
     const frame = try peer.allocator.dupe(u8, frame_const);

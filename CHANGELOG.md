@@ -7,7 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **Five frozen Stable signatures lost their `anytype` holes.** The API snapshot
+  cannot pin a *generic* function's error set: Zig will not resolve an inferred
+  error set through an `anytype` parameter until instantiation, so nine Stable
+  lines rendered an opaque `@typeInfo(...).error_union.error_set` marker that is
+  **identical no matter what the set contains**. Adding, removing or renaming an
+  error on any of them passed `zig build check-api` unchanged while breaking
+  every consumer's `catch |err| switch (err)`. `api-closure` skipped them too.
+
+  Two techniques, applied together. **De-genericized** (this is the breaking
+  part — the parameter type is now concrete):
+
+  - `message.MessageBuilder.writeTo` / `writePackedTo` take `*std.Io.Writer`
+    instead of `anytype`.
+  - `rpc.wire.protocol.CapDescriptor.writeReceiverAnswer` /
+    `writeThirdPartyHosted` / `writeThirdPartyHostedNull` take
+    `message.StructBuilder` instead of `anytype`. Callers holding a generated
+    `rpc_capnp.CapDescriptor.Builder` pass its `._builder` field.
+    `StructBuilder` was chosen over the generated builder deliberately: the
+    latter renders under `rpc.generated.*`, which is Experimental, and would
+    have tripped `api-closure`. The infallible `writeSenderHosted` /
+    `writeSenderPromise` / `writeReceiverHosted` keep `anytype`; they return
+    plain `void`, so neither hole applies.
+
+  **Annotated** (signature otherwise unchanged): `codegen.ArrayListWriter.print`
+  declares `error{CodegenBudgetExceeded, OutOfMemory}` — an explicit return set
+  renders concretely even while `args: anytype` keeps the function generic.
+
+  Opaque markers in `docs/api-snapshot.txt`: **9 → 2**. Genuinely tightened:
+  **5 of 9**. Two of the remaining four —
+  `CapDescriptor.writeThirdPartyHosted` and
+  `rpc.caps.table.payload_remap.clonePayloadWithRemappedCaps` — resolve to
+  `anyerror` at *every* instantiation (`message.cloneAnyPointer` is declared
+  `anyerror!void`; `map_inbound_cap` is an `anyerror`-typed callback), so they
+  now render an honest `anyerror!void` rather than a misleading marker, with no
+  tightening claimed. `reader.Reader.readMessage` / `readPackedMessage` stay
+  unpinned: they are duck-typed over any stream reader, so the set belongs to
+  the caller's reader type. See `docs/supported-surface.md`.
+
+  Ablation-proven in both directions. Before: `return error.Sentinel` added to
+  the generic `writeReceiverAnswer` left `check-api` **green** — the hole. After:
+  the same edit turns it **red** with `Sentinel` visible in the diffed set.
+
 ### Fixed
+
+- **`MessageBuilder.writeTo` and `writePackedTo` were neither type-checked nor
+  tested.** Both are frozen Stable API with **zero call sites in the tree**, and
+  Zig does not analyse an uninstantiated generic body — so making them concrete
+  would only have swapped an unchecked generic for an unchecked concrete
+  function. `tests/serialization/message_test.zig` now instantiates and executes
+  both: a multi-segment message (which forces the multi-entry segment table and
+  the even-count padding word) streamed through `std.Io.Writer.Allocating`,
+  asserted byte-for-byte against `toBytes`/`toPackedBytes` and then read back
+  and compared field by field, plus the zero-segment frame. Both functions turn
+  out to be correct — the defect was the absence of any check, not the code.
 
 - **179 `test` blocks under `src/rpc` were never compiled, let alone run.**
   `src/rpc/mod.zig` re-exports through namespace *structs*; Zig analyses a

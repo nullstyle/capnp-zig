@@ -376,18 +376,43 @@ cooperating peer.
 ### Active
 
 - **The frozen snapshot pins signatures, fields and error sets — but not
-  `anytype`.** `docs/api-snapshot.txt` now records struct fields with their
-  default values, union variants, enum ordinals, and concrete error sets
-  (expanded from Zig's inferred sets). Nine Stable signatures remain unpinned
-  beyond their arity, because they are *generic* — Zig cannot resolve an
-  inferred error set for a function whose parameters include `anytype` until it
-  is instantiated, so asking for it is a compile error. They are:
-  `codegen.ArrayListWriter.print`, `message.MessageBuilder.writeTo` /
-  `writePackedTo`, `reader.Reader.readMessage` / `readPackedMessage`,
-  `rpc.caps.table.payload_remap.clonePayloadWithRemappedCaps`, and
-  `rpc.wire.protocol.CapDescriptor.writeReceiverAnswer` /
-  `writeThirdPartyHosted` / `writeThirdPartyHostedNull`. A change to one of
-  those functions' error behavior will not turn `check-api` red.
+  `anytype`.** `docs/api-snapshot.txt` records struct fields with their default
+  values, union variants, enum ordinals, and concrete error sets (expanded from
+  Zig's inferred sets). A *generic* signature is the residual hole: Zig cannot
+  resolve an inferred error set for a function whose parameters include
+  `anytype` until it is instantiated, so the renderer emits an opaque
+  self-referential marker that is identical for every set, and `api-closure`
+  skips the signature entirely.
+
+  This was nine Stable signatures; **seven are now closed and two remain**.
+  Five are genuinely tightened to a concrete set:
+  `codegen.ArrayListWriter.print` (explicit `error{CodegenBudgetExceeded,
+  OutOfMemory}` — it keeps `args: anytype`, but an explicit return set renders
+  concretely anyway), and `message.MessageBuilder.writeTo` / `writePackedTo`
+  plus `rpc.wire.protocol.CapDescriptor.writeReceiverAnswer` /
+  `writeThirdPartyHostedNull`, which took concrete parameter types
+  (`*std.Io.Writer` and `message.StructBuilder` respectively) and so also
+  cleared their `api-closure` skip.
+
+  Two more lost the opaque marker without gaining a tighter pin, and the
+  snapshot now says so honestly by rendering `anyerror!void`:
+  `rpc.wire.protocol.CapDescriptor.writeThirdPartyHosted` (it calls
+  `message.cloneAnyPointer`, which is declared `anyerror!void` because it
+  recurses across a type-erased boundary whose helpers are `@ptrCast` to
+  `anyerror` signatures) and
+  `rpc.caps.table.payload_remap.clonePayloadWithRemappedCaps` (its
+  `map_inbound_cap` parameter is an `anyerror`-typed callback). Both resolve to
+  `anyerror` at *every* instantiation, so there is nothing to tighten.
+
+  **Still unpinned beyond arity: `reader.Reader.readMessage` and
+  `reader.Reader.readPackedMessage`.** These are duck-typed over any sequential
+  stream reader (`readByte`/`readInt`/`readAll`/`readNoEof`, as implemented by
+  the module's own `SliceReader`), so their error set is a function of the
+  reader the *caller* supplies and cannot be written down at the definition. A
+  change to their error behavior will not turn `check-api` red. Narrowing them
+  to a concrete `*std.Io.Reader` would close the hole but is a breaking change
+  to a frozen Stable entry point; declaring them `anyerror` would be a
+  widening, not a pin.
 
 - **The frozen surface IS now closed under its own signatures**, gated by
   `zig build api-closure` on all three CI tiers. Its first run reported 14

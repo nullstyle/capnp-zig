@@ -132,7 +132,7 @@ test "promised answer getPointerField resolves receiverAnswer to promised cap" {
     var cap_list = try ret.initCapTableTyped(1);
 
     const entry = try cap_list.get(0);
-    try protocol.CapDescriptor.writeReceiverAnswer(entry, 88, &receiver_ops);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry._builder, 88, &receiver_ops);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);

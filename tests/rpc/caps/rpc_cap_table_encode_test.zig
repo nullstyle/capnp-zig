@@ -462,7 +462,7 @@ test "InboundCapTable.clone owns promised answers independently of the frame" {
 
     var cap_list = try ret.initCapTableTyped(1);
     const entry0 = try cap_list.get(0);
-    try protocol.CapDescriptor.writeReceiverAnswer(entry0, 88, &ops);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry0._builder, 88, &ops);
 
     // Copy the finished frame into a buffer we can free on demand to simulate
     // the transport freeing the frame after the on_message callback returns.

@@ -2744,7 +2744,15 @@ pub const MessageBuilder = struct {
     }
 
     /// Stream the framed wire format directly to `writer` without intermediate allocation.
-    pub fn writeTo(self: *MessageBuilder, writer: anytype) !void {
+    ///
+    /// `writer` is a concrete `*std.Io.Writer` rather than `anytype`: a generic
+    /// parameter leaves the function's error set unpinnable in the frozen API
+    /// snapshot, and — because this function has no in-tree callers — an
+    /// uninstantiated generic body is never semantically analyzed at all.
+    ///
+    /// The writer is NOT flushed; per `std.Io` convention the owner of the
+    /// writer flushes it.
+    pub fn writeTo(self: *MessageBuilder, writer: *std.Io.Writer) !void {
         if (self.segments.items.len == 0) {
             try self.segments.append(self.allocator, std.ArrayList(u8).empty);
         }
@@ -2772,7 +2780,10 @@ pub const MessageBuilder = struct {
     }
 
     /// Stream the packed wire format directly to `writer`.
-    pub fn writePackedTo(self: *MessageBuilder, writer: anytype) !void {
+    ///
+    /// Concrete `*std.Io.Writer` for the same reasons as `writeTo`. The writer
+    /// is NOT flushed.
+    pub fn writePackedTo(self: *MessageBuilder, writer: *std.Io.Writer) !void {
         const packed_bytes = try self.toPackedBytes();
         defer self.allocator.free(packed_bytes);
         try writer.writeAll(packed_bytes);

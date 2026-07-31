@@ -344,7 +344,7 @@ test "InboundCapTable resolves receiverAnswer" {
     var cap_list = try ret.initCapTableTyped(1);
 
     const entry0 = try cap_list.get(0);
-    try protocol.CapDescriptor.writeReceiverAnswer(entry0, 55, &ops);
+    try protocol.CapDescriptor.writeReceiverAnswer(entry0._builder, 55, &ops);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);
@@ -390,7 +390,7 @@ test "InboundCapTable resolves thirdPartyHosted to vine import" {
     var cap_list = try ret.initCapTableTyped(1);
 
     const entry0 = try cap_list.get(0);
-    try protocol.CapDescriptor.writeThirdPartyHostedNull(entry0, 77);
+    try protocol.CapDescriptor.writeThirdPartyHostedNull(entry0._builder, 77);
 
     const bytes = try builder.finish();
     defer allocator.free(bytes);

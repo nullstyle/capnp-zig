@@ -2325,3 +2325,91 @@ test "struct-list upgrade: a corrupt inline-composite tag is still rejected" {
         message.Message.init(testing.allocator, mutated, .{}),
     );
 }
+
+// ---------------------------------------------------------------------------
+// MessageBuilder.writeTo / writePackedTo.
+//
+// These two frozen Stable functions had ZERO call sites anywhere in the tree.
+// While they took `writer: anytype` that meant their bodies were never
+// semantically analyzed and their behaviour was never exercised: an
+// uninstantiated generic body is not type-checked. The parameter is now a
+// concrete `*std.Io.Writer`, and these tests instantiate and execute both.
+// ---------------------------------------------------------------------------
+
+test "MessageBuilder.writeTo streams the same framing as toBytes and round-trips" {
+    const allocator = testing.allocator;
+
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(1, 2);
+    root.writeU64(0, 0xdead_beef_0bad_f00d);
+    try root.writeText(0, "writeTo round-trip");
+
+    // A second segment forces the multi-entry segment table AND the 4-byte
+    // padding word that only appears for an even segment count.
+    const far_segment = try builder.createSegment();
+    try root.writeTextInSegment(1, "second segment", far_segment);
+
+    const expected = try builder.toBytes();
+    defer allocator.free(expected);
+
+    var sink = std.Io.Writer.Allocating.init(allocator);
+    defer sink.deinit();
+    try builder.writeTo(&sink.writer);
+    try sink.writer.flush();
+
+    // Byte-for-byte identical to the allocating serializer.
+    try testing.expectEqualSlices(u8, expected, sink.written());
+
+    // ...and the streamed bytes are a message a reader accepts.
+    var msg = try message.Message.init(allocator, sink.written(), .{});
+    defer msg.deinit();
+    const reader = try msg.getRootStruct();
+    try testing.expectEqual(@as(u64, 0xdead_beef_0bad_f00d), reader.readU64(0));
+    try testing.expectEqualStrings("writeTo round-trip", try reader.readText(0));
+    try testing.expectEqualStrings("second segment", try reader.readText(1));
+}
+
+test "MessageBuilder.writePackedTo streams the same framing as toPackedBytes and round-trips" {
+    const allocator = testing.allocator;
+
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(1, 1);
+    root.writeU32(0, 0x0000_2a2a);
+    try root.writeText(0, "writePackedTo round-trip");
+
+    const expected = try builder.toPackedBytes();
+    defer allocator.free(expected);
+
+    var sink = std.Io.Writer.Allocating.init(allocator);
+    defer sink.deinit();
+    try builder.writePackedTo(&sink.writer);
+    try sink.writer.flush();
+
+    try testing.expectEqualSlices(u8, expected, sink.written());
+
+    var msg = try message.Message.initPacked(allocator, sink.written(), .{});
+    defer msg.deinit();
+    const reader = try msg.getRootStruct();
+    try testing.expectEqual(@as(u32, 0x0000_2a2a), reader.readU32(0));
+    try testing.expectEqualStrings("writePackedTo round-trip", try reader.readText(0));
+}
+
+test "MessageBuilder.writeTo emits a well-formed frame for a builder with no segments" {
+    const allocator = testing.allocator;
+
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    var sink = std.Io.Writer.Allocating.init(allocator);
+    defer sink.deinit();
+    try builder.writeTo(&sink.writer);
+    try sink.writer.flush();
+
+    // segment_count - 1 = 0, then a single zero-word segment size. No padding
+    // word: the count is odd.
+    try testing.expectEqualSlices(u8, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 }, sink.written());
+}

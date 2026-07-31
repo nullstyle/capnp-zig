@@ -23,7 +23,13 @@ pub const ArrayListWriter = struct {
         try self.list.appendSlice(self.allocator, bytes);
     }
 
-    pub fn print(self: ArrayListWriter, comptime fmt: []const u8, args: anytype) !void {
+    /// The error set is written out explicitly rather than inferred: `args`
+    /// keeps this function generic, and a generic function's inferred error set
+    /// cannot be resolved by the API-snapshot renderer, so an inferred `!void`
+    /// here renders as an opaque marker and leaves the set unpinned. The set is
+    /// the union of `reserve` (CodegenBudgetExceeded) and
+    /// `std.ArrayList(u8).print` (OutOfMemory).
+    pub fn print(self: ArrayListWriter, comptime fmt: []const u8, args: anytype) error{ CodegenBudgetExceeded, OutOfMemory }!void {
         try self.reserve(std.fmt.count(fmt, args));
         try self.list.print(self.allocator, fmt, args);
     }

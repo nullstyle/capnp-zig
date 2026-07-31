@@ -20,6 +20,12 @@ pub const RemappedCap = struct {
     cap_id: u32,
 };
 
+/// The return type is spelled `anyerror!void` on purpose. `map_inbound_cap` is
+/// an `anyerror`-typed callback that this function `try`s, so the inferred set
+/// resolves to `anyerror` at every instantiation anyway. Writing it out swaps
+/// the API snapshot's opaque inferred-error-set marker (which is identical for
+/// every set and therefore pins nothing) for the honest, stable `anyerror`.
+/// It buys no tightening — only truth in the frozen contract.
 pub fn clonePayloadWithRemappedCaps(
     comptime PeerType: type,
     allocator: std.mem.Allocator,
@@ -29,7 +35,7 @@ pub fn clonePayloadWithRemappedCaps(
     source: protocol.Payload,
     inbound_caps: *const cap_table.InboundCapTable,
     map_inbound_cap: *const fn (*PeerType, *const cap_table.InboundCapTable, u32) anyerror!?RemappedCap,
-) !void {
+) anyerror!void {
     var payload = payload_builder;
     const any_builder = try payload.initContent();
     try message.cloneAnyPointer(source.content, any_builder);
