@@ -319,6 +319,14 @@ const CrossPeerProxyContext = struct {
     /// never released) if the source peer dies first, same rule as
     /// `release_source_import_id`.
     release_source_export_pin_id: ?u32 = null,
+    /// A handoff pin on a SOURCE-peer IMPORT (the receiverHosted serve shape),
+    /// owned and released exactly once in deinit with the same ownership
+    /// transfer and once-only discipline as `release_source_export_pin_id`.
+    /// SEPARATE from the export pin on purpose: import and export ids share
+    /// one numeric space per connection, so a shared field would unpin the
+    /// wrong table by a colliding bare id. Abandoned (nulled, never released)
+    /// if the source peer dies first — its import table dies with it.
+    release_source_import_pin_id: ?u32 = null,
 
     fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *CrossPeerProxyContext = @ptrCast(@alignCast(ctx_ptr));
@@ -331,6 +339,15 @@ const CrossPeerProxyContext = struct {
             }
             if (ctx.release_source_export_pin_id) |pin_id| {
                 source_peer.releaseHandoffHeldExport(pin_id);
+            }
+            if (ctx.release_source_import_pin_id) |pin_id| {
+                // Rule-5 posture: this deinit is an infallible context (proxy
+                // destruction by wire Release or peer teardown), so the unpin
+                // failure is catch-logged — the same once-only, best-effort
+                // shape as `release_source_import_id` above.
+                source_peer.releaseHandoffImportPin(pin_id) catch |err| {
+                    log.debug("cross-peer proxy: failed to release source import handoff pin {}: {}", .{ pin_id, err });
+                };
             }
         }
         allocator.destroy(ctx);
@@ -2249,11 +2266,16 @@ pub const Peer = struct {
         }
         var it = self.caps.imports.iterator();
         while (it.next()) |entry| {
+            // The sweep stays EAGER by design (never routed through the
+            // handoff withhold seam), and it settles the whole debt: live
+            // wire refs PLUS any `deferred_release` still withheld under an
+            // abandoned handoff pin — that tally was never emitted and the
+            // table dies right after this walk, so this is its only exit.
             peer_outbound_control.sendReleaseViaSendFrame(
                 Peer,
                 self,
                 entry.key_ptr.*,
-                entry.value_ptr.ref_count,
+                entry.value_ptr.ref_count +| entry.value_ptr.deferred_release,
                 Peer.sendFrameControl,
             ) catch |err| {
                 log.debug("releaseAllImports: failed to send release for import {}: {}", .{ entry.key_ptr.*, err });
@@ -4640,17 +4662,29 @@ pub const Peer = struct {
         target: cap_table.ResolvedCap,
         release_source_import_id: ?u32,
         release_source_export_pin_id: ?u32,
+        release_source_import_pin_id: ?u32,
     ) !u32 {
         self.assertThreadAffinity();
-        // OWNERSHIP: both source-peer leases (the retained import ref and the
-        // handoff export pin) transfer to this call — on success the ctx's
-        // deinit releases each exactly once; on failure the errdefer below
-        // does. The caller must NEVER roll either back after invoking.
+        // OWNERSHIP: every source-peer lease (the retained import ref, the
+        // handoff export pin, and the handoff import pin) transfers to this
+        // call — released EXACTLY ONCE on any failure. Three disjoint
+        // custodians, tracked so no two can both fire:
+        //   - before the ctx exists (`leases_transferred == false`): the
+        //     errdefer's manual arm releases the raw leases;
+        //   - while the ctx exists un-consumed (`proxy_ctx != null`): the
+        //     errdefer deinits the ctx, which releases them;
+        //   - after a failed registerCrossPeerProxy: the destroy sweep below
+        //     consumes the ctx (its deinit releases them) — the errdefer must
+        //     then release NOTHING, which is what `leases_transferred`
+        //     staying true guarantees. (Without it, the manual arm fired a
+        //     SECOND release here and stole a coexisting provision pin.)
+        // The caller must NEVER roll any lease back after invoking.
         var proxy_ctx: ?*CrossPeerProxyContext = null;
+        var leases_transferred = false;
         errdefer {
             if (proxy_ctx) |ctx| {
                 CrossPeerProxyContext.deinit(self.allocator, ctx);
-            } else {
+            } else if (!leases_transferred) {
                 if (release_source_import_id) |import_id| {
                     source_peer.releaseImport(import_id, 1) catch |err| {
                         log.debug("cross-peer proxy: failed to release source import {} after allocation failure: {}", .{ import_id, err });
@@ -4659,17 +4693,24 @@ pub const Peer = struct {
                 if (release_source_export_pin_id) |pin_id| {
                     source_peer.releaseHandoffHeldExport(pin_id);
                 }
+                if (release_source_import_pin_id) |pin_id| {
+                    source_peer.releaseHandoffImportPin(pin_id) catch |err| {
+                        log.debug("cross-peer proxy: failed to release source import handoff pin {} after allocation failure: {}", .{ pin_id, err });
+                    };
+                }
             }
         }
 
         const ctx = try self.allocator.create(CrossPeerProxyContext);
         proxy_ctx = ctx;
+        leases_transferred = true;
         ctx.* = .{
             .owner_peer = self,
             .source_peer = source_peer,
             .target = target,
             .release_source_import_id = release_source_import_id,
             .release_source_export_pin_id = release_source_export_pin_id,
+            .release_source_import_pin_id = release_source_import_pin_id,
         };
 
         const id = try self.addExportWithDeinit(
@@ -4678,6 +4719,8 @@ pub const Peer = struct {
         );
         ctx.export_id = id;
         source_peer.registerCrossPeerProxy(self, id) catch |err| {
+            // The destroy sweep runs the ctx deinit — the leases' single
+            // release. Null the ctx so the errdefer arm fires neither branch.
             proxy_ctx = null;
             self.destroyUnreferencedProxyExport(id);
             return err;
@@ -4751,6 +4794,7 @@ pub const Peer = struct {
             ctx.inbound_peer,
             entry,
             release_source_import_id,
+            null,
             null,
         );
         errdefer ctx.outbound_peer.destroyUnreferencedProxyExport(proxy_id);
@@ -5513,23 +5557,38 @@ pub const Peer = struct {
                 prov.target = null;
             };
             var pinned_export: ?u32 = null;
+            var pinned_import: ?u32 = null;
             switch (entry.target) {
                 .local => |t| {
                     const tag = try cap_table.descriptors.tagForOriginCode(t.origin_code);
                     if (tag == .senderHosted or tag == .senderPromise) {
                         try self.noteHandoffExportRef(t.cap_id);
                         pinned_export = t.cap_id;
+                    } else if (tag == .receiverHosted) {
+                        // Provide-time IMPORT pin (the receiverHosted lift):
+                        // covers the [Provide, close) window — see the window
+                        // note in serveProvisionOnPeer. CRITICAL: import and
+                        // export ids share one numeric space per connection,
+                        // so this pin is recorded in the SEPARATE
+                        // `target_import_pinned` flag; reusing
+                        // `target_export_pinned` would make
+                        // closeProvisionAsOwner unpin the WRONG TABLE by a
+                        // colliding bare id, silently.
+                        try self.noteHandoffImportPin(t.cap_id);
+                        pinned_import = t.cap_id;
                     }
                 },
                 .promised => {},
             }
             errdefer if (pinned_export) |id| self.rollbackHandoffExportRef(id);
+            errdefer if (pinned_import) |id| self.rollbackHandoffImportPin(id);
             try self.provisions_by_question.put(provide_question_id, prov);
             // INFALLIBLE TAIL.
             prov.state = .active;
             prov.owner = self;
             prov.provide_question_id = provide_question_id;
             prov.target_export_pinned = pinned_export != null;
+            prov.target_import_pinned = pinned_import != null;
             prov.retain(); // the owner map's +1
             adopted.* = prov;
             return;
@@ -5554,19 +5613,26 @@ pub const Peer = struct {
         //    with the matching allocator).
         prov.target = try cloneProvideTargetWith(idx.allocator, &entry.target);
         errdefer if (prov.target) |*t| t.deinit(idx.allocator);
-        // 4. Pin a sender-hosted target export for the provision's lifetime.
+        // 4. Pin a sender-hosted target export — or a receiverHosted target
+        //    IMPORT (the lift; see the adoption arm's table-collision note) —
+        //    for the provision's lifetime.
         var pinned_export: ?u32 = null;
+        var pinned_import: ?u32 = null;
         switch (entry.target) {
             .local => |t| {
                 const tag = try cap_table.descriptors.tagForOriginCode(t.origin_code);
                 if (tag == .senderHosted or tag == .senderPromise) {
                     try self.noteHandoffExportRef(t.cap_id);
                     pinned_export = t.cap_id;
+                } else if (tag == .receiverHosted) {
+                    try self.noteHandoffImportPin(t.cap_id);
+                    pinned_import = t.cap_id;
                 }
             },
             .promised => {},
         }
         errdefer if (pinned_export) |id| self.rollbackHandoffExportRef(id);
+        errdefer if (pinned_import) |id| self.rollbackHandoffImportPin(id);
         // 5. Index entry (key borrows prov.recipient_key — rule R3).
         try idx.by_key.put(prov.recipient_key, prov);
         errdefer _ = idx.by_key.remove(prov.recipient_key);
@@ -5577,6 +5643,7 @@ pub const Peer = struct {
         prov.owner = self;
         prov.provide_question_id = provide_question_id;
         prov.target_export_pinned = pinned_export != null;
+        prov.target_import_pinned = pinned_import != null;
         prov.indexed = true;
         prov.retain(); // the index's +1
         prov.retain(); // the owner map's +1
@@ -6211,7 +6278,11 @@ pub const Peer = struct {
         const source: cap_table.ResolvedCap = switch (stored_target) {
             .local => |t| switch (try cap_table.descriptors.tagForOriginCode(t.origin_code)) {
                 .senderHosted, .senderPromise => .{ .exported = .{ .id = t.cap_id } },
-                .receiverHosted => return error.CrossPeerReceiverHostedTargetUnsupported,
+                // The receiverHosted lift, SITE 1: a target the owner merely
+                // IMPORTS serves through the same proxy machinery — the proxy
+                // forwards to the owner's import via the forwarded-vine call
+                // path (`sendCrossPeerProxyResolvedCall`'s `.imported` arm).
+                .receiverHosted => .{ .imported = .{ .id = t.cap_id } },
                 else => return error.CrossPeerProvisionTargetUnsupported,
             },
             // OWNER-SIDE re-resolution: the stored ops name an inbound answer
@@ -6225,7 +6296,9 @@ pub const Peer = struct {
                 while (true) {
                     switch (resolved) {
                         .exported => |cap| break :blk .{ .exported = .{ .id = cap.id } },
-                        .imported => return error.CrossPeerReceiverHostedTargetUnsupported,
+                        // The receiverHosted lift, SITE 2: the re-resolution
+                        // landing on `.imported` serves like site 1.
+                        .imported => |cap| break :blk .{ .imported = .{ .id = cap.id } },
                         .promised => |chained| {
                             depth += 1;
                             if (depth >= 4) return error.CrossPeerProvisionTargetUnsupported;
@@ -6238,18 +6311,67 @@ pub const Peer = struct {
             },
         };
 
-        // Pin the source export for the PROXY's lifetime (survives the
-        // provision's Finish). Ownership of this pin transfers AT the next
-        // call: the callee's pre-ctx errdefer arm or its ctx deinit releases
-        // it on ANY failure from here on — this caller performs NO pin
-        // rollback and NO destroy sweep of an export the serve does not own.
-        try owner.noteHandoffExportRef(source.exported.id);
-        const proxy_id = try accept_peer.addCrossPeerProxyExport(
-            owner,
-            source,
-            null,
-            source.exported.id,
-        );
+        // Pin the source — export or import — for the PROXY's lifetime
+        // (survives the provision's Finish). Ownership of the pin transfers
+        // AT the addCrossPeerProxyExport call: the callee's pre-ctx errdefer
+        // arm or its ctx deinit releases it on ANY failure from here on —
+        // this caller performs NO pin rollback and NO destroy sweep of a
+        // source the serve does not own.
+        //
+        // IMPORT-source pin windows (the receiverHosted lift):
+        //
+        //   SITE 1 (stored `.local{receiverHosted}`): the import was known at
+        //   Provide receipt, so `registerProvisionForProvide` already holds a
+        //   Provide-time pin (`target_import_pinned`) covering the
+        //   [Provide, close) window — the introducer may legally drain its
+        //   wire refs on the target between Provide and Accept, and only that
+        //   pin (plus its withheld Release) keeps the import and the far-side
+        //   export alive until this serve runs. The pin taken HERE is the
+        //   PROXY's own lease for the [serve, proxy-destroy) window: the
+        //   provision's Finish must not kill the accepted capability.
+        //
+        //   SITE 2 (stored `.promised` re-resolved to `.imported`): there is
+        //   NO Provide-time import pin — at Provide receipt the answer's cap
+        //   was not yet a settled import (that is exactly what made the
+        //   stored target `.promised`), so there was nothing to pin then.
+        //   Over [Provide, serve) the target is covered by the stored
+        //   ANSWER's own liveness instead: this serve re-resolves the ops
+        //   against the owner's still-recorded answer, and a target whose
+        //   import has since died re-resolves to a miss and fails closed
+        //   (CrossPeerProvisionTargetUnavailable) rather than serving a dead
+        //   cap. The pin taken here covers the same [serve, proxy-destroy)
+        //   window as site 1.
+        const proxy_id = switch (source) {
+            .exported => |cap| blk: {
+                try owner.noteHandoffExportRef(cap.id);
+                break :blk try accept_peer.addCrossPeerProxyExport(
+                    owner,
+                    source,
+                    null,
+                    cap.id,
+                    null,
+                );
+            },
+            .imported => |cap| blk: {
+                owner.noteHandoffImportPin(cap.id) catch |err| switch (err) {
+                    // The import died out from under the stored target (only
+                    // reachable for site 2 — site 1's Provide-time pin holds
+                    // the entry for the provision's whole life).
+                    error.UnknownImport => return error.CrossPeerProvisionTargetUnavailable,
+                    else => return err,
+                };
+                break :blk try accept_peer.addCrossPeerProxyExport(
+                    owner,
+                    source,
+                    null,
+                    null,
+                    cap.id,
+                );
+            },
+            // Unreachable by construction (the gate above only produces
+            // .exported/.imported), kept total and fail-closed defensively.
+            .promised, .none => return error.CrossPeerProvisionTargetUnsupported,
+        };
         errdefer accept_peer.destroyUnreferencedProxyExport(proxy_id);
         try accept_peer.sendReturnSenderHostedCap(answer_id, proxy_id);
     }
@@ -6422,6 +6544,25 @@ pub const Peer = struct {
                 };
                 prov.target_export_pinned = false;
             }
+            if (prov.target_import_pinned) {
+                // Table-correct unpin: `target_import_pinned` names the
+                // IMPORT table (bare ids collide across tables — see
+                // registerProvisionForProvide). Flag cleared FIRST so no
+                // path can ever double-unpin. Rule-5 posture: the
+                // wire-driven Finish (.fallible) re-raises OOM; any other
+                // send failure — and the whole `.best_effort` owner-deinit
+                // drain — is the documented deinit best-effort exception
+                // (the connection is dying; the remote reconciles at
+                // disconnect).
+                prov.target_import_pinned = false;
+                if (prov.target) |t| switch (t) {
+                    .local => |lt| self.releaseHandoffImportPin(lt.cap_id) catch |err| {
+                        if (posture == .fallible and err == error.OutOfMemory) return error.OutOfMemory;
+                        log.debug("provision close: handoff import unpin for {} failed: {}", .{ lt.cap_id, err });
+                    },
+                    else => {},
+                };
+            }
         }
         prov.owner = null;
         if (prov.indexed) {
@@ -6483,7 +6624,7 @@ pub const Peer = struct {
         while (it.next()) |prov_ptr| {
             const prov = prov_ptr.*;
             prov.state = .closed;
-            prov.owner = null; // pin abandoned (the export table dies with us)
+            prov.owner = null; // pins abandoned (the export/import tables die with us)
         }
         return .{ .saved_idx = saved_idx, .owned_provisions = owned };
     }
@@ -6716,7 +6857,9 @@ pub const Peer = struct {
             peer_cap_lifecycle.importRefCountForPeerFn(Peer),
             peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
             Peer.releaseResolvedImport,
-            peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
+            // The withhold seam: defers the Release while a handoff pin
+            // lives (see sendReleaseDeferringHandoffPin).
+            Peer.sendReleaseDeferringHandoffPin,
         );
     }
 
@@ -6921,6 +7064,78 @@ pub const Peer = struct {
         self.finalizeExportRelease(id, promise_target, import_target);
     }
 
+    /// Take one handoff pin on one of this peer's IMPORTS (the receiverHosted
+    /// lift). See `CapTable.noteHandoffImportPin` for the retention/withhold
+    /// contract.
+    fn noteHandoffImportPin(self: *Peer, id: u32) !void {
+        try self.caps.noteHandoffImportPin(id);
+    }
+
+    /// Roll back a handoff import pin taken by an OOM ladder that has NOT yet
+    /// transferred ownership (mirror of `rollbackHandoffExportRef`, import
+    /// table).
+    fn rollbackHandoffImportPin(self: *Peer, id: u32) void {
+        self.caps.rollbackHandoffImportPin(id);
+    }
+
+    /// Release one handoff pin on import `id`. When the LAST pin drops this
+    /// emits the withheld (deferred) `Release` via the RAW sender —
+    /// deliberately NOT `Peer.releaseImport`/the generic helper, which
+    /// early-returns with released == 0 before any send once the local wire
+    /// count is already 0 — and then performs the removal + resolved-import
+    /// cleanup that retention-under-pin deferred (`CapTable.releaseImport`
+    /// returns false for a pin-retained drain, so the generic's
+    /// `release_resolved_import` hook never fired). The deferred tally is
+    /// taken (zeroed) BEFORE the send, so a failed emission can never be
+    /// re-emitted stale by a second pin/unpin cycle.
+    ///
+    /// FAILURE POSTURE: fallible. Non-deinit callers must PROPAGATE — a lost
+    /// deferred Release breaks granted == released at the introducer.
+    /// Teardown/deinit callers catch-log under the documented deinit
+    /// best-effort exception: the connection is dying and the remote
+    /// reconciles at disconnect.
+    fn releaseHandoffImportPin(self: *Peer, id: u32) anyerror!void {
+        const unpin = self.caps.releaseHandoffImportPin(id);
+        if (!unpin.last_pin_released) return;
+        if (unpin.deferred_release > 0) {
+            try peer_outbound_control.sendReleaseViaSendFrame(
+                Peer,
+                self,
+                id,
+                unpin.deferred_release,
+                Peer.sendFrameControl,
+            );
+        }
+        if (self.caps.removeImportIfFullyReleased(id)) {
+            try self.releaseResolvedImport(id);
+        }
+    }
+
+    /// The `send_release` binding for BOTH generic import-release walks
+    /// (`Peer.releaseImport` and the inbound-cap release in
+    /// `releaseInboundCaps`): WITHHOLDS the Release frame while the import is
+    /// pinned by a live handoff (`handoff_pin_count > 0`), accumulating the
+    /// released count into the entry's `deferred_release` for
+    /// `releaseHandoffImportPin` to emit at the last unpin. A receiverHosted
+    /// provide target is a capability this vat merely imports and its
+    /// descriptor granted the introducer nothing to hold on our behalf, so an
+    /// eagerly-emitted Release here would let the introducer destroy the very
+    /// capability a pending Accept still has to reach. An import with no
+    /// handoff pin — including one alive on `promise_ref_count` alone — still
+    /// releases eagerly: today's behaviour, bit for bit. The raw senders stay
+    /// eager on purpose: `sendReleaseForHost` (a deliberate host bypass) and
+    /// `releaseAllImports` (the deinit sweep) must never defer.
+    fn sendReleaseDeferringHandoffPin(self: *Peer, import_id: u32, count: u32) anyerror!void {
+        if (try self.caps.deferReleaseWhilePinned(import_id, count)) return;
+        try peer_outbound_control.sendReleaseViaSendFrame(
+            Peer,
+            self,
+            import_id,
+            count,
+            Peer.sendFrameControl,
+        );
+    }
+
     fn rollbackPromiseExportRef(self: *Peer, id: u32) void {
         var entry = self.exports.getEntry(id) orelse return;
         if (entry.value_ptr.promise_ref_count == 0) return;
@@ -7058,7 +7273,9 @@ pub const Peer = struct {
             inbound,
             peer_cap_lifecycle.releaseImportRefForPeerFn(Peer),
             Peer.releaseResolvedImport,
-            peer_outbound_control.sendReleaseViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
+            // The withhold seam: defers the Release while a handoff pin
+            // lives (see sendReleaseDeferringHandoffPin).
+            Peer.sendReleaseDeferringHandoffPin,
         );
     }
 
@@ -7981,6 +8198,9 @@ pub const Peer = struct {
                         // Abandon (never release): the pinned export lives on
                         // this dying peer; its entry is freed with the peer.
                         proxy_ctx.release_source_export_pin_id = null;
+                        // Same rule for the import pin: the source peer's
+                        // import table is going away with it.
+                        proxy_ctx.release_source_import_pin_id = null;
                     }
                 }
             }
@@ -9839,7 +10059,19 @@ pub const Peer = struct {
             release_source_import_id: ?u32,
             release_source_export_pin_id: ?u32,
         ) !u32 {
-            return Peer.addCrossPeerProxyExport(self, source_peer, target, release_source_import_id, release_source_export_pin_id);
+            return Peer.addCrossPeerProxyExport(self, source_peer, target, release_source_import_id, release_source_export_pin_id, null);
+        }
+
+        /// Mint a cross-peer proxy whose ctx owns a handoff IMPORT pin on the
+        /// source peer (the receiverHosted serve shape).
+        pub fn addCrossPeerProxyExportPinnedImport(
+            self: *Peer,
+            source_peer: *Peer,
+            target: cap_table.ResolvedCap,
+            release_source_import_id: ?u32,
+            release_source_import_pin_id: ?u32,
+        ) !u32 {
+            return Peer.addCrossPeerProxyExport(self, source_peer, target, release_source_import_id, null, release_source_import_pin_id);
         }
 
         /// Take a handoff-held (Release-immune) pin on one of this peer's
@@ -9853,6 +10085,18 @@ pub const Peer = struct {
         /// proxy).
         pub fn releaseHandoffHeldExport(self: *Peer, id: u32) void {
             Peer.releaseHandoffHeldExport(self, id);
+        }
+
+        /// Take a handoff pin on one of this peer's IMPORTS — the
+        /// receiverHosted lift's Provide-time / serve-time lease.
+        pub fn noteHandoffImportPin(self: *Peer, id: u32) !void {
+            return Peer.noteHandoffImportPin(self, id);
+        }
+
+        /// Release a handoff import pin directly (tests that never hand it to
+        /// a proxy); the last unpin emits the withheld deferred Release.
+        pub fn releaseHandoffImportPin(self: *Peer, id: u32) !void {
+            return Peer.releaseHandoffImportPin(self, id);
         }
 
         pub fn releaseVineExport(self: *Peer, vine_id: u32) void {
