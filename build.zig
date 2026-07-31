@@ -673,6 +673,24 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
 
+    // The CORE library root gets its own test target. `lib_tests` above roots
+    // at src/lib.zig, so nothing in src/lib_core.zig was ever compiled as a
+    // test -- including the parity guard that asserts core exports every
+    // serialization module the full library does. A deliberately failing probe
+    // in lib_core.zig produced no output before this target existed.
+    const core_tests_module = b.createModule(.{
+        .root_source_file = b.path("src/lib_core.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{},
+    });
+    core_tests_module.addImport("capnpc-zig", core_tests_module);
+    const core_tests = b.addTest(.{
+        .root_module = core_tests_module,
+    });
+    registered_test_compile_steps.append(b.allocator, &core_tests.step) catch @panic("OOM");
+    const run_core_tests = b.addRunArtifact(core_tests);
+
     // Serialization tests
     const run_message_tests = addLibTest(b, "tests/serialization/message_test.zig", target, optimize, lib_module);
     const run_serialization_fuzz_tests = addLibTest(b, "tests/serialization/serialization_fuzz_test.zig", target, optimize, lib_module);
@@ -901,6 +919,7 @@ pub fn build(b: *std.Build) void {
     const test_serialization_step = b.step("test-serialization", "Run serialization-oriented tests");
     test_serialization_step.dependOn(&run_main_tests.step);
     test_serialization_step.dependOn(&run_lib_tests.step);
+    test_serialization_step.dependOn(&run_core_tests.step);
     test_serialization_step.dependOn(run_message_tests);
     test_serialization_step.dependOn(run_serialization_fuzz_tests);
     test_serialization_step.dependOn(run_codegen_tests);

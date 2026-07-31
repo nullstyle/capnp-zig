@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`capnpc-zig-core` now exports `canonical`.** v0.8.0 added the schema-free
+  canonicalizer to `src/lib.zig` only, so the module the docs tell a
+  serialization-only consumer to import could not reach it — despite
+  `canonical.zig` importing nothing but `message.zig`. Caught by a clean-room
+  consumer build against the published tag, *after* it was cut: `zig fetch`
+  compiles nothing, so the release validation step could not see it.
+
+  Two guards so it cannot recur. `src/lib_core.zig` now carries a comptime
+  parity test that fails the build, naming the declaration, if `lib.zig`
+  exports a non-RPC module it does not (`rpc` and `io_backend` are exempt by
+  design — the two roots expose deliberately different RPC surfaces). And
+  `lib_core.zig`'s test block is now compiled at all: a new `core_tests` target
+  roots there, because `lib_tests` roots at `src/lib.zig` and nothing in
+  `lib_core.zig` had ever been compiled as a test. A deliberately failing probe
+  produced no output before that target existed, and fails as expected after.
+  RELEASING.md's post-tag step now requires a clean-room *build* against both
+  published modules, not just a fetch.
+
 ## [0.8.0] - 2026-07-31
 
 Two-party interop and the frozen contract, hardened. The headline is a spec
