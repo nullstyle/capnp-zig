@@ -2814,6 +2814,71 @@ test "struct-list downgrade: nested Bool and Data stay strict, data-only is not 
     try testing.expectError(error.InvalidTextPointer, any.getText());
 }
 
+test "struct-list downgrade: a struct list reads as List(Void) with the tag's element count" {
+    // The last arm of the inverse list-upgrade rule. C++ accepts
+    // `ElementSize::VOID` against an inline-composite list — the `case
+    // ElementSize::VOID: break;` arm of readListPointer's struct-list check
+    // (layout.c++) has no precondition, because a void element needs zero data
+    // bits and zero pointers. The element count MUST come from the TAG word:
+    // the pointer's D field is a WORD count for C = 7, so a resolver that goes
+    // through the plain list path reports a three-element two-words-per-element
+    // list as having six elements — silent wrong data, not an error.
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeStructList(0, 3, 2, 0);
+    for (0..3) |i| {
+        var element = try list_builder.get(@intCast(i));
+        element.writeU32(0, @intCast(i + 1));
+    }
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    const void_list = try root.readVoidList(0);
+    // Three elements — the tag's count, not the pointer's six-word D field.
+    try testing.expectEqual(@as(u32, 3), void_list.len());
+    try void_list.get(2);
+    try testing.expectError(error.IndexOutOfBounds, void_list.get(3));
+}
+
+test "list upgrade: any element size reads as List(Void)" {
+    // The ordinary-list half of the same C++ rule: "verify that the elements
+    // are at least as large as the expected type" is vacuous for void (zero
+    // data bits, zero pointers), so EVERY well-formed list satisfies a
+    // List(Void) read, at its own element count. This is the forward
+    // list-upgrade direction (old List(Void) schema, peer evolved the field),
+    // and the count must be the actual element count for every width.
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 2);
+    var u32_list = try root_builder.writeU32List(0, 4);
+    for (0..4) |i| try u32_list.set(@intCast(i), @intCast(i));
+    try root_builder.writeText(1, "seven");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const root = try msg.getRootStruct();
+    try testing.expectEqual(@as(u32, 4), (try root.readVoidList(0)).len());
+    // Text is a byte list on the wire (six bytes with the NUL); void reads it
+    // at its own count exactly as C++ does.
+    try testing.expectEqual(@as(u32, 6), (try root.readVoidList(1)).len());
+
+    // Unchanged strictness elsewhere: null is still an error, and the same
+    // pointer still reads as its own type.
+    try testing.expectEqual(@as(u32, 2), (try root.readU32List(0)).get(2) catch unreachable);
+}
+
 test "list upgrade/downgrade: both directions of the same field agree" {
     // The forward direction (a primitive list decoded as a struct list) must
     // keep working unchanged, and the two directions must agree on the values.

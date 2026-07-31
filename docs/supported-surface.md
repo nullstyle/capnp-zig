@@ -443,15 +443,16 @@ cooperating peer.
   `map_inbound_cap` parameter is an `anyerror`-typed callback). Both resolve to
   `anyerror` at *every* instantiation, so there is nothing to tighten.
 
-  **Still unpinned beyond arity: `reader.Reader.readMessage` and
-  `reader.Reader.readPackedMessage`.** These are duck-typed over any sequential
-  stream reader (`readByte`/`readInt`/`readAll`/`readNoEof`, as implemented by
-  the module's own `SliceReader`), so their error set is a function of the
-  reader the *caller* supplies and cannot be written down at the definition. A
-  change to their error behavior will not turn `check-api` red. Narrowing them
-  to a concrete `*std.Io.Reader` would close the hole but is a breaking change
-  to a frozen Stable entry point; declaring them `anyerror` would be a
-  widening, not a pin.
+  **The generic-parameter holes are otherwise closed.**
+  `reader.Reader.readMessage` and `reader.Reader.readPackedMessage` — the last
+  two `anytype` signatures, formerly duck-typed over any sequential stream
+  reader — took a concrete `*std.Io.Reader` (breaking; `SliceReader`, whose
+  only purpose was feeding them, was removed — use
+  `std.Io.Reader.fixed(bytes)`). Their error sets now render concretely and an
+  error rename turns `check-api` red, verified in both directions. What
+  remains is the honest pair above: a signature that resolves to `anyerror` at
+  every instantiation cannot drift-detect either, but there is no tighter
+  truth to pin.
 
 - **The frozen surface IS now closed under its own signatures**, gated by
   `zig build api-closure` on all three CI tiers. Its first run reported 14
@@ -485,33 +486,37 @@ cooperating peer.
   with their own exception `Return`, because this vat never observes the results
   it would need in order to resolve them.
 
-- **`StructReader.readVoidList` reports a struct list's word count, not its
-  element count.** Both directions of the list-upgrade rule are implemented, on
-  a struct's own fields *and* one level down: a list of any element size except
-  one bit decodes as a struct list (so a peer that evolved `List(UInt32)` into
-  `List(SomeStruct)` reads old data), and a correctly-encoded struct list
-  decodes back as `List(UInt8/16/32/64)`, `List(Text)` or a pointer list (so a
-  binary still on the old schema reads what the evolved peer writes). The
-  inverse direction is served by one shared resolver, so
-  `PointerListReader.getU32List` and friends (nested `List(List(UInt32))`) and
-  `AnyPointerReader.getPointerList` (type-erased access) accept exactly what
-  `StructReader.read*List` accepts. Element preconditions follow the C++
-  reference on every surface: a primitive list needs a non-empty data section, a
-  pointer list needs at least one pointer, a struct list is never readable as
-  `List(Bool)`, and Text and Data still require byte elements.
-  `U8ListReader.slice` fails with `error.InvalidPointer` on such a list — its
-  bytes are one struct apart, so no contiguous slice holds them. The one
-  remaining gap is `readVoidList`, which resolves through the plain list pointer
-  only: handed a struct list it reports the pointer's D field (a word count)
-  as the element count. C++ accepts `ElementSize::VOID` against an
-  inline-composite list, so a `List(Void)` field that a peer evolved into a
-  struct list reads back with the wrong length.
-
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is
 either a Level-3 surface or a serialization compatibility gap; the frozen
 two-party RPC surface has no active limitation. Historical resolved items are listed
 below so release-to-release behavior changes stay auditable.
+
+### Resolved since v0.8.0 (unreleased)
+
+- **The list-upgrade rule is complete in both directions, `List(Void)`
+  included.** On a struct's own fields *and* one level down: a list of any
+  element size except one bit decodes as a struct list (so a peer that evolved
+  `List(UInt32)` into `List(SomeStruct)` reads old data), and a
+  correctly-encoded struct list decodes back as `List(UInt8/16/32/64)`,
+  `List(Text)` or a pointer list (so a binary still on the old schema reads
+  what the evolved peer writes). The inverse direction is served by one shared
+  resolver, so `PointerListReader.getU32List` and friends (nested
+  `List(List(UInt32))`) and `AnyPointerReader.getPointerList` (type-erased
+  access) accept exactly what `StructReader.read*List` accepts. Element
+  preconditions follow the C++ reference on every surface: a primitive list
+  needs a non-empty data section, a pointer list needs at least one pointer, a
+  struct list is never readable as `List(Bool)`, and Text and Data still
+  require byte elements. `U8ListReader.slice` fails with
+  `error.InvalidPointer` on such a list — its bytes are one struct apart, so
+  no contiguous slice holds them. `readVoidList` closes the last arm: a void
+  element needs zero data bits and zero pointers, so — exactly as the C++
+  reference (`layout.c++`, both element-size checks are vacuous for
+  `ElementSize::VOID`) — every well-formed list satisfies a `List(Void)` read
+  at its actual element count, an inline-composite list at its TAG count.
+  (Before v0.8.0 it rejected everything but a plain void list with
+  `error.InvalidPointer`; an earlier revision of this file misdescribed that
+  as misreporting the word count.)
 
 ### Resolved since v0.3.0
 

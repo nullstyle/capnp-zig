@@ -10,43 +10,15 @@ inline fn checkedEnd(offset: usize, size: usize) error{OutOfBounds}!usize {
     return std.math.add(usize, offset, size) catch return error.OutOfBounds;
 }
 
-/// Minimal sequential reader over a fixed byte slice, providing the duck-typed
-/// methods expected by `readMessage` and `readPackedMessage` (readByte,
-/// readInt, readAll, readNoEof).
-pub const SliceReader = struct {
-    data: []const u8,
-    pos: usize = 0,
-
-    pub fn readByte(self: *SliceReader) error{EndOfStream}!u8 {
-        if (self.pos >= self.data.len) return error.EndOfStream;
-        const b = self.data[self.pos];
-        self.pos += 1;
-        return b;
-    }
-
-    pub fn readInt(self: *SliceReader, comptime T: type, comptime endian: std.builtin.Endian) error{EndOfStream}!T {
-        const size = @sizeOf(T);
-        if (!hasByteRange(self.data, self.pos, size)) return error.EndOfStream;
-        const result = std.mem.readInt(T, self.data[self.pos..][0..size], endian);
-        self.pos += size;
-        return result;
-    }
-
-    pub fn readAll(self: *SliceReader, buf: []u8) error{EndOfStream}!usize {
-        if (self.pos >= self.data.len) return 0;
-        const available = self.data.len - self.pos;
-        const n = @min(buf.len, available);
-        @memcpy(buf[0..n], self.data[self.pos..][0..n]);
-        self.pos += n;
-        return n;
-    }
-
-    pub fn readNoEof(self: *SliceReader, buf: []u8) error{EndOfStream}!void {
-        if (!hasByteRange(self.data, self.pos, buf.len)) return error.EndOfStream;
-        @memcpy(buf, self.data[self.pos..][0..buf.len]);
-        self.pos += buf.len;
-    }
-};
+/// Read one little-endian u32 from `reader`.
+///
+/// A named helper (rather than four inline call sites) so both streaming entry
+/// points share the exact same failure surface for header reads.
+fn takeU32Le(reader: *std.Io.Reader) error{ ReadFailed, EndOfStream }!u32 {
+    var buf: [4]u8 = undefined;
+    try reader.readSliceAll(&buf);
+    return std.mem.readInt(u32, &buf, .little);
+}
 
 /// Cap'n Proto message reader (segment-aware)
 pub const Reader = struct {
@@ -77,8 +49,16 @@ pub const Reader = struct {
     ///
     /// The returned bytes can be passed to `Message.init` (which validates
     /// automatically) or `Message.initUnvalidated` to obtain a reader.
-    pub fn readMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
-        const segment_count_minus_one = try reader.readInt(u32, .little);
+    ///
+    /// `reader` is a concrete `*std.Io.Reader` rather than `anytype`: a generic
+    /// parameter leaves the function's error set unpinnable in the frozen API
+    /// snapshot — the renderer emits an opaque marker that is identical no
+    /// matter what the set contains, so adding, removing or renaming an error
+    /// passed `check-api` unchanged while breaking every consumer's
+    /// `catch |err| switch (err)`. For a fixed byte slice use
+    /// `std.Io.Reader.fixed(bytes)`.
+    pub fn readMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]const u8 {
+        const segment_count_minus_one = try takeU32Le(reader);
         const segment_count = std.math.add(u32, segment_count_minus_one, 1) catch return error.InvalidSegmentCount;
         const segment_count_usize = std.math.cast(usize, segment_count) orelse return error.InvalidSegmentCount;
         if (segment_count_usize > message.Message.max_segment_count) return error.SegmentCountLimitExceeded;
@@ -88,7 +68,7 @@ pub const Reader = struct {
 
         var total_words: usize = 0;
         for (segment_sizes) |*size| {
-            size.* = try reader.readInt(u32, .little);
+            size.* = try takeU32Le(reader);
             const size_words = std.math.cast(usize, size.*) orelse return error.InvalidMessageSize;
             total_words = std.math.add(usize, total_words, size_words) catch return error.InvalidMessageSize;
         }
@@ -98,7 +78,7 @@ pub const Reader = struct {
 
         const padding_words: usize = if (segment_count_usize % 2 == 0) 1 else 0;
         if (padding_words == 1) {
-            _ = try reader.readInt(u32, .little);
+            _ = try takeU32Le(reader);
         }
 
         const header_words_no_padding = std.math.add(usize, 1, segment_count_usize) catch return error.InvalidMessageSize;
@@ -122,7 +102,10 @@ pub const Reader = struct {
         }
         std.debug.assert(header_offset == header_bytes);
 
-        const bytes_read = try reader.readAll(framed[header_bytes..]);
+        // A short body stays `error.UnexpectedEof`, exactly as before the
+        // de-genericize: `readSliceShort` reports the achieved length instead
+        // of failing, so truncation is this function's own diagnosis.
+        const bytes_read = try reader.readSliceShort(framed[header_bytes..]);
         if (bytes_read != total_bytes) {
             return error.UnexpectedEof;
         }
@@ -135,7 +118,11 @@ pub const Reader = struct {
     /// Note: pre-validation allocation is bounded to ~max_header_size before
     /// segment_count is checked, so amplification from a malicious packed
     /// stream is limited to the header region.
-    pub fn readPackedMessage(allocator: std.mem.Allocator, reader: anytype) ![]const u8 {
+    ///
+    /// Concrete `*std.Io.Reader` for the same reasons as `readMessage`; a
+    /// truncated packed stream surfaces as `error.EndOfStream` from the
+    /// reader, as before.
+    pub fn readPackedMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]const u8 {
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(allocator);
 
@@ -146,27 +133,27 @@ pub const Reader = struct {
                 if (out.items.len >= needed) break;
             }
 
-            const tag = try reader.readByte();
+            const tag = try reader.takeByte();
             if (tag == 0x00) {
-                const count = try reader.readByte();
+                const count = try reader.takeByte();
                 const words = @as(usize, count) + 1;
                 try out.appendNTimes(allocator, 0, words * 8);
             } else if (tag == 0xFF) {
                 var word: [8]u8 = undefined;
-                try reader.readNoEof(&word);
+                try reader.readSliceAll(&word);
                 try out.appendSlice(allocator, &word);
-                const count = try reader.readByte();
+                const count = try reader.takeByte();
                 if (count > 0) {
                     const byte_count = @as(usize, count) * 8;
                     const start = out.items.len;
                     try out.appendNTimes(allocator, 0, byte_count);
-                    try reader.readNoEof(out.items[start .. start + byte_count]);
+                    try reader.readSliceAll(out.items[start .. start + byte_count]);
                 }
             } else {
                 var word = std.mem.zeroes([8]u8);
                 for (0..8) |i| {
                     if ((tag & (@as(u8, 1) << @as(u3, @intCast(i)))) != 0) {
-                        word[i] = try reader.readByte();
+                        word[i] = try reader.takeByte();
                     }
                 }
                 try out.appendSlice(allocator, &word);
@@ -350,7 +337,7 @@ test "Reader.readPackedMessage unpacks a packed stream" {
     const packed_bytes = try builder.toPackedBytes();
     defer allocator.free(packed_bytes);
 
-    var stream = SliceReader{ .data = packed_bytes };
+    var stream = std.Io.Reader.fixed(packed_bytes);
     const framed = try Reader.readPackedMessage(allocator, &stream);
     defer allocator.free(framed);
 
@@ -364,19 +351,8 @@ test "Reader.readPackedMessage unpacks a packed stream" {
 
 test "Reader.readMessage rejects overflowing segment count" {
     const bytes = [_]u8{ 0xff, 0xff, 0xff, 0xff };
-    var stream = SliceReader{ .data = &bytes };
+    var stream = std.Io.Reader.fixed(&bytes);
     try std.testing.expectError(error.InvalidSegmentCount, Reader.readMessage(std.testing.allocator, &stream));
-}
-
-test "SliceReader handles extreme positions without arithmetic overflow" {
-    const bytes = [_]u8{ 1, 2, 3, 4 };
-    var stream = SliceReader{ .data = &bytes, .pos = std.math.maxInt(usize) };
-    var buf: [4]u8 = undefined;
-
-    try std.testing.expectError(error.EndOfStream, stream.readByte());
-    try std.testing.expectError(error.EndOfStream, stream.readInt(u32, .little));
-    try std.testing.expectEqual(@as(usize, 0), try stream.readAll(&buf));
-    try std.testing.expectError(error.EndOfStream, stream.readNoEof(&buf));
 }
 
 test "Reader.readMessage rejects oversized payload claims" {
@@ -385,7 +361,7 @@ test "Reader.readMessage rejects oversized payload claims" {
     std.mem.writeInt(u32, bytes[0..4], 0, .little);
     std.mem.writeInt(u32, bytes[4..8], oversized_words, .little);
 
-    var stream = SliceReader{ .data = &bytes };
+    var stream = std.Io.Reader.fixed(&bytes);
     try std.testing.expectError(error.MessageTooLarge, Reader.readMessage(std.testing.allocator, &stream));
 }
 
@@ -395,7 +371,7 @@ test "Reader.readPackedMessage rejects overflowing segment count" {
     std.mem.writeInt(u64, packed_bytes[1..9], 0x00000000ffffffff, .little);
     packed_bytes[9] = 0;
 
-    var stream = SliceReader{ .data = &packed_bytes };
+    var stream = std.Io.Reader.fixed(&packed_bytes);
     try std.testing.expectError(error.InvalidSegmentCount, Reader.readPackedMessage(std.testing.allocator, &stream));
 }
 
@@ -406,18 +382,18 @@ test "Reader.readPackedMessage rejects oversized payload claims" {
     std.mem.writeInt(u64, packed_bytes[1..9], @as(u64, oversized_words) << 32, .little);
     packed_bytes[9] = 0;
 
-    var stream = SliceReader{ .data = &packed_bytes };
+    var stream = std.Io.Reader.fixed(&packed_bytes);
     try std.testing.expectError(error.MessageTooLarge, Reader.readPackedMessage(std.testing.allocator, &stream));
 }
 
 fn readMessageOomImpl(allocator: std.mem.Allocator, framed: []const u8) !void {
-    var stream = SliceReader{ .data = framed };
+    var stream = std.Io.Reader.fixed(framed);
     const out = try Reader.readMessage(allocator, &stream);
     defer allocator.free(out);
 }
 
 fn readPackedMessageOomImpl(allocator: std.mem.Allocator, packed_bytes: []const u8) !void {
-    var stream = SliceReader{ .data = packed_bytes };
+    var stream = std.Io.Reader.fixed(packed_bytes);
     const out = try Reader.readPackedMessage(allocator, &stream);
     defer allocator.free(out);
 }
@@ -443,12 +419,12 @@ test "Reader.readPackedMessage propagates OOM without leaks" {
 test "Reader.readPackedMessage rejects decoded header/body length mismatch" {
     // Decodes to 16 zero bytes, but the embedded frame header says only 8 bytes are needed.
     const packed_bytes = [_]u8{ 0x00, 0x01 };
-    var stream = SliceReader{ .data = &packed_bytes };
+    var stream = std.Io.Reader.fixed(&packed_bytes);
     try std.testing.expectError(error.InvalidPackedMessage, Reader.readPackedMessage(std.testing.allocator, &stream));
 }
 
 fn expectPackedTruncationError(packed_bytes: []const u8) !void {
-    var stream = SliceReader{ .data = packed_bytes };
+    var stream = std.Io.Reader.fixed(packed_bytes);
     const framed = Reader.readPackedMessage(std.testing.allocator, &stream) catch |err| {
         switch (err) {
             error.EndOfStream => return,

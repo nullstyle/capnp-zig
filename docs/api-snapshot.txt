@@ -585,18 +585,11 @@ capnpc-zig.reader.Reader.initPacked: fn (mem.Allocator, []const u8) error{Invali
 capnpc-zig.reader.Reader.max_total_words: const usize
 capnpc-zig.reader.Reader.msg: field serialization.message.Message
 capnpc-zig.reader.Reader.readBool: fn (serialization.reader.Reader, usize, u3) bool
-capnpc-zig.reader.Reader.readMessage: fn (mem.Allocator, anytype) @typeInfo(@typeInfo(@TypeOf(serialization.reader.Reader.readMessage)).@"fn".return_type.?).error_union.error_set![]const u8
-capnpc-zig.reader.Reader.readPackedMessage: fn (mem.Allocator, anytype) @typeInfo(@typeInfo(@TypeOf(serialization.reader.Reader.readPackedMessage)).@"fn".return_type.?).error_union.error_set![]const u8
+capnpc-zig.reader.Reader.readMessage: fn (mem.Allocator, *Io.Reader) error{EndOfStream,InvalidMessageSize,InvalidSegmentCount,MessageTooLarge,OutOfMemory,ReadFailed,SegmentCountLimitExceeded,UnexpectedEof}![]const u8
+capnpc-zig.reader.Reader.readPackedMessage: fn (mem.Allocator, *Io.Reader) error{EndOfStream,InvalidPackedMessage,InvalidSegmentCount,MessageTooLarge,OutOfMemory,ReadFailed,SegmentCountLimitExceeded}![]const u8
 capnpc-zig.reader.Reader.readPrimitive: fn (serialization.reader.Reader, comptime type, usize) anytype
 capnpc-zig.reader.Reader.readText: fn (serialization.reader.Reader, usize) ?[]const u8
 capnpc-zig.reader.Reader: struct
-capnpc-zig.reader.SliceReader.data: field []const u8
-capnpc-zig.reader.SliceReader.pos: field usize = 0
-capnpc-zig.reader.SliceReader.readAll: fn (*serialization.reader.SliceReader, []u8) error{EndOfStream}!usize
-capnpc-zig.reader.SliceReader.readByte: fn (*serialization.reader.SliceReader) error{EndOfStream}!u8
-capnpc-zig.reader.SliceReader.readInt: fn (*serialization.reader.SliceReader, comptime type, comptime lang.Endian) anytype
-capnpc-zig.reader.SliceReader.readNoEof: fn (*serialization.reader.SliceReader, []u8) error{EndOfStream}!void
-capnpc-zig.reader.SliceReader: struct
 capnpc-zig.reader: struct
 capnpc-zig.request.freeCodeGeneratorRequest: fn (mem.Allocator, serialization.schema.CodeGeneratorRequest) void
 capnpc-zig.request.parseCodeGeneratorRequest: fn (mem.Allocator, []const u8) anyerror!serialization.schema.CodeGeneratorRequest

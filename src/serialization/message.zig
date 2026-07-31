@@ -1961,9 +1961,39 @@ pub const StructReader = struct {
     }
 
     /// Read a `List(Void)` from the given pointer index.
+    ///
+    /// Accepts EVERY well-formed list encoding, exactly as the C++ reference
+    /// does (`layout.c++`, `readListPointer`): a void element needs zero data
+    /// bits and zero pointers, so both of its element-size checks are vacuous
+    /// for an expected `ElementSize::VOID` — the ordinary-list "at least as
+    /// large as expected" comparison and the struct-list arm (`case
+    /// ElementSize::VOID: break;`). The list-upgrade rule's last arm.
+    ///
+    /// The inline-composite classification is what makes the count honest: for
+    /// C = 7 the pointer's D field is a WORD count and the element count lives
+    /// in the tag, so resolving through the plain list path would report a
+    /// struct list's total words as its length — silent wrong data. A failure
+    /// to classify is swallowed (not propagated) so the plain path reproduces
+    /// the pre-existing diagnosis for malformed pointers and the frozen error
+    /// set does not widen.
     pub fn readVoidList(self: StructReader, pointer_index: usize) !VoidListReader {
-        const list = try self.resolveListPointerAt(pointer_index);
-        if (list.element_size != 0) return error.InvalidPointer;
+        const pointers = self.getPointerSection();
+        const pointer_offset = try pointerIndexByteOffset(pointer_index);
+        try bounds.checkBounds(pointers, pointer_offset, 8);
+
+        const pointer_word = std.mem.readInt(u64, pointers[pointer_offset..][0..8], .little);
+        if (pointer_word == 0) return error.InvalidPointer;
+
+        const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
+        if (self.message.resolveInlineCompositeList(
+            self.segment_id,
+            absolute_pointer_pos,
+            pointer_word,
+        )) |list| {
+            return .{ .element_count = list.element_count };
+        } else |_| {}
+
+        const list = try self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
         return .{ .element_count = list.element_count };
     }
 

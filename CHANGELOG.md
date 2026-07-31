@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **`reader.Reader.readMessage` / `readPackedMessage` take a concrete
+  `*std.Io.Reader`; `reader.SliceReader` is removed.** The last two `anytype`
+  signatures on the frozen Stable surface. A generic parameter leaves a
+  function's error set unpinnable: the snapshot renderer emits an opaque marker
+  that is identical no matter what the set contains, so adding, removing or
+  renaming an error passed `check-api` unchanged while breaking every
+  consumer's `catch |err| switch (err)` — demonstrated live before the change
+  (an error rename inside `readMessage`, gate green) and again after (the
+  identical rename, gate red naming the drifted line). Both error sets now
+  render concretely in `docs/api-snapshot.txt`, and `api-closure` checks the
+  signatures it previously had to skip. `SliceReader` existed only to feed the
+  duck-typed parameters; use `std.Io.Reader.fixed(bytes)`. Short-body behavior
+  is unchanged: truncated framing is still this function's own
+  `error.UnexpectedEof`, and a truncated packed stream still surfaces
+  `error.EndOfStream`. Frozen Stable declarations: 1320 -> 1313.
+
+### Fixed
+
+- **`StructReader.readVoidList` accepts every well-formed list encoding, at
+  the honest element count.** The last arm of the list-upgrade rule. A void
+  element needs zero data bits and zero pointers, so both of the C++
+  reference's element-size checks are vacuous for an expected
+  `ElementSize::VOID` (`layout.c++`, `readListPointer`: the ordinary-list
+  "at least as large as expected" comparison and the `case ElementSize::VOID:
+  break;` struct-list arm). Previously anything but a plain void list was
+  rejected with `error.InvalidPointer` — including the struct list a peer
+  evolved a `List(Void)` field into. (An earlier docs revision misdescribed
+  the symptom as misreporting the word count; the probe shows it rejected.)
+  The inline-composite arm reads the element count from the TAG word — the
+  pointer's D field is a word count for C = 7, so the plain-path count would
+  be silent wrong data. The frozen error set is unchanged: a classification
+  failure is swallowed and the plain path reproduces the pre-existing
+  diagnosis. Ablation: restoring the strict element-size check turns exactly
+  the two new tests red.
+
 ### Added
 
 - **Cross-impl coverage for the failed-answer directions of the broken-pipeline
