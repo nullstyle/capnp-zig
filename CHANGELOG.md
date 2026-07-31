@@ -139,6 +139,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrangement could silently under-test rollback paths on any platform where
   growth happens in place.
 
+- **Parked Level-3 accepts can now expire (opt-in TTL).** An inbound `Accept`
+  whose recipient token matches no provision does not fail — it *parks*, by
+  design, because the rendezvous is order-independent. But the token is
+  arbitrary attacker bytes needing no authentication, no prior `Provide` and no
+  bootstrap, the budgets were count/byte only, and the actual release point is
+  **`Peer.deinit`, not connection close**. One stranger connection could hold
+  vat-wide park slots for a peer's whole lifetime and starve unrelated
+  legitimate tokens. (The previous limitation text said "until its connection
+  dies", which understated it.)
+
+  `ProvisionIndexLimits.park_ttl_ms` (default **null**, so behaviour is
+  bit-identical until an embedder opts in) plus an **index-owned** clock —
+  deliberately not sourced from a peer, since `Peer.setClock` is per-peer and
+  two peers of one vat can sit in different time domains, which would
+  mis-compare deadlines and leave clockless-peer parks immortal. The sweep is
+  lazy, running at the next `Accept`, rather than on a tick: a tick only fires
+  when poll times out, so an attacker keeping its own connection busy could
+  suppress the very sweep meant to evict it.
+
+  Three ablations back it, including the one a naive implementation fails:
+  `failPendingAccept` decrements only the *queued* counters and does nothing for
+  parked entries, so reusing it without adding the parked decrement leaks the
+  budget upward forever — permanently shrinking the thing the TTL exists to
+  protect. Stripping those decrements reddens two tests, on the denied legit
+  accept and on a stale count.
+
 - **`WorkerPool` peers now get a real entropy source.** `workerMain` did
   `Peer.init` + `setClockIo` and nothing else, so `entropy` stayed null on every
   pooled peer and `nextAcceptEmbargoId` fell back to a **counter** where the

@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const rpc_time = @import("../time.zig");
 
 /// Vat-wide budgets. Defaults are chosen so a single-peer vat attaching an
 /// index is never tighter than the Stable per-peer ceilings
@@ -40,6 +41,21 @@ pub const ProvisionIndexLimits = struct {
     /// max_provisions x max_embargoes_per_provision live entries.
     max_queued_accepts: usize = 4096,
     max_queued_accept_bytes: usize = 1 << 20,
+    /// Time bound on Accept-before-Provide PARKING. An inbound `Accept` whose
+    /// recipient token matches nothing parks; the token is arbitrary bytes and
+    /// needs no prior Provide, no bootstrap, and no authentication, so the
+    /// count/byte budgets above — which are vat-wide, and whose only release
+    /// point is `Peer.deinit`, not connection close — let one stranger
+    /// connection squat every park slot in the vat for the peer's whole
+    /// lifetime. With a TTL set, a parked accept older than this is evicted
+    /// (loudly, with an exception `Return`) at the next park attempt.
+    ///
+    /// Null (the default) keeps the pre-TTL behaviour bit-identical, and the
+    /// bound is additionally inert without an INDEX-OWNED clock
+    /// (`ProvisionIndex.setClock`) — same opt-in contract as `PeerTimeouts`.
+    /// The clock is never taken from a peer or a frame: the party whose
+    /// accepts are being timed out must not be able to steer their expiry.
+    park_ttl_ms: ?u64 = null,
 };
 
 pub fn ProvisionIndex(comptime PeerType: type) type {
@@ -141,6 +157,12 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
             accept_peer: *PeerType,
             answer_id: u32,
             embargo: ?[]u8,
+            /// Absolute monotonic deadline in INDEX-clock nanoseconds, stamped
+            /// at park time (the `Question.deadline_ns` form). Null when the
+            /// index had no clock or no `park_ttl_ms` when this entry parked —
+            /// such an entry never expires, which is exactly the pre-TTL
+            /// behaviour.
+            deadline_ns: ?i64 = null,
         };
 
         allocator: std.mem.Allocator,
@@ -151,6 +173,11 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
         /// (self-removal loops to exhaustion).
         attached_peers: std.ArrayList(*PeerType) = .empty,
         limits: ProvisionIndexLimits,
+        /// INDEX-OWNED monotonic clock backing `limits.park_ttl_ms`. Never
+        /// sourced from a peer or a frame — expiry of a stranger's parked
+        /// accept must not be steerable by that same stranger. Null leaves the
+        /// TTL inert (the `PeerTimeouts`/`Peer.setClock` contract).
+        clock: ?rpc_time.Clock = null,
         /// Running counters — no O(n) walks.
         provision_count: usize = 0,
         provision_key_bytes: usize = 0,
@@ -169,6 +196,13 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
                 .by_key = std.StringHashMap(*Provision).init(allocator),
                 .limits = limits,
             };
+        }
+
+        /// Install (or clear) the index-owned monotonic clock. Required before
+        /// `ProvisionIndexLimits.park_ttl_ms` does anything; the clock's `ctx`
+        /// must outlive the index.
+        pub fn setClock(self: *Self, clock: ?rpc_time.Clock) void {
+            self.clock = clock;
         }
 
         pub fn disableThreadAffinity(self: *Self) void {

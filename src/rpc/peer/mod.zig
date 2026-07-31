@@ -5588,6 +5588,20 @@ pub const Peer = struct {
     /// orchestration call (byte-identical Returns and error strings); only the
     /// cross-peer arm is new.
     fn handleAcceptWithProvisionIndex(self: *Peer, idx: *ProvisionIndex, accept: protocol.Accept) !void {
+        // L9 parked-accept TTL, driven LAZILY from the Accept path and from
+        // NOWHERE ELSE. Deliberately not a tick: `on_tick` fires only when the
+        // transport poll TIMES OUT, and the tick interval is null unless a
+        // default call timeout is configured — so a connection that keeps
+        // itself busy suppresses its own ticks, which is exactly the attacker
+        // this bound exists to stop. Driving it here (rather than inside the
+        // two park helpers) is load-bearing in TWO ways: every park-budget
+        // check below now sees post-eviction counters, AND the eviction
+        // happens strictly BEFORE `by_key.get` — a sweep that ran after the
+        // lookup could unindex the very `.awaiting` provision this Accept is
+        // about to park onto, orphaning a legitimate accept on a provision no
+        // later `Provide` can ever adopt.
+        sweepExpiredParkedAccepts(idx);
+
         const key_opt = try peer_provide_join_orchestration.captureAcceptProvisionForPeer(
             Peer,
             self,
@@ -5794,6 +5808,144 @@ pub const Peer = struct {
         idx.provision_key_bytes += prov.recipient_key.len;
     }
 
+    /// True when this parked entry's TTL has run out. An unstamped entry (the
+    /// index had no clock or no TTL when it parked) never expires.
+    fn isParkExpired(parked: ProvisionIndex.ParkedAccept, now: i64) bool {
+        const deadline = parked.deadline_ns orelse return false;
+        return now >= deadline;
+    }
+
+    /// L9: evict every parked accept whose TTL has run out. Inert unless the
+    /// index has BOTH `limits.park_ttl_ms` and an index-owned `clock` — with
+    /// either missing this is a no-op and parking behaves exactly as it did
+    /// before the TTL existed.
+    ///
+    /// Restricted to `.awaiting` provisions: the index's design contract is
+    /// that Release/Finish/teardown never consult it, so index-first death
+    /// cannot wedge a matched handoff. An `.active` provision's parked list
+    /// belongs to adoption, not to this sweep.
+    ///
+    /// OOM POLICY (deliberate; the codebase has three): BEST-EFFORT, like
+    /// `failPendingAccept(.best_effort)` and unlike `convertParkErrorToReturn`.
+    /// This is background reclamation running underneath an unrelated inbound
+    /// Accept, so it must never convert that Accept into a terminal error. An
+    /// OOM in either collection pass abandons the round — the next park
+    /// attempt retries it, and the budget check that follows still fails
+    /// closed — and an exception `Return` that cannot be built is logged and
+    /// dropped rather than re-raised.
+    fn sweepExpiredParkedAccepts(idx: *ProvisionIndex) void {
+        if (idx.limits.park_ttl_ms == null) return;
+        const clock = idx.clock orelse return;
+        if (idx.parked_accept_count == 0) return;
+        const now = clock.now();
+
+        // PHASE 1 — collect. No sends here, so nothing re-enters dispatch and
+        // the `by_key` iterator stays valid. Each candidate is RETAINED for
+        // the whole walk, so a nested frame in phase 2 can never leave a
+        // dangling pointer in this list.
+        var expired_provs: std.ArrayList(*ProvisionIndex.Provision) = .empty;
+        defer {
+            for (expired_provs.items) |prov| prov.release();
+            expired_provs.deinit(idx.allocator);
+        }
+        var it = idx.by_key.valueIterator();
+        while (it.next()) |prov_ptr| {
+            const prov = prov_ptr.*;
+            if (prov.state != .awaiting) continue;
+            var any_expired = false;
+            for (prov.parked.items) |parked| {
+                if (isParkExpired(parked, now)) {
+                    any_expired = true;
+                    break;
+                }
+            }
+            if (!any_expired) continue;
+            expired_provs.append(idx.allocator, prov) catch return; // OOM: skip this round
+            prov.retain();
+        }
+
+        // PHASE 2 — act. Sends re-enter dispatch (a nested Finish can mutate
+        // `prov.parked`, and a nested path can unindex a provision), so this
+        // walks the collected list, never the live map.
+        for (expired_provs.items) |prov| sweepExpiredParkedAcceptsOn(idx, prov, now);
+    }
+
+    /// Evict one provision's expired parked accepts. The caller holds a ref on
+    /// `prov` for the whole call.
+    fn sweepExpiredParkedAcceptsOn(idx: *ProvisionIndex, prov: *ProvisionIndex.Provision, now: i64) void {
+        // A nested frame during an earlier provision's sends may have adopted
+        // (or closed) this one since phase 1.
+        if (prov.state != .awaiting) return;
+
+        // Move the expired entries OUT of the live list BEFORE any send.
+        var expired: std.ArrayList(ProvisionIndex.ParkedAccept) = .empty;
+        defer expired.deinit(idx.allocator);
+        var i: usize = prov.parked.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (!isParkExpired(prov.parked.items[i], now)) continue;
+            // Append (fallible) BEFORE the removal (infallible), so an OOM
+            // leaves the entry parked and intact rather than orphaned.
+            expired.append(idx.allocator, prov.parked.items[i]) catch break;
+            _ = prov.parked.orderedRemove(i);
+        }
+
+        for (expired.items) |parked| {
+            // (b) the length is read BEFORE anything is freed — `failPendingAccept`
+            //     frees the accept peer's key dupe out from under us.
+            const embargo_len: usize = if (parked.embargo) |b| b.len else 0;
+            // (c) the parked dupe is INDEX-allocator owned (the accept peer's
+            //     own dupe is NOT — two allocators per entry).
+            if (parked.embargo) |b| idx.allocator.free(b);
+            // (d) `failPendingAccept` adjusts only the QUEUED counters, and
+            //     only for non-parked records: the PARKED budget is ours to
+            //     give back. Without this every eviction would ratchet
+            //     `parked_accept_count`/`_bytes` upward forever and
+            //     permanently shrink the very bound this TTL protects.
+            idx.parked_accept_count -= 1;
+            idx.parked_accept_bytes -= embargo_len;
+            // (e)(f)(g) canonical ordering, shared with every other fail path:
+            //     the holder record removed and its key freed with the ACCEPT
+            //     PEER's allocator BEFORE the exception Return, then exactly
+            //     one ref released via `defer` so it drops once even if the
+            //     send fails.
+            failPendingAccept(
+                .{ .accept_peer = parked.accept_peer, .answer_id = parked.answer_id },
+                prov,
+                "parked accept expired",
+                .best_effort,
+            ) catch {};
+        }
+
+        // Nothing can ever adopt an `.awaiting` provision with no parked
+        // accepts — adoption needs the index entry this removes — so drop the
+        // index's +1, exactly as `maybeUnindexEmptyAwaiting` does. Done WHILE
+        // THE CALLER STILL HOLDS A REF: `by_key`'s key BORROWS
+        // `prov.recipient_key`, and `Provision.release` asserts `!indexed` at
+        // ref zero, so unindex must strictly precede the last release.
+        if (prov.state != .awaiting) return;
+        if (prov.parked.items.len != 0) return;
+        if (!prov.indexed) return;
+        _ = idx.by_key.remove(prov.recipient_key);
+        idx.provision_count -= 1;
+        idx.provision_key_bytes -= prov.recipient_key.len;
+        prov.indexed = false;
+        prov.release(); // the index's +1
+    }
+
+    /// Absolute expiry stamp for a parked accept, read from the INDEX-owned
+    /// clock — never from a peer's, so the connection whose accepts are being
+    /// timed out cannot steer its own deadline. Null (TTL off, or no index
+    /// clock) marks an entry that never expires: the pre-TTL behaviour.
+    fn parkDeadlineNs(idx: *ProvisionIndex) ?i64 {
+        const ttl_ms = idx.limits.park_ttl_ms orelse return null;
+        const clock = idx.clock orelse return null;
+        // Saturating throughout: an absurd configured TTL must clamp to "never
+        // expires", not panic on the integer cast.
+        const ttl_ms_i: i64 = std.math.cast(i64, ttl_ms) orelse std.math.maxInt(i64);
+        return clock.now() +| (ttl_ms_i *| std.time.ns_per_ms);
+    }
+
     /// Park an early Accept onto an existing `.awaiting` provision.
     fn parkAcceptOntoAwaiting(self: *Peer, idx: *ProvisionIndex, prov: *ProvisionIndex.Provision, answer_id: u32, embargo: ?[]const u8) !void {
         std.debug.assert(prov.state == .awaiting);
@@ -5818,6 +5970,7 @@ pub const Peer = struct {
             .accept_peer = self,
             .answer_id = answer_id,
             .embargo = parked_embargo,
+            .deadline_ns = parkDeadlineNs(idx),
         });
         prov.retain(); // the parked entry's +1
         idx.parked_accept_count += 1;

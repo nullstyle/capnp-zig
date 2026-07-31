@@ -1087,6 +1087,7 @@ capnpc-zig.rpc.peer.ProvideHandle.vine_id: field u32
 capnpc-zig.rpc.peer.ProvideHandle: struct
 capnpc-zig.rpc.peer.ProvisionIndex.ParkedAccept.accept_peer: field *rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.ProvisionIndex.ParkedAccept.answer_id: field u32
+capnpc-zig.rpc.peer.ProvisionIndex.ParkedAccept.deadline_ns: field ?i64 = null
 capnpc-zig.rpc.peer.ProvisionIndex.ParkedAccept.embargo: field ?[]u8
 capnpc-zig.rpc.peer.ProvisionIndex.ParkedAccept: struct
 capnpc-zig.rpc.peer.ProvisionIndex.PendingAccept.accept_peer: field *rpc.peer.mod.Peer
@@ -1119,6 +1120,7 @@ capnpc-zig.rpc.peer.ProvisionIndex.allocator: field mem.Allocator
 capnpc-zig.rpc.peer.ProvisionIndex.assertThreadAffinity: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.ProvisionIndex.attached_peers: field array_list.Aligned(*rpc.peer.mod.Peer,null) = <default>
 capnpc-zig.rpc.peer.ProvisionIndex.by_key: field hash_map.HashMap([]const u8,*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer).Provision,hash_map.StringContext,80)
+capnpc-zig.rpc.peer.ProvisionIndex.clock: field ?rpc.time.Clock = null
 capnpc-zig.rpc.peer.ProvisionIndex.deinit: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.ProvisionIndex.disableThreadAffinity: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.ProvisionIndex.init: fn (mem.Allocator, rpc.vat.provisions.ProvisionIndexLimits) rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)
@@ -1129,6 +1131,7 @@ capnpc-zig.rpc.peer.ProvisionIndex.provision_count: field usize = 0
 capnpc-zig.rpc.peer.ProvisionIndex.provision_key_bytes: field usize = 0
 capnpc-zig.rpc.peer.ProvisionIndex.queued_accept_bytes: field usize = 0
 capnpc-zig.rpc.peer.ProvisionIndex.queued_accept_count: field usize = 0
+capnpc-zig.rpc.peer.ProvisionIndex.setClock: fn (*rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer), ?rpc.time.Clock) void
 capnpc-zig.rpc.peer.ProvisionIndex.thread_affinity_enabled: field bool = true
 capnpc-zig.rpc.peer.ProvisionIndex.thread_id: field ?u64 = null
 capnpc-zig.rpc.peer.ProvisionIndex: struct
@@ -1140,6 +1143,7 @@ capnpc-zig.rpc.peer.ProvisionIndexLimits.max_provision_key_bytes: field usize = 
 capnpc-zig.rpc.peer.ProvisionIndexLimits.max_provisions: field usize = 4096
 capnpc-zig.rpc.peer.ProvisionIndexLimits.max_queued_accept_bytes: field usize = 1048576
 capnpc-zig.rpc.peer.ProvisionIndexLimits.max_queued_accepts: field usize = 4096
+capnpc-zig.rpc.peer.ProvisionIndexLimits.park_ttl_ms: field ?u64 = null
 capnpc-zig.rpc.peer.ProvisionIndexLimits: struct
 capnpc-zig.rpc.peer.RestoreOutcome.existing: variant u32
 capnpc-zig.rpc.peer.RestoreOutcome.host: variant rpc.peer.mod.Export
@@ -1176,6 +1180,7 @@ capnpc-zig.rpc.peer.TransportCloseFn: type = *const fn (*anyopaque) void
 capnpc-zig.rpc.peer.TransportIsClosingFn: type = *const fn (*anyopaque) bool
 capnpc-zig.rpc.peer.TransportSendFn: type = *const fn (*anyopaque, []const u8) anyerror!void
 capnpc-zig.rpc.peer.TransportStartFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer) void
+capnpc-zig.rpc.peer.Vat.Options.clock: field ?rpc.time.Clock = null
 capnpc-zig.rpc.peer.Vat.Options.io: field ?Io = null
 capnpc-zig.rpc.peer.Vat.Options.limits: field rpc.vat.provisions.ProvisionIndexLimits = <default>
 capnpc-zig.rpc.peer.Vat.Options.seed: field ?[32]u8 = null
@@ -1186,6 +1191,7 @@ capnpc-zig.rpc.peer.Vat.enroll: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer), *rpc.p
 capnpc-zig.rpc.peer.Vat.index: field rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.Vat.init: fn (mem.Allocator, rpc.vat.host.Vat(rpc.peer.mod.Peer).Options) error{Canceled,EntropyUnavailable}!rpc.vat.host.Vat(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.Vat.rng: field Random.ChaCha
+capnpc-zig.rpc.peer.Vat.setClock: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer), ?rpc.time.Clock) void
 capnpc-zig.rpc.peer.Vat.withdraw: fn (*rpc.vat.host.Vat(rpc.peer.mod.Peer), *rpc.peer.mod.Peer) error{PeerHasActiveHandoffState}!void
 capnpc-zig.rpc.peer.Vat: struct
 capnpc-zig.rpc.peer.VatNetwork.ConnectToIntroducedFn: type = *const fn (*anyopaque, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!rpc.vat.network.Introduced(rpc.peer.mod.Peer)
@@ -1951,6 +1957,7 @@ capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.max_provision_key_bytes: fiel
 capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.max_provisions: field usize = 4096
 capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.max_queued_accept_bytes: field usize = 1048576
 capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.max_queued_accepts: field usize = 4096
+capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits.park_ttl_ms: field ?u64 = null
 capnpc-zig.rpc.vat.provisions.ProvisionIndexLimits: struct
 capnpc-zig.rpc.vat.provisions: struct
 capnpc-zig.rpc.vat: struct

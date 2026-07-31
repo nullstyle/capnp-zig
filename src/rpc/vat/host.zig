@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const provisions = @import("./provisions.zig");
+const rpc_time = @import("../time.zig");
 
 pub fn Vat(comptime PeerType: type) type {
     return struct {
@@ -26,6 +27,11 @@ pub fn Vat(comptime PeerType: type) type {
             /// Takes precedence over `io` when both are set.
             seed: ?[32]u8 = null,
             limits: provisions.ProvisionIndexLimits = .{},
+            /// Vat-owned monotonic clock for `limits.park_ttl_ms`. The clock's
+            /// `ctx` must outlive the vat. Null (the default) leaves the
+            /// parked-accept TTL inert even when `park_ttl_ms` is set — the
+            /// clock is deliberately NOT derived from any enrolled peer.
+            clock: ?rpc_time.Clock = null,
         };
 
         /// Construct the vat. Requires an entropy decision: an explicit
@@ -40,10 +46,17 @@ pub fn Vat(comptime PeerType: type) type {
             } else {
                 return error.EntropyUnavailable;
             }
+            var index = provisions.ProvisionIndex(PeerType).init(allocator, options.limits);
+            index.setClock(options.clock);
             return .{
-                .index = provisions.ProvisionIndex(PeerType).init(allocator, options.limits),
+                .index = index,
                 .rng = std.Random.DefaultCsprng.init(seed),
             };
+        }
+
+        /// Install (or clear) the vat-owned monotonic clock after construction.
+        pub fn setClock(self: *Self, clock: ?rpc_time.Clock) void {
+            self.index.setClock(clock);
         }
 
         pub fn deinit(self: *Self) void {

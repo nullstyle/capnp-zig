@@ -23,6 +23,7 @@ const protocol = capnpc.rpc.wire.protocol;
 const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.caps.table;
 const vat_network = capnpc.rpc.vat.network;
+const rpc_time = capnpc.rpc.time;
 const message = capnpc.message;
 const Peer = peer_impl.Peer;
 const ProvisionIndex = peer_impl.ProvisionIndex;
@@ -2018,6 +2019,140 @@ test "L5 V2-M5: cancelling the last parked accept unindexes and destroys the awa
     try host.injectProvide(allocator, 62, carol_id, token);
     try host.injectAccept(allocator, 621, token, null);
     try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(621));
+}
+
+// ============================================================================
+// L9: a TTL for parked accepts. Parking is UNAUTHENTICATED — the recipient
+// token is arbitrary bytes and needs no prior Provide — so without a time
+// bound one stranger connection holds vat-wide park slots until `Peer.deinit`.
+// ============================================================================
+
+test "L9 characterization (no TTL): a stranger's parked accept starves an unrelated legit token" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    // One park slot makes the vat-wide starvation observable in two frames;
+    // the production default (1024) is the same hole with more arithmetic.
+    try host.init(allocator, .{ .max_parked_accepts = 1 });
+    defer host.deinitAll();
+
+    const stranger = try host.mintToken(allocator, "l9-stranger-a");
+    defer allocator.free(stranger);
+    const legit = try host.mintToken(allocator, "l9-legit-a");
+    defer allocator.free(legit);
+
+    // No Provide, no bootstrap, no authentication: an arbitrary token parks.
+    try host.injectAccept(allocator, 900, stranger, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(900));
+    try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
+
+    // Arbitrarily long afterwards — the park has NO time bound at all, and the
+    // only release point is `Peer.deinit` — an unrelated legitimate token
+    // cannot park. The budgets are vat-wide, so this starves a SIBLING peer's
+    // legitimate rendezvous just as effectively.
+    try host.injectAccept(allocator, 901, legit, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(901));
+    try std.testing.expectEqualStrings(
+        "provision park budget exhausted",
+        host.capture.reasonFor(901).?,
+    );
+    try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
+    // The squatter is untouched: still parked, still unreturned.
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(900));
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+}
+
+test "L9: an expired parked accept is evicted at the next park attempt; the legit token gets the slot" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .max_parked_accepts = 1, .park_ttl_ms = 30_000 });
+    defer host.deinitAll();
+
+    // The clock is INDEX-owned, never a peer's: the connection whose accepts
+    // are being timed out must not be able to steer their expiry.
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+
+    const stranger = try host.mintToken(allocator, "l9-stranger-b");
+    defer allocator.free(stranger);
+    const legit = try host.mintToken(allocator, "l9-legit-b");
+    defer allocator.free(legit);
+
+    // Park WITH an embargo so the byte counter is exercised too.
+    const embargo = "l9-embargo";
+    try host.injectAccept(allocator, 910, stranger, embargo);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(910));
+    try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
+    try std.testing.expectEqual(@as(usize, embargo.len), host.index.parked_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+
+    tc.advanceMs(31_000);
+
+    try host.injectAccept(allocator, 911, legit, null);
+
+    // (1) The squatter was evicted LOUDLY — an exception Return, never a
+    //     silent drop.
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(910));
+    try std.testing.expectEqualStrings("parked accept expired", host.capture.reasonFor(910).?);
+    // (2) The legitimate accept got the slot: it PARKED (no Return at all).
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(911));
+    // (3) The count moved to the legitimate entry...
+    try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
+    // (4) ...and so did the BYTES. This is the assertion a sweep that leans on
+    //     `failPendingAccept` alone gets wrong: that helper adjusts only the
+    //     QUEUED counters, so an eviction would leak the parked byte budget
+    //     upward forever and permanently shrink the bound the TTL protects.
+    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_bytes);
+    // The squatter's now-unadoptable awaiting provision was unindexed; only
+    // the legitimate one remains.
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+    try std.testing.expectEqual(@as(usize, 1), host.index.provision_count);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+    // Teardown under std.testing.allocator proves the eviction freed both
+    // owners' allocations (index-owned parked embargo, peer-owned key dupe).
+}
+
+test "L9: the sweep evicts only what expired — a younger sibling survives and is still adopted" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 30_000 });
+    defer host.deinitAll();
+
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+
+    const token = try host.mintToken(allocator, "l9-partial");
+    defer allocator.free(token);
+    const other = try host.mintToken(allocator, "l9-partial-other");
+    defer allocator.free(other);
+
+    // t=0: the old entry, embargoed (deadline 30s).
+    try host.injectAccept(allocator, 920, token, "e-old");
+    // t=20s: a younger sibling on the SAME provision (deadline 50s).
+    tc.advanceMs(20_000);
+    try host.injectAccept(allocator, 921, token, null);
+    try std.testing.expectEqual(@as(usize, 2), host.index.parked_accept_count);
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+
+    // t=31s: an unrelated Accept drives the sweep. Only the old entry is past
+    // its deadline, so only it is evicted — from the MIDDLE of a live parked
+    // list, leaving its provision indexed and still adoptable.
+    tc.advanceMs(11_000);
+    try host.injectAccept(allocator, 922, other, null);
+
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(920));
+    try std.testing.expectEqualStrings("parked accept expired", host.capture.reasonFor(920).?);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(921));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(922));
+    try std.testing.expectEqual(@as(usize, 2), host.index.parked_accept_count);
+    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 2), host.index.by_key.count());
+
+    // The survivor is still a live rendezvous: the Provide adopts and serves it.
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    try host.injectProvide(allocator, 92, carol_id, token);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(921));
+    try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
 }
 
 test "L5 F-2: index deinit fails parked accepts; the acceptor's follow-up Finish is a clean miss" {

@@ -278,8 +278,22 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      handoff over a promisedAnswer target whose answer is still open
      (`sendCall` auto-Finishes; a suppress-auto-finish call variant is future
      DX work).
-  5. Parked accepts have count/byte budgets but **no TTL**; a stranger can hold
-     park slots until its connection dies.
+  5. Parked accepts (Accept-before-Provide) are **unauthenticated**: the
+     recipient token is arbitrary bytes and needs no prior `Provide`, no
+     bootstrap, and no handshake. The count/byte budgets
+     (`max_parked_accepts`, `max_parked_accept_bytes`) are vat-wide, and a
+     parked entry's only unconditional release point is `Peer.deinit` — NOT
+     connection close, which does not touch parked accepts — so one stranger
+     connection can squat every park slot in the vat for the peer's entire
+     lifetime and starve unrelated legitimate tokens on sibling peers.
+     `ProvisionIndexLimits.park_ttl_ms` (with `ProvisionIndex.setClock` /
+     `Vat.Options.clock`) bounds this: a parked accept older than the TTL is
+     evicted with an exception `Return` at the next inbound `Accept`. It is
+     **opt-in and off by default**, and the clock is index-owned — never taken
+     from a peer or a frame, so the connection being timed out cannot steer
+     its own expiry. The sweep is deliberately lazy (driven by the Accept
+     path) rather than tick-driven: `on_tick` fires only when the transport
+     poll times out, so a busy attacker suppresses its own ticks.
 - **Level 4 (Join):** a guarded Zig↔Zig runtime pilot is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
   `Peer.sendJoinExperimental` can originate raw Join parts, and inbound `Join`
