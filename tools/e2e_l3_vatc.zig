@@ -36,6 +36,13 @@ const scenarios = [_][]const u8{
     "embargo",
     "unknown-token",
     "disconnect",
+    // The FAILED-answer arm of the broken-pipeline rule. Same unmatched-token
+    // park as `unknown-token`, but the host runs a clock plus `park_ttl_ms`,
+    // so a second Accept sweeps the expired one and answers it with an
+    // exception — and the driver has by then already pipelined a Call on that
+    // question. That call must get a copy of the same exception. Its ANSWERED
+    // counterpart is covered by `pipelined-provide`.
+    "park-expiry",
     // receiverHosted lift cells: the C++ driver provides a still-pipelined
     // (promisedAnswer-target) cap that re-resolves to a cap the host only
     // imports; the host must SERVE the Accept via deferred-Release import

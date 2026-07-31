@@ -40,11 +40,45 @@ const poll_slice_ms: i32 = 50;
 const default_port: u16 = 4707;
 const default_seed: u64 = 0x6c33_7661_7463_5eed;
 
+/// `park-expiry` only. Short enough that the driver's wait costs the lane
+/// almost nothing, long enough that it cannot fire between the Accept arriving
+/// and the driver's pipelined Call landing behind it.
+const park_expiry_ttl_ms: u64 = 300;
+
 const Scenario = enum {
     happy,
     embargo,
     unknown_token,
     disconnect,
+    /// The FAILED-answer directions of the broken-pipeline rule, cross-impl.
+    ///
+    /// `unknown-token` proves an unmatched completion token PARKS. This
+    /// scenario takes the same parked Accept and lets the L9 TTL evict it,
+    /// which answers that question with an exception ("parked accept expired").
+    /// Two calls must then be answered with a COPY of that exception, and they
+    /// travel different code paths:
+    ///
+    ///   * one the driver pipelined on the question BEFORE it failed — queued
+    ///     against the pending answer, so it is settled by the drain;
+    ///   * one that arrives AFTER the exception Return was built — no pending
+    ///     answer left to queue against, so it is settled from the recorded
+    ///     `failed_answers` entry.
+    ///
+    /// The second is the one that had only unit coverage, and a conformant C++
+    /// client does not normally emit it: once it has PROCESSED the exception
+    /// Return its promise is broken and it fails such calls locally, with no
+    /// frame. The driver gets one deterministically by queueing it in the same
+    /// turn as the Accept that triggers the eviction and never turning its
+    /// event loop in between — frame order on one connection does the rest.
+    /// Before the fix in v0.7.0 that call queued forever and the driver hung.
+    ///
+    /// The eviction is driven by that SECOND Accept, not by a timer: the TTL
+    /// sweep runs lazily from the Accept path and from nowhere else
+    /// (deliberately — `on_tick` only fires when the transport poll times out,
+    /// so a busy connection would suppress its own reclamation). "A later
+    /// Accept reclaims an expired parked one" is therefore also part of what
+    /// this cell proves.
+    park_expiry,
     // The C++ driver provides a still-PIPELINED (promisedAnswer-target) cap
     // that ultimately re-resolves to a cap this host only IMPORTS (a cap the
     // introducer itself hosts). With the receiverHosted lift the host SERVES
@@ -71,6 +105,7 @@ const Scenario = enum {
         if (std.mem.eql(u8, text, "embargo")) return .embargo;
         if (std.mem.eql(u8, text, "unknown-token")) return .unknown_token;
         if (std.mem.eql(u8, text, "disconnect")) return .disconnect;
+        if (std.mem.eql(u8, text, "park-expiry")) return .park_expiry;
         if (std.mem.eql(u8, text, "pipelined-provide")) return .pipelined_provide;
         if (std.mem.eql(u8, text, "pipelined-provide-chain")) return .pipelined_provide_chain;
         return null;
@@ -82,6 +117,7 @@ const Scenario = enum {
             .embargo => "embargo",
             .unknown_token => "unknown-token",
             .disconnect => "disconnect",
+            .park_expiry => "park-expiry",
             .pipelined_provide => "pipelined-provide",
             .pipelined_provide_chain => "pipelined-provide-chain",
         };
@@ -376,6 +412,29 @@ fn traceFrame(allocator: Allocator, dir: []const u8, idx: usize, frame: []const 
 const WireProbes = struct {
     provide_promised_answer: bool = false,
     provide_imported_cap: bool = false,
+    /// Outbound `Return`s carrying the parked-accept TTL exception.
+    ///
+    /// `park-expiry` needs TWO of them on one connection: the Return that
+    /// answers the Accept question the TTL evicted, and the Return that answers
+    /// the Call the driver had already PIPELINED on that question. One alone
+    /// means the answer failed but the pipelined call was silently dropped —
+    /// precisely the regression this cell exists to catch, and the shape that
+    /// hangs a real client rather than failing it.
+    expired_accept_returns: usize = 0,
+
+    /// Outbound counterpart to `note`. Frames are counted as they leave the
+    /// host, so this witnesses what the driver will actually receive rather
+    /// than what the host's internal state happens to say.
+    fn noteOutbound(self: *WireProbes, allocator: Allocator, frame: []const u8) void {
+        var decoded = protocol.DecodedMessage.init(allocator, frame) catch return;
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") return;
+        const ret = decoded.asReturn() catch return;
+        const ex = ret.exception orelse return;
+        if (std.mem.indexOf(u8, ex.reason, "parked accept expired") != null) {
+            self.expired_accept_returns += 1;
+        }
+    }
 
     fn note(self: *WireProbes, allocator: Allocator, frame: []const u8) void {
         var decoded = protocol.DecodedMessage.init(allocator, frame) catch return;
@@ -434,6 +493,7 @@ const HostConn = struct {
         while (self.host.popOutgoingFrame()) |frame| {
             defer self.host.freeFrame(frame);
             traceFrame(self.allocator, "-->", self.index, frame);
+            if (self.wire_probes) |wp| wp.noteOutbound(self.allocator, frame);
             writeAll(io, self.socket, frame) catch {
                 // Abrupt driver disconnect (EPIPE/reset) is a tolerated end
                 // state in every scenario; the drain asserts decide pass/fail.
@@ -803,8 +863,29 @@ fn boundPort(listener: *const rpc.transport.tcp.Listener, fallback: u16) u16 {
 fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
     tap.diag("scenario: {s}", .{args.scenario.name()});
 
+    // `Clock.fromIo` borrows this storage, and the vat below borrows the clock,
+    // so it has to be a named local declared FIRST — reverse-order destruction
+    // is what keeps it alive for the vat's whole life. (`io` itself is a
+    // by-value parameter; taking its address would work here too, but only by
+    // accident of it outliving the vat.)
+    var clock_io = io;
+
     // One vat; deterministic embargo-id entropy from the CLI seed.
-    var vat = try Vat.init(allocator, .{ .seed = seedBytes(args.seed) });
+    //
+    // The parked-accept TTL needs BOTH a limit and a vat-owned clock, and only
+    // `park-expiry` gets either: with no clock the sweep is inert, which is
+    // exactly the pre-L9 behaviour every other scenario is written against.
+    var vat = try Vat.init(allocator, .{
+        .seed = seedBytes(args.seed),
+        .limits = if (args.scenario == .park_expiry)
+            .{ .park_ttl_ms = park_expiry_ttl_ms }
+        else
+            .{},
+        .clock = if (args.scenario == .park_expiry)
+            rpc.time.Clock.fromIo(&clock_io)
+        else
+            null,
+    });
     defer vat.deinit();
 
     const bind_addr = try std.Io.net.IpAddress.parse(args.host, args.port);
@@ -916,6 +997,16 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
                     // returner for the param-echo returner (ctx unused).
                     .on_call = if (args.scenario.isPipelinedProvide()) EchoReturner.onCall else CapReturner.onCall,
                 });
+                // `park-expiry` asserts on the exception TEXT, and a HostPeer
+                // rewrites the reason of every outbound exception Return to a
+                // generic string by default. That default is the right one for
+                // a real host, but it would make "the pipelined call got a
+                // COPY of the answer's exception" indistinguishable from "it
+                // got some fresh generic error" — which is the entire
+                // distinction this cell exists to draw.
+                if (args.scenario == .park_expiry) {
+                    conn.host.setErrorDisclosurePolicy(.{ .reveal_details = true });
+                }
                 conn.probe_ctx = &sampler;
                 conn.probe_fn = Sampler.hook;
                 conn.wire_probes = &wire_probes;
@@ -996,6 +1087,55 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
             tap.ok(
                 pendingRendezvousShape(&vat, conns[0..inited], tap),
                 "residue is exactly the still-pending rendezvous (1 active + 1 awaiting provision, 1 parked accept)",
+            );
+        },
+        .park_expiry => {
+            // Same setup as `unknown-token` (an unmatched token, so the Accept
+            // parks), but this host runs with a clock and `park_ttl_ms`, and
+            // the driver sends a SECOND Accept once the TTL has elapsed. The
+            // sweep on that second Accept evicts the first.
+            tap.ok(probes.provide_seen, "a Provide registered a provision in the vat index");
+            tap.ok(probes.parked_seen, "the Accept with an unmatched completion token parked");
+            tap.ok(!probes.proxy_seen, "no provision was ever served (no proxy export minted)");
+
+            // THE CELL. THREE Returns must carry "parked accept expired", one
+            // per arm of the broken-pipeline rule:
+            //   1. the evicted Accept question itself;
+            //   2. the Call the driver pipelined on it BEFORE it failed, which
+            //      was queued and must be drained with the answer's exception;
+            //   3. the Call that arrives AFTER the exception Return was built,
+            //      which must be answered from the recorded `failed_answers`
+            //      entry rather than queued against an answer that is gone.
+            //
+            // The two call arms are genuinely different code paths, and this
+            // count is what tells them apart: ablating the recorded-exception
+            // lookup leaves arm 2 green and drops this to 2, while the driver's
+            // late call hangs until its bound. A missing Return here is a
+            // client that waits forever.
+            tap.diag("expired-accept Returns observed: {d}", .{wire_probes.expired_accept_returns});
+            tap.ok(
+                wire_probes.expired_accept_returns >= 1,
+                "the parked-accept TTL evicted the Accept with an exception Return",
+            );
+            tap.ok(
+                wire_probes.expired_accept_returns >= 2,
+                "the call pipelined on that answer BEFORE it failed was drained with the same exception",
+            );
+            tap.ok(
+                wire_probes.expired_accept_returns >= 3,
+                "the call arriving AFTER it failed got a copy of that exception too",
+            );
+
+            // Liveness: evicting a parked accept must not wedge the peer that
+            // owned it, and must not disturb the introducer leg.
+            tap.ok(carol.calls >= 1, "an ordinary call still reached Carol after the eviction");
+
+            // Residue is the SECOND rendezvous, in exactly the shape
+            // `unknown-token` ends in: the first parked accept is gone, so a
+            // count above one would mean the sweep evicted nothing.
+            tap.ok(
+                pendingRendezvousShape(&vat, conns[0..inited], tap),
+                "residue is exactly one still-pending rendezvous (the evicted accept is gone)",
             );
         },
         // The C++ driver introduced a still-unresolved PIPELINED cap that

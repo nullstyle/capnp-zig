@@ -437,7 +437,17 @@ kj::Maybe<kj::Own<DriverVatBase::Connection>> DriverConnectionBase::connectToInt
       "third-party contact does not name the zig host", contact.getHost());
   uint64_t token = contact.getToken();
   if (vat.network.corruptCompletionToken) {
-    token += 1;  // unknown-token scenario: rendezvous bytes will not match
+    // Make the completion token match no Provide this driver will ever send.
+    //
+    // Deliberately a high-bit flip and not `+= 1`. `newToken()` hands out small
+    // sequential values, so a +1 corruption produces the token the NEXT
+    // introduction is about to register legitimately: with two introductions
+    // in flight the second Provide adopts the first Accept and SERVES it,
+    // which silently turns a park cell into a rendezvous cell. That cost
+    // `park-expiry` a debugging round — it observed its pipelined call
+    // resolving rather than failing. One introduction hid the bug; two
+    // exposed it.
+    token += 0x8000000000000000ull;
   }
   completion.setToken(token);
   return vat.hostConnectionRef();
@@ -516,7 +526,10 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
 
   DriverNetwork shared;
   shared.hostAddr = hostAddr;
-  shared.corruptCompletionToken = (scenario == "unknown-token");
+  // Both cells need an Accept that finds no matching Provide, so it parks.
+  // `unknown-token` stops there; `park-expiry` then lets the TTL evict it.
+  shared.corruptCompletionToken =
+      (scenario == "unknown-token" || scenario == "park-expiry");
 
   DriverVat vatA(shared, "a");
   DriverVat vatB(shared, "b");
@@ -614,9 +627,11 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     // well as the serve. That matters historically — this exact wait HUNG
     // FOREVER when the host dropped calls pipelined on an already-failed
     // answer, and the fix that closed it keeps its cross-impl teeth here in the
-    // answered direction. The FAILED-answer direction of that rule no longer
-    // has a cross-impl cell (the lift turned this scenario's refusal into a
-    // success); it is covered by the unit tests that shipped with the fix.
+    // ANSWERED direction. The FAILED-answer directions (both of them: drained
+    // while queued, and answered from the recorded exception after the Return)
+    // are covered by the `park-expiry` scenario, which drives a real refusal
+    // via the parked-accept TTL now that the lift turned this scenario's own
+    // refusal into a success.
     bool threw = false;
     kj::String desc = kj::str("<no exception>");
     KJ_IF_SOME(e, kj::runCatchingExceptions([&]() {
@@ -697,7 +712,104 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     }
     tap.ok(true, "A received the introduced third-party cap from B");
 
-    if (scenario == "unknown-token") {
+    if (scenario == "park-expiry") {
+      // THE FAILED-ANSWER ARM OF THE BROKEN-PIPELINE RULE, CROSS-IMPL.
+      //
+      // `carol` is an unresolved Accept promise whose completion token matches
+      // no Provide, so the host parks the Accept. Calling on it now makes
+      // rpc.c++ send a Call PIPELINED on that Accept question (promisedAnswer)
+      // without waiting for its Return — exactly the shape whose ANSWERED
+      // direction `pipelined-provide` covers.
+      //
+      // The host then evicts the parked Accept on its L9 TTL and answers that
+      // question with an exception. The pipelined call must be answered with a
+      // COPY of that same exception. Before the fix in v0.7.0 it was dropped,
+      // and this wait hung until the lane's timeout killed it.
+      auto pipelined = carol.getNumberRequest().send();
+
+      // Outlive the host's TTL. The eviction sweep runs lazily from the Accept
+      // path and nowhere else, so nothing has happened yet at this point.
+      auto& timer = io.provider->getTimer();
+      timer.afterDelay(1 * kj::SECONDS).wait(ws);
+
+      // The SECOND Accept, which is what actually drives the sweep. Fetching
+      // from B's holder again re-introduces the cap, so A sends a fresh Accept
+      // (with a freshly corrupted token, so this one parks in its turn).
+      Number::Client second(nullptr);
+      {
+        auto resp2 = holderCap
+            .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+            .send().wait(ws);
+        second = readRootCap(resp2).castAs<Number>();
+      }
+      // USE it: rpc.c++ sends the Accept lazily, on first call, so merely
+      // holding the second cap sends nothing and the sweep never runs. This
+      // probe is fire-and-forget — its own token is corrupted too, so it parks
+      // in its turn and is never answered. Kept alive only so it is not
+      // cancelled before the Accept reaches the wire.
+      auto secondProbe = second.getNumberRequest().send();
+
+      // A SECOND pipelined call on the FIRST (about to be evicted) question,
+      // queued in the same turn as the Accept above so the event loop is not
+      // turned in between. Frame order on one connection is FIFO, so the host
+      // reads: Accept#2 -> [sweep evicts Accept#1, Return(exception) for it]
+      // -> this Call. It therefore arrives on an answer that has ALREADY
+      // failed, which is the other half of the broken-pipeline rule and the
+      // half a conformant client never sends by accident: once A has PROCESSED
+      // the exception Return its promise is broken and it fails such calls
+      // locally, without a frame. Not turning the loop here is what makes this
+      // deterministic rather than a race.
+      auto late = carol.getNumberRequest().send();
+      tap.ok(true, "A used a second introduced cap (its Accept drives the TTL sweep)");
+
+      // Bounded: a hang here is the regression, so it must fail rather than
+      // wedge the lane until the runner's timeout.
+      bool settled = false;
+      bool threw = false;
+      kj::String desc = kj::str("<no exception>");
+      auto outcome = pipelined
+          .then([](auto&&) { return kj::str("<resolved>"); },
+                [](kj::Exception&& e) { return kj::str(e.getDescription()); })
+          .exclusiveJoin(timer.afterDelay(5 * kj::SECONDS)
+              .then([]() { return kj::str("<timed out>"); }))
+          .wait(ws);
+      settled = (strcmp(outcome.cStr(), "<timed out>") != 0);
+      threw = settled && (strcmp(outcome.cStr(), "<resolved>") != 0);
+      desc = kj::mv(outcome);
+      printf("# pipelined-on-failed-answer outcome: %s\n", desc.cStr());
+      fflush(stdout);
+
+      tap.ok(settled,
+          "the call pipelined on the evicted Accept was ANSWERED (did not hang)");
+      tap.ok(threw,
+          "it was answered with an exception, not a bogus result");
+      // The exception is a COPY of the answer's, not a fresh generic one —
+      // this is what separates the rule from "the connection broke".
+      tap.ok(strstr(desc.cStr(), "parked accept expired") != nullptr,
+          "the exception is the failed answer's own (\"parked accept expired\")");
+
+      // The after-the-Return arm. Same bound, same expectation: it must be
+      // ANSWERED with a copy of that answer's exception, not dropped.
+      auto lateOutcome = late
+          .then([](auto&&) { return kj::str("<resolved>"); },
+                [](kj::Exception&& e) { return kj::str(e.getDescription()); })
+          .exclusiveJoin(timer.afterDelay(5 * kj::SECONDS)
+              .then([]() { return kj::str("<timed out>"); }))
+          .wait(ws);
+      printf("# call-on-already-failed-answer outcome: %s\n", lateOutcome.cStr());
+      fflush(stdout);
+      tap.ok(strcmp(lateOutcome.cStr(), "<timed out>") != 0,
+          "a call arriving on an ALREADY-failed answer was answered (did not hang)");
+      tap.ok(strstr(lateOutcome.cStr(), "parked accept expired") != nullptr,
+          "it too got a copy of the failed answer's own exception");
+
+      // Liveness after the eviction: the introducer leg still serves calls.
+      uint32_t viaB = holder.held.castAs<Number>().getNumberRequest().send().wait(ws).getN();
+      tap.ok(viaB == 42, "introducer leg still serves calls after the eviction");
+      (void)second;
+      (void)secondProbe;
+      (void)late;
+    } else if (scenario == "unknown-token") {
       // WHAT THIS CELL CAN AND CANNOT PROVE.
       //
       // An Accept whose ThirdPartyCompletion matches no Provide must PARK, not
@@ -781,7 +893,8 @@ int main(int argc, char* argv[]) {
   if (argc != 4) {
     fprintf(stderr, "usage: l3_vatc_client <host> <port> <scenario>\n"
                     "  scenario: happy | embargo | unknown-token | disconnect |\n"
-                    "            pipelined-provide | pipelined-provide-chain\n");
+                    "            park-expiry | pipelined-provide |\n"
+                    "            pipelined-provide-chain\n");
     return 2;
   }
   kj::StringPtr host = argv[1];
@@ -790,6 +903,7 @@ int main(int argc, char* argv[]) {
 
   if (scenario != "happy" && scenario != "embargo" &&
       scenario != "unknown-token" && scenario != "disconnect" &&
+      scenario != "park-expiry" &&
       scenario != "pipelined-provide" && scenario != "pipelined-provide-chain") {
     fprintf(stderr, "unknown scenario: %s\n", scenario.cStr());
     return 2;

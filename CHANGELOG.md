@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-impl coverage for the failed-answer directions of the broken-pipeline
+  rule** — a new `park-expiry` scenario in the `e2e-l3-vatc` lane (Zig VatC
+  host, C++ recipient+introducer driver). The ANSWERED direction already had
+  cross-impl teeth in `pipelined-provide`; the failed direction had only unit
+  tests, because the `receiverHosted` lift turned the scenario that used to
+  refuse into one that succeeds.
+
+  The host now runs with a clock and `park_ttl_ms`, so an Accept whose
+  completion token matches no Provide parks and is then evicted by the L9 TTL
+  with an exception Return. Three Returns must carry that exception: the
+  evicted Accept itself, a call the driver pipelined on it BEFORE it failed
+  (queued against the pending answer, settled by the drain), and a call
+  arriving AFTER the Return was built (settled from the recorded
+  `failed_answers` entry). The last is the path a conformant C++ client never
+  exercises by accident — once it has processed the exception its promise is
+  broken and it fails such calls locally — so the driver queues it in the same
+  turn as the triggering Accept and never turns its event loop in between,
+  making it deterministic on frame order rather than on timing.
+
+  The eviction is driven by that second Accept, not by a timer: the TTL sweep
+  runs lazily from the Accept path and nowhere else, so "a later Accept
+  reclaims an expired parked one" is proven here too.
+
+  Ablation-proven and arm-discriminating: forcing the recorded-exception lookup
+  to miss leaves the drain arm green while the driver's late call times out and
+  the host's expired-Return count drops 3 -> 2.
+
+### Fixed
+
+- **e2e L3 driver: the unmatched-token corruption could collide with a real
+  token.** `unknown-token` corrupted the completion token by `+= 1`, and
+  `newToken()` hands out small sequential values — so with two introductions in
+  flight the second Provide registers exactly the token the first Accept was
+  corrupted to, adopts that parked Accept and SERVES it. One introduction hid
+  this; `park-expiry` has two and observed its pipelined call resolving instead
+  of failing. Corruption is now a high-bit flip, which no minted token can
+  reach.
+
 ### Fixed
 
 - **Inbound param capabilities are no longer released twice.** rpc.capnp on
