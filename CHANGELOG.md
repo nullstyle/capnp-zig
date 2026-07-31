@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-31
+
+Level-3 three-party hosting is complete: a vat can now host a handoff whose
+provided capability it merely *imports* from the introducer, proven against the
+C++ reference. Alongside it, a deliberate freeze ceremony on the Stable surface,
+the missing half of the list-upgrade rule, and a run of gate work that found
+three real defects — including two the gates could not previously see at all.
+
+The recurring theme is worth stating: several of these were found by *building
+the gate*, not by suspecting the bug. A use-after-free in peer teardown, an
+unsound OOM harness, and 179 tests that had never once been compiled were all
+invisible until a lane existed that could see them.
+
 ### Breaking
 
 - **Five frozen Stable signatures lost their `anytype` holes.** The API snapshot
@@ -274,6 +287,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folded into the plain path's `error.InvalidPointer` rather than widening a
   frozen error set.
 
+- **`just test-release-safe-full`, wired into `release-preflight`.** The full
+  suite under ReleaseSafe is what CI's per-OS job runs, but no local recipe did
+  — `test-release-safe` is a ten-binary subset, and the gap let two defects
+  reach `main` in this cycle: the OOM harness that reported a deterministic
+  function as nondeterministic, and a dangling `ctx` pointer that segfaults on
+  amd64 while a still-mapped stack page hides it on arm64. Neither Debug,
+  ReleaseFast, nor the subset showed either. Being green locally in every other
+  mode is not evidence.
+
 - **A `test-release-fast` lane** (`zig build test-release-fast`, `just
   test-release-fast`), wired into `just ci` and the per-OS CI Test job. It is a
   memory-safety lane rather than a performance one: ReleaseFast is the only mode
@@ -417,17 +439,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blamed "a shared CSPRNG across worker threads", which is not what the code
   did — the pool shared nothing and installed nothing.
 
-- **The `receiverHosted` cross-peer fail-closed arms are pinned by tests.** Both
-  sites that answer a cross-peer Level-3 `Accept` with
-  `CrossPeerReceiverHostedTargetUnsupported` — the stored `.local` target whose
-  origin decodes to `receiverHosted`, and the owner-side re-resolution of a
-  stored `.promised` target that lands on `.imported` — had **zero** test
-  coverage anywhere in the repo. The lift that will eventually replace them
-  would have been rewriting an arm with no regression net under it. Two tests
-  now pin the exception reason exactly, plus leak-free teardown and no wedged
-  state on either peer. Ablation-verified per site: changing either
-  `return error.…` reddens exactly one test on the reason string, so neither
-  test rides on the other's site.
+- **A regression net was built under the `receiverHosted` arms before they were
+  lifted.** Both sites that used to answer a cross-peer Level-3 `Accept` with
+  `CrossPeerReceiverHostedTargetUnsupported` had **zero** test coverage
+  anywhere in the repo, so the lift above would have been rewriting them blind.
+  They were pinned first — two tests asserting the exception reason exactly per
+  site, ablation-verified so neither rode on the other's arm — and the lift then
+  flipped those same tests to assert the served path. Recorded because the
+  sequencing is the point, not because the intermediate state shipped: what
+  survives in this release is the served behaviour plus a fail-closed *witness*
+  for the one input that legitimately still refuses, a `.promised` target whose
+  re-resolved import has died.
 
 - **The hardening gate now scans the compiler plugin.** `unsafe_dirs` covered
   `src/serialization`, `src/rpc` and `src/wasm` but not `src/capnpc-zig`, so
@@ -1937,7 +1959,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/nullstyle/capnp-zig/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/nullstyle/capnp-zig/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nullstyle/capnp-zig/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/nullstyle/capnp-zig/compare/v0.3.0...v0.4.0

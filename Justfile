@@ -67,6 +67,18 @@ test-docs-snippets-quic:
 test-release-safe:
     zig build test-release-safe --summary all
 
+# Run the FULL suite under ReleaseSafe — the mode CI's per-OS job uses.
+#
+# Not the same thing as `test-release-safe`, which is a ten-binary subset. This
+# lane exists because it has now caught two defects nothing else could see: an
+# OOM harness that reported a deterministic function as nondeterministic, and a
+# dangling `ctx` pointer that segfaults on amd64 while a still-mapped stack page
+# hides it on arm64. Neither Debug, ReleaseFast, nor the subset showed either.
+# It is in `release-preflight` for that reason: locally green in every other
+# mode is not evidence.
+test-release-safe-full:
+    zig build test -Doptimize=ReleaseSafe --summary all
+
 # Run teardown-heavy RPC suites under ReleaseFast. This is a MEMORY-SAFETY lane,
 # not a performance one: ReleaseFast is the only mode that leaves a freed
 # pointer intact, so a use-after-free reached from a destructor shows up here
@@ -234,6 +246,7 @@ check-toolchain:
 release-preflight:
     just check-toolchain
     just ci
+    just test-release-safe-full
     just wasm-build
     just bench-check
     just release
