@@ -45,12 +45,32 @@ const Scenario = enum {
     embargo,
     unknown_token,
     disconnect,
+    // The C++ driver provides a still-PIPELINED (promisedAnswer-target) cap
+    // that ultimately re-resolves to a cap this host only IMPORTS (a cap the
+    // introducer itself hosts). Cross-peer serving of receiver-hosted
+    // targets is unsupported, so the Accept must be refused FAIL-CLOSED with
+    // `CrossPeerReceiverHostedTargetUnsupported` — these scenarios assert
+    // that current behavior and must be rewritten when the receiverHosted
+    // lift lands.
+    //   pipelined-provide       one-hop echo: the promisedAnswer target
+    //                           resolves at Provide time -> stored
+    //                           .local{receiverHosted} -> fail-closed at the
+    //                           serve's direct target-kind gate (site 1).
+    //   pipelined-provide-chain chained echo-of-pipelined: Provide-time
+    //                           resolution yields a chained receiverAnswer ->
+    //                           stored .promised ops -> serve-time owner-side
+    //                           re-resolution -> .imported -> fail-closed at
+    //                           the re-resolution arm (site 2).
+    pipelined_provide,
+    pipelined_provide_chain,
 
     fn parse(text: []const u8) ?Scenario {
         if (std.mem.eql(u8, text, "happy")) return .happy;
         if (std.mem.eql(u8, text, "embargo")) return .embargo;
         if (std.mem.eql(u8, text, "unknown-token")) return .unknown_token;
         if (std.mem.eql(u8, text, "disconnect")) return .disconnect;
+        if (std.mem.eql(u8, text, "pipelined-provide")) return .pipelined_provide;
+        if (std.mem.eql(u8, text, "pipelined-provide-chain")) return .pipelined_provide_chain;
         return null;
     }
 
@@ -60,7 +80,13 @@ const Scenario = enum {
             .embargo => "embargo",
             .unknown_token => "unknown-token",
             .disconnect => "disconnect",
+            .pipelined_provide => "pipelined-provide",
+            .pipelined_provide_chain => "pipelined-provide-chain",
         };
+    }
+
+    fn isPipelinedProvide(self: Scenario) bool {
+        return self == .pipelined_provide or self == .pipelined_provide_chain;
     }
 };
 
@@ -117,7 +143,7 @@ const Tap = struct {
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-l3-vatc-host [--host 0.0.0.0] [--port 4707] [--seed N] [--scenario happy|embargo|unknown-token|disconnect]
+        \\Usage: e2e-l3-vatc-host [--host 0.0.0.0] [--port 4707] [--seed N] [--scenario happy|embargo|unknown-token|disconnect|pipelined-provide|pipelined-provide-chain]
         \\
     , .{});
 }
@@ -221,6 +247,56 @@ const CapReturner = struct {
     }
 };
 
+/// Bootstrap for the pipelined-provide scenarios: ECHOES the caller's single
+/// param capability back in the Return, preserving its inbound origin: an import echoes as
+/// receiverHosted, an own export as senderHosted, and a promised-answer param
+/// (a cap the caller pipelined on one of its own outstanding questions) as a
+/// freshly-noted receiverAnswer. This is the natural "return the cap you gave
+/// me" server shape; it is what makes the provided pipeline re-resolve to a
+/// RECEIVER-hosted cap on the owner leg.
+const EchoReturner = struct {
+    fn onCall(
+        _: *anyopaque,
+        peer: *Peer,
+        call: protocol.Call,
+        inbound: *const InboundCapTable,
+    ) anyerror!void {
+        const descriptors = rpc.caps.table.descriptors;
+        const cap = try call.params.content.getCapability();
+        const entry = try inbound.get(cap.id);
+        // Retain the echoed cap (the standard handler pattern): without this
+        // the post-dispatch auto-release sends an explicit wire Release for
+        // the param import while the Return's `releaseParamCaps` stays at its
+        // wire default TRUE — the C++ caller then releases its param export
+        // TWICE and aborts the connection with "Tried to release invalid
+        // export ID" (rpc.c++ releaseExport). Observed empirically against
+        // the reference implementation when the retain was omitted.
+        const mutable_inbound: *InboundCapTable = @constCast(inbound);
+        try mutable_inbound.retainCapability(cap);
+        const mapped: struct { origin: u4, id: u32 } = switch (entry) {
+            .none => return error.EchoParamMissing,
+            .imported => |c| .{ .origin = descriptors.originCodeForTag(.receiverHosted), .id = c.id },
+            .exported => |c| .{ .origin = descriptors.originCodeForTag(.senderHosted), .id = c.id },
+            .promised => |promised| .{
+                .origin = descriptors.originCodeForTag(.receiverAnswer),
+                .id = try peer.caps.noteReceiverAnswer(promised),
+            },
+        };
+        const ReturnCtx = struct {
+            origin: u4,
+            id: u32,
+            fn build(bctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+                const bself: *const @This() = castCtx(*const @This(), bctx);
+                var payload = try ret.payloadTyped();
+                var any = try payload.initContent();
+                try any.setCapabilityOriginTagged(bself.origin, bself.id);
+            }
+        };
+        var ret_ctx = ReturnCtx{ .origin = mapped.origin, .id = mapped.id };
+        try peer.sendReturnResults(call.question_id, &ret_ctx, ReturnCtx.build);
+    }
+};
+
 // -- Wire tracing (diagnostics only; enabled with --trace) -------------------
 
 var trace_enabled: bool = false;
@@ -289,6 +365,25 @@ fn traceFrame(allocator: Allocator, dir: []const u8, idx: usize, frame: []const 
     }
 }
 
+/// Wire-level record of what Provide target form actually ARRIVED, decoded
+/// straight off the frame — independent of any internal re-classification.
+/// Shared across connections.
+const WireProbes = struct {
+    provide_promised_answer: bool = false,
+    provide_imported_cap: bool = false,
+
+    fn note(self: *WireProbes, allocator: Allocator, frame: []const u8) void {
+        var decoded = protocol.DecodedMessage.init(allocator, frame) catch return;
+        defer decoded.deinit();
+        if (decoded.tag != .provide) return;
+        const p = decoded.asProvide() catch return;
+        switch (p.target.tag) {
+            .promisedAnswer => self.provide_promised_answer = true,
+            .importedCap => self.provide_imported_cap = true,
+        }
+    }
+};
+
 // -- One accepted connection: socket + HostPeer + Framer ---------------------
 
 const HostConn = struct {
@@ -306,6 +401,8 @@ const HostConn = struct {
     fd_open: bool = true,
     probe_ctx: ?*anyopaque = null,
     probe_fn: ?*const fn (ctx: *anyopaque) void = null,
+    /// Wire-shape recorder (Provide target form as it arrived).
+    wire_probes: ?*WireProbes = null,
 
     fn initAccepted(allocator: Allocator, index: usize, socket: rpc.transport.tcp.SocketFd) HostConn {
         return .{
@@ -362,6 +459,7 @@ const HostConn = struct {
                     while (try self.framer.popFrame()) |frame| {
                         defer self.allocator.free(frame);
                         traceFrame(self.allocator, "<--", self.index, frame);
+                        if (self.wire_probes) |wp| wp.note(self.allocator, frame);
                         self.frames_in += 1;
                         try self.host.pushFrame(frame);
                         if (self.probe_fn) |hook| hook(self.probe_ctx.?);
@@ -424,6 +522,12 @@ const Probes = struct {
     proxy_seen: bool = false,
     queued_seen: bool = false,
     parked_seen: bool = false,
+    /// Which STORED form the provide target took after the host's
+    /// Provide-time resolution — `.local{receiverHosted}` routes the serve to
+    /// the direct fail-closed gate (site 1), `.promised` routes it to the
+    /// serve-time owner-side re-resolution (site 2).
+    stored_local_receiver_hosted: bool = false,
+    stored_promised: bool = false,
 };
 
 const Sampler = struct {
@@ -444,6 +548,17 @@ const Sampler = struct {
             const peer = &conn.host.peer;
             if (peer.provisions_by_question.count() > 0) self.probes.provide_seen = true;
             if (peer.cross_peer_proxy_links.items.len > 0) self.probes.proxy_seen = true;
+            // Record the STORED provide-target form (site discriminator).
+            var pit = peer.provides_by_question.valueIterator();
+            while (pit.next()) |entry| {
+                switch (entry.target) {
+                    .local => |local| {
+                        const rh = rpc.caps.table.descriptors.originCodeForTag(.receiverHosted);
+                        if (local.origin_code == rh) self.probes.stored_local_receiver_hosted = true;
+                    },
+                    .promised => self.probes.stored_promised = true,
+                }
+            }
         }
     }
 };
@@ -721,6 +836,7 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
     }
 
     var probes = Probes{};
+    var wire_probes = WireProbes{};
     var sampler = Sampler{
         .vat = &vat,
         .conns = &conns,
@@ -791,10 +907,20 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
                 returners[inited - 1] = .{ .export_id = carol_export_id };
                 _ = try conn.host.peer.setBootstrap(.{
                     .ctx = &returners[inited - 1],
-                    .on_call = CapReturner.onCall,
+                    // The pipelined-provide scenarios swap the fixed-cap
+                    // returner for the param-echo returner (ctx unused).
+                    .on_call = if (args.scenario.isPipelinedProvide()) EchoReturner.onCall else CapReturner.onCall,
                 });
                 conn.probe_ctx = &sampler;
                 conn.probe_fn = Sampler.hook;
+                conn.wire_probes = &wire_probes;
+                if (args.scenario.isPipelinedProvide()) {
+                    // Reveal the real exception name on the wire so the C++
+                    // recipient can assert the fail-closed refusal BY NAME
+                    // (the default policy sanitizes every outbound Return
+                    // exception to "host call failed").
+                    conn.host.setErrorDisclosurePolicy(.{ .reveal_details = true });
+                }
                 conn.host.start(null, null, null);
                 tap.diag("accepted connection {d}", .{inited});
             }
@@ -873,6 +999,26 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
                 pendingRendezvousShape(&vat, conns[0..inited], tap),
                 "residue is exactly the still-pending rendezvous (1 active + 1 awaiting provision, 1 parked accept)",
             );
+        },
+        // The C++ driver introduced a still-unresolved PIPELINED cap that
+        // re-resolves to a cap this host only imports. Assert the wire shape
+        // (the Provide target arrived as promisedAnswer — C++ did not
+        // shorten), the STORED form the Provide-time resolution took (which
+        // pins WHICH fail-closed site served the refusal), and that no proxy
+        // export was minted. The exception NAME is asserted driver-side (it
+        // is the wire-visible Return exception reason).
+        .pipelined_provide, .pipelined_provide_chain => {
+            tap.ok(probes.provide_seen, "a Provide registered a provision in the vat index");
+            tap.ok(wire_probes.provide_promised_answer, "the Provide target ARRIVED as promisedAnswer (C++ did not shorten)");
+            tap.ok(!wire_probes.provide_imported_cap, "no importedCap-target Provide was observed");
+            if (args.scenario == .pipelined_provide) {
+                tap.ok(probes.stored_local_receiver_hosted, "Provide-time resolution stored .local{receiverHosted} (fail-closed site 1)");
+                tap.ok(!probes.stored_promised, "no .promised target was stored in the one-hop shape");
+            } else {
+                tap.ok(probes.stored_promised, "Provide-time resolution stored .promised ops (serve-time re-resolution, site 2)");
+                tap.ok(!probes.stored_local_receiver_hosted, "no .local{receiverHosted} target was stored in the chained shape");
+            }
+            tap.ok(!probes.proxy_seen, "the Accept was refused fail-closed (no cross-peer proxy export minted)");
         },
         .disconnect => {
             tap.ok(drainedTransient(&vat, conns[0..inited], tap, "disconnect"), "transient handoff state drained after abrupt disconnect");

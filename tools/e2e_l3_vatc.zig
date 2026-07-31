@@ -31,7 +31,21 @@ fn sleepMs(io: std.Io, ms: u64) void {
     std.Io.sleep(io, std.Io.Duration.fromNanoseconds(@intCast(ms * std.time.ns_per_ms)), .awake) catch {};
 }
 
-const scenarios = [_][]const u8{ "happy", "embargo", "unknown-token", "disconnect" };
+const scenarios = [_][]const u8{
+    "happy",
+    "embargo",
+    "unknown-token",
+    "disconnect",
+    // Fail-closed cells: the C++ driver provides a still-pipelined
+    // (promisedAnswer-target) cap that re-resolves to a cap the host only
+    // imports; the host must refuse the Accept with
+    // `CrossPeerReceiverHostedTargetUnsupported` on both the direct
+    // target-kind gate (pipelined-provide) and the stored-.promised
+    // serve-time re-resolution (pipelined-provide-chain). Rewrite when the
+    // receiverHosted lift lands.
+    "pipelined-provide",
+    "pipelined-provide-chain",
+};
 
 /// Generous enough for a cold `docker compose run` (image already built);
 /// the host binary has its own internal deadline well below this.

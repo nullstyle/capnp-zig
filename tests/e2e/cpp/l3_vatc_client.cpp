@@ -37,6 +37,11 @@
 //                 fail, and must not wedge either leg to the host.
 //   disconnect    happy, then both host connections are dropped abruptly (no
 //                 clean shutdown) via _exit(0).
+//   pipelined-provide, pipelined-provide-chain
+//                 B introduces a still-PIPELINED result cap that re-resolves
+//                 to B's own local cap; the host must refuse the Accept
+//                 fail-closed (CrossPeerReceiverHostedTargetUnsupported).
+//                 See the scenario branch in runDriver for the two shapes.
 //
 // Output: TAP on stdout ("ok N - ..." + "1..N"); exit 0 iff all asserts pass.
 
@@ -460,6 +465,21 @@ public:
   }
 };
 
+class DeadEndImpl final: public capnp::Capability::Server {
+  // B's local capability for the pipelined-provide scenarios. It is the cap
+  // the host ends up re-resolving the provided pipeline to (an IMPORT from
+  // the host's perspective). The Zig host must fail the Accept closed, so
+  // this must never actually be called.
+public:
+  int calls = 0;
+
+  DispatchCallResult dispatchCall(uint64_t, uint16_t,
+      capnp::CallContext<capnp::AnyPointer, capnp::AnyPointer>) override {
+    ++calls;
+    KJ_FAIL_REQUIRE("spike dead-end capability must never be invoked");
+  }
+};
+
 capnp::Capability::Client readRootCap(capnp::AnyPointer::Reader root) {
   // Accept both returner result shapes: the vatc-test CapReturner puts the
   // capability at the payload content root; a schema-typed returner would put
@@ -511,6 +531,93 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
   auto hostId = hostIdMsg.initRoot<VatId>();
   hostId.setHost(hostAddr);
   auto returner = rpcB.bootstrap(hostId.asReader());
+
+  if (scenario == "pipelined-provide" || scenario == "pipelined-provide-chain") {
+    // B introduces a still-PIPELINED (unresolved) result cap to A. The
+    // host's bootstrap in these scenarios ECHOES its single param cap, so
+    // the pipelined result ultimately re-resolves to B's own local cap — a
+    // cap the host only IMPORTS. rpc.c++ writes the Provide target via
+    // PipelineClient::writeTarget => promisedAnswer{questionId, ops}; no
+    // shortening is possible while the question is outstanding.
+    //
+    //   pipelined-provide        held = pipeline of Q2 = echo(bCap). The
+    //                            host resolves the promisedAnswer target at
+    //                            Provide time to the already-answered Q2's
+    //                            receiverHosted cap (fail-closed site 1).
+    //   pipelined-provide-chain  held = pipeline of Q1 = echo(pipeline of
+    //                            Q2); the Q1 answer carries a chained
+    //                            receiverAnswer{Q2} descriptor, so the host
+    //                            stores .promised ops and only re-resolves
+    //                            at ACCEPT time (fail-closed site 2, the
+    //                            .promised -> .imported arm).
+    //
+    // Both refusals are CURRENT fail-closed behavior: the wire-visible
+    // outcome A must observe is the Accept answered with an exception naming
+    // CrossPeerReceiverHostedTargetUnsupported. Rewrite these asserts when
+    // the receiverHosted lift lands.
+    auto deadEndOwn = kj::heap<DeadEndImpl>();
+    DeadEndImpl& deadEnd = *deadEndOwn;
+    capnp::Capability::Client bCap(kj::mv(deadEndOwn));
+
+    // Q2: echo(bCap) — sent, NOT awaited. Keep q2p alive so no Finish is
+    // sent (the host's recorded answer must survive until the Accept).
+    auto q2 = returner.typelessRequest(RETURNER_INTERFACE_ID, RETURNER_METHOD_ID, kj::none, {});
+    q2.setAs<capnp::Capability>(bCap);
+    auto q2p = q2.send();
+
+    kj::Maybe<capnp::RemotePromise<capnp::AnyPointer>> keepQ1;
+    if (scenario == "pipelined-provide-chain") {
+      // Q1: echo(pipelined result of Q2) — the param descriptor B writes for
+      // a same-connection PipelineClient is receiverAnswer{Q2}.
+      auto q1 = returner.typelessRequest(RETURNER_INTERFACE_ID, RETURNER_METHOD_ID, kj::none, {});
+      q1.setAs<capnp::Capability>(capnp::Capability::Client(q2p.asCap()));
+      auto q1p = q1.send();
+      holder.held = capnp::Capability::Client(q1p.asCap());
+      keepQ1 = kj::mv(q1p);
+    } else {
+      holder.held = capnp::Capability::Client(q2p.asCap());
+    }
+    tap.ok(true, "B holds a still-pipelined (unresolved) result cap");
+
+    // A: fetch the held cap from B; B's answer forces the third-party
+    // introduction of the PIPELINED cap (thirdPartyHosted + Provide with a
+    // promisedAnswer target on the B leg).
+    capnp::MallocMessageBuilder bIdMsgSpike(8);
+    auto bIdSpike = bIdMsgSpike.initRoot<VatId>();
+    bIdSpike.setHost("b");
+    auto holderCapSpike = rpcA.bootstrap(bIdSpike.asReader());
+    auto resp = holderCapSpike
+        .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+        .send().wait(ws);
+    Number::Client accepted = readRootCap(resp).castAs<Number>();
+    tap.ok(true, "A received the introduced third-party cap from B");
+
+    // First use forces the lazy Accept; the host must refuse it fail-closed.
+    // Observe the Accept's own Return via whenResolved() (the unknown-token
+    // pattern) rather than a pipelined call: a call pipelined on the refused
+    // Accept question is a separate surface (empirically the host never
+    // answers it — a known gap), while whenResolved() settles on the Accept
+    // exception itself.
+    bool threw = false;
+    bool named = false;
+    kj::String desc = kj::str("<no exception>");
+    KJ_IF_SOME(e, kj::runCatchingExceptions([&]() {
+      accepted.whenResolved().wait(ws);
+    })) {
+      threw = true;
+      desc = kj::str(e.getDescription());
+      named = strstr(desc.cStr(), "CrossPeerReceiverHostedTargetUnsupported") != nullptr;
+    }
+    printf("# accept outcome: %s\n", desc.cStr());
+    fflush(stdout);
+    tap.ok(threw, "accepting the pipelined-provided cap failed (Accept refused)");
+    tap.ok(named, "the Accept exception names CrossPeerReceiverHostedTargetUnsupported");
+    tap.ok(deadEnd.calls == 0, "B's local dead-end cap was never invoked");
+
+    tap.plan();
+    return tap.failed ? 1 : 0;
+  }
+
   auto returnerResp = returner
       .typelessRequest(RETURNER_INTERFACE_ID, RETURNER_METHOD_ID, kj::none, {})
       .send().wait(ws);
@@ -640,7 +747,8 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
 int main(int argc, char* argv[]) {
   if (argc != 4) {
     fprintf(stderr, "usage: l3_vatc_client <host> <port> <scenario>\n"
-                    "  scenario: happy | embargo | unknown-token | disconnect\n");
+                    "  scenario: happy | embargo | unknown-token | disconnect |\n"
+                    "            pipelined-provide | pipelined-provide-chain\n");
     return 2;
   }
   kj::StringPtr host = argv[1];
@@ -648,7 +756,8 @@ int main(int argc, char* argv[]) {
   kj::StringPtr scenario = argv[3];
 
   if (scenario != "happy" && scenario != "embargo" &&
-      scenario != "unknown-token" && scenario != "disconnect") {
+      scenario != "unknown-token" && scenario != "disconnect" &&
+      scenario != "pipelined-provide" && scenario != "pipelined-provide-chain") {
     fprintf(stderr, "unknown scenario: %s\n", scenario.cStr());
     return 2;
   }
