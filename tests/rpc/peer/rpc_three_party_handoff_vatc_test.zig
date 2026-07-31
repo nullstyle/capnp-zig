@@ -3024,19 +3024,28 @@ const DeferringService = struct {
 /// provision whose stored target is `.promised` ops naming that answer — the
 /// state the serve arm re-resolves at Accept time. Returns the remote's
 /// import of the deferring service (for teardown).
+/// `bprobe` and `call_probe` are supplied BY THE CALLER, and that is
+/// load-bearing rather than stylistic. The staged call's Return is
+/// deliberately dropped in flight, so its question stays outstanding until
+/// `vat.remote.deinit()` — where `forceCancelAllQuestions` delivers a local
+/// exception THROUGH the question's stored `ctx` pointer. Locals of this
+/// helper would be dead stack by then: `deliverLocalException` writes into a
+/// vanished frame, which on amd64 (Linux and Windows, ReleaseSafe) is a
+/// segfault and on arm64 macOS merely scribbles unnoticed. The probes must
+/// outlive the peer, so they live in the test's frame.
 fn stageSite2Provision(
     vat: *ImportOwnerVat,
     host: *FrameHost,
     deferring: *DeferringService,
+    bprobe: *CapImportProbe,
+    call_probe: *TolerantCall,
     token: []const u8,
     provide_qid: u32,
 ) !u32 {
     _ = try vat.owner.setBootstrap(.{ .ctx = deferring, .on_call = DeferringService.onCall });
-    var bprobe = CapImportProbe{};
-    _ = try vat.remote.sendBootstrap(&bprobe, CapImportProbe.onReturn);
+    _ = try vat.remote.sendBootstrap(bprobe, CapImportProbe.onReturn);
     const service_import = bprobe.import_id orelse return error.ServiceBootstrapFailed;
-    var call_probe = TolerantCall{};
-    _ = try vat.remote.sendCall(service_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &call_probe, null, TolerantCall.onReturn);
+    _ = try vat.remote.sendCall(service_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, call_probe, null, TolerantCall.onReturn);
     const answer_qid = deferring.question_id orelse return error.CallNotDeferred;
     try std.testing.expect(!call_probe.returned);
 
@@ -3072,7 +3081,11 @@ test "L17 site 2: a stored .promised target re-resolving to an IMPORT is served 
     var deferring = DeferringService{};
     const token = try host.mintToken(allocator, "l17-promised-receiverhosted");
     defer allocator.free(token);
-    const service_import = try stageSite2Provision(&vat, &host, &deferring, token, 91);
+    // Declared here, not inside the helper: they back an outstanding question
+    // that `vat.deinitAll()` cancels, so they must outlive it.
+    var bprobe = CapImportProbe{};
+    var call_probe = TolerantCall{};
+    const service_import = try stageSite2Provision(&vat, &host, &deferring, &bprobe, &call_probe, token, 91);
 
     // SITE 2 takes NO Provide-time pin: the target was `.promised` at
     // registration (there was no import to pin yet), so the entry carries
@@ -3150,7 +3163,9 @@ test "L17 witness: a stored .promised target whose re-resolved import has DIED s
     var deferring = DeferringService{};
     const token = try host.mintToken(allocator, "l17-vanished-import");
     defer allocator.free(token);
-    const service_import = try stageSite2Provision(&vat, &host, &deferring, token, 94);
+    var bprobe = CapImportProbe{};
+    var call_probe = TolerantCall{};
+    const service_import = try stageSite2Provision(&vat, &host, &deferring, &bprobe, &call_probe, token, 94);
 
     // The target import dies for real BEFORE the Accept: site 2 has no
     // Provide-time pin (by design — the answer's cap was still a promise at
