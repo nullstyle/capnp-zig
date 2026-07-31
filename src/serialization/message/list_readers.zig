@@ -1,5 +1,6 @@
 const std = @import("std");
 const bounds = @import("bounds.zig");
+const element_list = @import("element_list.zig");
 
 /// Returns the unsigned integer type used for reading/writing a given type
 /// on the wire. For float types, this is the same-sized unsigned integer;
@@ -362,16 +363,90 @@ pub fn define(
                 return self.message.segments[list.segment_id][list.content_offset .. list.content_offset + total_bytes];
             }
 
-            /// Resolve a list pointer at `index`, validate its element size,
-            /// bounds-check the content, and return a 4-field reader struct.
-            fn readPrimitiveList(
+            /// Resolve the list pointer at `index` for reading as a list of
+            /// `expected_element_size` elements, accepting both a list pointer
+            /// that already carries that element size and — per the inverse of
+            /// the list-upgrade rule — a struct list (C = 7) whose elements are
+            /// wide enough to satisfy the request. The nested half of what
+            /// `StructReader.resolveElementListAt` does for a struct's own
+            /// fields, sharing the very same resolver.
+            ///
+            /// The five-field literal is deliberate: every reader built here
+            /// carries a stride, and `stride_bytes` defaults to 0 ("natural
+            /// width"), so a four-field literal would compile and read a
+            /// downgraded struct list at the wrong stride from element 1 on.
+            fn readElementList(
                 self: PointerListReader,
                 comptime ReaderType: type,
                 index: u32,
                 expected_element_size: u3,
             ) !ReaderType {
+                const ptr = try self.readPointer(index);
+                const view = try element_list.resolve(
+                    self.message,
+                    self.segment_id,
+                    ptr.pos,
+                    ptr.word,
+                    expected_element_size,
+                    list_content_bytes,
+                );
+                return .{
+                    .message = self.message,
+                    .segment_id = view.segment_id,
+                    .elements_offset = view.elements_offset,
+                    .element_count = view.element_count,
+                    .stride_bytes = view.stride_bytes,
+                };
+            }
+
+            pub fn getU8List(self: PointerListReader, index: u32) !U8ListReader {
+                return self.readElementList(U8ListReader, index, 2);
+            }
+
+            pub fn getI8List(self: PointerListReader, index: u32) !I8ListReader {
+                return self.readElementList(I8ListReader, index, 2);
+            }
+
+            pub fn getU16List(self: PointerListReader, index: u32) !U16ListReader {
+                return self.readElementList(U16ListReader, index, 3);
+            }
+
+            pub fn getI16List(self: PointerListReader, index: u32) !I16ListReader {
+                return self.readElementList(I16ListReader, index, 3);
+            }
+
+            pub fn getU32List(self: PointerListReader, index: u32) !U32ListReader {
+                return self.readElementList(U32ListReader, index, 4);
+            }
+
+            pub fn getI32List(self: PointerListReader, index: u32) !I32ListReader {
+                return self.readElementList(I32ListReader, index, 4);
+            }
+
+            pub fn getF32List(self: PointerListReader, index: u32) !F32ListReader {
+                return self.readElementList(F32ListReader, index, 4);
+            }
+
+            pub fn getU64List(self: PointerListReader, index: u32) !U64ListReader {
+                return self.readElementList(U64ListReader, index, 5);
+            }
+
+            pub fn getI64List(self: PointerListReader, index: u32) !I64ListReader {
+                return self.readElementList(I64ListReader, index, 5);
+            }
+
+            pub fn getF64List(self: PointerListReader, index: u32) !F64ListReader {
+                return self.readElementList(F64ListReader, index, 5);
+            }
+
+            /// The one primitive width that stays strict, and the one reader
+            /// with no `stride_bytes` field to carry: C++ hard-fails reading a
+            /// struct list as a bit list ("upgrading boolean lists to structs is
+            /// no longer supported"), so relaxing this would diverge from the
+            /// reference rather than converge with it.
+            pub fn getBoolList(self: PointerListReader, index: u32) !BoolListReader {
                 const list = try self.readList(index);
-                if (list.element_size != expected_element_size) return error.InvalidPointer;
+                if (list.element_size != 1) return error.InvalidPointer;
                 const total_bytes = try list_content_bytes(list.element_size, list.element_count);
                 try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
                 return .{
@@ -380,50 +455,6 @@ pub fn define(
                     .elements_offset = list.content_offset,
                     .element_count = list.element_count,
                 };
-            }
-
-            pub fn getU8List(self: PointerListReader, index: u32) !U8ListReader {
-                return self.readPrimitiveList(U8ListReader, index, 2);
-            }
-
-            pub fn getI8List(self: PointerListReader, index: u32) !I8ListReader {
-                return self.readPrimitiveList(I8ListReader, index, 2);
-            }
-
-            pub fn getU16List(self: PointerListReader, index: u32) !U16ListReader {
-                return self.readPrimitiveList(U16ListReader, index, 3);
-            }
-
-            pub fn getI16List(self: PointerListReader, index: u32) !I16ListReader {
-                return self.readPrimitiveList(I16ListReader, index, 3);
-            }
-
-            pub fn getU32List(self: PointerListReader, index: u32) !U32ListReader {
-                return self.readPrimitiveList(U32ListReader, index, 4);
-            }
-
-            pub fn getI32List(self: PointerListReader, index: u32) !I32ListReader {
-                return self.readPrimitiveList(I32ListReader, index, 4);
-            }
-
-            pub fn getF32List(self: PointerListReader, index: u32) !F32ListReader {
-                return self.readPrimitiveList(F32ListReader, index, 4);
-            }
-
-            pub fn getU64List(self: PointerListReader, index: u32) !U64ListReader {
-                return self.readPrimitiveList(U64ListReader, index, 5);
-            }
-
-            pub fn getI64List(self: PointerListReader, index: u32) !I64ListReader {
-                return self.readPrimitiveList(I64ListReader, index, 5);
-            }
-
-            pub fn getF64List(self: PointerListReader, index: u32) !F64ListReader {
-                return self.readPrimitiveList(F64ListReader, index, 5);
-            }
-
-            pub fn getBoolList(self: PointerListReader, index: u32) !BoolListReader {
-                return self.readPrimitiveList(BoolListReader, index, 1);
             }
 
             pub fn getStructList(self: PointerListReader, index: u32) !StructListReader {
@@ -445,7 +476,7 @@ pub fn define(
             }
 
             pub fn getPointerList(self: PointerListReader, index: u32) !PointerListReader {
-                return self.readPrimitiveList(PointerListReader, index, 6);
+                return self.readElementList(PointerListReader, index, 6);
             }
 
             pub fn getInlineCompositeList(self: PointerListReader, index: u32) !InlineCompositeListType {

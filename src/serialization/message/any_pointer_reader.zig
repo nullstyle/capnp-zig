@@ -1,5 +1,6 @@
 const std = @import("std");
 const bounds = @import("bounds.zig");
+const element_list = @import("element_list.zig");
 
 inline fn checkedSlice(data: []const u8, offset: usize, size: usize) error{OutOfBounds}![]const u8 {
     const end = std.math.add(usize, offset, size) catch return error.OutOfBounds;
@@ -111,14 +112,36 @@ pub fn define(
                 return checkedSlice(self.message.segments[list.segment_id], list.content_offset, total_bytes);
             }
 
+            /// Returns the pointer list this pointer refers to.
+            ///
+            /// Accepts both a pointer list (C = 6) and — per the inverse of the
+            /// list-upgrade rule — a struct list (C = 7) with at least one
+            /// pointer per element, which then reads at the struct's stride
+            /// starting from each element's pointer section. Shares the resolver
+            /// with `StructReader.readPointerList` and
+            /// `PointerListReader.getPointerList`.
+            ///
+            /// A NULL pointer stays `error.InvalidPointer`, as before: `getList`
+            /// used to synthesize an empty C = 0 list for it, which then failed
+            /// the element-size check.
             pub fn getPointerList(self: AnyPointerReader) !PointerListReaderType {
-                const list = try self.getList();
-                if (list.element_size != 6) return error.InvalidPointer;
+                const view = try element_list.resolve(
+                    self.message,
+                    self.segment_id,
+                    self.pointer_pos,
+                    self.pointer_word,
+                    6,
+                    element_list.listContentBytes,
+                );
+                // Five fields, not four: `stride_bytes` defaults to 0 ("natural
+                // width"), so dropping it here would silently read a downgraded
+                // struct list eight bytes apart instead of one struct apart.
                 return .{
                     .message = self.message,
-                    .segment_id = list.segment_id,
-                    .elements_offset = list.content_offset,
-                    .element_count = list.element_count,
+                    .segment_id = view.segment_id,
+                    .elements_offset = view.elements_offset,
+                    .element_count = view.element_count,
+                    .stride_bytes = view.stride_bytes,
                 };
             }
 

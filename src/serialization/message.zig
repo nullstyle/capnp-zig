@@ -8,6 +8,7 @@ const any_pointer_builder_module = @import("message/any_pointer_builder.zig");
 const struct_builder_module = @import("message/struct_builder.zig");
 const clone_any_pointer_module = @import("message/clone_any_pointer.zig");
 const typed_list_helpers_module = @import("message/typed_list_helpers.zig");
+const element_list = @import("message/element_list.zig");
 
 const parse_diagnostics_enabled = if (@hasField(std.Options, "capnp_message_parse_diagnostics"))
     std.options.capnp_message_parse_diagnostics
@@ -151,20 +152,14 @@ fn requireStrictText(text_data: []const u8) ![]const u8 {
     return text;
 }
 
+/// Kept as a real function in this file rather than an alias for
+/// `element_list.listContentBytes`: its fully-qualified name is rendered into
+/// the frozen `docs/api-snapshot.txt` (it is a `define()` argument, and that
+/// argument list appears inside every generated reader's type name), so
+/// `const listContentBytes = element_list.listContentBytes;` would move ~117
+/// snapshot lines for nothing.
 fn listContentBytes(element_size: u3, element_count: u32) !usize {
-    const count = @as(u64, element_count);
-    const total: u64 = switch (element_size) {
-        0 => 0,
-        1 => (count + 7) / 8,
-        2 => count,
-        3 => count * 2,
-        4 => count * 4,
-        5 => count * 8,
-        6 => count * 8,
-        else => return error.InvalidPointer,
-    };
-    if (total > std.math.maxInt(usize)) return error.ListTooLarge;
-    return @as(usize, @intCast(total));
+    return element_list.listContentBytes(element_size, element_count);
 }
 
 fn listContentWords(element_size: u3, element_count: u32) !usize {
@@ -467,77 +462,10 @@ pub const StructListLayout = struct {
 /// Per-element view of a list being read as a list of primitives or pointers.
 ///
 /// Deliberately not public: it exists only to let one resolver serve every
-/// `StructReader.read*List` entry point, and every field it carries is already
-/// reachable through the readers those entry points return.
-const ElementListView = struct {
-    segment_id: u32,
-    /// Byte offset of element 0's *first read unit* — the element itself for a
-    /// primitive list, the element's first pointer word for a pointer list.
-    elements_offset: usize,
-    element_count: u32,
-    /// Distance between consecutive elements in BYTES, or 0 for the natural,
-    /// tightly packed stride of the element type.
-    stride_bytes: u32,
-};
-
-/// The inverse of the list-upgrade rule: decode a correctly encoded struct list
-/// (element size C = 7) as the primitive or pointer list an older schema
-/// declares for the same field.
-///
-/// The forward rule (`StructListLayout.fromUpgradedList`) lets a peer that
-/// evolved `List(UInt32)` into `List(SomeStruct)` read old data. This is the
-/// direction the *old* binary needs: it must read the struct list the evolved
-/// peer now writes. Both reference implementations accept it, so rejecting it
-/// rejects messages every other implementation reads.
-///
-/// The preconditions are the amplification mitigation, not politeness, and are
-/// taken from the C++ reference (`layout.c++`, `readListPointer`, the
-/// `checkElementSize` switch over `expectedElementSize`): a primitive list needs
-/// a non-empty data section, a pointer list needs at least one pointer, and a
-/// bit list is never satisfiable from a struct list. Without them a struct list
-/// carrying no data at all would synthesize readable elements for free.
-///
-/// `data_words >= 1` also means every element carries at least eight bytes of
-/// data, so no primitive read — eight bytes wide at most — can reach past an
-/// element's data section into its pointers. That is why C++ checks whole words
-/// here rather than comparing against the requested element width, and why this
-/// does the same.
-fn downgradeInlineCompositeList(
-    list: InlineCompositeList,
-    expected_element_size: u3,
-) !ElementListView {
-    const data_bytes = @as(u32, list.data_words) * 8;
-    const elements_offset = switch (expected_element_size) {
-        // C++ hard-fails this one ("upgrading boolean lists to structs is no
-        // longer supported"); matching it is convergence, not politeness.
-        1 => return error.InvalidPointer,
-        2, 3, 4, 5 => blk: {
-            if (list.data_words == 0) return error.InvalidPointer;
-            break :blk list.elements_offset;
-        },
-        // An element's pointer section starts after its data section. This
-        // `+ data_bytes` is exactly what go-capnp's `TextList.At` omits (while
-        // its own `PointerList.At` applies it), so go reads the wrong word
-        // here; the C++ reference is the only cross-check for this arm.
-        6 => blk: {
-            if (list.pointer_words == 0) return error.InvalidPointer;
-            break :blk try checkedAddUsize(list.elements_offset, @as(usize, data_bytes));
-        },
-        // Void and struct lists never route through here: `readVoidList` and
-        // `readStructList` have their own paths. Answered defensively rather
-        // than with `unreachable` so a future caller cannot turn a reachable
-        // path into undefined behavior.
-        0, 7 => return error.InvalidPointer,
-    };
-    return .{
-        .segment_id = list.segment_id,
-        .elements_offset = elements_offset,
-        .element_count = list.element_count,
-        // The struct's total size, which is what separates consecutive
-        // elements. Non-zero: both surviving arms require a non-empty section.
-        .stride_bytes = data_bytes + @as(u32, list.pointer_words) * 8,
-    };
-}
+/// `read*List` entry point on `StructReader`, `PointerListReader` and
+/// `AnyPointerReader`, and every field it carries is already reachable through
+/// the readers those entry points return.
+const ElementListView = element_list.ElementListView;
 
 /// A capability pointer index, used in the RPC layer to reference entries
 /// in the message's capability table.
@@ -1851,10 +1779,9 @@ pub const StructReader = struct {
     /// size, and — per the inverse of the list-upgrade rule — a struct list
     /// (C = 7) whose elements are wide enough to satisfy the request.
     ///
-    /// Text, Data and `List(Bool)` deliberately do not come through here: the
-    /// C++ reference requires `ElementSize::BYTE` for the blobs and hard-fails
-    /// composite-as-bit, so relaxing those would diverge from the reference
-    /// rather than converge with it.
+    /// The decision and the decoding live in `element_list.resolve`, shared
+    /// verbatim with the nested (`PointerListReader`) and type-erased
+    /// (`AnyPointerReader`) readers; this only locates the pointer word.
     fn resolveElementListAt(
         self: StructReader,
         pointer_index: usize,
@@ -1869,49 +1796,14 @@ pub const StructReader = struct {
         if (pointer_word == 0) return error.InvalidPointer;
 
         const absolute_pointer_pos = try self.absolutePointerPos(pointer_offset);
-
-        // The probe — not `resolveListPointer` — decides whether this is an
-        // inline-composite list, for the same reason the upgrade direction uses
-        // it: for a double-far in the layout this builder writes,
-        // `resolvePointer` yields the struct *tag* word (pointer type 0), so
-        // `resolveListPointer` would report a valid struct list as a non-list.
-        //
-        // A probe *failure* is deliberately swallowed rather than propagated:
-        // the plain path below then produces exactly the error it produced
-        // before this rule existed, so no malformed pointer changes diagnosis.
-        if (self.message.structListIsInlineComposite(pointer_word, 3) catch false) {
-            // Must go through the inline-composite resolver, never
-            // `resolveListPointer`: for C = 7 the latter reports the pointer's
-            // D field (a WORD count, not an element count) and a content offset
-            // pointing at the TAG word rather than at the elements, which
-            // yields a reader with the wrong length anchored one word early —
-            // no error, just wrong data.
-            const list = self.message.resolveInlineCompositeList(
-                self.segment_id,
-                absolute_pointer_pos,
-                pointer_word,
-            ) catch |err| switch (err) {
-                // Folded into the plain path's error name on purpose: to a
-                // caller asking for `List(UInt32)` this is an unusable list
-                // pointer, and a new name would widen a frozen error set.
-                error.InvalidInlineCompositePointer => return error.InvalidPointer,
-                else => |e| return e,
-            };
-            return downgradeInlineCompositeList(list, expected_element_size);
-        }
-
-        const list = try self.message.resolveListPointer(self.segment_id, absolute_pointer_pos, pointer_word);
-        if (list.element_size != expected_element_size) return error.InvalidPointer;
-
-        const total_bytes = try listContentBytes(list.element_size, list.element_count);
-        try bounds.checkListContentBounds(self.message.segments, list.segment_id, list.content_offset, total_bytes);
-
-        return .{
-            .segment_id = list.segment_id,
-            .elements_offset = list.content_offset,
-            .element_count = list.element_count,
-            .stride_bytes = 0,
-        };
+        return element_list.resolve(
+            self.message,
+            self.segment_id,
+            absolute_pointer_pos,
+            pointer_word,
+            expected_element_size,
+            listContentBytes,
+        );
     }
 
     /// Build a 4-field list reader plus its stride from a resolved view.

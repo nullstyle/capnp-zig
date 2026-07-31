@@ -2591,18 +2591,40 @@ test "struct-list downgrade: Bool, Text and Data stay strict" {
     try testing.expectError(error.InvalidTextPointer, root.readText(0));
 }
 
-test "struct-list downgrade: the nested and type-erased readers still refuse" {
-    // Fence for the limitation docs/supported-surface.md records: the downgrade
-    // is implemented on a struct's own fields, not one level down. A nested
-    // `List(List(UInt32))` element or a type-erased pointer keeps rejecting a
-    // struct list. If this ever goes green, that bullet needs rewriting.
+// ---------------------------------------------------------------------------
+// Inverse list-upgrade rule: the NESTED and TYPE-ERASED readers
+// ---------------------------------------------------------------------------
+//
+// The same decode, one level down. `PointerListReader.getU32List` reaches the
+// element of a `List(List(UInt32))`, and `AnyPointerReader.getPointerList` the
+// type-erased equivalent; both used to reject a struct list where a struct's
+// own field accepted it. All three surfaces now share one resolver
+// (`message/element_list.zig`), which is the point: a downgrade implemented
+// per-surface is how one of them ends up silently wrong.
+//
+// No builder API produces a nested list-of-lists fixture directly, so these
+// synthesize the outer `PointerListReader` over the root struct's own pointer
+// section. The root struct has no data words, so its first pointer sits at
+// segment offset 8. The `getStructList` assertion in the first test is what
+// proves that offset addresses the list pointer and not some other word.
+
+test "struct-list downgrade: a nested List(List(UInt32)) element reads a struct list" {
+    // Two data words per element, so the pointer's word count (6) and the real
+    // element count (3) differ: a reader resolved through the plain list
+    // pointer would report six elements and start one word early, at the tag.
     var builder = message.MessageBuilder.init(testing.allocator);
     defer builder.deinit();
 
     var root_builder = try builder.allocateStruct(0, 1);
-    var list_builder = try root_builder.writeStructList(0, 2, 1, 0);
-    var first = try list_builder.get(0);
-    first.writeU32(0, 7);
+    var list_builder = try root_builder.writeStructList(0, 3, 2, 0);
+    const expected = [_]u32{ 0x11111111, 0x22222222, 0x33333333 };
+    for (expected, 0..) |value, i| {
+        var element = try list_builder.get(@intCast(i));
+        element.writeU32(0, value);
+        // The element's second data word. Nothing may ever surface it as an
+        // element of the downgraded list.
+        element.writeU32(8, 0xDEADBEEF);
+    }
 
     const bytes = try builder.toBytes();
     defer testing.allocator.free(bytes);
@@ -2610,26 +2632,186 @@ test "struct-list downgrade: the nested and type-erased readers still refuse" {
     var msg = try message.Message.init(testing.allocator, bytes, .{});
     defer msg.deinit();
 
-    const root = try msg.getRootStruct();
-
-    // The root struct has no data words, so its single pointer sits at segment
-    // offset 8 — read it as a one-element pointer list to reach the nested
-    // getters, which no builder API produces a fixture for directly.
     const nested = message.PointerListReader{
         .message = &msg,
         .segment_id = 0,
         .elements_offset = 8,
         .element_count = 1,
     };
-    try testing.expectError(error.InvalidPointer, nested.getU32List(0));
-    // ...while the struct-list view of the very same pointer works, which is
-    // what proves the fixture addresses the list pointer and not some other
-    // word.
-    try testing.expectEqual(@as(u32, 7), (try (try nested.getStructList(0)).get(0)).readU32(0));
 
-    const any = try root.readAnyPointer(0);
-    try testing.expectEqual(@as(u3, 7), (try any.getList()).element_size);
+    const list = try nested.getU32List(0);
+    // Three elements, not the six-word content size the pointer's D field
+    // carries for an inline-composite list.
+    try testing.expectEqual(@as(u32, 3), list.len());
+    // Values before metadata, so a stride regression surfaces as wrong data
+    // from element 1 onward rather than only as a wrong `stride_bytes`.
+    for (expected, 0..) |want, i| {
+        try testing.expectEqual(want, try list.get(@intCast(i)));
+    }
+    // Elements are separated by the whole struct, not by the four bytes being
+    // read out of each one.
+    try testing.expectEqual(@as(u32, 16), list.stride_bytes);
+    try testing.expectError(error.IndexOutOfBounds, list.get(3));
+
+    // Every width sees the same stride, including the signed view.
+    const signed = try nested.getI32List(0);
+    try testing.expectEqual(@as(u32, 16), signed.stride_bytes);
+    try testing.expectEqual(@as(i32, 0x22222222), try signed.get(1));
+    try testing.expectEqual(@as(u64, 0x11111111), try (try nested.getU64List(0)).get(0));
+    try testing.expectEqual(@as(u16, 0x2222), try (try nested.getU16List(0)).get(1));
+    try testing.expectEqual(@as(u8, 0x33), try (try nested.getU8List(0)).get(2));
+
+    // The forward direction of the very same pointer is unchanged — and this
+    // is what proves offset 8 addresses the list pointer.
+    try testing.expectEqual(@as(u32, 0x22222222), (try (try nested.getStructList(0)).get(1)).readU32(0));
+}
+
+test "struct-list downgrade: a nested pointer list reads a struct list" {
+    // The pointer arm one level down. Each element's data word is all-ones, so
+    // a reader that failed to skip the data section would try to decode
+    // 0xFFFF... as a pointer rather than quietly returning the wrong text.
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeStructList(0, 2, 1, 1);
+    var first = try list_builder.get(0);
+    first.writeU64(0, 0xFFFFFFFFFFFFFFFF);
+    try first.writeText(0, "alpha");
+    var second = try list_builder.get(1);
+    second.writeU64(0, 0xFFFFFFFFFFFFFFFF);
+    try second.writeText(0, "beta");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const nested = message.PointerListReader{
+        .message = &msg,
+        .segment_id = 0,
+        .elements_offset = 8,
+        .element_count = 1,
+    };
+
+    const pointers = try nested.getPointerList(0);
+    try testing.expectEqual(@as(u32, 2), pointers.len());
+    try testing.expectEqualStrings("alpha", try pointers.getText(0));
+    try testing.expectEqualStrings("beta", try pointers.getText(1));
+    try testing.expectEqual(@as(u32, 16), pointers.stride_bytes);
+}
+
+test "struct-list downgrade: the type-erased pointer list reads a struct list" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeStructList(0, 2, 1, 1);
+    var first = try list_builder.get(0);
+    first.writeU64(0, 0xFFFFFFFFFFFFFFFF);
+    try first.writeText(0, "alpha");
+    var second = try list_builder.get(1);
+    second.writeU64(0, 0xFFFFFFFFFFFFFFFF);
+    try second.writeText(0, "beta");
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const any = try (try msg.getRootStruct()).readAnyPointer(0);
+
+    // `getList` is the raw resolution and still reports the pointer verbatim:
+    // element size 7, and a D field of 4 that is a WORD count, not the two
+    // elements actually present. Reading that as the list is precisely the
+    // silent-wrong-data failure the downgrade must not have.
+    const raw = try any.getList();
+    try testing.expectEqual(@as(u3, 7), raw.element_size);
+    try testing.expectEqual(@as(u32, 4), raw.element_count);
+
+    const pointers = try any.getPointerList();
+    try testing.expectEqual(@as(u32, 2), pointers.len());
+    try testing.expectEqualStrings("alpha", try pointers.getText(0));
+    try testing.expectEqualStrings("beta", try pointers.getText(1));
+    try testing.expectEqual(@as(u32, 16), pointers.stride_bytes);
+}
+
+test "struct-list downgrade: a nested/type-erased pointer-only list is not a primitive list" {
+    // The same precondition as on a struct's own fields: without the data-words
+    // check a struct list carrying no data at all would synthesize primitive
+    // elements for free, and hand back pointer words as if they were data.
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeStructList(0, 3, 0, 1);
+    for (0..3) |i| {
+        var element = try list_builder.get(@intCast(i));
+        try element.writeText(0, "pointer-only");
+    }
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const nested = message.PointerListReader{
+        .message = &msg,
+        .segment_id = 0,
+        .elements_offset = 8,
+        .element_count = 1,
+    };
+
+    try testing.expectError(error.InvalidPointer, nested.getU8List(0));
+    try testing.expectError(error.InvalidPointer, nested.getU16List(0));
+    try testing.expectError(error.InvalidPointer, nested.getU32List(0));
+    try testing.expectError(error.InvalidPointer, nested.getU64List(0));
+
+    // ...but the pointer arm of the same list is legitimate, on both surfaces.
+    try testing.expectEqualStrings("pointer-only", try (try nested.getPointerList(0)).getText(2));
+    const any = try (try msg.getRootStruct()).readAnyPointer(0);
+    try testing.expectEqualStrings("pointer-only", try (try any.getPointerList()).getText(2));
+}
+
+test "struct-list downgrade: nested Bool and Data stay strict, data-only is not a pointer list" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root_builder = try builder.allocateStruct(0, 1);
+    var list_builder = try root_builder.writeStructList(0, 2, 1, 0);
+    var first = try list_builder.get(0);
+    first.writeU64(0, 0x1122334455667788);
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+
+    const nested = message.PointerListReader{
+        .message = &msg,
+        .segment_id = 0,
+        .elements_offset = 8,
+        .element_count = 1,
+    };
+    const any = try (try msg.getRootStruct()).readAnyPointer(0);
+
+    // Without the pointer-count precondition these would hand a data word to
+    // the pointer decoder.
+    try testing.expectError(error.InvalidPointer, nested.getPointerList(0));
     try testing.expectError(error.InvalidPointer, any.getPointerList());
+
+    // C++ hard-fails composite-as-bit and requires ElementSize::BYTE for both
+    // blob types. Relaxing any of these would diverge from the reference, not
+    // converge with it — one level down exactly as on a struct's own fields.
+    try testing.expectError(error.InvalidPointer, nested.getBoolList(0));
+    try testing.expectError(error.InvalidPointer, nested.getData(0));
+    try testing.expectError(error.InvalidTextPointer, nested.getText(0));
+    try testing.expectError(error.InvalidPointer, any.getData());
+    try testing.expectError(error.InvalidTextPointer, any.getText());
 }
 
 test "list upgrade/downgrade: both directions of the same field agree" {

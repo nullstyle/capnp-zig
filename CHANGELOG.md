@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The inverse list-upgrade rule now reaches the nested and type-erased list
+  readers.** v0.7.0 taught `StructReader.read*List` to decode a correctly
+  encoded struct list (element size C = 7) as the `List(UInt32)` / `List(Text)`
+  an older schema declares, but stopped at a struct's own fields; one level down
+  (`PointerListReader.getU8/16/32/64List`, `getI*`, `getF*`, `getPointerList` —
+  the accessors that reach an element of a `List(List(T))`) and through
+  `AnyPointerReader.getPointerList`, the same wire bytes still failed with
+  `error.InvalidPointer`. All three surfaces now share one resolver
+  (`src/serialization/message/element_list.zig`), which is the point: a
+  downgrade implemented per-surface is how one of them ends up silently wrong.
+
+  Preconditions are unchanged and now apply identically everywhere, straight
+  from the C++ reference (`layout.c++`, `readListPointer`): a primitive list
+  needs a non-empty data section, a pointer list needs at least one pointer, a
+  struct list is never readable as `List(Bool)`, and Text and Data still require
+  `ElementSize::BYTE`. The pointer arm adds the element's data-section length to
+  the base so it reads the element's *pointer* section — the `+ dataSize`
+  go-capnp's `TextList.At` omits while its own `PointerList.At` applies it, so
+  the C++ reference is again the only cross-check for that arm.
+
+  Both silent-wrong-data traps were live on the new paths and are closed by
+  routing through the inline-composite resolution rather than
+  `resolveListPointer`: for C = 7 the latter reports the pointer's D field (a
+  WORD count, not an element count) and a content offset addressing the TAG
+  word. Ablation, on a fixture with two data words per element so the two counts
+  differ: nested `getU32List` reports `expected 3, found 6` and reads the tag as
+  data (`expected 100, found 12`). The stride ablation (natural element width
+  instead of the whole struct) turns 9 tests red, including
+  `expected 572662306, found 0` on the nested reader's second element. The
+  precondition ablation turns a pointer-only struct list into readable `u8` data
+  on both the struct-field and nested surfaces.
+
+  **No `docs/api-snapshot.txt` drift.** The shared resolver is an internal
+  module imported directly, not a new `pub` declaration and not a seventh
+  `define()` parameter — the latter renders inside every generated reader's type
+  name and would have rewritten ~80 lines of the frozen surface for an internal
+  refactor. `error.InvalidInlineCompositePointer` stays folded into
+  `error.InvalidPointer`, and `listContentBytes` is threaded to the resolver by
+  each caller so `PointerListReader`'s eleven `get*List` signatures keep their
+  existing `anyerror!` rendering rather than silently tightening to a named set.
+
+  Still open, and now the only bullet on this rule in
+  `docs/supported-surface.md`: `readVoidList` resolves through the plain list
+  pointer, so a struct list read as `List(Void)` reports the word count as its
+  element count. C++ accepts `ElementSize::VOID` against an inline-composite
+  list. `test-message` 96 → 100.
+
 ## [0.7.0] - 2026-07-31
 
 Level-3 three-party hosting is complete: a vat can now host a handoff whose

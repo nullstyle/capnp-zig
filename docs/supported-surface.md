@@ -69,7 +69,7 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 | Enums | supported (exhaustive) | Generated as exhaustive `enum(u16)`; an unknown/out-of-range ordinal is rejected with `error.InvalidEnumValue` (see caveat). |
 | Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. |
 | Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. |
-| Nested lists `List(List(T))` | partial | Read via the untyped `message.PointerListReader`; no typed wrapper. Writable only when the inner element is a primitive — `List(List(Text))`, `List(List(Struct))`, and deeper nesting are readable but **not** writable. |
+| Nested lists `List(List(T))` | partial | Read via the untyped `message.PointerListReader`; no typed wrapper. Its inner-list accessors honour both directions of the list-upgrade rule, so an inner list reads back at the element size the schema declares regardless of which one the peer wrote. Writable only when the inner element is a primitive — `List(List(Text))`, `List(List(Struct))`, and deeper nesting are readable but **not** writable. |
 | `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | partial | All collapse to one untyped `AnyPointerReader` / `AnyPointerBuilder` accessor (the sub-variant is erased during parsing). A *named interface* type does get a typed capability accessor. |
 | Generics / parameterized types / brands | unsupported | Type parameters and brand bindings are silently erased to `AnyPointer` — no error, no specialization. e.g. `Persistent(SturdyRef, Owner)` exposes its parameter fields as `AnyPointer`. |
 | Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. |
@@ -463,23 +463,27 @@ cooperating peer.
   with their own exception `Return`, because this vat never observes the results
   it would need in order to resolve them.
 
-- **Reading a struct list as a primitive or pointer list works on a struct's own
-  fields, not through the nested/type-erased list readers.** Both directions of
-  the list-upgrade rule are implemented for `StructReader.read*List`: a list of
-  any element size except one bit decodes as a struct list (so a peer that
-  evolved `List(UInt32)` into `List(SomeStruct)` reads old data), and a
-  correctly-encoded struct list decodes back as `List(UInt8/16/32/64)`,
-  `List(Text)` or a pointer list (so a binary still on the old schema reads what
-  the evolved peer writes). Element preconditions follow the C++ reference: a
-  primitive list needs a non-empty data section, a pointer list needs at least
-  one pointer, a struct list is never readable as `List(Bool)`, and Text and
-  Data still require byte elements. `U8ListReader.slice` fails with
-  `error.InvalidPointer` on such a list — its bytes are one struct apart, so no
-  contiguous slice holds them. What is *not* implemented is the same
-  struct-list-to-primitive direction one level down: `PointerListReader.getU32List`
-  and friends, and `AnyPointerReader.getPointerList`, still reject a struct list
-  with `error.InvalidPointer`. That affects nested lists (`List(List(UInt32))`)
-  and type-erased access, not ordinary fields.
+- **`StructReader.readVoidList` reports a struct list's word count, not its
+  element count.** Both directions of the list-upgrade rule are implemented, on
+  a struct's own fields *and* one level down: a list of any element size except
+  one bit decodes as a struct list (so a peer that evolved `List(UInt32)` into
+  `List(SomeStruct)` reads old data), and a correctly-encoded struct list
+  decodes back as `List(UInt8/16/32/64)`, `List(Text)` or a pointer list (so a
+  binary still on the old schema reads what the evolved peer writes). The
+  inverse direction is served by one shared resolver, so
+  `PointerListReader.getU32List` and friends (nested `List(List(UInt32))`) and
+  `AnyPointerReader.getPointerList` (type-erased access) accept exactly what
+  `StructReader.read*List` accepts. Element preconditions follow the C++
+  reference on every surface: a primitive list needs a non-empty data section, a
+  pointer list needs at least one pointer, a struct list is never readable as
+  `List(Bool)`, and Text and Data still require byte elements.
+  `U8ListReader.slice` fails with `error.InvalidPointer` on such a list — its
+  bytes are one struct apart, so no contiguous slice holds them. The one
+  remaining gap is `readVoidList`, which resolves through the plain list pointer
+  only: handed a struct list it reports the pointer's D field (a word count)
+  as the element count. C++ accepts `ElementSize::VOID` against an
+  inline-composite list, so a `List(Void)` field that a peer evolved into a
+  struct list reads back with the wrong length.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is
