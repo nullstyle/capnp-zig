@@ -593,16 +593,18 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     tap.ok(true, "A received the introduced third-party cap from B");
 
     // First use forces the lazy Accept; the host must refuse it fail-closed.
-    // Observe the Accept's own Return via whenResolved() (the unknown-token
-    // pattern) rather than a pipelined call: a call pipelined on the refused
-    // Accept question is a separate surface (empirically the host never
-    // answers it — a known gap), while whenResolved() settles on the Accept
-    // exception itself.
+    // Observe the refusal THROUGH A PIPELINED CALL: rpc.c++ sends the Call on
+    // the Accept question's promisedAnswer without waiting for the Accept's
+    // Return, so the host must answer that Call with (a copy of) the Accept's
+    // own exception — the broken-pipeline rule. This wait HUNG FOREVER when
+    // the host dropped calls pipelined on an already-failed answer (they
+    // parked in its pending-promise queue with no Return ever coming); this
+    // probe is the cross-impl regression proof for that fix.
     bool threw = false;
     bool named = false;
     kj::String desc = kj::str("<no exception>");
     KJ_IF_SOME(e, kj::runCatchingExceptions([&]() {
-      accepted.whenResolved().wait(ws);
+      accepted.getNumberRequest().send().wait(ws);
     })) {
       threw = true;
       desc = kj::str(e.getDescription());

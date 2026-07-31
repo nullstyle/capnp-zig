@@ -2742,6 +2742,110 @@ test "L10: a cross-peer Accept whose provide target resolved to an IMPORT fails 
     try harness.expectNoImport(&vat.owner, vat.carol_import);
 }
 
+// The recipient does not wait for the Accept's Return before using the
+// capability — it PIPELINES a Call on the Accept question (rpc.c++ always
+// does; the e2e pipelined-provide scenarios hit exactly this). When the
+// Accept is refused, that Call arrives AFTER the refusal already went out, so
+// the queued-call drain in sendReturnException ran before there was anything
+// to drain. Without the failed_answers record the Call parked in
+// pending_promises forever and the C++ recipient hung on a Return that never
+// came. Spec rule: every Call gets exactly one Return; a call pipelined on a
+// failed answer gets (a copy of) that answer's exception.
+test "L10: a Call pipelined on a refused Accept gets the refusal exception, not silence" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    // Identical arrangement to the first L10 test: a Provide whose stored
+    // `.local` target decodes to receiverHosted, so the un-embargoed Accept
+    // is refused by name in serveProvisionOnPeer.
+    var introducer = Introducer{};
+    _ = try vat.owner.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+    var iprobe = CapImportProbe{};
+    _ = try vat.remote.sendBootstrap(&iprobe, CapImportProbe.onReturn);
+    const introducer_import = iprobe.import_id orelse return error.IntroducerBootstrapFailed;
+    var pprobe = CapImportProbe{};
+    _ = try vat.remote.sendCall(introducer_import, 0x1234_5678_9abc_def0, 0, &pprobe, null, CapImportProbe.onReturn);
+    const promise_import = pprobe.import_id orelse return error.PromiseNotImported;
+    const promise_export = introducer.promise_export_id orelse return error.PromiseNotMinted;
+    try vat.owner.resolvePromiseExportToImport(promise_export, vat.carol_import);
+
+    const token = try host.mintToken(allocator, "l10-pipelined-on-refusal");
+    defer allocator.free(token);
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const recipient = try token_msg.getRootAnyPointer();
+        const frame = try buildProvideFrame(allocator, 90, .{
+            .tag = .importedCap,
+            .imported_cap = promise_export,
+            .promised_answer = null,
+        }, recipient);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+
+    try host.injectAccept(allocator, 900, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(900));
+
+    // The pipelined Call lands after the refusal: Call{qid=901,
+    // target=promisedAnswer{900}} — the exact frame order the C++ recipient
+    // produces (Accept, then Call, with the Return in between on our side).
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(901, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID);
+        try call.setTargetPromisedAnswer(900);
+        _ = try call.initCapTableTyped(0);
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try host.peer.handleFrame(call_frame);
+    }
+
+    // THE PIN: the pipelined call is ANSWERED — with a copy of the Accept's
+    // own refusal, not parked in pending_promises waiting forever.
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(901));
+    try std.testing.expectEqualStrings(receiver_hosted_reason, host.capture.reasonFor(901).?);
+    try std.testing.expect(!host.peer.pending_promises.contains(900));
+
+    // Failed closed all the way down: no proxy, and Carol was never reached
+    // through the refused pipeline either.
+    try harness.expectNoCrossPeerProxyLinks(&vat.owner);
+    try harness.expectNoCrossPeerProxyLinks(&host.peer);
+    try std.testing.expectEqual(@as(u32, 0), vat.carol.get_number_calls);
+
+    // A compliant recipient Finishes both questions; each Finish clears its
+    // own failure record (leak-free teardown is the other half, as always).
+    try std.testing.expectEqual(@as(usize, 2), host.peer.failed_answers.count());
+    for ([_]u32{ 900, 901 }) |qid| {
+        const frame = try buildFinishFrame(allocator, qid);
+        defer allocator.free(frame);
+        try host.peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), host.peer.failed_answers.count());
+
+    // Standard L10 teardown: the provision drains on the owner's Finish and
+    // every wire reference goes home.
+    {
+        const frame = try buildFinishFrame(allocator, 90);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+    try harness.expectNoProvideState(&vat.owner);
+    try harness.expectNoProvideState(&host.peer);
+    try vat.remote.releaseImport(promise_import, 1);
+    try vat.remote.releaseImport(introducer_import, 1);
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
+}
+
 /// A Return whose single result cap is one the ANSWERING peer only IMPORTS,
 /// emitted origin-tagged as `receiverHosted` — the same encode path
 /// `sendReturnProvidedTarget` takes for a `.local` receiverHosted target.

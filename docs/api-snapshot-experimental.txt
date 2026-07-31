@@ -969,6 +969,7 @@ capnpc-zig.rpc.peer.Peer.enableRuntimeThreadChecks: fn (*rpc.peer.mod.Peer, bool
 capnpc-zig.rpc.peer.Peer.ensureExportAt: fn (*rpc.peer.mod.Peer, u32, rpc.peer.mod.Export) error{CapTableFull,OutOfMemory}!bool
 capnpc-zig.rpc.peer.Peer.entropy: field ?rpc.peer.mod.EntropySource = null
 capnpc-zig.rpc.peer.Peer.exports: field hash_map.HashMap(u32,rpc.peer.state.ExportEntry(rpc.peer.mod.Export),hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.failed_answers: field hash_map.HashMap(u32,rpc.peer.state.FailedAnswer,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.finished_early_answers: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.forgetImportRefsForHost: fn (*rpc.peer.mod.Peer, u32, u32) anyerror!void
 capnpc-zig.rpc.peer.Peer.forwarded_questions: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
@@ -1391,6 +1392,9 @@ capnpc-zig.rpc.peer.resolve: struct
 capnpc-zig.rpc.peer.seedEntropyCsprng: fn (Io) error{Canceled,EntropyUnavailable}!Random.ChaCha
 capnpc-zig.rpc.peer.shutdown_reason: const *const [18:0]u8
 capnpc-zig.rpc.peer.state.ExportEntry: fn (comptime type) type
+capnpc-zig.rpc.peer.state.FailedAnswer.ex_type: field rpc.wire.protocol.ExceptionType
+capnpc-zig.rpc.peer.state.FailedAnswer.reason: field []u8
+capnpc-zig.rpc.peer.state.FailedAnswer: struct
 capnpc-zig.rpc.peer.state.JoinKeyPart.join_id: field u32
 capnpc-zig.rpc.peer.state.JoinKeyPart.part_count: field u16
 capnpc-zig.rpc.peer.state.JoinKeyPart.part_num: field u16
