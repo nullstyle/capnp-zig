@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const state_types = @import("./peer_state_types.zig");
 const cap_table = @import("../caps/table.zig");
+const protocol = @import("../wire/protocol.zig");
 
 /// Tunable hard limits for peer-owned protocol state.
 ///
@@ -118,6 +119,19 @@ pub fn ExportEntry(comptime ExportType: type) type {
 
 pub const ResolvedAnswer = struct {
     frame: []u8,
+};
+
+/// The exception a Return already delivered for an inbound answer, kept until
+/// that answer's Finish. Only results Returns are recorded in
+/// `resolved_answers`, so without this record a call pipelined on a FAILED
+/// answer that arrives after its exception Return would queue in
+/// `pending_promises` forever — the failed answer can never replay it. The
+/// record lets the peer answer such a call with a copy of the same exception,
+/// the broken-pipeline behavior of the C++ reference.
+pub const FailedAnswer = struct {
+    /// Owned copy of the exception reason.
+    reason: []u8,
+    ex_type: protocol.ExceptionType,
 };
 
 pub const PendingCall = struct {

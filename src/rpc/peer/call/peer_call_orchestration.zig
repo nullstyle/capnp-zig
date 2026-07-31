@@ -286,9 +286,11 @@ pub fn handleCallPromisedTargetForPeer(
     promised: protocol.PromisedAnswer,
     resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
     has_unresolved_promise_export: *const fn (*PeerType, u32) bool,
+    lookup_failed_answer: *const fn (*PeerType, u32) ?peer_call_targets.FailedAnswerView,
     queue_promised_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
     queue_promise_export_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
     send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    send_return_exception_typed: *const fn (*PeerType, u32, []const u8, protocol.ExceptionType) anyerror!void,
     handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     report_nonfatal_error: *const fn (*PeerType, anyerror) void,
@@ -311,6 +313,7 @@ pub fn handleCallPromisedTargetForPeer(
         promised,
         resolve_promised_answer,
         has_unresolved_promise_export,
+        lookup_failed_answer,
     );
 
     switch (target_plan) {
@@ -335,6 +338,16 @@ pub fn handleCallPromisedTargetForPeer(
             try send_return_exception(peer, call.question_id, @errorName(err));
             return;
         },
+        .fail_broken_answer => |failed| {
+            // Pipelined on an answer that already returned an exception. The
+            // failure drain (`failQueuedPromisedCalls`) only reaches calls
+            // queued BEFORE the exception Return; this one arrived after, so
+            // fail it the same way — a copy of the answer's own exception,
+            // preserving the retryability signal.
+            release_caps = true;
+            try send_return_exception_typed(peer, call.question_id, failed.reason, failed.ex_type);
+            return;
+        },
         .handle_resolved => |resolved| {
             release_caps = true;
             try handle_resolved_call(peer, call, &inbound_caps, resolved);
@@ -347,9 +360,11 @@ pub fn handleCallPromisedTargetForPeerFn(
     comptime InboundCapsType: type,
     comptime resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
     comptime has_unresolved_promise_export: *const fn (*PeerType, u32) bool,
+    comptime lookup_failed_answer: *const fn (*PeerType, u32) ?peer_call_targets.FailedAnswerView,
     comptime queue_promised_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
     comptime queue_promise_export_call: *const fn (*PeerType, u32, []const u8, InboundCapsType) anyerror!void,
     comptime send_return_exception: *const fn (*PeerType, u32, []const u8) anyerror!void,
+    comptime send_return_exception_typed: *const fn (*PeerType, u32, []const u8, protocol.ExceptionType) anyerror!void,
     comptime handle_resolved_call: *const fn (*PeerType, protocol.Call, *const InboundCapsType, cap_table.ResolvedCap) anyerror!void,
     comptime release_inbound_caps: *const fn (*PeerType, *InboundCapsType) anyerror!void,
     comptime report_nonfatal_error: *const fn (*PeerType, anyerror) void,
@@ -365,9 +380,11 @@ pub fn handleCallPromisedTargetForPeerFn(
                 promised,
                 resolve_promised_answer,
                 has_unresolved_promise_export,
+                lookup_failed_answer,
                 queue_promised_call,
                 queue_promise_export_call,
                 send_return_exception,
+                send_return_exception_typed,
                 handle_resolved_call,
                 release_inbound_caps,
                 report_nonfatal_error,

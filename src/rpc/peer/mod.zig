@@ -173,6 +173,7 @@ const PersistenceState = struct {
 
 const ExportEntry = state.ExportEntry(Export);
 const ResolvedAnswer = state.ResolvedAnswer;
+const FailedAnswer = state.FailedAnswer;
 const PendingCall = state.PendingCall;
 
 const ProvideTarget = state.ProvideTarget;
@@ -519,6 +520,7 @@ fn msToNs(ms: u64) i64 {
 /// | `questions` | question ID | `Question` | Outstanding outbound calls awaiting a Return. Removed when the Return arrives. |
 /// | `question_param_export_refs` | question ID | export IDs (list) | Wire refs the question's Call params took on local exports (one per emitted senderHosted/senderPromise descriptor). Spent when the Return arrives with `releaseParamCaps = true` (the rpc.capnp default), dropped when it is false (the remote sends explicit Releases), freed unspent when the question dies without a wire Return. |
 /// | `resolved_answers` | question ID | `ResolvedAnswer` | Cached Return frames for answered questions (used to resolve PromisedAnswer references). Holds one answer-held reference per results export so pipeline targets survive an early Release. Removed on Finish, releasing those references. |
+/// | `failed_answers` | question ID | `FailedAnswer` | The exception already returned for a failed answer (results-only `resolved_answers` never records it). Lets a call pipelined on that answer arriving after the Return be failed with a copy of the same exception instead of queueing forever. Removed on Finish. |
 /// | `pending_promises` | question ID | `ArrayList(PendingCall)` | Calls targeting a PromisedAnswer whose Return has not yet arrived. Replayed once the answer resolves. |
 /// | `pending_export_promises` | export ID | `ArrayList(PendingCall)` | Calls targeting a promise export not yet resolved. Replayed on `resolvePromiseExportToExport`. |
 /// | `forwarded_questions` | original answer ID | forwarded question ID | Maps an inbound call's answer ID to the question ID of the forwarded outbound call. |
@@ -1410,6 +1412,15 @@ pub const Peer = struct {
     /// resolved answer, it commits first to drain queued promised calls, then
     /// immediately removes the recorded answer through normal Finish cleanup.
     finished_early_answers: std.AutoHashMap(u32, bool),
+    /// Inbound answers that already returned an EXCEPTION, kept until Finish
+    /// (the mirror of `resolved_answers`, which records results only). A call
+    /// pipelined on such an answer that arrives AFTER the exception Return
+    /// would otherwise queue in `pending_promises` forever — the failed
+    /// answer can never replay it; this record answers it with a copy of the
+    /// same exception instead. Bounded by max_active_inbound_questions,
+    /// best-effort under pressure (a skipped record degrades to the old
+    /// queue-forever behavior for that answer, never a crash).
+    failed_answers: std.AutoHashMap(u32, FailedAnswer),
 
     // -- Promise queueing ---------------------------------------------------
 
@@ -1726,6 +1737,7 @@ pub const Peer = struct {
             .active_inbound_questions = std.AutoHashMap(u32, void).init(allocator),
             .resolving_answers = std.AutoHashMap(u32, void).init(allocator),
             .finished_early_answers = std.AutoHashMap(u32, bool).init(allocator),
+            .failed_answers = std.AutoHashMap(u32, FailedAnswer).init(allocator),
             .pending_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .pending_export_promises = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(allocator),
             .forwarded_questions = std.AutoHashMap(u32, u32).init(allocator),
@@ -2111,6 +2123,11 @@ pub const Peer = struct {
         self.active_inbound_questions.deinit();
         self.resolving_answers.deinit();
         self.finished_early_answers.deinit();
+        {
+            var f_it = self.failed_answers.valueIterator();
+            while (f_it.next()) |failed| self.allocator.free(failed.reason);
+        }
+        self.failed_answers.deinit();
         {
             var p_it = self.persistent_exports.valueIterator();
             while (p_it.next()) |st| self.allocator.destroy(st.*);
@@ -5215,6 +5232,9 @@ pub const Peer = struct {
         reason: []const u8,
         ex_type: protocol.ExceptionType,
     ) !void {
+        // Capture before delivery consumes the loopback marker (see
+        // sendReturnResults).
+        const is_loopback = self.loopback_questions.contains(answer_id);
         try peer_return_dispatch.sendReturnExceptionForPeer(
             Peer,
             self,
@@ -5224,7 +5244,48 @@ pub const Peer = struct {
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
-        _ = self.finished_early_answers.remove(answer_id);
+        const finished_early = self.finished_early_answers.remove(answer_id);
+        // Record AFTER a successful send, mirroring resolved_answers' gates:
+        // never for loopback answers (no Finish will clear the record and the
+        // id would be poisoned for legal reuse) and never for finished-early
+        // answers (the Finish already arrived — same poisoned-reuse hazard,
+        // and no compliant pipelined call can follow it). This is what every
+        // exception Return funnels through, so calls failed by the queued
+        // drain below get their own record too — a late call pipelined on a
+        // FAILED pipelined call still finds the failure, transitively.
+        if (!is_loopback and !finished_early) {
+            self.recordFailedAnswer(answer_id, reason, ex_type);
+        }
+    }
+
+    /// Best-effort record of an exception Return for `answer_id` (see the
+    /// `failed_answers` field doc). Keeps the FIRST exception if somehow
+    /// recorded twice; bounded like `finished_early_answers`; a skip under
+    /// budget or OOM degrades to the pre-record behavior for that answer
+    /// (late pipelined calls queue until their own Finish), never a crash.
+    fn recordFailedAnswer(
+        self: *Peer,
+        answer_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) void {
+        if (self.failed_answers.contains(answer_id)) return;
+        if (self.failed_answers.count() >= self.limits.max_active_inbound_questions) return;
+        const owned = self.allocator.dupe(u8, reason) catch |err| {
+            return self.reportNonfatalError(err);
+        };
+        self.failed_answers.put(answer_id, .{ .reason = owned, .ex_type = ex_type }) catch |err| {
+            self.allocator.free(owned);
+            self.reportNonfatalError(err);
+        };
+    }
+
+    /// Planner hook (`planPromisedTarget`): the recorded exception for an
+    /// already-failed inbound answer, if any. Borrowed view — valid until the
+    /// record is removed at Finish.
+    fn lookupFailedAnswer(self: *Peer, answer_id: u32) ?peer_call_targets.FailedAnswerView {
+        const failed = self.failed_answers.get(answer_id) orelse return null;
+        return .{ .reason = failed.reason, .ex_type = failed.ex_type };
     }
 
     /// Fail and drain every pipelined call queued against `answer_id` (and,
@@ -7922,6 +7983,11 @@ pub const Peer = struct {
         try self.detachProvisionForFinish(qid);
         const was_active = self.active_inbound_questions.remove(qid);
         const was_resolving = self.resolving_answers.contains(qid);
+        // The failed-answer record lives exactly as long as resolved_answers
+        // entries do: until the remote finishes the question.
+        if (self.failed_answers.fetchRemove(qid)) |failed| {
+            self.allocator.free(failed.value.reason);
+        }
         self.clearPendingJoinResultAnswer(qid);
         try self.clearPendingJoinRelay(qid, true, finish_msg.release_result_caps);
         // Cancellation race: a Finish for an in-flight inbound call (still
@@ -9546,8 +9612,9 @@ pub const Peer = struct {
     }
 
     /// True when `question_id` is already consumed by an inbound Call or
-    /// Bootstrap answer (active, resolved, resolving, finished-early, forwarded,
-    /// or queued for a promised target). This is the shared answer namespace;
+    /// Bootstrap answer (active, resolved, failed, resolving, finished-early,
+    /// forwarded, or queued for a promised target). This is the shared answer
+    /// namespace;
     /// it deliberately excludes the provide/join question tables so their
     /// handlers can report their own specific errors for same-type collisions.
     ///
@@ -9560,6 +9627,7 @@ pub const Peer = struct {
     /// remote-forceable premature export release.
     fn inboundAnswerQuestionIdInUse(self: *Peer, question_id: u32) !bool {
         return self.resolved_answers.contains(question_id) or
+            self.failed_answers.contains(question_id) or
             self.active_inbound_questions.contains(question_id) or
             self.resolving_answers.contains(question_id) or
             self.finished_early_answers.contains(question_id) or
@@ -9648,9 +9716,11 @@ pub const Peer = struct {
                 cap_table.InboundCapTable,
                 Peer.resolvePromisedAnswer,
                 peer_call_targets.hasUnresolvedPromiseExportForPeerFn(Peer),
+                Peer.lookupFailedAnswer,
                 Peer.queuePromisedCall,
                 Peer.queuePromiseExportCall,
                 Peer.sendReturnException,
+                Peer.sendReturnExceptionTyped,
                 Peer.handleResolvedCall,
                 Peer.releaseInboundCaps,
                 peer_return_dispatch.reportNonfatalErrorForPeerFn(Peer),
