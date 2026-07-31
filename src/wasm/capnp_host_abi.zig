@@ -81,9 +81,13 @@ const FEATURE_HOST_CALL_FRAME_RELEASE: u64 = 1 << 6;
 const FEATURE_BOOTSTRAP_STUB_IDENTITY: u64 = 1 << 7;
 const FEATURE_HOST_CALL_RETURN_FRAME: u64 = 1 << 8;
 /// Host-call param caps are retained for the call's lifetime and settled by
-/// the Return's `releaseParamCaps` flag (`false` = the host keeps them; no
-/// Release frames are emitted). Without this feature the peer releases param
-/// caps as soon as the call is queued for the host.
+/// the Return's `releaseParamCaps` flag: `false` (what this stack's own Return
+/// senders emit for any call whose params granted import refs) means the remote
+/// is still holding its exports, so the peer releases them back with explicit
+/// Release frames; `true` means the Return itself already released them and
+/// rpc.capnp forbids a second signal, so the peer only drops its bookkeeping.
+/// Without this feature the peer releases param caps as soon as the call is
+/// queued for the host.
 const FEATURE_HOST_CALL_PARAM_CAP_RETENTION: u64 = 1 << 9;
 const ABI_FEATURE_FLAGS: u64 = FEATURE_ABI_RANGE |
     FEATURE_ERROR_TAKE |

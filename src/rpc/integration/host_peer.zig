@@ -62,9 +62,9 @@ pub const HostPeer = struct {
     pending_host_call_questions: std.AutoHashMap(u32, void),
     /// Param-cap import ids (one entry per capTable occurrence) retained for
     /// each queued host call, keyed by question id. Populated by `onHostCall`,
-    /// settled when the host answers: `releaseParamCaps = true` releases each
-    /// reference back to the remote (wire Release frames), `false` transfers
-    /// ownership to the host and only drops the peer's bookkeeping.
+    /// settled when the host answers — see `settleHostCallParamImports`, whose
+    /// choice of wire Release vs silent forget is dictated by the answering
+    /// Return's `releaseParamCaps`.
     pending_host_call_param_imports: std.AutoHashMap(u32, []u32),
     current_inbound_frame: ?[]const u8 = null,
     host_bridge_enabled: bool = false,
@@ -229,19 +229,30 @@ pub const HostPeer = struct {
     }
 
     /// Settle the param-cap imports retained for a host call once its Return
-    /// is on the wire. `release_param_caps = true` (the rpc.capnp default)
-    /// means the host did not keep the capabilities: each reference is
-    /// released back to the remote, which the peer signals with explicit
-    /// Release frames (this stack's clients reclaim exports from those frames
-    /// rather than from the Return flag). `false` means the host retained the
-    /// capabilities past the call: the wire references now belong to the host
-    /// (which sends its own Release when done), so the peer only forgets its
-    /// import bookkeeping and puts nothing on the wire.
-    fn settleHostCallParamImports(self: *HostPeer, question_id: u32, release_param_caps: bool) void {
+    /// is on the wire.
+    ///
+    /// Exactly ONE settlement signal may reach the remote per param grant, and
+    /// `send_explicit_release` picks which one this is:
+    ///
+    ///   * `true` — the answering Return carries `releaseParamCaps = false`, so
+    ///     the remote is still holding its exports for us and the wire Release
+    ///     emitted here is the one and only signal. This is the peer-built
+    ///     Return paths (`respondHostCallResults`, `respondHostCallException`),
+    ///     where the host has no channel to express retention.
+    ///   * `false` — nothing may go on the wire from here, only the peer's own
+    ///     import bookkeeping is dropped. Either the Return already released
+    ///     the caps (`releaseParamCaps = true`, and rpc.capnp: "the sender must
+    ///     not send separate `Release` messages for them"), or the host claimed
+    ///     retention (`false`) and owes its own `sendReleaseForHost` later.
+    ///
+    /// Emitting a Release alongside a `releaseParamCaps = true` Return spends
+    /// the remote's export twice; a compliant peer answers that with "Tried to
+    /// release invalid export ID" and drops the connection.
+    fn settleHostCallParamImports(self: *HostPeer, question_id: u32, send_explicit_release: bool) void {
         const record = self.pending_host_call_param_imports.fetchRemove(question_id) orelse return;
         defer self.allocator.free(record.value);
         for (record.value) |import_id| {
-            if (release_param_caps) {
+            if (send_explicit_release) {
                 self.peer.releaseImport(import_id, 1) catch |err| {
                     log.debug("failed to release host-call param import {}: {}", .{ import_id, err });
                 };
@@ -259,9 +270,9 @@ pub const HostPeer = struct {
         try self.sendSanitizedReturnException(question_id, false, false, reason);
         _ = self.pending_host_call_questions.remove(question_id);
         // A failed call cannot legitimately retain its params; release them
-        // back to the remote. The exception Return above already says
-        // `releaseParamCaps = false`, so the explicit Release frames here are
-        // the one and only release signal (spec-consistent).
+        // back to the remote. The exception Return above says
+        // `releaseParamCaps = false`, so the explicit Release frames this
+        // settle emits are the one and only release signal (spec-consistent).
         self.settleHostCallParamImports(question_id, true);
     }
 
@@ -311,7 +322,11 @@ pub const HostPeer = struct {
         try self.peer.sendReturnResults(question_id, &ctx, BuildCtx.build);
         _ = self.pending_host_call_questions.remove(question_id);
         // This legacy path cannot express retention; params are released back
-        // to the remote once the Return is on the wire.
+        // to the remote once the Return is on the wire. `sendReturnResults`
+        // stamps `releaseParamCaps = false` for any call whose params granted
+        // import refs (Peer.returnReleasesParamCaps), which is exactly the set
+        // this record can be non-empty for — so explicit Release frames are
+        // the matching signal.
         self.settleHostCallParamImports(question_id, true);
     }
 
@@ -343,11 +358,13 @@ pub const HostPeer = struct {
             try self.peer.sendPrebuiltReturnFrame(ret, return_frame);
         }
         _ = self.pending_host_call_questions.remove(ret.answer_id);
-        // Honor the host's retention decision now that the Return is on the
-        // wire: `releaseParamCaps = false` keeps the param caps alive for the
-        // host (no Release frames), anything else releases them back to the
-        // remote.
-        self.settleHostCallParamImports(ret.answer_id, ret.release_param_caps);
+        // The host built this Return itself, so it owns BOTH halves of the
+        // settlement and the peer puts nothing on the wire either way:
+        // `releaseParamCaps = true` already released the param caps (rpc.capnp
+        // forbids a second signal), and `false` claims retention — the host
+        // sends its own `sendReleaseForHost` when it is done. All the peer does
+        // is drop its now-transferred import bookkeeping.
+        self.settleHostCallParamImports(ret.answer_id, false);
     }
 
     /// Ensure every senderHosted capability named by a host-built Return

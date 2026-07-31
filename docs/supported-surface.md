@@ -148,6 +148,21 @@ early-Finish tombstone is still undischarged is rejected as
 transport delivering a new Call/Bootstrap mid-send) are counted so an outer
 post-send commit cannot underflow the answer map's reserved capacity.
 
+**Param-capability release.** capnpc-zig settles the capabilities a caller
+passes in a Call's params with explicit `Release` frames — from the
+post-dispatch auto-release for params a handler ignored, and from the
+application's own `releaseImport` for ones it kept (what the generated param
+accessors set up when they retain a cap and hand back an owning `Client`).
+rpc.capnp forbids pairing those frames with `Return.releaseParamCaps = true`
+("the sender must not send separate `Release` messages for them"), so the peer
+stamps `releaseParamCaps = false` on every Return answering a call whose params
+carried a `senderHosted`/`senderPromise`/`thirdPartyHosted` descriptor — the
+same thing the C++ reference does on every Return it sends. Answers that took no
+param references (Bootstrap/Provide/Accept/Join, calls with cap-free params, the
+`sendResultsTo = thirdParty` refusal issued before any import is noted) keep the
+schema default `true`, where the flag is a no-op. Applications do not set this
+flag; a handler's only obligation is to retain a param cap it intends to keep.
+
 The reflected-capability resolve/embargo handshake — a promise capability
 resolved to a *caller-hosted* cap (`Peer.resolvePromiseExportToImport`), driving
 the `senderLoopback`/`receiverLoopback` `Disembargo` — is exercised end to end by
@@ -251,11 +266,13 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      same serve. Residual honest constraints: a stored-`.promised` target whose
      re-resolved import has since died still fails closed
      (`CrossPeerProvisionTargetUnavailable` — the lift serves live targets, it
-     does not resurrect dead ones), and an introducer-side service that
-     RETAINS the provided cap it received as a call param must declare
-     `releaseParamCaps = false` on its Return (the wire-honest statement of
-     that retention), or the introducer legitimately retires the export the
-     handoff needs.
+     does not resurrect dead ones). An introducer-side service that RETAINS
+     the provided cap it received as a call param no longer has to declare
+     `releaseParamCaps = false` by hand: the peer stamps it on every Return
+     answering a call whose params granted import refs, so the introducer keeps
+     the export the handoff needs. Retaining the cap (`InboundCapTable.retain*`,
+     which the generated param accessors already do) is the whole application
+     obligation.
   2. The vat (index/`Vat` + all enrolled peers) is **single-threaded**;
      `WorkerPool`-hosted multi-peer vats are unsupported, and pool peers keep
      the legacy counter embargo ids. To be precise about the cause, because an

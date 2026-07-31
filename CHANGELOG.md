@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Inbound param capabilities are no longer released twice.** rpc.capnp on
+  `Return.releaseParamCaps`, which DEFAULTS to true: "If true, all capabilities
+  that were in the params should be considered released. The sender must not
+  send separate `Release` messages for them." The sender there is the callee —
+  and capnpc-zig was doing both: it left the flag at its wire default while also
+  emitting explicit `Release` frames from the post-dispatch auto-release (and,
+  for a handler that kept a param cap the way the generated accessors do, from
+  the application's own later `releaseImport`). The caller then retired the same
+  export twice. Against the vendored C++ reference that is fatal:
+  `capnp/rpc.c++:4263: failed: Tried to release invalid export ID.` followed by
+  `RPC connection broken for non-DISCONNECTED reason`. Zig↔Zig it silently
+  destroyed the caller's export at ref-count 2 → 0.
+
+  The peer now decides the flag from what the answer actually owes.
+  `Peer.returnReleasesParamCaps` reads a per-answer `owes_param_cap_releases`
+  bit recorded in `active_inbound_questions` when the Call arrives, computed
+  from the params cap table: a `senderHosted` / `senderPromise` /
+  `thirdPartyHosted` descriptor is a reference this vat takes and settles
+  explicitly, so those Returns carry `releaseParamCaps = false` — exactly what
+  the C++ reference emits on every Return it sends ("no version of the C++ RPC
+  system has ever" sent true, `rpc.c++`). Every peer-built Return threads it:
+  results, exception, `canceled`, `resultsSentElsewhere`,
+  `takeFromOtherQuestion`, `awaitFromThirdParty`, and the reflected-loopback
+  results. Answers that took no param refs — Bootstrap/Provide/Accept/Join,
+  cap-free params, the `sendResultsTo = thirdParty` refusal issued before any
+  import is noted — keep the schema default `true`, where the flag is a no-op.
+  Cross-peer relay Returns still compute their own value and override it.
+
+  `HostPeer` had the same defect inverted in its own settle step: it sent wire
+  `Release` frames for `releaseParamCaps = true` and stayed silent for `false`.
+  A host-built Return frame now settles silently either way (the flag already
+  released the caps, or the host claimed retention and owes its own
+  `sendReleaseForHost`), while the two peer-built paths — which stamp `false` —
+  keep emitting the explicit Releases that are then the only signal.
+
+  Proven cross-implementation. Ablating the fix and re-running
+  `just e2e-l3-vatc` reproduces the C++ abort verbatim; with the fix the lane is
+  green **and** `tests/e2e/zig/l3_vatc_host.zig` no longer needs its
+  `setReleaseParamCaps(false)` override — the runtime states the retention. Five
+  new frame-capturing tests in
+  `tests/rpc/peer/rpc_return_release_param_caps_test.zig` assert the pairing
+  (never one half of it) for the ignoring handler, the retaining handler, the
+  exception Return, the cap-free call, and a two-peer end-to-end grant/settle;
+  ablating `returnReleasesParamCaps` to the old constant turns four of them red,
+  the end-to-end one with the caller's export already destroyed.
+
 - **The inverse list-upgrade rule now reaches the nested and type-erased list
   readers.** v0.7.0 taught `StructReader.read*List` to decode a correctly
   encoded struct list (element size C = 7) as the `List(UInt32)` / `List(Text)`

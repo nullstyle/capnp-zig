@@ -940,7 +940,7 @@ capnpc-zig.rpc.peer.Peer.ProvideTargetType: union
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.application: enumerant = 1
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.reject: enumerant = 0
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy: enum
-capnpc-zig.rpc.peer.Peer.active_inbound_questions: field hash_map.HashMap(u32,void,hash_map.AutoContext(u32),80)
+capnpc-zig.rpc.peer.Peer.active_inbound_questions: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.adopted_third_party_answers: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.allocator: field mem.Allocator
 capnpc-zig.rpc.peer.Peer.assertThreadAffinity: fn (*const rpc.peer.mod.Peer) void

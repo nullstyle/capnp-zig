@@ -266,13 +266,16 @@ const EchoReturner = struct {
         const descriptors = rpc.caps.table.descriptors;
         const cap = try call.params.content.getCapability();
         const entry = try inbound.get(cap.id);
-        // Retain the echoed cap (the standard handler pattern): without this
-        // the post-dispatch auto-release sends an explicit wire Release for
-        // the param import while the Return's `releaseParamCaps` stays at its
-        // wire default TRUE — the C++ caller then releases its param export
-        // TWICE and aborts the connection with "Tried to release invalid
-        // export ID" (rpc.c++ releaseExport). Observed empirically against
-        // the reference implementation when the retain was omitted.
+        // KEEP the echoed capability past this Return: these scenarios go on to
+        // serve a `Provide` whose target is this very import, so the reference
+        // has to outlive the answer. Retaining is the application half of the
+        // contract; the runtime supplies the wire half — `Peer` sees that the
+        // params granted import refs and stamps `releaseParamCaps = false` on
+        // the Return, so the caller keeps its export alive until this host's own
+        // Release. (No `setReleaseParamCaps` override here: an answer that says
+        // `true` while the callee also releases would spend the caller's export
+        // twice, which is exactly what the C++ reference rejects with "Tried to
+        // release invalid export ID".)
         const mutable_inbound: *InboundCapTable = @constCast(inbound);
         try mutable_inbound.retainCapability(cap);
         const mapped: struct { origin: u4, id: u32 } = switch (entry) {
@@ -289,16 +292,6 @@ const EchoReturner = struct {
             id: u32,
             fn build(bctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
                 const bself: *const @This() = castCtx(*const @This(), bctx);
-                // The retain above KEEPS the caller's param grant: say so on
-                // the wire. Leaving `releaseParamCaps` at its wire default
-                // TRUE makes the C++ caller retire its param export while
-                // this host still counts a live import ref on it — exactly
-                // the far-side death that would strand the receiverHosted
-                // provide target these scenarios hand off (the accepted
-                // proxy's forwarded call would then hit "Message target is
-                // not a current export ID"). Observed empirically against
-                // the reference implementation.
-                ret.setReleaseParamCaps(false);
                 var payload = try ret.payloadTyped();
                 var any = try payload.initContent();
                 try any.setCapabilityOriginTagged(bself.origin, bself.id);

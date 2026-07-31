@@ -904,7 +904,7 @@ const HostCallParamCapHarness = struct {
     }
 };
 
-test "host-call param caps stay alive until the host answers (releaseParamCaps=true releases them)" {
+test "host-call param caps stay alive until the host answers (releaseParamCaps=true releases them implicitly)" {
     const allocator = std.testing.allocator;
 
     var harness = HostCallParamCapHarness.init(allocator);
@@ -920,21 +920,23 @@ test "host-call param caps stay alive until the host answers (releaseParamCaps=t
     const call = harness.server.popHostCall() orelse return error.MissingHostCall;
     defer harness.server.freeHostCallFrame(call.frame);
 
-    // Host answers without retaining (rpc.capnp default releaseParamCaps).
+    // Host answers without retaining, using the rpc.capnp default
+    // `releaseParamCaps = true`.
     const return_frame = try HostCallParamCapHarness.buildResultsReturn(allocator, call.question_id, true);
     defer allocator.free(return_frame);
     try harness.server.respondHostCallReturnFrame(return_frame);
 
-    // The Return goes out first, then exactly one Release spending the
-    // param-cap reference back to the client.
+    // The Return is the WHOLE settlement. rpc.capnp on releaseParamCaps: "If
+    // true, all capabilities that were in the params should be considered
+    // released. The sender must not send separate `Release` messages for
+    // them." So exactly one Return and ZERO Release frames — emitting one here
+    // would spend the client's export a second time, which the C++ reference
+    // answers with "Tried to release invalid export ID" and a dropped
+    // connection.
     const after_respond = try harness.drainOutgoing(allocator);
     try std.testing.expectEqual(@as(usize, 1), after_respond.return_count);
-    try std.testing.expectEqual(@as(usize, 1), after_respond.release_count);
-    try std.testing.expectEqual(
-        @as(?u32, HostCallParamCapHarness.client_sink_export_id),
-        after_respond.released_id,
-    );
-    try std.testing.expectEqual(@as(u32, 1), after_respond.released_reference_count);
+    try std.testing.expectEqual(@as(usize, 0), after_respond.release_count);
+    // The local import bookkeeping is still dropped: settled, not leaked.
     try std.testing.expect(!harness.server.peer.caps.hasImport(HostCallParamCapHarness.client_sink_export_id));
 }
 

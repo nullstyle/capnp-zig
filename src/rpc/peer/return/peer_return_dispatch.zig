@@ -258,10 +258,11 @@ pub fn sendReturnTagForPeer(
     peer: *PeerType,
     answer_id: u32,
     tag: protocol.ReturnTag,
+    release_param_caps: bool,
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    const frame = try peer_return_frames.buildReturnTagFrame(peer.allocator, answer_id, tag);
+    const frame = try peer_return_frames.buildReturnTagFrame(peer.allocator, answer_id, tag, release_param_caps);
     try clearAndSendReturnFrameForPeer(
         PeerType,
         peer,
@@ -278,10 +279,17 @@ pub fn sendReturnExceptionForPeer(
     answer_id: u32,
     reason: []const u8,
     ex_type: protocol.ExceptionType,
+    release_param_caps: bool,
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
-    const frame = try peer_return_frames.buildReturnExceptionFrame(peer.allocator, answer_id, reason, ex_type);
+    const frame = try peer_return_frames.buildReturnExceptionFrame(
+        peer.allocator,
+        answer_id,
+        reason,
+        ex_type,
+        release_param_caps,
+    );
     try clearAndSendReturnFrameForPeer(
         PeerType,
         peer,
@@ -297,6 +305,7 @@ pub fn sendReturnTakeFromOtherQuestionForPeer(
     peer: *PeerType,
     answer_id: u32,
     other_question_id: u32,
+    release_param_caps: bool,
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
@@ -304,6 +313,7 @@ pub fn sendReturnTakeFromOtherQuestionForPeer(
         peer.allocator,
         answer_id,
         other_question_id,
+        release_param_caps,
     );
     try clearAndSendReturnFrameForPeer(
         PeerType,
@@ -320,6 +330,7 @@ pub fn sendReturnAcceptFromThirdPartyForPeer(
     peer: *PeerType,
     answer_id: u32,
     await_payload: ?[]const u8,
+    release_param_caps: bool,
     clear_send_results_routing: *const fn (*PeerType, u32) void,
     send_return_frame_with_loopback: *const fn (*PeerType, u32, []const u8) anyerror!void,
 ) !void {
@@ -327,6 +338,7 @@ pub fn sendReturnAcceptFromThirdPartyForPeer(
         peer.allocator,
         answer_id,
         await_payload,
+        release_param_caps,
     );
     try clearAndSendReturnFrameForPeer(
         PeerType,
@@ -346,6 +358,7 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
         clear_answer_id: u32 = 0,
         sent_answer_id: u32 = 0,
         sent_tag: protocol.ReturnTag = .results,
+        sent_release_param_caps: bool = true,
     };
 
     const Hooks = struct {
@@ -361,6 +374,7 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
             defer decoded.deinit();
             const ret = try decoded.asReturn();
             state.sent_tag = ret.tag;
+            state.sent_release_param_caps = ret.release_param_caps;
             try std.testing.expectEqual(@as(usize, 0), state.clear_calls);
         }
     };
@@ -374,6 +388,7 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
         &state,
         44,
         .resultsSentElsewhere,
+        false,
         Hooks.clear,
         Hooks.send,
     );
@@ -383,6 +398,9 @@ test "peer_return_dispatch sendReturnTagForPeer clears routing and sends encoded
     try std.testing.expectEqual(@as(u32, 44), state.clear_answer_id);
     try std.testing.expectEqual(@as(u32, 44), state.sent_answer_id);
     try std.testing.expectEqual(protocol.ReturnTag.resultsSentElsewhere, state.sent_tag);
+    // The caller's decision reaches the wire verbatim: this answer owes
+    // explicit Release frames, so it must NOT also claim implicit release.
+    try std.testing.expectEqual(false, state.sent_release_param_caps);
 }
 
 test "peer_return_dispatch keeps routing when send fails" {
@@ -410,6 +428,7 @@ test "peer_return_dispatch keeps routing when send fails" {
         &state,
         44,
         .resultsSentElsewhere,
+        false,
         State.clear,
         State.send,
     ));
@@ -462,6 +481,7 @@ test "peer_return_dispatch sendReturnAcceptFromThirdPartyForPeer sends await pay
         &state,
         45,
         await_payload,
+        false,
         Hooks.clear,
         Hooks.send,
     );
@@ -523,6 +543,7 @@ test "peer_return_dispatch sendReturnExceptionForPeer clears routing and sends e
         // (non-default) arm of sendReturnExceptionForPeer rather than the
         // `.failed` fallback that plain `Peer.sendReturnException` supplies.
         .disconnected,
+        false,
         Hooks.clear,
         Hooks.send,
     );
@@ -567,6 +588,7 @@ test "peer_return_dispatch sendReturnTakeFromOtherQuestionForPeer clears routing
         &state,
         47,
         12,
+        false,
         Hooks.clear,
         Hooks.send,
     );

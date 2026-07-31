@@ -463,6 +463,42 @@ fn msToNs(ms: u64) i64 {
     return @as(i64, @intCast(ms)) * std.time.ns_per_ms;
 }
 
+/// True when an inbound Call's params cap table contains at least one
+/// descriptor that grants this vat a wire reference — the descriptors
+/// `InboundCapTable.init` turns into `noteImport` calls, and therefore the
+/// ones this vat later settles with an explicit `Release` frame.
+///
+/// Read straight off the caller's frame (tags only; no import is taken here)
+/// so the answering Return's `releaseParamCaps` can be decided before dispatch
+/// runs — see `Peer.returnReleasesParamCaps`.
+///
+/// A descriptor this peer cannot even decode counts as ref-granting, but purely
+/// as a defensive default: no Return ever reads that value. `InboundCapTable`
+/// construction is about to fail on the same entry, and that failure unwinds
+/// `handleCall`, whose `errdefer` drops this answer's `active_inbound_questions`
+/// record — while the dispatch-error path sends no Return at all for a Call it
+/// could not dispatch. (Nor is a reference stranded: the table's own `errdefer`
+/// releases every import it noted before the failing entry.) The conservative
+/// direction is still the right one to be wrong in, because it can only ever
+/// withhold an implicit release, never invent a second one.
+fn callParamsGrantImportRefs(cap_table_list: ?message.StructListReader) bool {
+    const list = cap_table_list orelse return false;
+    var idx: u32 = 0;
+    while (idx < list.len()) : (idx += 1) {
+        const reader = list.get(idx) catch return true;
+        const descriptor = protocol.CapDescriptor.fromReader(reader) catch return true;
+        switch (descriptor.tag) {
+            // `resolveDescriptor` notes an import for each of these: the two
+            // sender-side forms, and the vine of a third-party hand-off.
+            .senderHosted, .senderPromise, .thirdPartyHosted => return true,
+            // `receiverHosted` names one of our own exports and `receiverAnswer`
+            // one of our own answers; neither grants us a reference to release.
+            .none, .receiverHosted, .receiverAnswer => {},
+        }
+    }
+    return false;
+}
+
 /// A Cap'n Proto RPC peer that manages one side of a two-party connection.
 ///
 /// `Peer` tracks exported capabilities, outstanding questions, promise
@@ -1388,8 +1424,20 @@ pub const Peer = struct {
     question_param_export_refs: std.AutoHashMap(u32, std.ArrayList(u32)),
     /// Cached Return frames for answered questions, kept until Finish.
     resolved_answers: std.AutoHashMap(u32, ResolvedAnswer),
-    /// Inbound call question IDs accepted from the remote peer until Return or Finish.
-    active_inbound_questions: std.AutoHashMap(u32, void),
+    /// Inbound call question IDs accepted from the remote peer until Return or
+    /// Finish. The value is that answer's `owes_param_cap_releases`: TRUE when
+    /// the Call's params carried `senderHosted`/`senderPromise` descriptors, so
+    /// this vat took wire references on the caller's capabilities and settles
+    /// them with explicit `Release` frames (the post-dispatch auto-release, or
+    /// an application that kept a param cap and drops it later).
+    ///
+    /// It is the sole input to `returnReleasesParamCaps`, i.e. to the answering
+    /// Return's `releaseParamCaps` flag: rpc.capnp forbids sending separate
+    /// `Release` messages once that flag is true, so an answer that owes
+    /// Releases must say `false`. Entries are created in `handleCall` and
+    /// removed by the Return (`sendReturnFrameWithLoopback`) or the Finish,
+    /// which is exactly the window in which the flag can be read.
+    active_inbound_questions: std.AutoHashMap(u32, bool),
     /// Answer IDs whose results Return is currently being synchronously delivered
     /// and may receive a reentrant Finish before the resolved answer is committed.
     resolving_answers: std.AutoHashMap(u32, void),
@@ -1734,7 +1782,7 @@ pub const Peer = struct {
             .questions = std.AutoHashMap(u32, Question).init(allocator),
             .question_param_export_refs = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator),
             .resolved_answers = std.AutoHashMap(u32, ResolvedAnswer).init(allocator),
-            .active_inbound_questions = std.AutoHashMap(u32, void).init(allocator),
+            .active_inbound_questions = std.AutoHashMap(u32, bool).init(allocator),
             .resolving_answers = std.AutoHashMap(u32, void).init(allocator),
             .finished_early_answers = std.AutoHashMap(u32, bool).init(allocator),
             .failed_answers = std.AutoHashMap(u32, FailedAnswer).init(allocator),
@@ -3788,7 +3836,16 @@ pub const Peer = struct {
         errdefer if (!callback_ran) {
             if (question.deinit_ctx) |deinit_ctx| deinit_ctx(self.allocator, question.ctx);
         };
-        const frame = try peer_return_frames.buildReturnExceptionFrame(self.allocator, question_id, reason, ex_type);
+        // Synthetic and LOCAL: delivered straight to our own question callback,
+        // never sent, and never routed through `handleReturn`. Nothing consumes
+        // its `releaseParamCaps`, so it keeps the rpc.capnp default.
+        const frame = try peer_return_frames.buildReturnExceptionFrame(
+            self.allocator,
+            question_id,
+            reason,
+            ex_type,
+            true,
+        );
         defer self.allocator.free(frame);
         var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
         defer decoded.deinit();
@@ -5016,6 +5073,10 @@ pub const Peer = struct {
         errdefer if (!effects_committed) effects.rollback();
 
         var ret = try builder.beginReturn(answer_id, .results);
+        // Stamp BEFORE `build`: relay builders that computed their own value
+        // (buildCrossPeerReturnResults) still override it, and an application
+        // build fn keeps the last word for answers it settles itself.
+        ret.setReleaseParamCaps(self.returnReleasesParamCaps(answer_id));
         try build(ctx, &ret);
         _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, onOutboundCap, &effects);
 
@@ -5099,6 +5160,7 @@ pub const Peer = struct {
         defer effects.deinit();
 
         var ret = try builder.beginReturn(answer_id, .results);
+        ret.setReleaseParamCaps(self.returnReleasesParamCaps(answer_id));
         try build(ctx, &ret);
         _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &ret, onOutboundCap, &effects);
         effects.rollback();
@@ -5241,6 +5303,7 @@ pub const Peer = struct {
             answer_id,
             reason,
             ex_type,
+            self.returnReleasesParamCaps(answer_id),
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
@@ -5431,6 +5494,7 @@ pub const Peer = struct {
             self,
             answer_id,
             tag,
+            self.returnReleasesParamCaps(answer_id),
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
@@ -5443,6 +5507,7 @@ pub const Peer = struct {
             self,
             answer_id,
             other_question_id,
+            self.returnReleasesParamCaps(answer_id),
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
@@ -5455,6 +5520,7 @@ pub const Peer = struct {
             self,
             answer_id,
             await_payload,
+            self.returnReleasesParamCaps(answer_id),
             clearSendResultsRouting,
             sendReturnFrameWithLoopback,
         );
@@ -7693,6 +7759,28 @@ pub const Peer = struct {
         }
     }
 
+    /// The `releaseParamCaps` flag for the Return that answers `answer_id`.
+    ///
+    /// rpc.capnp: with `releaseParamCaps = true` the caller drops the wire refs
+    /// its param capabilities took, and "the sender must not send separate
+    /// `Release` messages for them". This vat DOES send them — the
+    /// post-dispatch auto-release for params the handler ignored, and the
+    /// application's own `releaseImport` for ones it kept — so any answer that
+    /// took param import refs must say `false`, exactly as the C++ reference
+    /// does on every Return it sends. Claiming `true` alongside those frames
+    /// releases the caller's export twice; a compliant peer answers that with
+    /// "Tried to release invalid export ID" and drops the connection.
+    ///
+    /// Returns the schema default `true` for every answer with no
+    /// `active_inbound_questions` record: Bootstrap/Provide/Accept/Join Returns
+    /// (whose messages have no params cap table at all), the `sendResultsTo =
+    /// thirdParty` refusal issued before the record exists, and any answer whose
+    /// Call params carried no ref-granting descriptor. In all of those the
+    /// caller recorded no param exports, so the flag is a no-op either way.
+    fn returnReleasesParamCaps(self: *Peer, answer_id: u32) bool {
+        return !(self.active_inbound_questions.get(answer_id) orelse false);
+    }
+
     fn onConnectionError(self: *Peer, err: anyerror) void {
         log.debug("connection error: {}", .{err});
         if (self.on_error) |cb| cb(self.callback_ctx, self, err);
@@ -9668,9 +9756,10 @@ pub const Peer = struct {
         // id still reports DuplicateQuestionId; before the answer bookkeeping,
         // so there is nothing to unwind; and before the inbound cap table is
         // built, so no import references are taken and the exception Return's
-        // default `releaseParamCaps` correctly tells the sender to drop its
-        // export refs. This also covers in-process loopback calls, which are
-        // delivered through handleFrame.
+        // `releaseParamCaps` — still the schema default TRUE, because no
+        // `active_inbound_questions` entry exists yet to say otherwise —
+        // correctly tells the sender to drop its export refs. This also covers
+        // in-process loopback calls, which are delivered through handleFrame.
         if (call.send_results_to.tag == .thirdParty and
             self.third_party_result_policy == .reject)
         {
@@ -9680,7 +9769,18 @@ pub const Peer = struct {
 
         const inbound_before = self.active_inbound_questions.count();
         try ensureCountLimit(false, inbound_before, self.limits.max_active_inbound_questions);
-        try self.active_inbound_questions.put(call.question_id, {});
+        // Decide the answering Return's `releaseParamCaps` up front, from the
+        // frame the caller actually sent: a `senderHosted`/`senderPromise` param
+        // descriptor is a wire reference the caller recorded and this vat is
+        // about to take (`InboundCapTable.init`), and every such reference is
+        // settled here with an explicit `Release` frame — never implicitly.
+        // rpc.capnp: "If true, all capabilities that were in the params should
+        // be considered released. The sender must not send separate `Release`
+        // messages for them."
+        try self.active_inbound_questions.put(
+            call.question_id,
+            callParamsGrantImportRefs(call.params.cap_table),
+        );
         errdefer _ = self.active_inbound_questions.remove(call.question_id);
         events.emitPressureCrossing(
             self.observer,
