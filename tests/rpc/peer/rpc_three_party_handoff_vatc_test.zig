@@ -1569,6 +1569,10 @@ const FrameCapture = struct {
         answer_id: u32,
         tag: protocol.ReturnTag,
         reason: ?[]u8 = null,
+        /// For a results Return whose payload content is a single capability:
+        /// the cap-table descriptor's id (e.g. the minted proxy export id).
+        /// Null for exceptions and cap-less results.
+        cap_id: ?u32 = null,
     };
 
     fn deinit(self: *FrameCapture) void {
@@ -1589,10 +1593,20 @@ const FrameCapture = struct {
                 break :blk try self.allocator.dupe(u8, ex.reason);
             } else null;
             errdefer if (reason) |bytes| self.allocator.free(bytes);
+            const cap_id: ?u32 = if (ret.tag == .results) blk: {
+                const payload = ret.results orelse break :blk null;
+                const cap = payload.content.getCapability() catch break :blk null;
+                const cap_list = payload.cap_table orelse break :blk null;
+                if (cap.id >= cap_list.len()) break :blk null;
+                const desc_reader = cap_list.get(cap.id) catch break :blk null;
+                const desc = protocol.CapDescriptor.fromReader(desc_reader) catch break :blk null;
+                break :blk desc.id;
+            } else null;
             try self.returns.append(self.allocator, .{
                 .answer_id = ret.answer_id,
                 .tag = ret.tag,
                 .reason = reason,
+                .cap_id = cap_id,
             });
         }
     }
@@ -1609,6 +1623,14 @@ const FrameCapture = struct {
     fn reasonFor(self: *const FrameCapture, answer_id: u32) ?[]const u8 {
         for (self.returns.items) |r| {
             if (r.answer_id == answer_id) return r.reason;
+        }
+        return null;
+    }
+
+    /// The captured result cap id for `answer_id` (see `Entry.cap_id`).
+    fn capIdFor(self: *const FrameCapture, answer_id: u32) ?u32 {
+        for (self.returns.items) |r| {
+            if (r.answer_id == answer_id) return r.cap_id;
         }
         return null;
     }
@@ -2573,36 +2595,87 @@ test "L8 Vat: entropy is mandatory (seed or io), enrollment wires index + entrop
 }
 
 // ============================================================================
-// L10: a cross-peer serve whose provide target is a capability the host only
-// IMPORTS (`receiverHosted`) FAILS CLOSED — pinned on the reason string.
+// L17: a cross-peer serve whose provide target is a capability the host only
+// IMPORTS (`receiverHosted`) is SERVED — the receiverHosted lift.
 //
-// WHY it must fail: the cross-peer arm serves by minting a proxy on the accept
-// peer that forwards to `source.exported.id` on the OWNER's connection. That
-// only works when the target is something the owner HOSTS. A target the owner
-// merely imports lives in a THIRD id space — the one behind the owner's own
-// remote — and reaching it from the accept peer needs a hop nobody has built
-// yet. So the arm refuses rather than guessing, and the refusal reaches the
-// recipient verbatim: `handleAcceptWithProvisionIndex` turns the error into
-// `sendReturnException(question_id, @errorName(err))`.
+// Before this landing both sites refused with
+// `CrossPeerReceiverHostedTargetUnsupported` (the old L10 fail-closed pins).
+// The lift serves them through the same proxy machinery as exported targets:
+// the proxy minted on the accept peer forwards to the OWNER's *import* via
+// the forwarded-vine call path, and the import is kept alive by a handoff
+// pin (`handoff_pin_count`) that also WITHHOLDS outbound Release frames into
+// `deferred_release` — a `receiverHosted` descriptor grants no transferable
+// wire reference, so the withheld count is the only thing keeping the
+// introducer-side export alive across the [Provide, serve) window.
 //
-// TWO independent sites refuse, and both are pinned below:
+// TWO independent sites serve, discriminated exactly like the old pins:
 //   1. the stored `.local` target whose `origin_code` decodes to
-//      `receiverHosted` — the Provide named an export that is a PROMISE the
-//      owner had already resolved to an import;
+//      `receiverHosted` — pinned at PROVIDE registration
+//      (`target_import_pinned`), plus a serve-time pin owned by the proxy;
 //   2. the OWNER-SIDE re-resolution of a stored `.promised` target landing on
-//      `.imported`.
-//
-// These tests pin what the code does TODAY. The L9/L17 "receiverHosted lift"
-// will replace both arms with a real serve; when it lands these tests are
-// meant to be REWRITTEN against the new behaviour, not deleted — the point is
-// that the arms cannot be changed silently.
+//      `.imported` — no Provide-time pin exists (the answer's cap was still a
+//      promise then); the serve-time pin alone covers [serve, proxy-destroy),
+//      and the [Provide, serve) window is covered by the stored answer's own
+//      liveness (a vanished target still fails closed — see the witness
+//      below).
 // ============================================================================
 
-/// The exact bytes on the wire: `@errorName` of the fail-closed error. Spelled
-/// as a literal, never derived from the error itself, so that renaming the
-/// error in the runtime surfaces here as a RED reason mismatch instead of
-/// quietly tracking along.
-const receiver_hosted_reason = "CrossPeerReceiverHostedTargetUnsupported";
+/// The residual fail-closed reason: a re-resolved target whose import has
+/// died serves an exception with this exact name (the lift does not resurrect
+/// dead capabilities). Spelled as a literal, never derived from the error, so
+/// a rename surfaces here as a RED mismatch instead of quietly tracking.
+const target_unavailable_reason = "CrossPeerProvisionTargetUnavailable";
+
+/// Inject Call{qid, importedCap{target}, getNumber} on `peer` — how a
+/// capture-only "recipient" exercises a served proxy export.
+fn injectNumberCall(peer: *Peer, allocator: std.mem.Allocator, qid: u32, target_id: u32) !void {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call_builder = try builder.beginCall(qid, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID);
+    try call_builder.setTargetImportedCap(target_id);
+    call_builder.setSendResultsToCaller();
+    _ = try call_builder.payloadTyped();
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+}
+
+/// Inject Finish{qid, releaseResultCaps=false} on `peer` — the recipient
+/// finishing its Accept question. Releases the ANSWER-held ref the recorded
+/// Return holds on its result caps (the proxy export) while keeping the wire
+/// reference the Return granted.
+fn injectFinish(peer: *Peer, allocator: std.mem.Allocator, qid: u32) !void {
+    const frame = try buildFinishFrame(allocator, qid);
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+}
+
+/// Inject Release{id, count} on `peer` — the recipient dropping its wire
+/// reference on a served proxy export.
+fn injectRelease(peer: *Peer, allocator: std.mem.Allocator, id: u32, count: u32) !void {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildRelease(id, count);
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+}
+
+/// Inject the spec-form accept-Disembargo naming a Provide question on `peer`
+/// (the OWNER connection — where the introducer's forwarded Disembargo
+/// arrives).
+fn injectAcceptDisembargoOn(peer: *Peer, allocator: std.mem.Allocator, provide_qid: u32, embargo: []const u8) !void {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildDisembargoAccept(.{
+        .tag = .promisedAnswer,
+        .imported_cap = null,
+        .promised_answer = .{ .question_id = provide_qid, .transform = .{ .list = null } },
+    }, embargo);
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+}
 
 /// A VatC whose OWNER peer has a live remote, so it can hold genuine IMPORTS
 /// — the precondition both L10 sites need, and one a capture-only peer cannot
@@ -2653,7 +2726,53 @@ const ImportOwnerVat = struct {
     }
 };
 
-test "L10: a cross-peer Accept whose provide target resolved to an IMPORT fails closed by name" {
+/// Stage the site-1 shape: put `.imported` behind an EXPORT id.
+/// `resolvePromiseExportToImport` is the lever: the owner exports a promise
+/// (the remote imports it), then resolves that promise to the capability the
+/// owner only imports. From then on a Provide naming the promise export
+/// resolves — through `resolveProvideImportedCapForPeer`'s is_promise arm —
+/// to `.imported`, and `makeProvideTarget` stores `.local{receiverHosted}`.
+/// The Provide is landed on the OWNER with question id `provide_qid`.
+const Site1Staging = struct {
+    promise_import: u32,
+    introducer_import: u32,
+};
+
+fn stageSite1Provide(
+    vat: *ImportOwnerVat,
+    allocator: std.mem.Allocator,
+    introducer: *Introducer,
+    token: []const u8,
+    provide_qid: u32,
+) !Site1Staging {
+    _ = try vat.owner.setBootstrap(.{ .ctx = introducer, .on_call = Introducer.onCall });
+    var iprobe = CapImportProbe{};
+    _ = try vat.remote.sendBootstrap(&iprobe, CapImportProbe.onReturn);
+    const introducer_import = iprobe.import_id orelse return error.IntroducerBootstrapFailed;
+    var pprobe = CapImportProbe{};
+    _ = try vat.remote.sendCall(introducer_import, 0x1234_5678_9abc_def0, 0, &pprobe, null, CapImportProbe.onReturn);
+    const promise_import = pprobe.import_id orelse return error.PromiseNotImported;
+    const promise_export = introducer.promise_export_id orelse return error.PromiseNotMinted;
+    try vat.owner.resolvePromiseExportToImport(promise_export, vat.carol_import);
+
+    // The Provide lands on the OWNER naming that promise export (the remote
+    // legitimately holds it as an import, so this is the real wire shape).
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const recipient = try token_msg.getRootAnyPointer();
+        const frame = try buildProvideFrame(allocator, provide_qid, .{
+            .tag = .importedCap,
+            .imported_cap = promise_export,
+            .promised_answer = null,
+        }, recipient);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    return .{ .promise_import = promise_import, .introducer_import = introducer_import };
+}
+
+test "L17 site 1: a cross-peer Accept whose provide target resolved to an IMPORT is served via the pinned import" {
     const allocator = std.testing.allocator;
 
     // Declared FIRST so its deinit runs LAST: the owner must leave the index
@@ -2666,61 +2785,43 @@ test "L10: a cross-peer Accept whose provide target resolved to an IMPORT fails 
     try vat.init(allocator, &host.index);
     defer vat.deinitAll();
 
-    // Put `.imported` behind an EXPORT id. `resolvePromiseExportToImport` is
-    // the lever: the owner exports a promise (the remote imports it), then
-    // resolves that promise to the capability the owner only imports. From
-    // then on a Provide naming the promise export resolves — through
-    // `resolveProvideImportedCapForPeer`'s is_promise arm — to `.imported`,
-    // and `makeProvideTarget` stores that as `.local{receiverHosted}`.
     var introducer = Introducer{};
-    _ = try vat.owner.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
-    var iprobe = CapImportProbe{};
-    _ = try vat.remote.sendBootstrap(&iprobe, CapImportProbe.onReturn);
-    const introducer_import = iprobe.import_id orelse return error.IntroducerBootstrapFailed;
-    var pprobe = CapImportProbe{};
-    _ = try vat.remote.sendCall(introducer_import, 0x1234_5678_9abc_def0, 0, &pprobe, null, CapImportProbe.onReturn);
-    const promise_import = pprobe.import_id orelse return error.PromiseNotImported;
-    const promise_export = introducer.promise_export_id orelse return error.PromiseNotMinted;
-    try vat.owner.resolvePromiseExportToImport(promise_export, vat.carol_import);
-
-    // The Provide lands on the OWNER naming that promise export (the remote
-    // legitimately holds it as an import, so this is the real wire shape).
-    const token = try host.mintToken(allocator, "l10-local-receiverhosted");
+    const token = try host.mintToken(allocator, "l17-local-receiverhosted");
     defer allocator.free(token);
-    {
-        var token_msg = try message.Message.initUnvalidated(allocator, token);
-        defer token_msg.deinit();
-        const recipient = try token_msg.getRootAnyPointer();
-        const frame = try buildProvideFrame(allocator, 90, .{
-            .tag = .importedCap,
-            .imported_cap = promise_export,
-            .promised_answer = null,
-        }, recipient);
-        defer allocator.free(frame);
-        try vat.owner.handleFrame(frame);
-    }
+    const staged = try stageSite1Provide(&vat, allocator, &introducer, token, 90);
     try std.testing.expectEqual(@as(usize, 1), vat.owner.provisions_by_question.count());
+
+    // Registration took the Provide-time IMPORT pin (site 1 only).
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+    }
 
     // The Accept lands on the SIBLING — the cross-peer arm, un-embargoed, so
     // it goes straight to `serveProvisionOnPeer`.
     try host.injectAccept(allocator, 900, token, null);
 
-    // THE PIN: an exception Return whose reason is the error's own name.
-    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(900));
-    try std.testing.expectEqualStrings(receiver_hosted_reason, host.capture.reasonFor(900).?);
+    // THE FLIP: served, not refused — a results Return carrying a
+    // senderHosted proxy minted on the accept peer.
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(900));
+    const proxy_id = host.capture.capIdFor(900) orelse return error.NoProxyCap;
+    try std.testing.expectEqual(@as(usize, 1), vat.owner.cross_peer_proxy_links.items.len);
 
-    // Fail CLOSED, not half-open: the refusal happens BEFORE any pin or proxy
-    // is taken, so no proxy exists on either peer and Carol was never reached
-    // (an exception-tag check alone would pass against a half-served target).
-    try harness.expectNoCrossPeerProxyLinks(&vat.owner);
-    try harness.expectNoCrossPeerProxyLinks(&host.peer);
-    try std.testing.expectEqual(@as(u32, 0), vat.carol.get_number_calls);
+    // The proxy ctx holds its own serve-time pin on top of the provision's.
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 2), entry.handoff_pin_count);
+    }
 
-    // ...and not WEDGED: nothing was queued or parked behind the refusal, and
-    // the provision still drains normally on the owner's Finish.
-    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
-    try std.testing.expectEqual(@as(usize, 0), host.index.queued_accept_count);
-    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_count);
+    // The accepted capability WORKS: a call on the proxy forwards over the
+    // owner's live link and reaches the remote's real Carol.
+    try injectNumberCall(&host.peer, allocator, 901, proxy_id);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(901));
+    try std.testing.expectEqual(@as(u32, 1), vat.carol.get_number_calls);
+
+    // The owner's Finish drains the provision and drops ITS pin; the served
+    // capability survives on the proxy's pin (the accepted cap must outlive
+    // the provision's Finish).
     {
         const frame = try buildFinishFrame(allocator, 90);
         defer allocator.free(frame);
@@ -2730,16 +2831,159 @@ test "L10: a cross-peer Accept whose provide target resolved to an IMPORT fails 
     try std.testing.expectEqual(@as(usize, 0), host.index.provision_count);
     try harness.expectNoProvideState(&vat.owner);
     try harness.expectNoProvideState(&host.peer);
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGoneAfterFinish;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+    }
+    try injectNumberCall(&host.peer, allocator, 902, proxy_id);
+    try std.testing.expectEqual(@as(u32, 2), vat.carol.get_number_calls);
+
+    // The recipient finishes its Accept question (dropping the answer-held
+    // ref on the proxy), then Releases its wire ref: the proxy dies and the
+    // ctx deinit drops the last pin. Nothing was withheld in this test (the
+    // owner's own wire ref never drained while pinned), so no deferred
+    // Release goes out and the entry survives on its live wire ref.
+    try injectFinish(&host.peer, allocator, 900);
+    try injectRelease(&host.peer, allocator, proxy_id, 1);
+    try std.testing.expect(!host.peer.exports.contains(proxy_id));
+    try std.testing.expectEqual(@as(usize, 0), vat.owner.cross_peer_proxy_links.items.len);
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGoneAfterProxyRelease;
+        try std.testing.expectEqual(@as(u32, 0), entry.handoff_pin_count);
+        try std.testing.expectEqual(@as(u32, 0), entry.deferred_release);
+        try std.testing.expectEqual(@as(u32, 1), entry.ref_count);
+    }
 
     // Wire references home. Promise FIRST: destroying the promise export is
     // what drops its LOCAL pin on the import (a receiverHosted resolution
-    // sends no wire Release), so this is the only order that leaves both
-    // tables at zero. Leak-free teardown under std.testing.allocator — both
-    // peers of the vat plus the index — is the other half of the assertion.
-    try vat.remote.releaseImport(promise_import, 1);
-    try vat.remote.releaseImport(introducer_import, 1);
+    // sends no wire Release). Leak-free teardown under std.testing.allocator
+    // — both peers of the vat plus the index — is the other half.
+    try vat.remote.releaseImport(staged.promise_import, 1);
+    try vat.remote.releaseImport(staged.introducer_import, 1);
     try vat.owner.releaseImport(vat.carol_import, 1);
     try harness.expectNoImport(&vat.owner, vat.carol_import);
+    try std.testing.expect(!vat.remote.exports.contains(vat.carol_export_on_remote));
+}
+
+test "L17 site 1 embargoed: an embargoed Accept of a receiverHosted target completes at Disembargo time" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    var introducer = Introducer{};
+    const token = try host.mintToken(allocator, "l17-embargoed-receiverhosted");
+    defer allocator.free(token);
+    const staged = try stageSite1Provide(&vat, allocator, &introducer, token, 93);
+
+    // The Accept arrives WITH an embargo before its Disembargo: it must be
+    // QUEUED in the provision store, not served and not refused.
+    const embargo = "\x11\x22\x33\x44\x55\x66\x77\x88";
+    try host.injectAccept(allocator, 930, token, embargo);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(930));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), host.index.queued_accept_count);
+
+    // The introducer's forwarded accept-Disembargo lands on the OWNER
+    // connection: the embargo releases and the SAME serve arm runs — the
+    // target gate sits inside `serveProvisionOnPeer`, which the
+    // embargo-release fan-out calls, so a receiverHosted target must
+    // complete here exactly like an un-embargoed one.
+    try injectAcceptDisembargoOn(&vat.owner, allocator, 93, embargo);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(930));
+    const proxy_id = host.capture.capIdFor(930) orelse return error.NoProxyCap;
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.queued_accept_count);
+
+    try injectNumberCall(&host.peer, allocator, 931, proxy_id);
+    try std.testing.expectEqual(@as(u32, 1), vat.carol.get_number_calls);
+
+    // Drain: Finish the Provide (owner side), finish the Accept question and
+    // release the proxy (recipient side), send the refs home.
+    {
+        const frame = try buildFinishFrame(allocator, 93);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    try injectFinish(&host.peer, allocator, 930);
+    try injectRelease(&host.peer, allocator, proxy_id, 1);
+    try harness.expectNoProvideState(&vat.owner);
+    try harness.expectNoProvideState(&host.peer);
+    try vat.remote.releaseImport(staged.promise_import, 1);
+    try vat.remote.releaseImport(staged.introducer_import, 1);
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
+}
+
+test "L17 V2-M6: wire refs draining between Provide and Accept cannot kill the serve (deferred-Release pin)" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    var introducer = Introducer{};
+    const token = try host.mintToken(allocator, "l17-v2m6-drain-window");
+    defer allocator.free(token);
+    const staged = try stageSite1Provide(&vat, allocator, &introducer, token, 92);
+
+    // BETWEEN the Provide and the Accept, every wire reference on the target
+    // drains: first the promise export dies (dropping its local promise pin
+    // on the import), then the owner-side holder releases its own retained
+    // wire ref — the discriminating ordering (a post-serve drain would pass
+    // even without the Provide-time pin).
+    try vat.remote.releaseImport(staged.promise_import, 1);
+    try vat.owner.releaseImport(vat.carol_import, 1);
+
+    // THE PROBE: the entry is alive on the Provide-time pin ALONE
+    // (ref_count == 0), the drained count was WITHHELD (deferred, not sent),
+    // and therefore the introducer-side export is still alive too.
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportDiedDespitePin;
+        try std.testing.expectEqual(@as(u32, 0), entry.ref_count);
+        try std.testing.expectEqual(@as(u32, 0), entry.promise_ref_count);
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+        try std.testing.expectEqual(@as(u32, 1), entry.deferred_release);
+    }
+    try std.testing.expect(vat.remote.exports.contains(vat.carol_export_on_remote));
+
+    // THE SERVE — asserted HERE, not at some post-Finish call: the
+    // Provide-time pin is only load-bearing over the [Provide, serve) window.
+    try host.injectAccept(allocator, 920, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(920));
+    const proxy_id = host.capture.capIdFor(920) orelse return error.NoProxyCap;
+
+    // ...and the served capability actually works.
+    try injectNumberCall(&host.peer, allocator, 921, proxy_id);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(921));
+    try std.testing.expectEqual(@as(u32, 1), vat.carol.get_number_calls);
+
+    // WIRE TOTALS: Finish + proxy Release drop both pins; the LAST unpin
+    // emits the single deferred Release(1); the introducer-side export dies —
+    // granted == released across the whole handoff, just later.
+    {
+        const frame = try buildFinishFrame(allocator, 92);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    try std.testing.expect(vat.remote.exports.contains(vat.carol_export_on_remote));
+    try injectFinish(&host.peer, allocator, 920);
+    try injectRelease(&host.peer, allocator, proxy_id, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
+    try std.testing.expect(!vat.remote.exports.contains(vat.carol_export_on_remote));
+
+    try vat.remote.releaseImport(staged.introducer_import, 1);
+    try harness.expectNoProvideState(&vat.owner);
+    try harness.expectNoProvideState(&host.peer);
 }
 
 /// A Return whose single result cap is one the ANSWERING peer only IMPORTS,
@@ -2775,27 +3019,33 @@ const DeferringService = struct {
     }
 };
 
-test "L10: a stored .promised target re-resolving to an IMPORT fails closed by the same name" {
-    const allocator = std.testing.allocator;
-
-    var host: FrameHost = undefined;
-    try host.init(allocator, .{});
-    defer host.deinitAll();
-
-    var vat: ImportOwnerVat = undefined;
-    try vat.init(allocator, &host.index);
-    defer vat.deinitAll();
-
-    // Give the OWNER a live resolved answer whose single result cap is the
-    // capability it merely IMPORTS — that is what makes the stored ops
-    // re-resolve to `.imported` at Accept time.
-    var deferring = DeferringService{};
-    _ = try vat.owner.setBootstrap(.{ .ctx = &deferring, .on_call = DeferringService.onCall });
-    var bprobe = CapImportProbe{};
-    _ = try vat.remote.sendBootstrap(&bprobe, CapImportProbe.onReturn);
+/// Stage the site-2 shape: give the OWNER a live resolved answer whose single
+/// result cap is the capability it merely IMPORTS, then install an `.active`
+/// provision whose stored target is `.promised` ops naming that answer — the
+/// state the serve arm re-resolves at Accept time. Returns the remote's
+/// import of the deferring service (for teardown).
+/// `bprobe` and `call_probe` are supplied BY THE CALLER, and that is
+/// load-bearing rather than stylistic. The staged call's Return is
+/// deliberately dropped in flight, so its question stays outstanding until
+/// `vat.remote.deinit()` — where `forceCancelAllQuestions` delivers a local
+/// exception THROUGH the question's stored `ctx` pointer. Locals of this
+/// helper would be dead stack by then: `deliverLocalException` writes into a
+/// vanished frame, which on amd64 (Linux and Windows, ReleaseSafe) is a
+/// segfault and on arm64 macOS merely scribbles unnoticed. The probes must
+/// outlive the peer, so they live in the test's frame.
+fn stageSite2Provision(
+    vat: *ImportOwnerVat,
+    host: *FrameHost,
+    deferring: *DeferringService,
+    bprobe: *CapImportProbe,
+    call_probe: *TolerantCall,
+    token: []const u8,
+    provide_qid: u32,
+) !u32 {
+    _ = try vat.owner.setBootstrap(.{ .ctx = deferring, .on_call = DeferringService.onCall });
+    _ = try vat.remote.sendBootstrap(bprobe, CapImportProbe.onReturn);
     const service_import = bprobe.import_id orelse return error.ServiceBootstrapFailed;
-    var call_probe = TolerantCall{};
-    _ = try vat.remote.sendCall(service_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, &call_probe, null, TolerantCall.onReturn);
+    _ = try vat.remote.sendCall(service_import, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID, call_probe, null, TolerantCall.onReturn);
     const answer_qid = deferring.question_id orelse return error.CallNotDeferred;
     try std.testing.expect(!call_probe.returned);
 
@@ -2813,38 +3063,507 @@ test "L10: a stored .promised target re-resolving to an IMPORT fails closed by t
     // resolves to a CHAINED promise, which no public API can stage. The state
     // itself is exactly what the serve arm reads — ops naming an answer that
     // lives on the owner.
-    const token = try host.mintToken(allocator, "l10-promised-receiverhosted");
+    _ = try installPromisedProvision(host, &vat.owner, token, provide_qid, answer_qid);
+    return service_import;
+}
+
+test "L17 site 2: a stored .promised target re-resolving to an IMPORT is served with a serve-time pin" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    var deferring = DeferringService{};
+    const token = try host.mintToken(allocator, "l17-promised-receiverhosted");
     defer allocator.free(token);
-    _ = try installPromisedProvision(&host, &vat.owner, token, 91, answer_qid);
+    // Declared here, not inside the helper: they back an outstanding question
+    // that `vat.deinitAll()` cancels, so they must outlive it.
+    var bprobe = CapImportProbe{};
+    var call_probe = TolerantCall{};
+    const service_import = try stageSite2Provision(&vat, &host, &deferring, &bprobe, &call_probe, token, 91);
+
+    // SITE 2 takes NO Provide-time pin: the target was `.promised` at
+    // registration (there was no import to pin yet), so the entry carries
+    // only its wire ref here.
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 0), entry.handoff_pin_count);
+    }
 
     // Cross-peer Accept on the sibling: the owner re-resolves its own answer
-    // through the stored ops, lands on `.imported`, and refuses.
+    // through the stored ops, lands on `.imported`, and SERVES it.
     try host.injectAccept(allocator, 910, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(910));
+    const proxy_id = host.capture.capIdFor(910) orelse return error.NoProxyCap;
+    try std.testing.expectEqual(@as(usize, 1), vat.owner.cross_peer_proxy_links.items.len);
 
-    // THE PIN: the SAME reason string, from the second site.
-    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(910));
-    try std.testing.expectEqualStrings(receiver_hosted_reason, host.capture.reasonFor(910).?);
+    // The serve-time pin (owned by the proxy ctx) is the ONLY pin.
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+    }
 
-    // Fail closed, and not wedged.
-    try harness.expectNoCrossPeerProxyLinks(&vat.owner);
-    try harness.expectNoCrossPeerProxyLinks(&host.peer);
-    try std.testing.expectEqual(@as(u32, 0), vat.carol.get_number_calls);
-    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
-    try std.testing.expectEqual(@as(usize, 0), host.index.queued_accept_count);
+    // The accepted capability reaches the far side.
+    try injectNumberCall(&host.peer, allocator, 911, proxy_id);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(911));
+    try std.testing.expectEqual(@as(u32, 1), vat.carol.get_number_calls);
+
+    // Finish drains the provision; the serve-time pin is untouched (the
+    // provision never held an import pin for site 2).
     {
         const frame = try buildFinishFrame(allocator, 91);
         defer allocator.free(frame);
         try vat.owner.handleFrame(frame);
     }
     try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
-    try std.testing.expectEqual(@as(usize, 0), host.index.provision_count);
     try harness.expectNoProvideState(&vat.owner);
     try harness.expectNoProvideState(&host.peer);
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGoneAfterFinish;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+    }
+    try injectNumberCall(&host.peer, allocator, 912, proxy_id);
+    try std.testing.expectEqual(@as(u32, 2), vat.carol.get_number_calls);
 
-    // The owner's answer stays outstanding (its Return was dropped in flight);
-    // teardown under std.testing.allocator proves the whole vat — both peers,
-    // the index, the live answer, the import — still drains leak-free.
+    // The recipient finishes its Accept question, then its Release sweeps
+    // the proxy and its pin.
+    try injectFinish(&host.peer, allocator, 910);
+    try injectRelease(&host.peer, allocator, proxy_id, 1);
+    try std.testing.expect(!host.peer.exports.contains(proxy_id));
+    try std.testing.expectEqual(@as(usize, 0), vat.owner.cross_peer_proxy_links.items.len);
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGoneAfterProxyRelease;
+        try std.testing.expectEqual(@as(u32, 0), entry.handoff_pin_count);
+    }
+
+    // The owner's answer stays outstanding (its Return was dropped in
+    // flight); teardown under std.testing.allocator proves the whole vat —
+    // both peers, the index, the live answer, the import — drains leak-free.
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
     try vat.remote.releaseImport(service_import, 1);
+}
+
+test "L17 witness: a stored .promised target whose re-resolved import has DIED still fails closed, by name" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    var deferring = DeferringService{};
+    const token = try host.mintToken(allocator, "l17-vanished-import");
+    defer allocator.free(token);
+    var bprobe = CapImportProbe{};
+    var call_probe = TolerantCall{};
+    const service_import = try stageSite2Provision(&vat, &host, &deferring, &bprobe, &call_probe, token, 94);
+
+    // The target import dies for real BEFORE the Accept: site 2 has no
+    // Provide-time pin (by design — the answer's cap was still a promise at
+    // registration), so nothing holds the import once its own wire ref goes
+    // home. The lift serves live targets; it does not resurrect dead ones.
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
+
+    try host.injectAccept(allocator, 940, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(940));
+    try std.testing.expectEqualStrings(target_unavailable_reason, host.capture.reasonFor(940).?);
+
+    // Fail closed, and not wedged: no proxy, no pin residue, and the
+    // provision still drains normally on the owner's Finish.
+    try harness.expectNoCrossPeerProxyLinks(&vat.owner);
+    try harness.expectNoCrossPeerProxyLinks(&host.peer);
+    try std.testing.expectEqual(@as(u32, 0), vat.carol.get_number_calls);
+    {
+        const frame = try buildFinishFrame(allocator, 94);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+    try harness.expectNoProvideState(&vat.owner);
+    try harness.expectNoProvideState(&host.peer);
+    try vat.remote.releaseImport(service_import, 1);
+}
+
+// ============================================================================
+// L17 teardown order: the new pin state must stay leak-free whichever side
+// dies first (extends the L3 teardown trio with the import-pin cases).
+// ============================================================================
+
+test "L17 teardown: owner-first — the proxy's abandoned import pin cannot be released post-mortem (no UAF)" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    // Hand-rolled ImportOwnerVat guts: the owner is deinited MID-TEST, so the
+    // fixture's own deinitAll (which would deinit it again) cannot be used.
+    var link = PairLink{};
+    var carol = Carol{};
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    var remote = Peer.initDetached(allocator);
+    remote.disableThreadAffinity();
+    defer {
+        link.forwarding = false;
+        link.deinitBuffered();
+        remote.deinit();
+        // owner deinited mid-test.
+    }
+    link.left = &remote;
+    link.right = &owner;
+    remote.setSendFrameOverride(&link, PairLink.leftSend);
+    owner.setSendFrameOverride(&link, PairLink.rightSend);
+    try owner.attachProvisionIndex(&host.index);
+
+    const carol_export_on_remote = try remote.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    var carol_returner = CapReturner{ .export_id = carol_export_on_remote };
+    const carol_import = try grantCapVia(&remote, &owner, &carol_returner);
+
+    var introducer = Introducer{};
+    _ = try owner.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+    var iprobe = CapImportProbe{};
+    _ = try remote.sendBootstrap(&iprobe, CapImportProbe.onReturn);
+    const introducer_import = iprobe.import_id orelse return error.IntroducerBootstrapFailed;
+    var pprobe = CapImportProbe{};
+    _ = try remote.sendCall(introducer_import, 0x1234_5678_9abc_def0, 0, &pprobe, null, CapImportProbe.onReturn);
+    _ = pprobe.import_id orelse return error.PromiseNotImported;
+    const promise_export = introducer.promise_export_id orelse return error.PromiseNotMinted;
+    try owner.resolvePromiseExportToImport(promise_export, carol_import);
+
+    const token = try host.mintToken(allocator, "l17-tdown-owner");
+    defer allocator.free(token);
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const recipient = try token_msg.getRootAnyPointer();
+        const frame = try buildProvideFrame(allocator, 95, .{
+            .tag = .importedCap,
+            .imported_cap = promise_export,
+            .promised_answer = null,
+        }, recipient);
+        defer allocator.free(frame);
+        try owner.handleFrame(frame);
+    }
+    try host.injectAccept(allocator, 950, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(950));
+    const proxy_id = host.capture.capIdFor(950) orelse return error.NoProxyCap;
+
+    // The OWNER dies first (transport severed like a real disconnect). Its
+    // neutralize step must ABANDON the proxy's import pin — the import table
+    // dies with the peer.
+    link.forwarding = false;
+    owner.deinit();
+
+    // The proxy degrades LOUDLY (dead-source exception), not a UAF.
+    try injectNumberCall(&host.peer, allocator, 951, proxy_id);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(951));
+    try std.testing.expectEqual(@as(u32, 0), carol.get_number_calls);
+
+    // Destroying the proxy AFTER the owner's death must not touch the dead
+    // owner's tables (the abandoned pin is null): leak-free under
+    // std.testing.allocator is the other half of the assertion.
+    try injectFinish(&host.peer, allocator, 950);
+    try injectRelease(&host.peer, allocator, proxy_id, 1);
+    try std.testing.expect(!host.peer.exports.contains(proxy_id));
+}
+
+test "L17 teardown: accept-peer-first — the proxy sweep releases the serve-time import pin on the live owner" {
+    const allocator = std.testing.allocator;
+
+    // Hand-rolled FrameHost guts: the accept peer is deinited MID-TEST.
+    var capture = FrameCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var accept_peer = Peer.initDetached(allocator);
+    accept_peer.disableThreadAffinity();
+    accept_peer.setSendFrameOverride(&capture, FrameCapture.send);
+    var index = ProvisionIndex.init(allocator, .{});
+    index.disableThreadAffinity();
+    defer index.deinit();
+    try accept_peer.attachProvisionIndex(&index);
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+    var dummy = Peer.initDetached(allocator);
+    dummy.disableThreadAffinity();
+    defer dummy.deinit();
+    try net.register("l17-tdown-holder", &dummy);
+    dummy.attachVatNetwork(net.network());
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &index);
+    defer vat.deinitAll();
+
+    var introducer = Introducer{};
+    const token = blk: {
+        const d_network = dummy.vat_network orelse return error.NoVatNetwork;
+        var introduction = try d_network.mintIntroduction(&dummy, "l17-tdown-holder");
+        defer introduction.deinit(allocator);
+        break :blk try allocator.dupe(u8, introduction.to_await);
+    };
+    defer allocator.free(token);
+    const staged = try stageSite1Provide(&vat, allocator, &introducer, token, 96);
+
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(960, provision, null);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try accept_peer.handleFrame(frame);
+    }
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), capture.returnFor(960));
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 2), entry.handoff_pin_count);
+    }
+
+    // The ACCEPT PEER dies first: its export sweep runs the proxy ctx deinit,
+    // which releases the serve-time pin on the still-live owner — leaving
+    // exactly the Provide-time pin.
+    accept_peer.deinit();
+    try std.testing.expectEqual(@as(usize, 0), vat.owner.cross_peer_proxy_links.items.len);
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGoneAfterHolderDeath;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+    }
+
+    // The owner's Finish drops the last pin; everything drains.
+    {
+        const frame = try buildFinishFrame(allocator, 96);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportGoneAfterFinish;
+        try std.testing.expectEqual(@as(u32, 0), entry.handoff_pin_count);
+    }
+    try vat.remote.releaseImport(staged.promise_import, 1);
+    try vat.remote.releaseImport(staged.introducer_import, 1);
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
+}
+
+// ============================================================================
+// L17 OOM discipline: the new import-pin ladder arms roll back to zero
+// residue (two-pass FailingAllocator sweeps with state probes, the same shape
+// as the L3 Provide-registration sweep above).
+// ============================================================================
+
+/// Per-iteration fixture for the L17 OOM sweeps: an ImportOwnerVat staged to
+/// the site-1 shape (resolved promise export -> carol_import) on `alloc`,
+/// with the provide frame BUILT but not yet delivered. Every field lives in
+/// the caller's frame; `deinitAll` mirrors construction order.
+const L17OomFixture = struct {
+    index: ProvisionIndex,
+    net: vat_network.LoopbackVatNetwork(Peer),
+    dummy: Peer,
+    vat: ImportOwnerVat,
+    introducer: Introducer,
+    token: []u8,
+    provide_frame: []const u8,
+    allocator: std.mem.Allocator,
+
+    fn init(self: *L17OomFixture, alloc: std.mem.Allocator, nonce: []const u8, provide_qid: u32) !void {
+        self.allocator = alloc;
+        self.introducer = .{};
+        self.index = ProvisionIndex.init(alloc, .{});
+        self.index.disableThreadAffinity();
+        self.net = vat_network.LoopbackVatNetwork(Peer).init(alloc);
+        self.dummy = Peer.initDetached(alloc);
+        self.dummy.disableThreadAffinity();
+        try self.net.register(nonce, &self.dummy);
+        self.dummy.attachVatNetwork(self.net.network());
+        try self.vat.init(alloc, &self.index);
+
+        const d_network = self.dummy.vat_network orelse return error.NoVatNetwork;
+        var introduction = try d_network.mintIntroduction(&self.dummy, nonce);
+        defer introduction.deinit(alloc);
+        self.token = try alloc.dupe(u8, introduction.to_await);
+
+        _ = try self.vat.owner.setBootstrap(.{ .ctx = &self.introducer, .on_call = Introducer.onCall });
+        var iprobe = CapImportProbe{};
+        _ = try self.vat.remote.sendBootstrap(&iprobe, CapImportProbe.onReturn);
+        const introducer_import = iprobe.import_id orelse return error.IntroducerBootstrapFailed;
+        var pprobe = CapImportProbe{};
+        _ = try self.vat.remote.sendCall(introducer_import, 0x1234_5678_9abc_def0, 0, &pprobe, null, CapImportProbe.onReturn);
+        _ = pprobe.import_id orelse return error.PromiseNotImported;
+        const promise_export = self.introducer.promise_export_id orelse return error.PromiseNotMinted;
+        try self.vat.owner.resolvePromiseExportToImport(promise_export, self.vat.carol_import);
+
+        var token_msg = try message.Message.initUnvalidated(alloc, self.token);
+        defer token_msg.deinit();
+        const recipient = try token_msg.getRootAnyPointer();
+        self.provide_frame = try buildProvideFrame(alloc, provide_qid, .{
+            .tag = .importedCap,
+            .imported_cap = promise_export,
+            .promised_answer = null,
+        }, recipient);
+    }
+
+    fn deinitAll(self: *L17OomFixture) void {
+        self.allocator.free(self.provide_frame);
+        self.allocator.free(self.token);
+        self.vat.deinitAll();
+        self.dummy.deinit();
+        self.net.deinit();
+        self.index.deinit();
+    }
+};
+
+test "L17 OOM: a failed receiverHosted Provide registration rolls the import pin back to zero residue" {
+    const base = std.testing.allocator;
+
+    var window_start: usize = 0;
+    var window_end: usize = 0;
+
+    // Pass 1: record the allocation window of handleFrame(provide).
+    {
+        var failing = std.testing.FailingAllocator.init(base, .{});
+        const alloc = failing.allocator();
+        var fx: L17OomFixture = undefined;
+        try fx.init(alloc, "l17-oom-provide", 97);
+        defer fx.deinitAll();
+
+        window_start = failing.alloc_index;
+        try fx.vat.owner.handleFrame(fx.provide_frame);
+        window_end = failing.alloc_index;
+
+        // The success path really took the pin (otherwise this sweep probes
+        // nothing).
+        const entry = fx.vat.owner.caps.imports.get(fx.vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+    }
+    try std.testing.expect(window_end > window_start);
+
+    // Pass 2: inject one failure at every index inside the window.
+    var fail_index = window_start;
+    while (fail_index < window_end) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(base, .{ .fail_index = fail_index });
+        const alloc = failing.allocator();
+        var fx: L17OomFixture = undefined;
+        try fx.init(alloc, "l17-oom-provide", 97);
+        defer fx.deinitAll();
+
+        if (fx.vat.owner.handleFrame(fx.provide_frame)) |_| {
+            // Allocation pattern shifted; this index no longer fails inside
+            // the provide path. The success state drains at deinit.
+        } else |_| {
+            // THE PROBES: no half-registered residue anywhere, and the pin
+            // ladder rolled ITS arm back — the import survives with its wire
+            // ref, its promise pin, and NO handoff pin or deferred tally.
+            try std.testing.expectEqual(@as(usize, 0), fx.index.by_key.count());
+            try std.testing.expectEqual(@as(usize, 0), fx.vat.owner.provisions_by_question.count());
+            try std.testing.expectEqual(@as(usize, 0), fx.vat.owner.provides_by_question.count());
+            try std.testing.expectEqual(@as(usize, 0), fx.vat.owner.provides_by_key.count());
+            const entry = fx.vat.owner.caps.imports.get(fx.vat.carol_import) orelse return error.ImportDestroyedByOom;
+            try std.testing.expectEqual(@as(u32, 1), entry.ref_count);
+            try std.testing.expectEqual(@as(u32, 1), entry.promise_ref_count);
+            try std.testing.expectEqual(@as(u32, 0), entry.handoff_pin_count);
+            try std.testing.expectEqual(@as(u32, 0), entry.deferred_release);
+        }
+    }
+}
+
+test "L17 OOM: a failed receiverHosted serve rolls the serve-time pin back (Provide-time pin intact)" {
+    const base = std.testing.allocator;
+
+    var window_start: usize = 0;
+    var window_end: usize = 0;
+
+    // Pass 1: register the provide successfully, then record the allocation
+    // window of the ACCEPT (the serve path: pin + proxy mint + Return).
+    {
+        var failing = std.testing.FailingAllocator.init(base, .{});
+        const alloc = failing.allocator();
+        var fx: L17OomFixture = undefined;
+        try fx.init(alloc, "l17-oom-serve", 98);
+        defer fx.deinitAll();
+        var capture = FrameCapture{ .allocator = alloc };
+        defer capture.deinit();
+        var accept_peer = Peer.initDetached(alloc);
+        accept_peer.disableThreadAffinity();
+        defer accept_peer.deinit();
+        accept_peer.setSendFrameOverride(&capture, FrameCapture.send);
+        try accept_peer.attachProvisionIndex(&fx.index);
+
+        try fx.vat.owner.handleFrame(fx.provide_frame);
+
+        var token_msg = try message.Message.initUnvalidated(alloc, fx.token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(alloc);
+        defer builder.deinit();
+        try builder.buildAccept(980, provision, null);
+        const accept_frame = try builder.finish();
+        defer alloc.free(accept_frame);
+
+        window_start = failing.alloc_index;
+        try accept_peer.handleFrame(accept_frame);
+        window_end = failing.alloc_index;
+
+        // The serve really happened (this is also the pre-lift RED).
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), capture.returnFor(980));
+        const entry = fx.vat.owner.caps.imports.get(fx.vat.carol_import) orelse return error.ImportGone;
+        try std.testing.expectEqual(@as(u32, 2), entry.handoff_pin_count);
+    }
+    try std.testing.expect(window_end > window_start);
+
+    // Pass 2: inject one failure at every index inside the serve window.
+    var fail_index = window_start;
+    while (fail_index < window_end) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(base, .{ .fail_index = fail_index });
+        const alloc = failing.allocator();
+        var fx: L17OomFixture = undefined;
+        try fx.init(alloc, "l17-oom-serve", 98);
+        defer fx.deinitAll();
+        var capture = FrameCapture{ .allocator = alloc };
+        defer capture.deinit();
+        var accept_peer = Peer.initDetached(alloc);
+        accept_peer.disableThreadAffinity();
+        defer accept_peer.deinit();
+        accept_peer.setSendFrameOverride(&capture, FrameCapture.send);
+        try accept_peer.attachProvisionIndex(&fx.index);
+
+        try fx.vat.owner.handleFrame(fx.provide_frame);
+
+        var token_msg = try message.Message.initUnvalidated(alloc, fx.token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(alloc);
+        defer builder.deinit();
+        try builder.buildAccept(980, provision, null);
+        const accept_frame = try builder.finish();
+        defer alloc.free(accept_frame);
+
+        const serve_result = accept_peer.handleFrame(accept_frame);
+        const served = if (serve_result) |_|
+            (capture.returnFor(980) orelse protocol.ReturnTag.exception) == .results
+        else |_|
+            false;
+        if (!served) {
+            // THE PROBES: the serve-time pin rolled back (the Provide-time
+            // pin alone remains), no proxy state leaked on either peer, and
+            // nothing was queued behind the failure.
+            const entry = fx.vat.owner.caps.imports.get(fx.vat.carol_import) orelse return error.ImportDestroyedByOom;
+            try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+            try std.testing.expectEqual(@as(usize, 0), fx.vat.owner.cross_peer_proxy_links.items.len);
+            try std.testing.expectEqual(@as(usize, 0), accept_peer.exports.count());
+            try std.testing.expectEqual(@as(usize, 0), fx.index.queued_accept_count);
+        }
+    }
 }
 
 // ============================================================================
