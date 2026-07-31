@@ -139,41 +139,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrangement could silently under-test rollback paths on any platform where
   growth happens in place.
 
-- **A lane that actually executes an `std.Io` backend selector.** The
-  `evented-check` job ran `zig build -Dio-backend=evented check`, which verified
-  nothing that plain `zig build check` did not already: `-Dio-backend` is a
-  `[]const u8` compared at *runtime* by `io_backend.parseKind`, so all three
-  arms of `Backend.init` are semantically analysed in every configuration.
-  Ablation-proven — breaking the `.evented` arm turns plain `zig build check`
-  red with no flag passed at all.
-
-  What was missing was any lane that *executes* a selector. `just
-  check-selector` / `zig build -Dio-backend=threaded e2e-self` now runs the RPC
-  e2e over an explicitly chosen backend, in CI and in `just ci`. Its own
-  ablation: making `parseKind("threaded")` return null leaves the old compile
-  check **green** and turns the new lane red. `.threaded` is the only selector
-  that can carry RPC today — see the Evented note above. The compile check is
-  kept as a cheap cross-check that the evented selector still builds.
-
-### Known issues
-
-- **`L4 Join proxy relay rolls back state under OOM injection` fails under
-  ReleaseSafe on Linux and Windows.** Found by attempting to promote the CI
-  ReleaseSafe lane from its ten-binary subset to the full suite. The full suite
-  passes on macOS at 1291/1291 and in Debug on every tier, but this one test
-  fails consistently — not flakily — on both `ubuntu-latest` and
-  `windows-latest` under ReleaseSafe. It drives
-  `std.testing.checkAllAllocationFailures`, so the likely shape is an OOM
-  rollback path whose behaviour depends on an allocation sequence that
-  optimization changes.
-
-  The promotion is therefore **not** in this release; the lane still runs the
-  subset, which leaves most of the RPC runtime (peer, caps, promises, vat,
-  integration) unexecuted with safety checks on in an optimized build. Recorded
-  here rather than left as a quietly narrow gate. The promotion itself is
-  ablation-verified and ready: a deliberately failing assertion in
-  `tests/rpc/peer/rpc_peer_test.zig` leaves `zig build test-release-safe` green
-  and turns `zig build test -Doptimize=ReleaseSafe` red.
+- **The `receiverHosted` cross-peer fail-closed arms are pinned by tests.** Both
+  sites that answer a cross-peer Level-3 `Accept` with
+  `CrossPeerReceiverHostedTargetUnsupported` — the stored `.local` target whose
+  origin decodes to `receiverHosted`, and the owner-side re-resolution of a
+  stored `.promised` target that lands on `.imported` — had **zero** test
+  coverage anywhere in the repo. The lift that will eventually replace them
+  would have been rewriting an arm with no regression net under it. Two tests
+  now pin the exception reason exactly, plus leak-free teardown and no wedged
+  state on either peer. Ablation-verified per site: changing either
+  `return error.…` reddens exactly one test on the reason string, so neither
+  test rides on the other's site.
 
 - **The hardening gate now scans the compiler plugin.** `unsafe_dirs` covered
   `src/serialization`, `src/rpc` and `src/wasm` but not `src/capnpc-zig`, so
