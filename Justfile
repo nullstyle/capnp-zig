@@ -174,6 +174,7 @@ ci-quic:
     just test-rpc-quic
     just test-docs-snippets-quic
     just test-quic-full
+    just check-quic-not-noop
 
 # The FULL suite against the QUIC library ROOT. `-Dquic=true` swaps the root to
 # src/lib_quic.zig, and the targeted lanes above never compile the non-QUIC
@@ -181,6 +182,39 @@ ci-quic:
 # root through an entire release. Mirrors the CI job of the same shape.
 test-quic-full:
     zig build -Dquic=true test --summary all
+
+# Assert the QUIC lane actually BUILT something, rather than trusting its exit
+# code.
+#
+# build.zig now resolves quic-zig with `try b.dependencyLazy(...)`, so an
+# unresolved dependency propagates out of `build` instead of yielding a null
+# module -- which makes "quic enabled but no quic steps" unrepresentable. This
+# recipe is the belt-and-braces for the day someone reintroduces an
+# `orelse null`: back when the module could be null, every QUIC step vanished
+# from the graph and `-Dquic=true test-rpc-quic` exited 0 having compiled
+# nothing. The distinguishing signal is the STEP COUNT, not the status:
+# healthy is 13 steps, the silent no-op was 1.
+#
+# Deliberately a floor, not an equality -- adding QUIC tests raises the count,
+# and only a collapse toward 1 is the failure being detected.
+check-quic-not-noop:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(zig build -Dquic=true test-rpc-quic --summary all 2>&1)"
+    line="$(printf '%s\n' "$out" | grep -oE 'Build Summary: [0-9]+/[0-9]+ steps succeeded' | tail -1)"
+    if [ -z "$line" ]; then
+      printf '%s\n' "$out" | tail -20
+      echo "ERROR: no Build Summary line; cannot prove the QUIC lane did any work" >&2
+      exit 1
+    fi
+    total="$(printf '%s' "$line" | sed -E 's|.*/([0-9]+) steps succeeded|\1|')"
+    if [ "$total" -lt 5 ]; then
+      echo "ERROR: QUIC lane built only ${total} steps ($line)." >&2
+      echo "       That is the silent no-op shape: quic-zig did not resolve, so every" >&2
+      echo "       QUIC step was omitted and the lane passed while compiling nothing." >&2
+      exit 1
+    fi
+    echo "QUIC lane did real work: ${line}"
 
 # CI gate (format, compile, docs, tests, QUIC, and interop e2e)
 ci:

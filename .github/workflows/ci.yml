@@ -233,6 +233,15 @@ jobs:
       - name: Run the full suite against the QUIC library root
         run: zig build -Dquic=true test --summary all
 
+      # Proves the lanes above did real work rather than passing vacuously.
+      # build.zig resolves quic-zig with `try b.dependencyLazy(...)`, so an
+      # unresolved dependency now propagates out of `build`; before that, a null
+      # module silently dropped every QUIC step and the lane exited 0 having
+      # compiled nothing. Asserts on the step COUNT, which is the only signal
+      # that distinguishes the two.
+      - name: The QUIC lane must not be a silent no-op
+        run: just check-quic-not-noop
+
       - name: Compile QUIC documentation snippet fixtures
         run: zig build -Dquic=true test-docs-snippets-quic --summary all
 

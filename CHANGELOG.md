@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every QUIC gate could pass while compiling zero QUIC code.** `build.zig`
+  resolved quic-zig with the deprecated
+  `b.lazyDependency("quic_zig", ...) orelse break :blk null` and `build`
+  returned `void`. `std.Build.runPackageScript` only fetches unresolved lazy
+  dependencies and re-runs the configure phase when `build` returns an ERROR —
+  a `build` that returns normally proceeds straight to the make phase with
+  whatever graph it managed to build. So an unresolved quic-zig produced a null
+  module, `addQuicImport` no-opped, all four QUIC test steps were omitted, and
+  `-Dquic=true check`, `test-rpc-quic` and `test` each exited 0 having built
+  nothing. `just ci-quic`, the CI QUIC job and `release-preflight` were vacuous
+  together, and the only visible difference was the step count: `1/1 steps
+  succeeded` against a healthy `13/13`.
+
+  `build` now returns `!void` and uses `try b.dependencyLazy(...)`, the
+  documented idiom — the error propagates, the toolchain fetches and retries,
+  and "QUIC enabled but no QUIC steps" becomes unrepresentable rather than
+  merely unlikely. Both resolution sites (debug and the ReleaseSafe lane) are
+  converted.
+
+  Belt-and-braces for the day someone reintroduces an `orelse null`: a new
+  `just check-quic-not-noop` asserts the lane's step count, wired into
+  `ci-quic` and run as its own CI step. Ablation-proven — restoring the old
+  swallowing shape leaves `zig build -Dquic=true test-rpc-quic` exiting 0 while
+  the assertion fails naming the cause.
+
+  This also corrects the record: commit 6dd903d attributed the false-green
+  after the quic-zig bump to a stale `.zig-cache`. That was never established;
+  this is the mechanism, and it was a standing property of the build rather
+  than a cache artifact.
+
 ## [0.9.0] - 2026-07-31
 
 Reachability and defaults. v0.8.0 shipped the schema-free canonicalizer

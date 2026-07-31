@@ -101,7 +101,20 @@ fn addQuicImport(module: *std.Build.Module, quic_zig_module: ?*std.Build.Module)
     if (quic_zig_module) |m| module.addImport("quic_zig", m);
 }
 
-pub fn build(b: *std.Build) void {
+/// Returns `!void` so `error.LazyDependencyNeeded` can propagate.
+///
+/// This is load-bearing, not style. `std.Build.runPackageScript` only fetches
+/// unresolved lazy dependencies and re-runs the configure phase when `build`
+/// returns an ERROR; a `build` that returns normally goes straight to the make
+/// phase with whatever graph it managed to construct. This file previously
+/// swallowed the unresolved case (`b.lazyDependency(...) orelse break :blk
+/// null`) and returned void, so `-Dquic=true` silently produced a graph with
+/// NO quic steps in it: `check`, `test-rpc-quic` and `test` all exited 0 while
+/// compiling zero QUIC code, and `just ci-quic`, the CI QUIC job and
+/// `release-preflight` were no-ops together. Measured, before the fix:
+/// `-Dquic=true test-rpc-quic --summary all` reported `1/1 steps succeeded`
+/// against a healthy `13/13`.
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -116,13 +129,17 @@ pub fn build(b: *std.Build) void {
     // is declared lazy in build.zig.zon so non-QUIC builds neither fetch it
     // nor compile its build.zig; it is only resolved when callers explicitly
     // request the QUIC transport surface.
-    const quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
-        const quic_zig_dep = b.lazyDependency("quic_zig", .{
+    // `dependencyLazy` (not the deprecated `lazyDependency`): when the package
+    // is not yet fetched this returns `error.LazyDependencyNeeded`, which MUST
+    // propagate out of `build` so the toolchain fetches and re-runs. Swallowing
+    // it is what made every QUIC gate a silent no-op.
+    const quic_zig_module: ?*std.Build.Module = if (enable_quic)
+        (try b.dependencyLazy("quic_zig", .{
             .target = target,
             .optimize = optimize,
-        }) orelse break :blk null;
-        break :blk quic_zig_dep.module("quic_zig");
-    } else null;
+        })).module("quic_zig")
+    else
+        null;
 
     // Selects which std.Io backend RPC entry points should construct. See
     // src/io_backend.zig for the full list of accepted spellings; the
@@ -1048,13 +1065,14 @@ pub fn build(b: *std.Build) void {
     test_lib_step.dependOn(&run_lib_tests.step);
 
     const release_safe_optimize: std.builtin.OptimizeMode = .safe;
-    const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic) blk: {
-        const release_safe_quic_zig_dep = b.lazyDependency("quic_zig", .{
+    // Same contract as the debug-mode resolution above: propagate, never swallow.
+    const release_safe_quic_zig_module: ?*std.Build.Module = if (enable_quic)
+        (try b.dependencyLazy("quic_zig", .{
             .target = target,
             .optimize = release_safe_optimize,
-        }) orelse break :blk null;
-        break :blk release_safe_quic_zig_dep.module("quic_zig");
-    } else null;
+        })).module("quic_zig")
+    else
+        null;
     const release_safe_lib_module = b.addModule("capnpc-zig-release-safe", .{
         .root_source_file = b.path(lib_root),
         .target = target,
