@@ -39,9 +39,11 @@
 //                 clean shutdown) via _exit(0).
 //   pipelined-provide, pipelined-provide-chain
 //                 B introduces a still-PIPELINED result cap that re-resolves
-//                 to B's own local cap; the host must refuse the Accept
-//                 fail-closed (CrossPeerReceiverHostedTargetUnsupported).
-//                 See the scenario branch in runDriver for the two shapes.
+//                 to B's own local cap — one the host merely IMPORTS. With
+//                 the receiverHosted lift the host must SERVE the Accept
+//                 (deferred-Release import pinning): the accepted cap works
+//                 and reaches B's local capability. See the scenario branch
+//                 in runDriver for the two shapes.
 //
 // Output: TAP on stdout ("ok N - ..." + "1..N"); exit 0 iff all asserts pass.
 
@@ -465,18 +467,21 @@ public:
   }
 };
 
-class DeadEndImpl final: public capnp::Capability::Server {
-  // B's local capability for the pipelined-provide scenarios. It is the cap
-  // the host ends up re-resolving the provided pipeline to (an IMPORT from
-  // the host's perspective). The Zig host must fail the Accept closed, so
-  // this must never actually be called.
+class LocalNumberImpl final: public Number::Server {
+  // B's local capability for the pipelined-provide scenarios: the cap the
+  // host re-resolves the provided pipeline to (an IMPORT from the host's
+  // perspective). With the receiverHosted lift the host SERVES the Accept by
+  // proxying back to this cap over the introducer leg, so it must answer for
+  // real. Returns 43 — deliberately distinct from host-Carol's 42 — so a
+  // passing call proves the accepted cap reached B's OWN capability, not a
+  // host-side one.
 public:
   int calls = 0;
 
-  DispatchCallResult dispatchCall(uint64_t, uint16_t,
-      capnp::CallContext<capnp::AnyPointer, capnp::AnyPointer>) override {
+  kj::Promise<void> getNumber(GetNumberContext context) override {
     ++calls;
-    KJ_FAIL_REQUIRE("spike dead-end capability must never be invoked");
+    context.getResults().setN(43);
+    return kj::READY_NOW;
   }
 };
 
@@ -543,21 +548,25 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     //   pipelined-provide        held = pipeline of Q2 = echo(bCap). The
     //                            host resolves the promisedAnswer target at
     //                            Provide time to the already-answered Q2's
-    //                            receiverHosted cap (fail-closed site 1).
+    //                            receiverHosted cap (lift site 1: the stored
+    //                            `.local{receiverHosted}` target, pinned at
+    //                            Provide registration).
     //   pipelined-provide-chain  held = pipeline of Q1 = echo(pipeline of
     //                            Q2); the Q1 answer carries a chained
     //                            receiverAnswer{Q2} descriptor, so the host
     //                            stores .promised ops and only re-resolves
-    //                            at ACCEPT time (fail-closed site 2, the
-    //                            .promised -> .imported arm).
+    //                            at ACCEPT time (lift site 2, the
+    //                            .promised -> .imported arm, pinned at serve
+    //                            time).
     //
-    // Both refusals are CURRENT fail-closed behavior: the wire-visible
-    // outcome A must observe is the Accept answered with an exception naming
-    // CrossPeerReceiverHostedTargetUnsupported. Rewrite these asserts when
-    // the receiverHosted lift lands.
-    auto deadEndOwn = kj::heap<DeadEndImpl>();
-    DeadEndImpl& deadEnd = *deadEndOwn;
-    capnp::Capability::Client bCap(kj::mv(deadEndOwn));
+    // With the receiverHosted lift both shapes must be SERVED: the Accept
+    // resolves cleanly and the accepted cap reaches B's OWN capability over
+    // the host's introducer leg (deferred-Release import pinning keeps that
+    // import alive across the handoff window). These cells previously
+    // asserted the fail-closed refusal by name; this is the rewrite.
+    auto localOwn = kj::heap<LocalNumberImpl>();
+    LocalNumberImpl& localNum = *localOwn;
+    capnp::Capability::Client bCap(kj::mv(localOwn));
 
     // Q2: echo(bCap) — sent, NOT awaited. Keep q2p alive so no Finish is
     // sent (the host's recorded answer must survive until the Accept).
@@ -581,38 +590,51 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
 
     // A: fetch the held cap from B; B's answer forces the third-party
     // introduction of the PIPELINED cap (thirdPartyHosted + Provide with a
-    // promisedAnswer target on the B leg).
+    // promisedAnswer target on the B leg). The Response is scoped so the
+    // ONLY surviving ref to the accepted cap is `accepted` — the release
+    // ceremony below must drive a real wire Release.
     capnp::MallocMessageBuilder bIdMsgSpike(8);
     auto bIdSpike = bIdMsgSpike.initRoot<VatId>();
     bIdSpike.setHost("b");
     auto holderCapSpike = rpcA.bootstrap(bIdSpike.asReader());
-    auto resp = holderCapSpike
-        .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
-        .send().wait(ws);
-    Number::Client accepted = readRootCap(resp).castAs<Number>();
+    Number::Client accepted(nullptr);
+    {
+      auto resp = holderCapSpike
+          .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+          .send().wait(ws);
+      accepted = readRootCap(resp).castAs<Number>();
+    }
     tap.ok(true, "A received the introduced third-party cap from B");
 
-    // First use forces the lazy Accept; the host must refuse it fail-closed.
-    // Observe the Accept's own Return via whenResolved() (the unknown-token
-    // pattern) rather than a pipelined call: a call pipelined on the refused
-    // Accept question is a separate surface (empirically the host never
-    // answers it — a known gap), while whenResolved() settles on the Accept
-    // exception itself.
+    // First use forces the lazy Accept; with the lift the host must SERVE
+    // it. whenResolved() settles on the Accept's own Return (the
+    // unknown-token pattern), so a refusal would surface here as a thrown
+    // exception.
     bool threw = false;
-    bool named = false;
     kj::String desc = kj::str("<no exception>");
     KJ_IF_SOME(e, kj::runCatchingExceptions([&]() {
       accepted.whenResolved().wait(ws);
     })) {
       threw = true;
       desc = kj::str(e.getDescription());
-      named = strstr(desc.cStr(), "CrossPeerReceiverHostedTargetUnsupported") != nullptr;
     }
-    printf("# accept outcome: %s\n", desc.cStr());
+    printf("# accept outcome: %s\n", threw ? desc.cStr() : "resolved");
     fflush(stdout);
-    tap.ok(threw, "accepting the pipelined-provided cap failed (Accept refused)");
-    tap.ok(named, "the Accept exception names CrossPeerReceiverHostedTargetUnsupported");
-    tap.ok(deadEnd.calls == 0, "B's local dead-end cap was never invoked");
+    tap.ok(!threw, "accepting the pipelined-provided cap succeeded (Accept served)");
+
+    // The accepted cap WORKS, and it reaches B's own local capability —
+    // 43, not host-Carol's 42.
+    uint32_t n = accepted.getNumberRequest().send().wait(ws).getN();
+    tap.ok(n == 43, "call on the accepted cap returned 43 (B's local cap)");
+    tap.ok(localNum.calls == 1, "B's local capability was invoked exactly once");
+
+    // Release ceremony (the `happy` pattern): drop A's only ref to the
+    // accepted cap and turn the kj loop so the queued Release actually
+    // reaches the host — its side asserts the proxy export died and the
+    // transient handoff state drained.
+    accepted = nullptr;
+    io.provider->getTimer().afterDelay(250 * kj::MILLISECONDS).wait(ws);
+    tap.ok(true, "released the accepted cap and flushed the Release to the host");
 
     tap.plan();
     return tap.failed ? 1 : 0;

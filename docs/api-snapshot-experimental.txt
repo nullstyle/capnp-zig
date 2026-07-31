@@ -29,9 +29,17 @@ capnpc-zig.rpc.caps.descriptors: struct
 capnpc-zig.rpc.caps.inbound: struct
 capnpc-zig.rpc.caps.lifecycle: struct
 capnpc-zig.rpc.caps.outbound: struct
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin.deferred_release: field u32
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin.last_pin_released: field bool
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.HandoffImportUnpin: struct
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.clearThirdPartyHosted: fn (*rpc.caps.lifecycle.CapTable, u32) void
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.deferReleaseWhilePinned: fn (*rpc.caps.lifecycle.CapTable, u32, u32) error{RefCountOverflow}!bool
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.getThirdPartyHosted: fn (*const rpc.caps.lifecycle.CapTable, u32) ?rpc.caps.lifecycle.ThirdPartyHostedRecord
 capnpc-zig.rpc.caps.table.lifecycle.CapTable.markThirdPartyHosted: fn (*rpc.caps.lifecycle.CapTable, u32, []const u8, u32) error{OutOfMemory}!void
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.noteHandoffImportPin: fn (*rpc.caps.lifecycle.CapTable, u32) error{RefCountOverflow,UnknownImport}!void
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.releaseHandoffImportPin: fn (*rpc.caps.lifecycle.CapTable, u32) rpc.caps.lifecycle.CapTable.HandoffImportUnpin
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.removeImportIfFullyReleased: fn (*rpc.caps.lifecycle.CapTable, u32) bool
+capnpc-zig.rpc.caps.table.lifecycle.CapTable.rollbackHandoffImportPin: fn (*rpc.caps.lifecycle.CapTable, u32) void
 capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord.contact_payload: field []u8
 capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord.vine_id: field u32
 capnpc-zig.rpc.caps.table.lifecycle.ThirdPartyHostedRecord: struct
@@ -1111,6 +1119,7 @@ capnpc-zig.rpc.peer.ProvisionIndex.Provision.retain: fn (*rpc.vat.provisions.Pro
 capnpc-zig.rpc.peer.ProvisionIndex.Provision.state: field rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer).Provision.State = .awaiting
 capnpc-zig.rpc.peer.ProvisionIndex.Provision.target: field ?rpc.peer.peer_state_types.ProvideTarget = null
 capnpc-zig.rpc.peer.ProvisionIndex.Provision.target_export_pinned: field bool = false
+capnpc-zig.rpc.peer.ProvisionIndex.Provision.target_import_pinned: field bool = false
 capnpc-zig.rpc.peer.ProvisionIndex.Provision: struct
 capnpc-zig.rpc.peer.ProvisionIndex.ProvisionEmbargo.disembargoed: field bool = false
 capnpc-zig.rpc.peer.ProvisionIndex.ProvisionEmbargo.pending: field ?rpc.vat.provisions.ProvisionIndex(rpc.peer.mod.Peer).PendingAccept = null
