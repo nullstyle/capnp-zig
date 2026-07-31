@@ -240,15 +240,19 @@ Recommended hardening posture:
 - Provide `new_token_key` when you want returning clients to avoid Retry after
   address validation has already succeeded.
 - Leave the preset's listener gates enabled, then tune
-  `max_initials_per_source_per_window`, `max_datagrams_per_window`,
-  `max_bytes_per_window`, and `max_bytes_per_source_per_second` from production
-  telemetry instead of disabling them during load tests.
+  `initial_source_rate_limit`, `listener_datagram_rate_limit`,
+  `listener_byte_rate_limit`, and `source_byte_rate_limit` from production
+  telemetry instead of disabling them during load tests. Each is a three-state
+  `RateLimit`: `.default` (the library recommendation), `.disabled` (opt out),
+  or `.{ .limit = n }`. There is deliberately no `null` — an optional could not
+  distinguish "unset" from "turn this DoS mitigation off", and capnp-zig
+  shipped exactly that confusion before v0.9.0.
 - Keep `max_connection_memory`, `max_message_bytes`,
   `max_outbound_queue_items`, and `max_outbound_queue_bytes` bounded. Raise them
   only with matching application-level size limits.
 - Register `log_callback` or `qlog_callback` for diagnostics in controlled
   environments, and rate-limit exposed log paths with
-  `max_log_events_per_source_per_window`.
+  `log_source_rate_limit`.
 - For native mode, keep the default `NativeOptions` first. If large application
   frames are common, prefer raising `max_pending_data_bytes` within your message
   budget over making every frame inline.

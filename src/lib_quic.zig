@@ -24,6 +24,9 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
+/// Spec-faithful, schema-FREE canonicalization (Experimental). See `lib.zig`.
+pub const canonical = @import("serialization/canonical.zig");
+
 /// Cap'n Proto RPC runtime with TCP plus optional native QUIC transport.
 pub const rpc = @import("rpc/mod_quic.zig");
 
@@ -34,4 +37,25 @@ pub const io_backend = @import("io_backend.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+}
+
+// Same parity contract as `lib_core.zig`, against the third library root.
+// `build.zig` selects THIS root under `-Dquic=true`, so a serialization module
+// added to `lib.zig` alone silently disappears for every QUIC build — which is
+// exactly what happened to `canonical` in v0.8.0 and was not caught because
+// CI's QUIC job runs `test-rpc-quic`, not `-Dquic=true test`.
+//
+// `rpc` and `io_backend` are compared loosely: this root deliberately swaps in
+// `rpc/mod_quic.zig`, and both roots do export `io_backend`.
+test "quic root exposes every serialization export the default root does" {
+    const std = @import("std");
+    const full = @import("lib.zig");
+    inline for (@typeInfo(full).@"struct".decl_names) |name| {
+        if (comptime std.mem.eql(u8, name, "rpc")) continue;
+        if (!@hasDecl(@This(), name)) {
+            @compileError("lib.zig exports '" ++ name ++
+                "' but src/lib_quic.zig does not. Add it there too, or exempt " ++
+                "it here with a reason.");
+        }
+    }
 }

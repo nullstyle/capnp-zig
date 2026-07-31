@@ -205,45 +205,47 @@ test "quic server options propagate quic_zig hardening controls" {
         .local_cid_len = 12,
         .log_callback = captureServerLog,
         .log_user_data = &log_user_data,
-        .max_initials_per_source_per_window = 32,
+        .initial_source_rate_limit = .{ .limit = 32 },
         .source_rate_window_us = 123_000,
         .source_rate_table_capacity = 256,
-        .max_vn_per_source_per_window = 7,
+        .vn_source_rate_limit = .{ .limit = 7 },
         .retry_token_key = retry_key,
         .retry_token_lifetime_us = 456_000,
         .retry_state_table_capacity = 64,
         .new_token_key = new_token_key,
         .new_token_lifetime_us = 789_000,
-        .enable_0rtt = true,
+        .early_data = .without_replay_protection,
         .reveal_close_reason_on_wire = true,
         .max_connection_memory = 4 * 1024 * 1024,
-        .max_datagrams_per_window = 100,
-        .max_bytes_per_window = 64 * 1024,
+        .listener_datagram_rate_limit = .{ .limit = 100 },
+        .listener_byte_rate_limit = .{ .limit = 64 * 1024 },
         .listener_rate_window_us = 42_000,
-        .max_bytes_per_source_per_second = 32 * 1024,
-        .max_log_events_per_source_per_window = 5,
+        .source_byte_rate_limit = .{ .limit = 32 * 1024 },
+        .log_source_rate_limit = .{ .limit = 5 },
     });
 
     try std.testing.expectEqual(@as(u8, 12), config.local_cid_len);
     try std.testing.expect(config.log_callback != null);
     try std.testing.expectEqual(@intFromPtr(&log_user_data), @intFromPtr(config.log_user_data.?));
-    try std.testing.expectEqual(@as(?u32, 32), config.max_initials_per_source_per_window);
+    // `.resolve(default_cap)` is quic-zig's accessor for the effective cap;
+    // passing 0 means "recommended off", so an explicit `.limit` must survive.
+    try std.testing.expectEqual(@as(?u64, 32), config.initial_source_rate_limit.resolve(0));
     try std.testing.expectEqual(@as(u64, 123_000), config.source_rate_window_us);
     try std.testing.expectEqual(@as(u32, 256), config.source_rate_table_capacity);
-    try std.testing.expectEqual(@as(?u32, 7), config.max_vn_per_source_per_window);
+    try std.testing.expectEqual(@as(?u64, 7), config.vn_source_rate_limit.resolve(0));
     try std.testing.expectEqual(retry_key, config.retry_token_key.?);
     try std.testing.expectEqual(@as(u64, 456_000), config.retry_token_lifetime_us);
     try std.testing.expectEqual(@as(u32, 64), config.retry_state_table_capacity);
     try std.testing.expectEqual(new_token_key, config.new_token_key.?);
     try std.testing.expectEqual(@as(u64, 789_000), config.new_token_lifetime_us);
-    try std.testing.expect(config.enable_0rtt);
+    try std.testing.expect(config.early_data == .without_replay_protection);
     try std.testing.expect(config.reveal_close_reason_on_wire);
     try std.testing.expectEqual(@as(u64, 4 * 1024 * 1024), config.max_connection_memory);
-    try std.testing.expectEqual(@as(?u32, 100), config.max_datagrams_per_window);
-    try std.testing.expectEqual(@as(?u64, 64 * 1024), config.max_bytes_per_window);
+    try std.testing.expectEqual(@as(?u64, 100), config.listener_datagram_rate_limit.resolve(0));
+    try std.testing.expectEqual(@as(?u64, 64 * 1024), config.listener_byte_rate_limit.resolve(0));
     try std.testing.expectEqual(@as(u64, 42_000), config.listener_rate_window_us);
-    try std.testing.expectEqual(@as(?u64, 32 * 1024), config.max_bytes_per_source_per_second);
-    try std.testing.expectEqual(@as(?u32, 5), config.max_log_events_per_source_per_window);
+    try std.testing.expectEqual(@as(?u64, 32 * 1024), config.source_byte_rate_limit.resolve(0));
+    try std.testing.expectEqual(@as(?u64, 5), config.log_source_rate_limit.resolve(0));
 }
 
 test "quic production hardening preset enables retry and rate gates" {
@@ -254,7 +256,7 @@ test "quic production hardening preset enables retry and rate gates" {
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
-        .enable_0rtt = true,
+        .early_data = .without_replay_protection,
         .reveal_close_reason_on_wire = true,
     }, .{
         .retry_token_key = retry_key,
@@ -263,19 +265,33 @@ test "quic production hardening preset enables retry and rate gates" {
 
     try std.testing.expectEqual(retry_key, options.retry_token_key.?);
     try std.testing.expectEqual(new_token_key, options.new_token_key.?);
-    try std.testing.expectEqual(@as(?u32, 32), options.max_initials_per_source_per_window);
-    try std.testing.expect(options.max_datagrams_per_window.? > 0);
-    try std.testing.expect(options.max_bytes_per_window.? > 0);
-    try std.testing.expect(options.max_bytes_per_source_per_second.? > 0);
-    try std.testing.expect(!options.enable_0rtt);
+    try std.testing.expectEqual(
+        @as(?u64, quic.default_quic_initial_source_rate_cap),
+        options.initial_source_rate_limit.resolve(0),
+    );
+    try std.testing.expect(options.listener_datagram_rate_limit.resolve(0).? > 0);
+    try std.testing.expect(options.listener_byte_rate_limit.resolve(0).? > 0);
+    try std.testing.expect(options.source_byte_rate_limit.resolve(0).? > 0);
+    // Hardening OVERRIDES an opt-in 0-RTT posture back to disabled: the preset
+    // is the conservative one, and replay-exposed 0-RTT is never part of it.
+    try std.testing.expect(options.early_data == .disabled);
     try std.testing.expect(!options.reveal_close_reason_on_wire);
 
     const config = try quic.serverConfigFromOptions(std.testing.allocator, options);
     try std.testing.expectEqual(retry_key, config.retry_token_key.?);
     try std.testing.expectEqual(new_token_key, config.new_token_key.?);
-    try std.testing.expectEqual(options.max_initials_per_source_per_window, config.max_initials_per_source_per_window);
-    try std.testing.expectEqual(options.max_datagrams_per_window, config.max_datagrams_per_window);
-    try std.testing.expectEqual(options.max_bytes_per_window, config.max_bytes_per_window);
+    try std.testing.expectEqual(
+        options.initial_source_rate_limit.resolve(0),
+        config.initial_source_rate_limit.resolve(0),
+    );
+    try std.testing.expectEqual(
+        options.listener_datagram_rate_limit.resolve(0),
+        config.listener_datagram_rate_limit.resolve(0),
+    );
+    try std.testing.expectEqual(
+        options.listener_byte_rate_limit.resolve(0),
+        config.listener_byte_rate_limit.resolve(0),
+    );
 }
 
 test "quic length-delimited framer handles fragmented and coalesced payloads" {
@@ -1187,7 +1203,7 @@ test "quic server options reject unusable hardening limits" {
         .listen_addr = testListenAddr(),
         .tls_cert_pem = "cert",
         .tls_key_pem = "key",
-        .max_datagrams_per_window = 0,
+        .listener_datagram_rate_limit = .{ .limit = 0 },
     }));
 
     try std.testing.expectError(error.InvalidConfig, quic.serverConfigFromOptions(std.testing.allocator, .{

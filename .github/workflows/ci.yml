@@ -223,6 +223,16 @@ jobs:
       - name: Run QUIC baseline/native transport tests
         run: zig build -Dquic=true test-rpc-quic --summary all
 
+      # The FULL suite under -Dquic=true, because `-Dquic` swaps the library
+      # ROOT (src/lib_quic.zig) and the targeted lanes above never compile the
+      # non-QUIC suites against it. That gap hid a missing `canonical` export
+      # on the QUIC root through an entire release: `zig build test` uses
+      # src/lib.zig, `test-rpc-quic` only touches the transport suites, and
+      # nothing in between ever built e.g. the serialization tests against the
+      # root a QUIC consumer actually gets.
+      - name: Run the full suite against the QUIC library root
+        run: zig build -Dquic=true test --summary all
+
       - name: Compile QUIC documentation snippet fixtures
         run: zig build -Dquic=true test-docs-snippets-quic --summary all
 

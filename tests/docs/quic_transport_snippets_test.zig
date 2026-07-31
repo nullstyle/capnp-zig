@@ -114,11 +114,15 @@ test "quic transport guide server fanout and hardening snippets avoid network se
 
     try std.testing.expectEqual(retry_key, hardened_options.retry_token_key.?);
     try std.testing.expectEqual(new_token_key, hardened_options.new_token_key.?);
-    try std.testing.expect(hardened_options.max_initials_per_source_per_window.? > 0);
-    try std.testing.expect(hardened_options.max_datagrams_per_window.? > 0);
-    try std.testing.expect(hardened_options.max_bytes_per_window.? > 0);
-    try std.testing.expect(hardened_options.max_bytes_per_source_per_second.? > 0);
-    try std.testing.expect(!hardened_options.enable_0rtt);
+    // Production hardening pins every bandwidth/flood ceiling to an EXPLICIT
+    // cap rather than `.default`, because `.default` for the listener and
+    // bandwidth limiters resolves to "off" (the right ceiling is
+    // deployment-specific). `.resolve(0)` therefore has to yield a real cap.
+    try std.testing.expect(hardened_options.initial_source_rate_limit.resolve(0).? > 0);
+    try std.testing.expect(hardened_options.listener_datagram_rate_limit.resolve(0).? > 0);
+    try std.testing.expect(hardened_options.listener_byte_rate_limit.resolve(0).? > 0);
+    try std.testing.expect(hardened_options.source_byte_rate_limit.resolve(0).? > 0);
+    try std.testing.expect(hardened_options.early_data == .disabled);
     try std.testing.expect(!hardened_options.reveal_close_reason_on_wire);
 
     const server_config = try quic.serverConfigFromOptions(std.testing.allocator, hardened_options);

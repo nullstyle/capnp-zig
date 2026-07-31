@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **quic-zig bumped v0.7.0 -> v0.10.0, and the QUIC server options adopt its
+  three-state `RateLimit` / `EarlyData` types.** (Experimental tier.) quic-zig
+  0.10.0 normalized `Server.Config` and froze the names to 1.0; capnp-zig's
+  `ServerOptions` mirrored the old shape 1:1, so the rename lands here too.
+
+  | old `ServerOptions` field | new field |
+  | --- | --- |
+  | `max_initials_per_source_per_window: ?u32` | `initial_source_rate_limit: RateLimit` |
+  | `max_vn_per_source_per_window: ?u32` | `vn_source_rate_limit: RateLimit` |
+  | `max_log_events_per_source_per_window: ?u32` | `log_source_rate_limit: RateLimit` |
+  | `max_datagrams_per_window: ?u32` | `listener_datagram_rate_limit: RateLimit` |
+  | `max_bytes_per_window: ?u64` | `listener_byte_rate_limit: RateLimit` |
+  | `max_bytes_per_source_per_second: ?u64` | `source_byte_rate_limit: RateLimit` |
+  | `enable_0rtt: bool` + `early_data_anti_replay: ?*T` | `early_data: EarlyData` |
+
+  **Migration:** `null` -> `.disabled`; `n` -> `.{ .limit = n }`; omit the field
+  for `.default`. `.enable_0rtt = true` + a tracker ->
+  `.early_data = .{ .with_anti_replay = &t }`; `enable_0rtt = true` alone ->
+  `.early_data = .without_replay_protection`; omit to keep 0-RTT off. Read an
+  effective cap with `.resolve(default_cap)` (null = limiter off). `RateLimit`
+  and `EarlyData` are re-exported from `rpc.transport.quic`, so callers need no
+  direct quic-zig import. Renamed constants:
+  `default_quic_max_vn_per_source_per_window` ->
+  `default_quic_vn_source_rate_cap`,
+  `default_quic_max_log_events_per_source_per_window` ->
+  `default_quic_log_source_rate_cap`, plus a new
+  `default_quic_initial_source_rate_cap`.
+
+### Fixed
+
+- **The QUIC server's Initial-flood DoS mitigation was off by default.**
+  `max_initials_per_source_per_window` defaulted to `null`, and under quic-zig
+  >= 0.3.0 `null` on that knob means *explicitly disable the limiter* — not
+  "unset". capnp-zig mirrored quic-zig's recommended caps for the VN (8) and
+  log-event (16) limiters but left this one at `null`, so every server that did
+  not opt in accepted unbounded Initial packets per source address. quic-zig's
+  0.10.0 notes describe a downstream consumer shipping exactly this
+  misconfiguration "with no compile error and no failing test"; that consumer
+  was capnp-zig. `initial_source_rate_limit` now defaults to `.default`, which
+  applies the recommended 32-per-window cap. Servers that genuinely want it off
+  must now say `.disabled`.
+
+- **`canonical` was missing from the QUIC library root.** `-Dquic=true` selects
+  `src/lib_quic.zig`, which never gained the export v0.8.0 added to
+  `src/lib.zig` — so a QUIC-enabled consumer could not reach the canonicalizer
+  at all. Found by the parity guard added for `lib_core.zig`, once the full
+  suite was finally built against the QUIC root. `lib_quic.zig` now carries the
+  same comptime guard, and CI runs `-Dquic=true test` (the whole suite, not just
+  the transport lanes) so a third root cannot silently diverge again: the
+  targeted `test-rpc-quic` lane never compiled the serialization suites against
+  the root a QUIC consumer actually gets.
+
 ### Fixed
 
 - **`capnpc-zig-core` now exports `canonical`.** v0.8.0 added the schema-free

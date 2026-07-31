@@ -4,8 +4,8 @@
     .minimum_zig_version = "0.17.0-dev.1509",
     .dependencies = .{
         .quic_zig = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/28f1d96016f98115ee9f1484b2a54bd942a3da0e.tar.gz",
-            .hash = "quic_zig-0.7.0-jMbGHQHoNQA8cEl9q29Z398oVIsKsdoBSHzU4IOD0Lp6",
+            .url = "https://github.com/nullstyle/quic-zig/archive/a113cd9c1910ad47317c9df7fd45ecfc52bb2115.tar.gz",
+            .hash = "quic_zig-0.10.0-jMbGHfXQJQA4jqdbJtcW7cMSNWCuLLM4GVHW2XYow_zF",
             .lazy = true,
         },
     },

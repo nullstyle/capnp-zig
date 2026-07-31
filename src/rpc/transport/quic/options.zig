@@ -36,13 +36,43 @@ pub const default_native_data_stream_completion_deadline_us: u64 = 30 * 1_000_00
 pub const default_quic_local_cid_len: u8 = 8;
 pub const default_quic_source_rate_window_us: u64 = 1_000_000;
 pub const default_quic_source_rate_table_capacity: u32 = 4096;
-pub const default_quic_max_vn_per_source_per_window: ?u32 = 8;
+/// The library-recommended per-source VN cap, mirrored from quic-zig's
+/// `Server.Config.default_vn_source_rate_cap`. Kept as a named constant
+/// because it is part of capnp-zig's documented posture, not just a
+/// pass-through.
+pub const default_quic_vn_source_rate_cap: u64 = quic_zig.Server.Config.default_vn_source_rate_cap;
 pub const default_quic_retry_token_lifetime_us: u64 = 10_000_000;
 pub const default_quic_retry_state_table_capacity: u32 = 4096;
 pub const default_quic_new_token_lifetime_us: u64 = 24 * 3600 * 1_000_000;
 pub const default_quic_max_connection_memory: u64 = quic_zig.conn.state.default_max_connection_memory;
 pub const default_quic_listener_rate_window_us: u64 = 1_000_000;
-pub const default_quic_max_log_events_per_source_per_window: ?u32 = 16;
+/// Recommended per-source log-event cap
+/// (quic-zig `Server.Config.default_log_source_rate_cap`).
+pub const default_quic_log_source_rate_cap: u64 = quic_zig.Server.Config.default_log_source_rate_cap;
+
+/// Recommended per-source Initial-flood cap
+/// (quic-zig `Server.Config.default_initial_source_rate_cap`). capnp-zig had
+/// no constant for this before v0.9.0 and defaulted the knob to `null`, which
+/// under quic-zig >= 0.3.0 meant "explicitly disable this DoS mitigation".
+pub const default_quic_initial_source_rate_cap: u64 = quic_zig.Server.Config.default_initial_source_rate_cap;
+
+/// Three-state rate/quota control, re-exported from quic-zig so callers do not
+/// have to reach into the dependency: `.default` (the library recommendation),
+/// `.disabled` (opt out), `.{ .limit = n }` (explicit cap).
+///
+/// This replaced `?u32`/`?u64` knobs in v0.9.0. The optional shape could not
+/// distinguish "unset" from "deliberately disable a DoS mitigation", and
+/// capnp-zig shipped exactly that confusion: `max_initials_per_source_per_window`
+/// defaulted to `null`, silently turning the Initial-flood limiter OFF for
+/// every server that did not override it.
+pub const RateLimit = quic_zig.Server.RateLimit;
+
+/// 0-RTT posture, re-exported from quic-zig: `.disabled`,
+/// `.{ .with_anti_replay = &tracker }`, or `.without_replay_protection`.
+/// Replaces the old `enable_0rtt` + `early_data_anti_replay` pair, where
+/// `true` with a forgotten tracker was a valid config that shipped
+/// replay-exposed 0-RTT.
+pub const EarlyData = quic_zig.Server.EarlyData;
 
 /// Single-session compatibility capacity used by `Connection.initServer`.
 pub const compatibility_max_concurrent_sessions: u32 = 1;
@@ -145,24 +175,29 @@ pub const ServerOptions = struct {
     qlog_user_data: ?*anyopaque = null,
     log_callback: ?ServerLogCallback = null,
     log_user_data: ?*anyopaque = null,
-    max_initials_per_source_per_window: ?u32 = null,
+    /// Per-source Initial-flood limiter. `.default` applies quic-zig's
+    /// recommended cap (32/window) — note this is a BEHAVIOUR CHANGE from the
+    /// pre-v0.9.0 `?u32 = null` default, which disabled the limiter outright.
+    initial_source_rate_limit: RateLimit = .default,
     source_rate_window_us: u64 = default_quic_source_rate_window_us,
     source_rate_table_capacity: u32 = default_quic_source_rate_table_capacity,
-    max_vn_per_source_per_window: ?u32 = default_quic_max_vn_per_source_per_window,
+    vn_source_rate_limit: RateLimit = .default,
     retry_token_key: ?ServerRetryTokenKey = null,
     retry_token_lifetime_us: u64 = default_quic_retry_token_lifetime_us,
     retry_state_table_capacity: u32 = default_quic_retry_state_table_capacity,
     new_token_key: ?ServerNewTokenKey = null,
     new_token_lifetime_us: u64 = default_quic_new_token_lifetime_us,
-    enable_0rtt: bool = false,
-    early_data_anti_replay: ?*ServerAntiReplayTracker = null,
+    early_data: EarlyData = .disabled,
     reveal_close_reason_on_wire: bool = false,
     max_connection_memory: u64 = default_quic_max_connection_memory,
-    max_datagrams_per_window: ?u32 = null,
-    max_bytes_per_window: ?u64 = null,
+    /// Listener-wide and per-source bandwidth ceilings. quic-zig's `.default`
+    /// for these three is "off" — the right ceiling is deployment-specific —
+    /// so this is not a behaviour change from the old `null`.
+    listener_datagram_rate_limit: RateLimit = .default,
+    listener_byte_rate_limit: RateLimit = .default,
     listener_rate_window_us: u64 = default_quic_listener_rate_window_us,
-    max_bytes_per_source_per_second: ?u64 = null,
-    max_log_events_per_source_per_window: ?u32 = default_quic_max_log_events_per_source_per_window,
+    source_byte_rate_limit: RateLimit = .default,
+    log_source_rate_limit: RateLimit = .default,
     receive_timeout: std.Io.Duration = std.Io.Duration.fromMilliseconds(5),
     udp_rx_buffer_size: usize = default_udp_rx_buffer_size,
     udp_tx_buffer_size: usize = default_udp_tx_buffer_size,
@@ -178,13 +213,13 @@ pub const ServerOptions = struct {
 pub const ServerProductionHardening = struct {
     retry_token_key: ServerRetryTokenKey,
     new_token_key: ?ServerNewTokenKey = null,
-    max_initials_per_source_per_window: u32 = 32,
-    max_vn_per_source_per_window: ?u32 = default_quic_max_vn_per_source_per_window,
-    max_datagrams_per_window: u32 = 100_000,
-    max_bytes_per_window: u64 = 128 * 1024 * 1024,
-    max_bytes_per_source_per_second: u64 = 16 * 1024 * 1024,
+    initial_source_rate_limit: RateLimit = .{ .limit = default_quic_initial_source_rate_cap },
+    vn_source_rate_limit: RateLimit = .default,
+    listener_datagram_rate_limit: RateLimit = .{ .limit = 100_000 },
+    listener_byte_rate_limit: RateLimit = .{ .limit = 128 * 1024 * 1024 },
+    source_byte_rate_limit: RateLimit = .{ .limit = 16 * 1024 * 1024 },
     max_connection_memory: u64 = default_quic_max_connection_memory,
-    max_log_events_per_source_per_window: ?u32 = default_quic_max_log_events_per_source_per_window,
+    log_source_rate_limit: RateLimit = .default,
 };
 
 pub fn withProductionServerHardening(
@@ -194,15 +229,14 @@ pub fn withProductionServerHardening(
     var out = options;
     out.retry_token_key = hardening.retry_token_key;
     out.new_token_key = hardening.new_token_key;
-    out.max_initials_per_source_per_window = hardening.max_initials_per_source_per_window;
-    out.max_vn_per_source_per_window = hardening.max_vn_per_source_per_window;
-    out.max_datagrams_per_window = hardening.max_datagrams_per_window;
-    out.max_bytes_per_window = hardening.max_bytes_per_window;
-    out.max_bytes_per_source_per_second = hardening.max_bytes_per_source_per_second;
+    out.initial_source_rate_limit = hardening.initial_source_rate_limit;
+    out.vn_source_rate_limit = hardening.vn_source_rate_limit;
+    out.listener_datagram_rate_limit = hardening.listener_datagram_rate_limit;
+    out.listener_byte_rate_limit = hardening.listener_byte_rate_limit;
+    out.source_byte_rate_limit = hardening.source_byte_rate_limit;
     out.max_connection_memory = hardening.max_connection_memory;
-    out.max_log_events_per_source_per_window = hardening.max_log_events_per_source_per_window;
-    out.enable_0rtt = false;
-    out.early_data_anti_replay = null;
+    out.log_source_rate_limit = hardening.log_source_rate_limit;
+    out.early_data = .disabled;
     out.reveal_close_reason_on_wire = false;
     return out;
 }
@@ -224,24 +258,23 @@ pub fn serverConfigFromOptions(
         .qlog_user_data = options.qlog_user_data,
         .log_callback = options.log_callback,
         .log_user_data = options.log_user_data,
-        .max_initials_per_source_per_window = options.max_initials_per_source_per_window,
+        .initial_source_rate_limit = options.initial_source_rate_limit,
         .source_rate_window_us = options.source_rate_window_us,
         .source_rate_table_capacity = options.source_rate_table_capacity,
-        .max_vn_per_source_per_window = options.max_vn_per_source_per_window,
+        .vn_source_rate_limit = options.vn_source_rate_limit,
         .retry_token_key = options.retry_token_key,
         .retry_token_lifetime_us = options.retry_token_lifetime_us,
         .retry_state_table_capacity = options.retry_state_table_capacity,
         .new_token_key = options.new_token_key,
         .new_token_lifetime_us = options.new_token_lifetime_us,
-        .enable_0rtt = options.enable_0rtt,
-        .early_data_anti_replay = options.early_data_anti_replay,
+        .early_data = options.early_data,
         .reveal_close_reason_on_wire = options.reveal_close_reason_on_wire,
         .max_connection_memory = options.max_connection_memory,
-        .max_datagrams_per_window = options.max_datagrams_per_window,
-        .max_bytes_per_window = options.max_bytes_per_window,
+        .listener_datagram_rate_limit = options.listener_datagram_rate_limit,
+        .listener_byte_rate_limit = options.listener_byte_rate_limit,
         .listener_rate_window_us = options.listener_rate_window_us,
-        .max_bytes_per_source_per_second = options.max_bytes_per_source_per_second,
-        .max_log_events_per_source_per_window = options.max_log_events_per_source_per_window,
+        .source_byte_rate_limit = options.source_byte_rate_limit,
+        .log_source_rate_limit = options.log_source_rate_limit,
     };
 }
 
@@ -264,18 +297,27 @@ fn validateServerOptions(options: ServerOptions) !void {
         return error.InvalidConfig;
     }
     if (options.listener_rate_window_us == 0) return error.InvalidConfig;
-    if (options.max_initials_per_source_per_window) |cap| if (cap == 0) return error.InvalidConfig;
-    if (options.max_vn_per_source_per_window) |cap| if (cap == 0) return error.InvalidConfig;
+    // quic-zig rejects `.{ .limit = 0 }` in `Server.init`; fail here too so a
+    // bad cap is caught at the capnp-zig boundary, as it was before v0.9.0.
+    inline for (.{
+        options.initial_source_rate_limit,
+        options.vn_source_rate_limit,
+        options.listener_datagram_rate_limit,
+        options.listener_byte_rate_limit,
+        options.source_byte_rate_limit,
+        options.log_source_rate_limit,
+    }) |rl| {
+        switch (rl) {
+            .limit => |cap| if (cap == 0) return error.InvalidConfig,
+            .default, .disabled => {},
+        }
+    }
     if (options.retry_token_key != null) {
         if (options.retry_token_lifetime_us == 0 or options.retry_state_table_capacity == 0) {
             return error.InvalidConfig;
         }
     }
     if (options.new_token_key != null and options.new_token_lifetime_us == 0) return error.InvalidConfig;
-    if (options.max_datagrams_per_window) |cap| if (cap == 0) return error.InvalidConfig;
-    if (options.max_bytes_per_window) |cap| if (cap == 0) return error.InvalidConfig;
-    if (options.max_bytes_per_source_per_second) |cap| if (cap == 0) return error.InvalidConfig;
-    if (options.max_log_events_per_source_per_window) |cap| if (cap == 0) return error.InvalidConfig;
     try validateNativeOptions(options.mode, options.native, options.max_message_bytes);
 }
 
