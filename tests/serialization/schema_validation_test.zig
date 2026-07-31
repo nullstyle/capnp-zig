@@ -48,15 +48,24 @@ fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorR
 }
 
 fn capnpConvertCanonical(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    return capnpConvert(allocator, input, "binary:canonical", "TestAllTypes");
+}
+
+fn capnpConvert(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    conversion: []const u8,
+    type_name: []const u8,
+) ![]u8 {
     const io = std.testing.io;
     const argv = [_][]const u8{
         "capnp",
         "convert",
-        "binary:canonical",
+        conversion,
         "--no-standard-import",
         "-Itests/capnp_testdata",
         "tests/capnp_testdata/test.capnp",
-        "TestAllTypes",
+        type_name,
     };
 
     var child = std.process.spawn(io, .{
@@ -140,4 +149,44 @@ test "Schema validation and canonicalization (TestAllTypes)" {
     // single segment. The framed payload must contain the flat bytes.
     try std.testing.expect(canonical_framed.len >= canonical_flat.len);
     try std.testing.expect(std.mem.indexOf(u8, canonical_framed, canonical_flat) != null);
+}
+
+test "canonicalization keeps a pointer that equals its schema default, matching capnp" {
+    const allocator = std.testing.allocator;
+
+    const request = try loadCodeGeneratorRequest(allocator);
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+
+    const root_node = compare.findStructBySuffix(request.nodes, "TestDefaults") orelse return error.InvalidSchema;
+
+    // Let the reference implementation build the input, so no layout is
+    // hand-computed here: a TestDefaults whose textField is EXPLICITLY set to
+    // "foo" -- which is that field's schema default.
+    const input = try capnpConvert(allocator, "(textField = \"foo\")", "text:binary", "TestDefaults");
+    defer allocator.free(input);
+
+    var msg = try message.Message.init(allocator, input, .{});
+    defer msg.deinit();
+
+    // The reference canonicalizer is SCHEMA-FREE: it cannot know the written
+    // text equals the field default, so its canonical form keeps the pointer.
+    // Ours must agree BY DEFAULT, or canonicalize-and-compare against any
+    // other implementation's output breaks exactly on default-valued fields.
+    const expected = try capnpConvert(allocator, input, "binary:canonical", "TestDefaults");
+    defer allocator.free(expected);
+
+    const ours = try schema_validation.canonicalizeMessageFlat(allocator, &msg, request.nodes, root_node, .{});
+    defer allocator.free(ours);
+
+    try std.testing.expectEqualSlices(u8, expected, ours);
+
+    // The schema-aware omission stays available as an explicit opt-in -- it is
+    // a capnp-zig extension for schema-aware equality, not the spec's
+    // canonical form. With it, the default-equal pointer is nulled and the
+    // output must therefore be strictly smaller.
+    const omitted = try schema_validation.canonicalizeMessageFlat(allocator, &msg, request.nodes, root_node, .{
+        .omit_default_pointers = true,
+    });
+    defer allocator.free(omitted);
+    try std.testing.expect(omitted.len < ours.len);
 }

@@ -1309,7 +1309,7 @@ capnpc-zig.schema.Value: union
 capnpc-zig.schema.stream_result_type_id: const u64
 capnpc-zig.schema: struct
 capnpc-zig.schema_validation.CanonicalizeOptions.nesting_limit: field usize = 64
-capnpc-zig.schema_validation.CanonicalizeOptions.omit_default_pointers: field bool = true
+capnpc-zig.schema_validation.CanonicalizeOptions.omit_default_pointers: field bool = false
 capnpc-zig.schema_validation.CanonicalizeOptions.strict_text_termination: field bool = false
 capnpc-zig.schema_validation.CanonicalizeOptions.traversal_limit_words: field usize = 8388608
 capnpc-zig.schema_validation.CanonicalizeOptions.validate: field bool = true

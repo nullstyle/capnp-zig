@@ -51,6 +51,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the generic `writeReceiverAnswer` left `check-api` **green** — the hole. After:
   the same edit turns it **red** with `Sentinel` visible in the diffed set.
 
+- **`CanonicalizeOptions.omit_default_pointers` now defaults to `false`.** The
+  spec's canonical form is **schema-free**: the reference canonicalizer cannot
+  know a written pointer equals its field's schema default, so it keeps the
+  pointer. Ours defaulted to *nulling* it — a capnp-zig extension — which made
+  canonicalize-and-compare against any other implementation's output diverge
+  precisely on default-valued fields. Proven differentially: a `TestDefaults`
+  with `textField` explicitly set to `"foo"` (its schema default) canonicalizes
+  under `capnp convert binary:canonical` to 24 bytes keeping the text; ours
+  dropped it. The default output is now byte-exact with `capnp`; the omission
+  stays available as an explicit opt-in for schema-aware equality.
+
+  **Migration:** pass `.{ .omit_default_pointers = true }` to keep the old
+  behaviour. No caller inside the repo relied on it — the canonicalizer had no
+  callers at all until this release series added them.
+
 ### Fixed
 
 - **`MessageBuilder.writeTo` and `writePackedTo` were neither type-checked nor

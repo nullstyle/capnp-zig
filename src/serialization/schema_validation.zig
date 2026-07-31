@@ -18,7 +18,15 @@ pub const CanonicalizeOptions = struct {
     traversal_limit_words: usize = 8 * 1024 * 1024,
     nesting_limit: usize = 64,
     strict_text_termination: bool = false,
-    omit_default_pointers: bool = true,
+    /// Null out a pointer field whose content equals its SCHEMA default before
+    /// canonicalizing. This is a capnp-zig extension for schema-aware equality,
+    /// NOT part of the spec's canonical form: the reference canonicalizer is
+    /// schema-free and cannot know a written value equals the field default, so
+    /// it keeps the pointer. Defaults to off so that our output is byte-exact
+    /// with `capnp convert binary:canonical` — with it on, canonicalize-and-
+    /// compare against any other implementation's output diverges precisely on
+    /// default-valued fields (proven by differential test against capnp).
+    omit_default_pointers: bool = false,
     validate: bool = true,
 };
 
