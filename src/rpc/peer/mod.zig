@@ -5588,6 +5588,16 @@ pub const Peer = struct {
     /// orchestration call (byte-identical Returns and error strings); only the
     /// cross-peer arm is new.
     fn handleAcceptWithProvisionIndex(self: *Peer, idx: *ProvisionIndex, accept: protocol.Accept) !void {
+        // Same single-thread contract `attachProvisionIndex` and
+        // `registerProvisionForProvide` enforce: WorkerPool vats are
+        // unsupported, so the index pins itself to the first thread that
+        // touches it. The Accept path touches it as hard as the Provide path
+        // does — the sweep immediately below mutates vat-wide counters and can
+        // unindex provisions — so it must fail the SAME loud way rather than
+        // racing silently. First statement, before anything reads or writes the
+        // index.
+        idx.assertThreadAffinity();
+
         // L9 parked-accept TTL, driven LAZILY from the Accept path and from
         // NOWHERE ELSE. Deliberately not a tick: `on_tick` fires only when the
         // transport poll TIMES OUT, and the tick interval is null unless a

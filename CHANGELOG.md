@@ -139,6 +139,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrangement could silently under-test rollback paths on any platform where
   growth happens in place.
 
+- **The Level-3 index thread-affinity tripwire now covers the Accept path.**
+  `ProvisionIndex.assertThreadAffinity()` pins the index to the first thread
+  that touches it, and was called from `attachProvisionIndex` and the *Provide*
+  path but not the *Accept* path. A vat driven from two threads therefore
+  panicked loudly on a second-thread Provide and raced **silently** on a
+  second-thread Accept. Multi-threaded vats are unsupported; both paths should
+  fail the same way. One assert, ahead of the park sweep and the lookup.
+
+  The test is the real work here, and worth describing: the L3 vat suite calls
+  `index.disableThreadAffinity()` throughout, so anything written on that
+  harness would silently no-op and prove nothing. The new test builds its own
+  index with affinity enabled, attaches by hand (because `attachProvisionIndex`
+  asserts, which would pin the index before the Accept ever arrives and pass
+  vacuously), and is Debug-guarded since the tripwire is Debug-only and
+  `thread_id` is literally `void` in release builds. It compares the pinned id
+  as an *optional* so an ablation reports a mismatch rather than aborting on a
+  null unwrap. Ablation-verified: deleting the assert yields
+  `expected <id>, found null`.
+
 - **Parked Level-3 accepts can now expire (opt-in TTL).** An inbound `Accept`
   whose recipient token matches no provision does not fail — it *parks*, by
   design, because the rendezvous is order-independent. But the token is

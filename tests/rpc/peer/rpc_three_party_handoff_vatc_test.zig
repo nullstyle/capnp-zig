@@ -17,6 +17,7 @@
 //!   Vat A: a_to_b, a_to_c      Vat B: b_to_a, b_to_c      Vat C: c_to_b, c_to_a
 
 const std = @import("std");
+const builtin = @import("builtin");
 const capnpc = @import("capnpc-zig");
 
 const protocol = capnpc.rpc.wire.protocol;
@@ -2844,4 +2845,87 @@ test "L10: a stored .promised target re-resolving to an IMPORT fails closed by t
     // teardown under std.testing.allocator proves the whole vat — both peers,
     // the index, the live answer, the import — still drains leak-free.
     try vat.remote.releaseImport(service_import, 1);
+}
+
+// ============================================================================
+// Thread-affinity contract. WorkerPool vats are unsupported (provisions.zig
+// header, §"Single-threaded"), and the index enforces that by pinning itself
+// to the first thread that touches it. The pin has to be taken on EVERY path
+// that touches the index: attach and Provide took it from the first landing,
+// the Accept path did not — so a second thread's Provide panicked loudly while
+// its Accept raced the sweep and the by_key lookup in silence.
+// ============================================================================
+
+test "L3 affinity: an inbound Accept pins the index, exactly like a Provide does" {
+    // `assertThreadAffinity` is a no-op outside Debug and `thread_id` is
+    // literally `void` there, so the observation does not exist in the
+    // ReleaseSafe/ReleaseFast lanes. The condition is comptime-known, which is
+    // what keeps the body below out of those builds entirely.
+    if (comptime builtin.mode != .debug) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+
+    var capture = FrameCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, FrameCapture.send);
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+    var dummy = Peer.initDetached(allocator);
+    dummy.disableThreadAffinity();
+    defer dummy.deinit();
+    try net.register("affinity-accept", &dummy);
+    dummy.attachVatNetwork(net.network());
+
+    // Index affinity left ENABLED. Every other test in this file (and the
+    // `FrameHost` harness itself) calls `index.disableThreadAffinity()`, on
+    // which this assertion would be a silent no-op proving nothing.
+    var index = ProvisionIndex.init(allocator, .{});
+    defer index.deinit();
+
+    // Attach by hand. `Peer.attachProvisionIndex` asserts affinity itself, so
+    // routing through it would pin the index BEFORE the Accept ever arrived
+    // and make the post-condition below vacuously true. These are its only
+    // other two effects.
+    try index.attached_peers.append(index.allocator, &peer);
+    peer.provision_index = &index;
+    try std.testing.expectEqual(@as(?std.Thread.Id, null), index.thread_id);
+
+    const token = blk: {
+        const d_network = dummy.vat_network orelse return error.NoVatNetwork;
+        var introduction = try d_network.mintIntroduction(&dummy, "affinity-accept");
+        defer introduction.deinit(allocator);
+        break :blk try allocator.dupe(u8, introduction.to_await);
+    };
+    defer allocator.free(token);
+
+    // An Accept for a token no Provide has claimed: it parks, which is the
+    // shortest frame that reaches `handleAcceptWithProvisionIndex` at all.
+    {
+        var token_msg = try message.Message.initUnvalidated(allocator, token);
+        defer token_msg.deinit();
+        const provision = try token_msg.getRootAnyPointer();
+        var builder = protocol.MessageBuilder.init(allocator);
+        defer builder.deinit();
+        try builder.buildAccept(640, provision, null);
+        const frame = try builder.finish();
+        defer allocator.free(frame);
+        try peer.handleFrame(frame);
+    }
+    // It really did run the index-mode Accept path (and mutated the index).
+    try std.testing.expectEqual(@as(usize, 1), index.parked_accept_count);
+
+    // THE PIN. Drop `idx.assertThreadAffinity()` from
+    // `handleAcceptWithProvisionIndex` and this stays null: the index would
+    // then accept its first-ever touch from any thread, and a later Provide
+    // from the vat's real thread would be the one that panicked.
+    // Compared as an OPTIONAL on purpose: with the assert ablated this reports
+    // `expected ..., found null` instead of unwrapping a null and aborting.
+    try std.testing.expectEqual(
+        @as(?std.Thread.Id, std.Thread.getCurrentId()),
+        index.thread_id,
+    );
 }
