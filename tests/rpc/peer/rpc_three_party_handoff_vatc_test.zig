@@ -2986,6 +2986,85 @@ test "L17 V2-M6: wire refs draining between Provide and Accept cannot kill the s
     try harness.expectNoProvideState(&host.peer);
 }
 
+// The recipient does not wait for the Accept's Return before using the
+// capability — it PIPELINES a Call on the Accept question (rpc.c++ always
+// does; the e2e pipelined-provide scenarios hit exactly this). When the
+// Accept is refused, that Call arrives AFTER the refusal already went out, so
+// the queued-call drain in sendReturnException ran before there was anything
+// to drain. Without the failed_answers record the Call parked in
+// pending_promises forever and the C++ recipient hung on a Return that never
+// came. Spec rule: every Call gets exactly one Return; a call pipelined on a
+// failed answer gets (a copy of) that answer's exception.
+test "a Call pipelined on a refused Accept gets the refusal exception, not silence" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    // A refusal that SURVIVES the receiverHosted lift. This test originally
+    // staged a receiverHosted target, which the lift now serves; the
+    // vanished-import shape is the refusal that remains — a site-2 `.promised`
+    // target whose import dies before the Accept, since site 2 takes no
+    // Provide-time pin. What is under test is the broken-pipeline rule, not
+    // which particular refusal produced it.
+    var deferring = DeferringService{};
+    const token = try host.mintToken(allocator, "pipelined-on-refusal");
+    defer allocator.free(token);
+    // The probes live HERE, not inside the staging helper: the staged call's
+    // Return is dropped in flight, so its question is still outstanding when
+    // `vat.deinitAll()` cancels it THROUGH this ctx pointer. Helper locals
+    // would be dead stack by then — a segfault on amd64 under ReleaseSafe.
+    var bprobe = CapImportProbe{};
+    var call_probe = TolerantCall{};
+    const service_import = try stageSite2Provision(&vat, &host, &deferring, &bprobe, &call_probe, token, 90);
+
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    try harness.expectNoImport(&vat.owner, vat.carol_import);
+
+    try host.injectAccept(allocator, 900, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(900));
+
+    // The pipelined Call lands after the refusal: Call{qid=901,
+    // target=promisedAnswer{900}} — the exact frame order the C++ recipient
+    // produces (Accept, then Call, with the Return in between on our side).
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(901, NUMBER_INTERFACE_ID, GET_NUMBER_METHOD_ID);
+        try call.setTargetPromisedAnswer(900);
+        _ = try call.initCapTableTyped(0);
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try host.peer.handleFrame(call_frame);
+    }
+
+    // THE PIN: the pipelined call is ANSWERED — with a copy of the Accept's
+    // own refusal, not parked in pending_promises waiting forever.
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(901));
+    try std.testing.expectEqualStrings(target_unavailable_reason, host.capture.reasonFor(901).?);
+    try std.testing.expect(!host.peer.pending_promises.contains(900));
+
+    // Failed closed all the way down: no proxy, and Carol was never reached
+    // through the refused pipeline either.
+    try harness.expectNoCrossPeerProxyLinks(&vat.owner);
+    try harness.expectNoCrossPeerProxyLinks(&host.peer);
+    try std.testing.expectEqual(@as(u32, 0), vat.carol.get_number_calls);
+
+    {
+        const frame = try buildFinishFrame(allocator, 90);
+        defer allocator.free(frame);
+        try vat.owner.handleFrame(frame);
+    }
+    try harness.expectNoProvideState(&vat.owner);
+    try harness.expectNoProvideState(&host.peer);
+    try vat.remote.releaseImport(service_import, 1);
+}
+
 /// A Return whose single result cap is one the ANSWERING peer only IMPORTS,
 /// emitted origin-tagged as `receiverHosted` — the same encode path
 /// `sendReturnProvidedTarget` takes for a `.local` receiverHosted target.

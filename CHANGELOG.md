@@ -68,6 +68,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A Call pipelined on an already-failed answer never received a Return.**
+  Found on the wire by the cross-impl L3 lane (`just e2e-l3-vatc`,
+  pipelined-provide scenarios): the C++ recipient pipelines its Call on the
+  Accept question without waiting, the host refuses the Accept
+  (`CrossPeerReceiverHostedTargetUnsupported`), and the Call — arriving after
+  the refusal already went out — parked in `pending_promises` forever. The
+  queued-call drain in `sendReturnException` only reaches calls queued
+  *before* the exception Return; results Returns are recorded in
+  `resolved_answers` precisely so late pipelined calls can resolve, but
+  exception Returns were recorded nowhere, so a late call on a failed answer
+  was indistinguishable from one on a still-pending answer. The C++ recipient
+  hung on the spec's exactly-one-Return-per-call guarantee. Not Accept-specific:
+  any answer failed synchronously during dispatch had the same window.
+
+  Exception Returns are now recorded in a `failed_answers` map (reason + type,
+  kept until Finish, the exact lifecycle of `resolved_answers`), and a
+  promised-target call that would otherwise queue is answered immediately with
+  a **copy of the recorded exception**, preserving the retryability signal —
+  the broken-pipeline behavior of the C++ reference. The record is written in
+  the one funnel every exception Return passes through, so transitive
+  pipelines (a call pipelined on a failed pipelined call) are covered, and the
+  drain path is unchanged. Ablation-proven unit tests pin both the refused-
+  Accept shape and the plain two-party shape; the e2e driver now observes the
+  refusal *through* a pipelined call instead of working around the gap with
+  `whenResolved()`.
+
 - **`MessageBuilder.writeTo` and `writePackedTo` were neither type-checked nor
   tested.** Both are frozen Stable API with **zero call sites in the tree**, and
   Zig does not analyse an uninstantiated generic body — so making them concrete

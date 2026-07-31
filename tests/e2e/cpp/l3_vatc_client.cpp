@@ -606,14 +606,21 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     }
     tap.ok(true, "A received the introduced third-party cap from B");
 
-    // First use forces the lazy Accept; with the lift the host must SERVE
-    // it. whenResolved() settles on the Accept's own Return (the
-    // unknown-token pattern), so a refusal would surface here as a thrown
-    // exception.
+    // First use forces the lazy Accept, which the lift now SERVES.
+    //
+    // The probe is deliberately a PIPELINED call, not whenResolved(): rpc.c++
+    // sends this Call on the Accept question's promisedAnswer without waiting
+    // for the Accept's own Return, so it exercises the broken-pipeline rule as
+    // well as the serve. That matters historically — this exact wait HUNG
+    // FOREVER when the host dropped calls pipelined on an already-failed
+    // answer, and the fix that closed it keeps its cross-impl teeth here in the
+    // answered direction. The FAILED-answer direction of that rule no longer
+    // has a cross-impl cell (the lift turned this scenario's refusal into a
+    // success); it is covered by the unit tests that shipped with the fix.
     bool threw = false;
     kj::String desc = kj::str("<no exception>");
     KJ_IF_SOME(e, kj::runCatchingExceptions([&]() {
-      accepted.whenResolved().wait(ws);
+      accepted.getNumberRequest().send().wait(ws);
     })) {
       threw = true;
       desc = kj::str(e.getDescription());
@@ -626,7 +633,11 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     // 43, not host-Carol's 42.
     uint32_t n = accepted.getNumberRequest().send().wait(ws).getN();
     tap.ok(n == 43, "call on the accepted cap returned 43 (B's local cap)");
-    tap.ok(localNum.calls == 1, "B's local capability was invoked exactly once");
+    // TWO invocations, not one: the probe above is itself a real pipelined
+    // call, not a whenResolved(). Both must land on B's cap — the first
+    // proves a call pipelined on the Accept question is answered, the second
+    // that the settled capability still routes to the same place.
+    tap.ok(localNum.calls == 2, "B's local capability was invoked by both the pipelined probe and the settled call");
 
     // Release ceremony (the `happy` pattern): drop A's only ref to the
     // accepted cap and turn the kj loop so the queued Release actually

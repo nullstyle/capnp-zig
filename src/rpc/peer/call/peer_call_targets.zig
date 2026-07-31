@@ -26,11 +26,22 @@ pub fn planImportedTarget(
     return if (has_handler) .call_handler else .missing_export_handler;
 }
 
+/// Borrowed view of a recorded failed answer's exception (see
+/// `state.FailedAnswer`): valid until the record is removed at Finish.
+pub const FailedAnswerView = struct {
+    reason: []const u8,
+    ex_type: protocol.ExceptionType,
+};
+
 pub const PromisedTargetPlan = union(enum) {
     queue_promised_call,
     queue_export_promise: u32,
     handle_resolved: cap_table.ResolvedCap,
     send_exception: anyerror,
+    /// The target answer already returned an exception: answer the call with
+    /// a copy of that exception. Queueing would wedge it forever — a failed
+    /// answer never replays its queue.
+    fail_broken_answer: FailedAnswerView,
 };
 
 pub fn planPromisedTarget(
@@ -39,9 +50,19 @@ pub fn planPromisedTarget(
     promised: protocol.PromisedAnswer,
     resolve_promised_answer: *const fn (*PeerType, protocol.PromisedAnswer) anyerror!cap_table.ResolvedCap,
     has_unresolved_promise_export: *const fn (*PeerType, u32) bool,
+    lookup_failed_answer: *const fn (*PeerType, u32) ?FailedAnswerView,
 ) PromisedTargetPlan {
     const resolved = resolve_promised_answer(peer, promised) catch |err| {
-        if (err == error.PromiseUnresolved) return .queue_promised_call;
+        if (err == error.PromiseUnresolved) {
+            // `resolved_answers` records results Returns only. An answer that
+            // already FAILED misses there identically to one still pending —
+            // distinguish via the failed-answer record, or the call queues
+            // against a Return that will never come.
+            if (lookup_failed_answer(peer, promised.question_id)) |failed| {
+                return .{ .fail_broken_answer = failed };
+            }
+            return .queue_promised_call;
+        }
         return .{ .send_exception = err };
     };
 
@@ -108,10 +129,11 @@ test "peer_call_targets imported target planning covers all branches" {
     );
 }
 
-test "peer_call_targets promised target planning handles unresolved, exception, queue-export and resolved" {
+test "peer_call_targets promised target planning handles unresolved, failed-answer, exception, queue-export and resolved" {
     const FakePeer = struct {
         mode: enum {
             unresolved,
+            failed_answer,
             failure,
             exported_unresolved,
             exported_resolved,
@@ -123,7 +145,7 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
         fn resolvePromisedAnswer(peer: *FakePeer, promised: protocol.PromisedAnswer) !cap_table.ResolvedCap {
             _ = promised;
             return switch (peer.mode) {
-                .unresolved => error.PromiseUnresolved,
+                .unresolved, .failed_answer => error.PromiseUnresolved,
                 .failure => error.TestExpectedError,
                 .exported_unresolved, .exported_resolved => .{ .exported = .{ .id = 9 } },
                 .imported_resolved => .{ .imported = .{ .id = 11 } },
@@ -132,6 +154,11 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
 
         fn hasUnresolvedPromiseExport(peer: *FakePeer, export_id: u32) bool {
             return peer.mode == .exported_unresolved and export_id == 9;
+        }
+
+        fn lookupFailedAnswer(peer: *FakePeer, question_id: u32) ?FailedAnswerView {
+            if (peer.mode != .failed_answer or question_id != 1) return null;
+            return .{ .reason = "broken", .ex_type = .overloaded };
         }
     };
 
@@ -153,8 +180,31 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
             promised,
             Hooks.resolvePromisedAnswer,
             Hooks.hasUnresolvedPromiseExport,
+            Hooks.lookupFailedAnswer,
         );
         try std.testing.expectEqual(PromisedTargetPlan.queue_promised_call, plan);
+    }
+
+    {
+        // Same PromiseUnresolved from the resolver, but the answer is on
+        // record as FAILED: the plan must carry the recorded exception, not
+        // queue the call behind a Return that will never come.
+        var peer = FakePeer{ .mode = .failed_answer };
+        const plan = planPromisedTarget(
+            FakePeer,
+            &peer,
+            promised,
+            Hooks.resolvePromisedAnswer,
+            Hooks.hasUnresolvedPromiseExport,
+            Hooks.lookupFailedAnswer,
+        );
+        switch (plan) {
+            .fail_broken_answer => |failed| {
+                try std.testing.expectEqualStrings("broken", failed.reason);
+                try std.testing.expectEqual(protocol.ExceptionType.overloaded, failed.ex_type);
+            },
+            else => return error.TestExpectedEqual,
+        }
     }
 
     {
@@ -165,6 +215,7 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
             promised,
             Hooks.resolvePromisedAnswer,
             Hooks.hasUnresolvedPromiseExport,
+            Hooks.lookupFailedAnswer,
         );
         switch (plan) {
             .send_exception => |err| try std.testing.expectEqual(error.TestExpectedError, err),
@@ -180,6 +231,7 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
             promised,
             Hooks.resolvePromisedAnswer,
             Hooks.hasUnresolvedPromiseExport,
+            Hooks.lookupFailedAnswer,
         );
         switch (plan) {
             .queue_export_promise => |export_id| try std.testing.expectEqual(@as(u32, 9), export_id),
@@ -195,6 +247,7 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
             promised,
             Hooks.resolvePromisedAnswer,
             Hooks.hasUnresolvedPromiseExport,
+            Hooks.lookupFailedAnswer,
         );
         switch (plan) {
             .handle_resolved => |cap| switch (cap) {
@@ -213,6 +266,7 @@ test "peer_call_targets promised target planning handles unresolved, exception, 
             promised,
             Hooks.resolvePromisedAnswer,
             Hooks.hasUnresolvedPromiseExport,
+            Hooks.lookupFailedAnswer,
         );
         switch (plan) {
             .handle_resolved => |cap| switch (cap) {

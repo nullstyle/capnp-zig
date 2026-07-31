@@ -3917,6 +3917,122 @@ test "bootstrap return is recorded for promisedAnswer pipelined calls" {
     try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
 }
 
+// Exception Returns are never recorded in resolved_answers, so before the
+// failed_answers record a call pipelined on an already-FAILED answer parked in
+// pending_promises forever — the exactly-one-Return-per-call invariant broke
+// and a compliant caller hung. Found on the wire by the cross-impl L3 lane
+// (pipelined-provide scenarios): the C++ recipient pipelines a Call on its
+// Accept question, the Accept is refused, and the Call never got a Return.
+test "call pipelined on an already-failed answer gets a copy of that exception Return" {
+    const allocator = std.testing.allocator;
+
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8),
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const ctx: *@This() = castCtx(*@This(), ctx_ptr);
+            const copy = try ctx.allocator.dupe(u8, frame);
+            try ctx.frames.append(ctx.allocator, copy);
+        }
+    };
+    const Handlers = struct {
+        // Every call on the bootstrap cap fails, with a NON-default exception
+        // type so the copy assertion below can tell "the recorded exception
+        // was replayed" apart from "some fresh .failed exception was built".
+        fn onCall(ctx_ptr: *anyopaque, peer: *Peer, call: protocol.Call, caps: *const cap_table.InboundCapTable) anyerror!void {
+            _ = ctx_ptr;
+            _ = caps;
+            try peer.sendReturnExceptionTyped(call.question_id, "boom", .overloaded);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+
+    var capture = Capture{
+        .allocator = allocator,
+        .frames = std.ArrayList([]u8).empty,
+    };
+    defer {
+        for (capture.frames.items) |frame| allocator.free(frame);
+        capture.frames.deinit(allocator);
+    }
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    _ = try peer.setBootstrap(.{ .ctx = &capture, .on_call = Handlers.onCall });
+
+    const bootstrap_question_id: u32 = 41;
+    {
+        var bootstrap_builder = protocol.MessageBuilder.init(allocator);
+        defer bootstrap_builder.deinit();
+        try bootstrap_builder.buildBootstrap(bootstrap_question_id);
+        const bootstrap_frame = try bootstrap_builder.finish();
+        defer allocator.free(bootstrap_frame);
+        try peer.handleFrame(bootstrap_frame);
+    }
+
+    // The parent call fails synchronously: its exception Return is on the
+    // wire BEFORE the next frame is even parsed.
+    const failed_question_id: u32 = 42;
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(failed_question_id, 0xABCD, 7);
+        try call.setTargetPromisedAnswer(bootstrap_question_id);
+        _ = try call.initCapTableTyped(0);
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try peer.handleFrame(call_frame);
+    }
+    try std.testing.expect(peer.failed_answers.contains(failed_question_id));
+
+    // The pipelined child arrives AFTER that Return — exactly the ordering
+    // the queued-call drain in sendReturnException can never see.
+    const late_question_id: u32 = 43;
+    {
+        var call_builder = protocol.MessageBuilder.init(allocator);
+        defer call_builder.deinit();
+        var call = try call_builder.beginCall(late_question_id, 0xABCD, 8);
+        try call.setTargetPromisedAnswer(failed_question_id);
+        _ = try call.initCapTableTyped(0);
+        const call_frame = try call_builder.finish();
+        defer allocator.free(call_frame);
+        try peer.handleFrame(call_frame);
+    }
+
+    // Not queued behind a Return that will never come...
+    try std.testing.expect(!peer.pending_promises.contains(failed_question_id));
+
+    // ...but answered, with a COPY of the parent's exception: same reason,
+    // same type (the retryability signal survives the replay).
+    try std.testing.expectEqual(@as(usize, 3), capture.frames.items.len);
+    {
+        var ret_msg = try protocol.DecodedMessage.init(allocator, capture.frames.items[2]);
+        defer ret_msg.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.@"return", ret_msg.tag);
+        const ret = try ret_msg.asReturn();
+        try std.testing.expectEqual(late_question_id, ret.answer_id);
+        try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+        const ex = ret.exception orelse return error.MissingException;
+        try std.testing.expectEqualStrings("boom", ex.reason);
+        try std.testing.expectEqual(protocol.ExceptionType.overloaded, ex.kind());
+    }
+
+    // The records live exactly as long as resolved_answers entries: each
+    // question's Finish clears its own, leak-free under testing allocator.
+    try std.testing.expect(peer.failed_answers.contains(late_question_id));
+    for ([_]u32{ failed_question_id, late_question_id }) |qid| {
+        var finish_builder = protocol.MessageBuilder.init(allocator);
+        defer finish_builder.deinit();
+        try finish_builder.buildFinish(qid, true, false);
+        const finish_frame = try finish_builder.finish();
+        defer allocator.free(finish_frame);
+        try peer.handleFrame(finish_frame);
+    }
+    try std.testing.expectEqual(@as(usize, 0), peer.failed_answers.count());
+}
+
 test "bootstrap promisedAnswer call still resolves after bootstrap export release" {
     const allocator = std.testing.allocator;
 
