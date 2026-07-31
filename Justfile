@@ -173,6 +173,14 @@ ci-quic:
     just check-quic
     just test-rpc-quic
     just test-docs-snippets-quic
+    just test-quic-full
+
+# The FULL suite against the QUIC library ROOT. `-Dquic=true` swaps the root to
+# src/lib_quic.zig, and the targeted lanes above never compile the non-QUIC
+# suites against it -- that gap hid a missing `canonical` export on the QUIC
+# root through an entire release. Mirrors the CI job of the same shape.
+test-quic-full:
+    zig build -Dquic=true test --summary all
 
 # CI gate (format, compile, docs, tests, QUIC, and interop e2e)
 ci:

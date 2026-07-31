@@ -1,7 +1,7 @@
-# Supported Surface (v0.8.0)
+# Supported Surface (v0.9.0)
 
 This is the authoritative statement of what `capnpc-zig` promises a consumer at
-v0.8.0 — which modules are stable, what the RPC implementation conforms to, the
+v0.9.0 — which modules are stable, what the RPC implementation conforms to, the
 error contract, and the known limitations you are opting into. It is the single
 source of truth; where other docs disagree, this file wins.
 
@@ -12,7 +12,7 @@ and [`CHANGELOG.md`](../CHANGELOG.md) (what changed).
 
 The project is pre-1.0. Per semver, **0.x minor bumps may break the API** — and
 they will, deliberately, for anything marked Experimental below. Pin an exact
-version (`zig fetch --save …#v0.8.0`) and read the CHANGELOG before bumping.
+version (`zig fetch --save …#v0.9.0`) and read the CHANGELOG before bumping.
 
 - **Stable** (serialization + codegen + the two-party RPC core): the Stable
   surface is **frozen and CI-gated**. It is pinned by
@@ -406,7 +406,7 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `just e2e-l3-go` confirms Go has generated Join/twoparty shapes but no
   runtime dispatch for `Message.join`. Experimental; exact-pin only.
 
-## Known limitations (v0.8.0)
+## Known limitations (v0.9.0)
 
 Each of these is a defined, non-corrupting behavior — safe to tag with, listed so
 you know exactly what you are relying on. None is a leak/UAF/hang against a
@@ -492,7 +492,7 @@ either a Level-3 surface or a serialization compatibility gap; the frozen
 two-party RPC surface has no active limitation. Historical resolved items are listed
 below so release-to-release behavior changes stay auditable.
 
-### Resolved since v0.8.0
+### Resolved since v0.9.0
 
 - **The list-upgrade rule is complete in both directions, `List(Void)`
   included.** On a struct's own fields *and* one level down: a list of any
@@ -514,7 +514,7 @@ below so release-to-release behavior changes stay auditable.
   reference (`layout.c++`, both element-size checks are vacuous for
   `ElementSize::VOID`) — every well-formed list satisfies a `List(Void)` read
   at its actual element count, an inline-composite list at its TAG count.
-  (Before v0.8.0 it rejected everything but a plain void list with
+  (Before v0.9.0 it rejected everything but a plain void list with
   `error.InvalidPointer`; an earlier revision of this file misdescribed that
   as misreporting the word count.)
 

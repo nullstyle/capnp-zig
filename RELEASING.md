@@ -138,16 +138,24 @@ git push origin vX.Y.Z
       zig fetch --save "git+https://github.com/nullstyle/capnp-zig.git#vX.Y.Z"
       ```
 
-      **A fetch is not enough — BUILD against it, from BOTH modules.** `zig
-      fetch` only downloads and hashes; it compiles nothing, so it cannot see a
-      declaration that is missing from a module's root. v0.8.0 was tagged with
-      `canonical` exported from `src/lib.zig` but not `src/lib_core.zig`, which
-      is the module the docs tell serialization-only consumers to import: the
-      fetch passed, and a three-line consumer that imported
-      `capnpc-zig-core` did not compile. Point the temp project's build at
-      `dep.module("capnpc-zig")` and then at `dep.module("capnpc-zig-core")`,
-      and in each call something *new in this release* — the version bump is
-      the whole reason the release exists, so exercise the thing it added.
+      **A fetch is not enough — BUILD against it, in all THREE consumer
+      configurations.** `zig fetch` only downloads and hashes; it compiles
+      nothing, so it cannot see a declaration missing from a library root.
+      v0.8.0 was tagged with `canonical` exported from `src/lib.zig` but not
+      `src/lib_core.zig` — the module the docs tell serialization-only
+      consumers to import — and the fetch passed while a three-line consumer
+      importing `capnpc-zig-core` did not compile. The SAME export was also
+      missing from `src/lib_quic.zig`, found a release later.
+
+      The three configurations, each a root that can diverge independently:
+
+      1. `dep.module("capnpc-zig")` — `src/lib.zig`
+      2. `dep.module("capnpc-zig-core")` — `src/lib_core.zig`
+      3. `b.dependency("capnpc_zig", .{ ..., .quic = true })` then
+         `dep.module("capnpc-zig")` — `src/lib_quic.zig`
+
+      In each, call something *new in this release* — the version bump is the
+      whole reason the release exists, so exercise the thing it added.
 
 - [ ] Record the resulting hash in `docs/build-integration.md`, replacing the
       `capnpc_zig-X.Y.Z-...` placeholder with the real value. That turns the
