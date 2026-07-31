@@ -129,6 +129,27 @@ const RejectCounter = struct {
     }
 };
 
+/// Records whether the pool handed the accepted peer a real entropy source.
+///
+/// A pool peer with `entropy == null` falls back to COUNTER accept-embargo ids
+/// (`nextAcceptEmbargoId`), where the spec wants unguessable ones. `workerMain`
+/// used to do `Peer.init` + `setClockIo` and nothing else, so every pool peer
+/// took that fallback.
+const EntropyObserver = struct {
+    count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    saw_entropy: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn onAccept(ctx: *anyopaque, peer: *Peer, _: *Connection, _: u32) anyerror!WorkerPool.AcceptDecision {
+        const self: *EntropyObserver = @ptrCast(@alignCast(ctx));
+        // Read BEFORE start(): the pool must have installed it by the time the
+        // accept callback can observe the peer.
+        self.saw_entropy.store(peer.entropy != null, .release);
+        _ = self.count.fetchAdd(1, .monotonic);
+        peer.start(null, onPeerError, onPeerClose);
+        return .accept;
+    }
+};
+
 const ActiveCounter = struct {
     count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
@@ -405,4 +426,36 @@ test "WorkerPool: graceful shutdown drains an active connection that finishes on
 
     try std.testing.expectEqual(@as(u32, 1), counter.count.load(.acquire));
     try std.testing.expect(elapsed < 8000 * std.time.ns_per_ms);
+}
+
+test "WorkerPool: an accepted peer is given a real entropy source" {
+    const allocator = std.testing.allocator;
+
+    var observer = EntropyObserver{};
+    var pool = try WorkerPool.init(
+        allocator,
+        std.testing.io,
+        .{ .ip4 = .loopback(0) },
+        @ptrCast(&observer),
+        EntropyObserver.onAccept,
+        .{ .concurrency = 1 },
+    );
+    defer pool.deinit();
+
+    const connect_addr = pool.server.socket.address;
+    const pool_thread = try spawnPoolThread(&pool);
+    errdefer {
+        pool.shutdown();
+        pool_thread.join();
+    }
+
+    _ = try connectUntilAccepted(std.testing.io, connect_addr, &observer.count, false);
+
+    pool.shutdown();
+    pool_thread.join();
+
+    try std.testing.expect(observer.count.load(.acquire) >= 1);
+    // The assertion that matters: without it, pool peers silently keep counter
+    // embargo ids where the spec asks for unguessable ones.
+    try std.testing.expect(observer.saw_entropy.load(.acquire));
 }

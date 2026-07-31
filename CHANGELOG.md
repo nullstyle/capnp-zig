@@ -139,6 +139,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrangement could silently under-test rollback paths on any platform where
   growth happens in place.
 
+- **`WorkerPool` peers now get a real entropy source.** `workerMain` did
+  `Peer.init` + `setClockIo` and nothing else, so `entropy` stayed null on every
+  pooled peer and `nextAcceptEmbargoId` fell back to a **counter** where the
+  spec wants unguessable accept-embargo ids. One `DefaultCsprng` per worker
+  *thread*, living on the worker frame: thread-confined by construction, so no
+  lock and no thread-safety requirement on the CSPRNG. Handing each peer a
+  pointer to it is sound because every accepted peer is destroyed inside the
+  same loop iteration that created it.
+
+  Fails closed the way `ServerSession` does — a worker that cannot obtain secure
+  entropy refuses the connection rather than quietly downgrading, and re-seeds
+  per accept so one transient `randomSecure` failure does not poison the worker
+  for its whole life. Urgency is genuinely low: pool peers are never enrolled in
+  a `Vat` today, so this was spec hygiene rather than a live weakness.
+
+  Also corrects the record: an earlier revision of `docs/supported-surface.md`
+  blamed "a shared CSPRNG across worker threads", which is not what the code
+  did — the pool shared nothing and installed nothing.
+
 - **The `receiverHosted` cross-peer fail-closed arms are pinned by tests.** Both
   sites that answer a cross-peer Level-3 `Accept` with
   `CrossPeerReceiverHostedTargetUnsupported` — the stored `.local` target whose

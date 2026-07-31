@@ -5,7 +5,8 @@ const Connection = @import("../transport/tcp/connection.zig").Connection;
 const Listener = @import("../transport/tcp/runtime.zig").Listener;
 const runtime_helpers = @import("../transport/tcp/runtime.zig");
 const Runtime = @import("../transport/tcp/runtime.zig").Runtime;
-const Peer = @import("../peer/mod.zig").Peer;
+const peer_mod = @import("../peer/mod.zig");
+const Peer = peer_mod.Peer;
 const net = std.Io.net;
 
 /// A multi-threaded worker pool that accepts connections from a single
@@ -221,6 +222,21 @@ pub const WorkerPool = struct {
             pool.conn_options,
         );
 
+        // One CSPRNG per worker THREAD, living on this frame. Thread-confined
+        // by construction -- nothing outside this worker can reach it -- so it
+        // needs no lock and imposes no thread-safety requirement on
+        // DefaultCsprng. Handing every accepted peer a pointer to it is sound
+        // because each peer is destroyed by `destroyAccepted` inside the same
+        // loop iteration that created it, so no peer outlives this frame.
+        //
+        // Without this, `entropy` stayed null on every pool peer and
+        // `nextAcceptEmbargoId` fell back to a COUNTER, where the spec wants
+        // unguessable accept-embargo ids.
+        var rng: ?std.Random.DefaultCsprng = peer_mod.seedEntropyCsprng(pool.io) catch |err| blk: {
+            log.err("worker {}: secure entropy unavailable ({}); connections will be refused", .{ worker_index, err });
+            break :blk null;
+        };
+
         while (!pool.should_stop.load(.acquire)) {
             const conn_ptr = listener.accept() catch |err| {
                 if (pool.should_stop.load(.acquire)) break;
@@ -249,6 +265,22 @@ pub const WorkerPool = struct {
 
             peer_ptr.* = Peer.init(pool.allocator, conn_ptr);
             peer_ptr.setClockIo(pool.io);
+
+            // Fail closed, the way ServerSession refuses to construct without
+            // secure entropy -- rejecting the connection is the closest
+            // analogue available to a worker loop that returns void. Retry the
+            // seed here rather than poisoning the worker for its whole life on
+            // one transient `randomSecure` failure.
+            if (rng == null) {
+                rng = peer_mod.seedEntropyCsprng(pool.io) catch null;
+            }
+            if (rng) |*seeded| {
+                peer_ptr.setEntropySource(peer_mod.EntropySource.fromCsprng(seeded));
+            } else {
+                log.err("worker {}: refusing connection, secure entropy unavailable", .{worker_index});
+                destroyAccepted(pool.allocator, peer_ptr, conn_ptr);
+                continue;
+            }
 
             const decision = pool.on_accept(pool.ctx, peer_ptr, conn_ptr, worker_index) catch |err| {
                 log.debug("worker {}: on_accept failed: {}", .{ worker_index, err });
