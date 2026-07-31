@@ -110,7 +110,24 @@ class DriverVat;
 struct DriverNetwork {
   // Shared cross-vat state (the TestNetwork analogue).
   kj::StringPtr hostAddr;  // "<host>:<port>" exactly as dialed; goes into ThirdPartyToContact.host
-  bool corruptCompletionToken = false;
+
+  // How `connectToIntroduced` rewrites the completion token before sending the
+  // Accept. Rewriting it is how this harness controls the RENDEZVOUS: the token
+  // is the only identity linking an Accept to a Provide.
+  enum class TokenRewrite {
+    // Spec-correct: the Accept names the Provide that introduced this cap.
+    none,
+    // Names a Provide that will NEVER exist, so the Accept parks forever.
+    // A high-bit flip, chosen so it cannot collide with any minted token.
+    unmatchable,
+    // Names the token the NEXT introduction is about to register. `newToken()`
+    // hands out small sequential values, so `+1` is exactly "the next
+    // Provide". The Accept therefore arrives BEFORE the Provide it names and
+    // must park, then be adopted when that Provide lands — the order-
+    // independent rendezvous of rpc.h:483-492, driven deliberately.
+    next_provision,
+  };
+  TokenRewrite tokenRewrite = TokenRewrite::none;
   uint64_t tokenCounter = 0;
   uint64_t embargoCounter = 0;
 
@@ -436,18 +453,20 @@ kj::Maybe<kj::Own<DriverVatBase::Connection>> DriverConnectionBase::connectToInt
   KJ_REQUIRE(contact.getHost() == vat.network.hostAddr,
       "third-party contact does not name the zig host", contact.getHost());
   uint64_t token = contact.getToken();
-  if (vat.network.corruptCompletionToken) {
-    // Make the completion token match no Provide this driver will ever send.
-    //
-    // Deliberately a high-bit flip and not `+= 1`. `newToken()` hands out small
-    // sequential values, so a +1 corruption produces the token the NEXT
-    // introduction is about to register legitimately: with two introductions
-    // in flight the second Provide adopts the first Accept and SERVES it,
-    // which silently turns a park cell into a rendezvous cell. That cost
-    // `park-expiry` a debugging round — it observed its pipelined call
-    // resolving rather than failing. One introduction hid the bug; two
-    // exposed it.
-    token += 0x8000000000000000ull;
+  switch (vat.network.tokenRewrite) {
+    case DriverNetwork::TokenRewrite::none:
+      break;
+    case DriverNetwork::TokenRewrite::unmatchable:
+      // A high-bit flip, NOT `+= 1`. Sequential tokens mean `+1` names the next
+      // introduction's Provide, which would adopt-and-serve this Accept instead
+      // of parking it forever — silently turning a park cell into a rendezvous
+      // cell. That distinction cost `park-expiry` a debugging round; it is now
+      // the difference between these two modes.
+      token += 0x8000000000000000ull;
+      break;
+    case DriverNetwork::TokenRewrite::next_provision:
+      token += 1;
+      break;
   }
   completion.setToken(token);
   return vat.hostConnectionRef();
@@ -526,10 +545,16 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
 
   DriverNetwork shared;
   shared.hostAddr = hostAddr;
-  // Both cells need an Accept that finds no matching Provide, so it parks.
-  // `unknown-token` stops there; `park-expiry` then lets the TTL evict it.
-  shared.corruptCompletionToken =
-      (scenario == "unknown-token" || scenario == "park-expiry");
+  // All three park-flavoured cells send an Accept whose token names no
+  // provision that exists YET, so the host must park it. They differ only in
+  // what happens next: `unknown-token` stops there (parked forever),
+  // `park-expiry` lets the L9 TTL evict it, and `park-adopt` names the NEXT
+  // introduction's Provide so the park is later ADOPTED and served.
+  if (scenario == "unknown-token" || scenario == "park-expiry") {
+    shared.tokenRewrite = DriverNetwork::TokenRewrite::unmatchable;
+  } else if (scenario == "park-adopt") {
+    shared.tokenRewrite = DriverNetwork::TokenRewrite::next_provision;
+  }
 
   DriverVat vatA(shared, "a");
   DriverVat vatB(shared, "b");
@@ -712,7 +737,81 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     }
     tap.ok(true, "A received the introduced third-party cap from B");
 
-    if (scenario == "park-expiry") {
+    if (scenario == "park-adopt") {
+      // THE ORDER-INDEPENDENT RENDEZVOUS, CROSS-IMPL (Accept BEFORE Provide).
+      //
+      // rpc.h:483-492: "The two calls can happen in any order;
+      // `completeThirdParty()` will wait for a corresponding
+      // `awaitThirdParty()` if it hasn't happened already." `unknown-token`
+      // proves the waiting half — an Accept naming no provision parks. This
+      // proves the OTHER half: a parked Accept must be ADOPTED and served when
+      // the Provide it names finally arrives.
+      //
+      // The mechanism is the token rewrite: A's Accept for the first
+      // introduction names token+1, which is exactly what B's NEXT introduction
+      // registers. So the Accept lands first and parks, and the second Provide
+      // adopts it. No timing hook and no delay is involved — this rests on the
+      // driver's own token arithmetic, so it is deterministic.
+      //
+      // (This is the shape the `+= 1` token-corruption bug was exercising by
+      // accident before it was fixed; it silently made `park-expiry` a
+      // rendezvous cell. Here it is the deliberate subject.)
+      auto probe = carol.getNumberRequest().send();
+
+      // Nothing can resolve that probe yet: its Accept is parked on a provision
+      // that does not exist. Prove the park is real before creating it, rather
+      // than assuming it.
+      //
+      // `poll` and NOT `exclusiveJoin(timer)`: exclusiveJoin CANCELS the loser,
+      // so racing the probe against a timeout would cancel the very call under
+      // test, and `.then()` consumes the promise so a second use is a
+      // use-after-move. Both of those were live here and the driver segfaulted
+      // (exit 139). `poll` turns the event loop and reports readiness while
+      // leaving the promise intact and owned.
+      auto& timer = io.provider->getTimer();
+      timer.afterDelay(2 * kj::SECONDS).wait(ws);
+      tap.ok(!probe.poll(ws),
+          "the Accept parked: no Return while the provision it names does not exist");
+
+      // Now make it exist. Fetching from B's holder again re-introduces the
+      // cap, and THAT Provide registers the token the parked Accept named.
+      Number::Client second(nullptr);
+      {
+        auto resp2 = holderCap
+            .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+            .send().wait(ws);
+        second = readRootCap(resp2).castAs<Number>();
+      }
+      tap.ok(true, "B introduced a second cap, registering the awaited token");
+
+      // Bounded: a hang here is the regression (adoption never happened), so it
+      // must fail rather than wedge the lane until the runner's timeout. NOW
+      // consuming the probe is correct — this is its single terminal use.
+      auto outcome = probe
+          .then([](capnp::Response<Number::GetNumberResults> r) { return kj::str(r.getN()); },
+                [](kj::Exception&& e) { return kj::str("exception: ", e.getDescription()); })
+          .exclusiveJoin(timer.afterDelay(10 * kj::SECONDS)
+              .then([]() { return kj::str("<timed out>"); }))
+          .wait(ws);
+      printf("# park-adopt outcome: %s\n", outcome.cStr());
+      fflush(stdout);
+
+      tap.ok(strcmp(outcome.cStr(), "<timed out>") != 0,
+          "the parked Accept was adopted by the later Provide (did not hang)");
+      tap.ok(strcmp(outcome.cStr(), "42") == 0,
+          "the adopted Accept was SERVED and the call returned 42");
+
+      // Release ceremony (the `happy` pattern): an adopted-then-served
+      // capability must have the same lifecycle as a normally-served one, so
+      // drop A's refs and turn the loop until the Release reaches the host. Its
+      // side asserts the cross-peer proxy export actually died — without this,
+      // the proxy link survives to the checkpoint and only teardown reaps it,
+      // which would prove nothing about Release handling on an adopted handoff.
+      carol = nullptr;
+      second = nullptr;
+      timer.afterDelay(250 * kj::MILLISECONDS).wait(ws);
+      tap.ok(true, "released the adopted cap and flushed the Release to the host");
+    } else if (scenario == "park-expiry") {
       // THE FAILED-ANSWER ARM OF THE BROKEN-PIPELINE RULE, CROSS-IMPL.
       //
       // `carol` is an unresolved Accept promise whose completion token matches
@@ -893,7 +992,8 @@ int main(int argc, char* argv[]) {
   if (argc != 4) {
     fprintf(stderr, "usage: l3_vatc_client <host> <port> <scenario>\n"
                     "  scenario: happy | embargo | unknown-token | disconnect |\n"
-                    "            park-expiry | pipelined-provide |\n"
+                    "            park-expiry | park-adopt |\n"
+                    "            pipelined-provide |\n"
                     "            pipelined-provide-chain\n");
     return 2;
   }
@@ -903,7 +1003,7 @@ int main(int argc, char* argv[]) {
 
   if (scenario != "happy" && scenario != "embargo" &&
       scenario != "unknown-token" && scenario != "disconnect" &&
-      scenario != "park-expiry" &&
+      scenario != "park-expiry" && scenario != "park-adopt" &&
       scenario != "pipelined-provide" && scenario != "pipelined-provide-chain") {
     fprintf(stderr, "unknown scenario: %s\n", scenario.cStr());
     return 2;

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-impl coverage for the park-then-adopt rendezvous** — a new
+  `park-adopt` scenario in the `e2e-l3-vatc` lane. rpc.h:483-492 makes the
+  third-party rendezvous order-independent: "The two calls can happen in any
+  order; `completeThirdParty()` will wait for a corresponding
+  `awaitThirdParty()` if it hasn't happened already." `unknown-token` proved the
+  waiting half (an Accept naming no provision parks); this proves the other —
+  that the park is ADOPTED and served once the Provide naming its token arrives.
+
+  Driven by arithmetic rather than timing, which is what made it cheap: the
+  driver's completion-token rewrite is now an explicit mode, and `park-adopt`
+  selects `next_provision` (`+1`), which is exactly the token the driver's NEXT
+  introduction registers. The Accept therefore necessarily reaches the host
+  before its Provide. No delay hook is involved, so the ordering is
+  deterministic rather than raced — this cell was previously deferred for
+  wanting exactly such a hook.
+
+  Both sides assert, and the pair is the point: parking without serving is
+  `unknown-token`, and serving without parking would prove nothing about
+  ordering. The adopted capability is then held to the same lifecycle as a
+  normally-served one — the driver runs the `happy` release ceremony and the
+  host requires the proxy export to die and all transient state to drain.
+
+  Ablation-proven and discriminating: removing the Provide's adoption drain
+  (`drainAdoptedParkedAccepts`) leaves the PARK assertions green on both sides
+  while the driver's call times out and the host reports no serve, no Carol
+  call, the park still outstanding, and no drain.
+
 ### Fixed
 
 - **Every QUIC gate could pass while compiling zero QUIC code.** `build.zig`

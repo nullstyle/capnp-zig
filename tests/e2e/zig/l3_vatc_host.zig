@@ -79,6 +79,18 @@ const Scenario = enum {
     /// Accept reclaims an expired parked one" is therefore also part of what
     /// this cell proves.
     park_expiry,
+    /// The ORDER-INDEPENDENT rendezvous, other half: Accept BEFORE Provide.
+    ///
+    /// `unknown-token` proves an Accept naming no provision PARKS. This proves
+    /// the park is then ADOPTED and served when the Provide it names arrives —
+    /// rpc.h:483-492, "the two calls can happen in any order".
+    ///
+    /// The driver rewrites A's completion token to `+1`, which is precisely the
+    /// token B's NEXT introduction registers, so the Accept necessarily lands
+    /// before its Provide. That is arithmetic, not timing, so no delay hook is
+    /// needed — which is what made this cell cheap once the token-rewrite modes
+    /// were made explicit.
+    park_adopt,
     // The C++ driver provides a still-PIPELINED (promisedAnswer-target) cap
     // that ultimately re-resolves to a cap this host only IMPORTS (a cap the
     // introducer itself hosts). With the receiverHosted lift the host SERVES
@@ -106,6 +118,7 @@ const Scenario = enum {
         if (std.mem.eql(u8, text, "unknown-token")) return .unknown_token;
         if (std.mem.eql(u8, text, "disconnect")) return .disconnect;
         if (std.mem.eql(u8, text, "park-expiry")) return .park_expiry;
+        if (std.mem.eql(u8, text, "park-adopt")) return .park_adopt;
         if (std.mem.eql(u8, text, "pipelined-provide")) return .pipelined_provide;
         if (std.mem.eql(u8, text, "pipelined-provide-chain")) return .pipelined_provide_chain;
         return null;
@@ -118,6 +131,7 @@ const Scenario = enum {
             .unknown_token => "unknown-token",
             .disconnect => "disconnect",
             .park_expiry => "park-expiry",
+            .park_adopt => "park-adopt",
             .pipelined_provide => "pipelined-provide",
             .pipelined_provide_chain => "pipelined-provide-chain",
         };
@@ -697,6 +711,31 @@ fn liveProxyLinks(conns: []HostConn) usize {
 /// specific than an all-zero check: over-parking, double-parking, serving the
 /// bad token, or leaking an embargo all fail it. Reaping of this residue at
 /// peer teardown is proven separately by the DebugAllocator leak verdict.
+/// `park-adopt`: the park must have been CONSUMED by adoption, not left
+/// outstanding.
+///
+/// This is the one assertion that separates this scenario from
+/// `unknown-token`, which ends with its parked accept still pending. Everything
+/// else about the end state is the ordinary drained shape and is checked by
+/// `drainedTransient`.
+fn parkWasAdopted(vat: *Vat, conns: []HostConn, tap: *Tap) bool {
+    var ok = true;
+    if (vat.index.parked_accept_count != 0) {
+        ok = false;
+        tap.diag("park-adopt: index.parked_accept_count = {d}, want 0 (the park must have been ADOPTED)", .{
+            vat.index.parked_accept_count,
+        });
+    }
+    for (conns, 0..) |*conn, i| {
+        const pending = conn.host.peer.cross_peer_pending_accepts.count();
+        if (pending != 0) {
+            ok = false;
+            tap.diag("park-adopt: peer{d}.cross_peer_pending_accepts = {d}, want 0", .{ i, pending });
+        }
+    }
+    return ok;
+}
+
 fn pendingRendezvousShape(vat: *Vat, conns: []HostConn, tap: *Tap) bool {
     var ok = true;
     const Expect = struct { name: []const u8, got: usize, want: usize };
@@ -1136,6 +1175,37 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
             tap.ok(
                 pendingRendezvousShape(&vat, conns[0..inited], tap),
                 "residue is exactly one still-pending rendezvous (the evicted accept is gone)",
+            );
+        },
+        .park_adopt => {
+            // The other direction of the order-independent rendezvous. The
+            // driver's Accept named the token its NEXT introduction registers,
+            // so it necessarily arrived BEFORE that Provide and had to park;
+            // when the Provide landed the park must have been ADOPTED and
+            // served.
+            tap.ok(probes.provide_seen, "a Provide registered a provision in the vat index");
+
+            // Both halves are required, and the pair is the point: parking
+            // without serving is `unknown-token`, and serving without parking
+            // means the Accept was never early and the cell proved nothing
+            // about ordering.
+            tap.ok(probes.parked_seen, "the Accept arrived first and PARKED (no provision yet)");
+            tap.ok(
+                probes.proxy_seen,
+                "the later Provide ADOPTED that parked Accept and served it cross-peer",
+            );
+
+            tap.ok(carol.calls >= 1, "the adopted Accept reached Carol");
+            tap.ok(
+                parkWasAdopted(&vat, conns[0..inited], tap),
+                "the park was CONSUMED by adoption, not left outstanding",
+            );
+            // The adopted handoff then behaves like any served one: the
+            // driver's Release retires the proxy export and everything drains.
+            // An adopted capability must not have a second-class lifecycle.
+            tap.ok(
+                drainedTransient(&vat, conns[0..inited], tap, "park-adopt"),
+                "all transient handoff state drained after the driver's Release",
             );
         },
         // The C++ driver introduced a still-unresolved PIPELINED cap that

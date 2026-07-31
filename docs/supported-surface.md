@@ -290,9 +290,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      `thirdPartyHosted` resolve, the Accept, and the spec-form forwarded
      accept-Disembargo; the Zig host registers the provision on one peer,
      serves the Accept cross-peer from the sibling, releases the embargoed
-     Accept on the Disembargo, and drains leak-free. Seven scenarios (happy,
-     embargo, unknown-token, disconnect, park-expiry, pipelined-provide,
-     pipelined-provide-chain) assert on both sides — the last two are the
+     Accept on the Disembargo, and drains leak-free. Eight scenarios (happy,
+     embargo, unknown-token, disconnect, park-expiry, park-adopt,
+     pipelined-provide, pipelined-provide-chain) assert on both sides — the last two are the
      `receiverHosted` lift proven against the reference: C++ introduces a
      still-pipelined cap that re-resolves to C++'s own local capability, and
      the accepted cap must reach it (both stored forms, site 1 and site 2).
@@ -301,6 +301,11 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      call pipelined on it *before* it failed (drained from the pending answer)
      and one arriving *after* the Return (answered from the recorded exception)
      must come back with a copy of that same exception rather than hanging.
+     `park-adopt` proves the other half of the order-independent rendezvous
+     (rpc.h:483-492): an Accept naming a provision that does not exist YET
+     parks, and is ADOPTED and served when the Provide naming that token
+     arrives. Together with `unknown-token` (parks forever) that covers both
+     directions of "the two calls can happen in any order".
      **Still unproven:** every other implementation (go-capnp's 3PH is `TODO`,
      Rust/Python adapters are two-party only), and — even for C++ —
      redirected returns / `ThirdPartyAnswer` (absent from the vendored C++),

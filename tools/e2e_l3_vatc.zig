@@ -43,6 +43,11 @@ const scenarios = [_][]const u8{
     // question. That call must get a copy of the same exception. Its ANSWERED
     // counterpart is covered by `pipelined-provide`.
     "park-expiry",
+    // The other half of the order-independent rendezvous: the driver's Accept
+    // names the token its NEXT introduction will register, so the Accept lands
+    // BEFORE its Provide, parks, and must then be ADOPTED and served. Pairs
+    // with `unknown-token` (parks forever) and `park-expiry` (parks, expires).
+    "park-adopt",
     // receiverHosted lift cells: the C++ driver provides a still-pipelined
     // (promisedAnswer-target) cap that re-resolves to a cap the host only
     // imports; the host must SERVE the Accept via deferred-Release import
