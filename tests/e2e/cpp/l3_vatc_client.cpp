@@ -633,7 +633,11 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
     // 43, not host-Carol's 42.
     uint32_t n = accepted.getNumberRequest().send().wait(ws).getN();
     tap.ok(n == 43, "call on the accepted cap returned 43 (B's local cap)");
-    tap.ok(localNum.calls == 1, "B's local capability was invoked exactly once");
+    // TWO invocations, not one: the probe above is itself a real pipelined
+    // call, not a whenResolved(). Both must land on B's cap — the first
+    // proves a call pipelined on the Accept question is answered, the second
+    // that the settled capability still routes to the same place.
+    tap.ok(localNum.calls == 2, "B's local capability was invoked by both the pipelined probe and the settled call");
 
     // Release ceremony (the `happy` pattern): drop A's only ref to the
     // accepted cap and turn the kj loop so the queued Release actually
