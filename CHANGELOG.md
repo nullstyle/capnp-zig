@@ -7,11 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-31
+
+Two-party interop and the frozen contract, hardened. The headline is a spec
+violation on the *Stable* surface that no lane could see: every Return that
+answered a call with param capabilities told the caller to release its exports
+twice — fatal against the C++ reference, a silent export destruction Zig-to-Zig.
+The freeze gate itself got its last two holes closed (no fallible `anytype`
+signature remains on the frozen surface — every frozen error set is now either
+concretely pinned or an honest `anyerror`), the list-upgrade rule is now
+complete in both directions
+including `List(Void)`, and canonicalization gained the spec's actual
+schema-free form, byte-identical to `capnp convert binary:canonical` and
+appropriate as a signing input.
+
 ### Breaking
 
 - **`reader.Reader.readMessage` / `readPackedMessage` take a concrete
-  `*std.Io.Reader`; `reader.SliceReader` is removed.** The last two `anytype`
-  signatures on the frozen Stable surface. A generic parameter leaves a
+  `*std.Io.Reader`; `reader.SliceReader` is removed.** The last two fallible
+  `anytype` signatures on the frozen Stable surface (the infallible
+  `CapDescriptor.writeSenderHosted`-family keeps `anytype` harmlessly: no
+  error set exists to pin). A generic parameter leaves a
   function's error set unpinnable: the snapshot renderer emits an opaque marker
   that is identical no matter what the set contains, so adding, removing or
   renaming an error passed `check-api` unchanged while breaking every
@@ -25,86 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error.UnexpectedEof`, and a truncated packed stream still surfaces
   `error.EndOfStream`. Frozen Stable declarations: 1320 -> 1313.
 
-### Fixed
-
-- **`StructReader.readVoidList` accepts every well-formed list encoding, at
-  the honest element count.** The last arm of the list-upgrade rule. A void
-  element needs zero data bits and zero pointers, so both of the C++
-  reference's element-size checks are vacuous for an expected
-  `ElementSize::VOID` (`layout.c++`, `readListPointer`: the ordinary-list
-  "at least as large as expected" comparison and the `case ElementSize::VOID:
-  break;` struct-list arm). Previously anything but a plain void list was
-  rejected with `error.InvalidPointer` — including the struct list a peer
-  evolved a `List(Void)` field into. (An earlier docs revision misdescribed
-  the symptom as misreporting the word count; the probe shows it rejected.)
-  The inline-composite arm reads the element count from the TAG word — the
-  pointer's D field is a word count for C = 7, so the plain-path count would
-  be silent wrong data. The frozen error set is unchanged: a classification
-  failure is swallowed and the plain path reproduces the pre-existing
-  diagnosis. Ablation: restoring the strict element-size check turns exactly
-  the two new tests red.
-
-### Added
-
-- **`canonical` — spec-faithful, schema-FREE canonicalization (Experimental
-  top-level module).** `canonical.canonicalize` (framed) /
-  `canonical.canonicalizeFlat` (bare segment, byte-identical to
-  `capnp convert binary:canonical`) walk the raw pointer graph the way the
-  reference implementation's `canonicalize()` does — single segment, preorder
-  layout, trailing-zero data-word and trailing-null pointer truncation,
-  uniform max-truncated inline-composite element sizes, far pointers
-  collapsed, upgraded lists preserved as written, capabilities rejected —
-  each rule cited to the vendored `layout.c++`/`message.c++` at its
-  enforcement site. `canonical.isCanonical` ports
-  `MessageReader::isCanonical`. Unlike the schema-driven
-  `schema_validation.canonicalizeMessage` (unchanged, still the home of
-  schema-aware equality and `omit_default_pointers`), the schema-free form
-  preserves fields the local schema does not know about, making it
-  appropriate as a signing input. Differentially tested byte-for-byte
-  against the reference CLI (multi-segment collapse, truncation,
-  heterogeneous struct lists, text/data/bit/nested lists, null pointers,
-  empty structs) plus ports of the reference's `canonicalize-test.c++`
-  acceptance suite; idempotence, determinism, full-validation and
-  per-allocation OOM invariants; ablation-proven (each canonical rule has a
-  test that goes red without it).
-
-- **Cross-impl coverage for the failed-answer directions of the broken-pipeline
-  rule** — a new `park-expiry` scenario in the `e2e-l3-vatc` lane (Zig VatC
-  host, C++ recipient+introducer driver). The ANSWERED direction already had
-  cross-impl teeth in `pipelined-provide`; the failed direction had only unit
-  tests, because the `receiverHosted` lift turned the scenario that used to
-  refuse into one that succeeds.
-
-  The host now runs with a clock and `park_ttl_ms`, so an Accept whose
-  completion token matches no Provide parks and is then evicted by the L9 TTL
-  with an exception Return. Three Returns must carry that exception: the
-  evicted Accept itself, a call the driver pipelined on it BEFORE it failed
-  (queued against the pending answer, settled by the drain), and a call
-  arriving AFTER the Return was built (settled from the recorded
-  `failed_answers` entry). The last is the path a conformant C++ client never
-  exercises by accident — once it has processed the exception its promise is
-  broken and it fails such calls locally — so the driver queues it in the same
-  turn as the triggering Accept and never turns its event loop in between,
-  making it deterministic on frame order rather than on timing.
-
-  The eviction is driven by that second Accept, not by a timer: the TTL sweep
-  runs lazily from the Accept path and nowhere else, so "a later Accept
-  reclaims an expired parked one" is proven here too.
-
-  Ablation-proven and arm-discriminating: forcing the recorded-exception lookup
-  to miss leaves the drain arm green while the driver's late call times out and
-  the host's expired-Return count drops 3 -> 2.
-
-### Fixed
-
-- **e2e L3 driver: the unmatched-token corruption could collide with a real
-  token.** `unknown-token` corrupted the completion token by `+= 1`, and
-  `newToken()` hands out small sequential values — so with two introductions in
-  flight the second Provide registers exactly the token the first Accept was
-  corrupted to, adopts that parked Accept and SERVES it. One introduction hid
-  this; `park-expiry` has two and observed its pipelined call resolving instead
-  of failing. Corruption is now a high-bit flip, which no minted token can
-  reach.
+  **Migration:** wrap your stream in `*std.Io.Reader` — for a byte slice,
+  `var r = std.Io.Reader.fixed(bytes);` then pass `&r`; a socket/file reader
+  from `std.Io` passes through unchanged. A custom duck-typed reader must be
+  adapted to the `std.Io.Reader` interface. `SliceReader{ .data = bytes }`
+  call sites become `std.Io.Reader.fixed(bytes)` one-for-one (that is the
+  exact conversion this repo's own tests underwent). Error handling: the sets
+  are now concrete and pinned; `error.ReadFailed` replaces whatever your
+  custom reader's failure was, and truncation diagnoses are unchanged
+  (`UnexpectedEof` framed, `EndOfStream` packed).
 
 ### Fixed
 
@@ -200,6 +145,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointer, so a struct list read as `List(Void)` reports the word count as its
   element count. C++ accepts `ElementSize::VOID` against an inline-composite
   list. `test-message` 96 → 100.
+
+- **`StructReader.readVoidList` accepts every well-formed list encoding, at
+  the honest element count.** The last arm of the list-upgrade rule. A void
+  element needs zero data bits and zero pointers, so both of the C++
+  reference's element-size checks are vacuous for an expected
+  `ElementSize::VOID` (`layout.c++`, `readListPointer`: the ordinary-list
+  "at least as large as expected" comparison and the `case ElementSize::VOID:
+  break;` struct-list arm). Previously anything but a plain void list was
+  rejected with `error.InvalidPointer` — including the struct list a peer
+  evolved a `List(Void)` field into. (An earlier docs revision misdescribed
+  the symptom as misreporting the word count; the probe shows it rejected.)
+  The inline-composite arm reads the element count from the TAG word — the
+  pointer's D field is a word count for C = 7, so the plain-path count would
+  be silent wrong data. The frozen error set is unchanged: a classification
+  failure is swallowed and the plain path reproduces the pre-existing
+  diagnosis. Ablation: restoring the strict element-size check turns exactly
+  the two new tests red.
+
+- **e2e L3 driver: the unmatched-token corruption could collide with a real
+  token.** `unknown-token` corrupted the completion token by `+= 1`, and
+  `newToken()` hands out small sequential values — so with two introductions in
+  flight the second Provide registers exactly the token the first Accept was
+  corrupted to, adopts that parked Accept and SERVES it. One introduction hid
+  this; `park-expiry` has two and observed its pipelined call resolving instead
+  of failing. Corruption is now a high-bit flip, which no minted token can
+  reach.
+
+### Added
+
+- **`canonical` — spec-faithful, schema-FREE canonicalization (Experimental
+  top-level module).** `canonical.canonicalize` (framed) /
+  `canonical.canonicalizeFlat` (bare segment, byte-identical to
+  `capnp convert binary:canonical`) walk the raw pointer graph the way the
+  reference implementation's `canonicalize()` does — single segment, preorder
+  layout, trailing-zero data-word and trailing-null pointer truncation,
+  uniform max-truncated inline-composite element sizes, far pointers
+  collapsed, upgraded lists preserved as written, capabilities rejected —
+  each rule cited to the vendored `layout.c++`/`message.c++` at its
+  enforcement site. `canonical.isCanonical` ports
+  `MessageReader::isCanonical`. Unlike the schema-driven
+  `schema_validation.canonicalizeMessage` (unchanged, still the home of
+  schema-aware equality and `omit_default_pointers`), the schema-free form
+  preserves fields the local schema does not know about, making it
+  appropriate as a signing input. Differentially tested byte-for-byte
+  against the reference CLI (multi-segment collapse, truncation,
+  heterogeneous struct lists, text/data/bit/nested lists, null pointers,
+  empty structs) plus ports of the reference's `canonicalize-test.c++`
+  acceptance suite; idempotence, determinism, full-validation and
+  per-allocation OOM invariants; ablation-proven (each canonical rule has a
+  test that goes red without it).
+
+- **Cross-impl coverage for the failed-answer directions of the broken-pipeline
+  rule** — a new `park-expiry` scenario in the `e2e-l3-vatc` lane (Zig VatC
+  host, C++ recipient+introducer driver). The ANSWERED direction already had
+  cross-impl teeth in `pipelined-provide`; the failed direction had only unit
+  tests, because the `receiverHosted` lift turned the scenario that used to
+  refuse into one that succeeds.
+
+  The host now runs with a clock and `park_ttl_ms`, so an Accept whose
+  completion token matches no Provide parks and is then evicted by the L9 TTL
+  with an exception Return. Three Returns must carry that exception: the
+  evicted Accept itself, a call the driver pipelined on it BEFORE it failed
+  (queued against the pending answer, settled by the drain), and a call
+  arriving AFTER the Return was built (settled from the recorded
+  `failed_answers` entry). The last is the path a conformant C++ client never
+  exercises by accident — once it has processed the exception its promise is
+  broken and it fails such calls locally — so the driver queues it in the same
+  turn as the triggering Accept and never turns its event loop in between,
+  making it deterministic on frame order rather than on timing.
+
+  The eviction is driven by that second Accept, not by a timer: the TTL sweep
+  runs lazily from the Accept path and nowhere else, so "a later Accept
+  reclaims an expired parked one" is proven here too.
+
+  Ablation-proven and arm-discriminating: forcing the recorded-exception lookup
+  to miss leaves the drain arm green while the driver's late call times out and
+  the host's expired-Return count drops 3 -> 2.
 
 ## [0.7.0] - 2026-07-31
 
@@ -2153,7 +2175,8 @@ minor bumps). See [`docs/supported-surface.md`](docs/supported-surface.md).
 - **Quality hardening**: Comprehensive quality passes covering error handling,
   bounds checking, resource cleanup, and documentation across all layers.
 
-[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/nullstyle/capnp-zig/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/nullstyle/capnp-zig/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/nullstyle/capnp-zig/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/nullstyle/capnp-zig/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nullstyle/capnp-zig/compare/v0.4.0...v0.5.0
