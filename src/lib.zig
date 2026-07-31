@@ -25,6 +25,14 @@ pub const request = @import("serialization/request_reader.zig");
 /// Validates and canonicalizes Cap'n Proto schema graphs.
 pub const schema_validation = @import("serialization/schema_validation.zig");
 
+/// Spec-faithful, schema-FREE canonicalization of Cap'n Proto messages
+/// (Experimental). Walks the raw pointer graph the way the reference
+/// implementation's `canonicalize()`/`isCanonical()` do, so the output is
+/// byte-comparable with `capnp convert binary:canonical` and suitable as a
+/// signing input. Contrast with `schema_validation.canonicalizeMessage`,
+/// which is schema-DRIVEN and re-encodes through builders.
+pub const canonical = @import("serialization/canonical.zig");
+
 /// Cap'n Proto RPC runtime: connection management, capability tables,
 /// message framing, and peer protocol implementation. The default build keeps
 /// the quic-zig-backed QUIC transport disabled; pass `-Dquic=true` to select

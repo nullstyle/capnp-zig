@@ -73,7 +73,7 @@ Four-layer design, each building on the previous:
 
 ### Public API (`src/lib.zig`)
 
-Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `rpc`, `io_backend`
+Exports: `message`, `schema`, `reader`, `codegen`, `request`, `schema_validation`, `canonical`, `rpc`, `io_backend`
 
 ### Switchable Io Backend
 

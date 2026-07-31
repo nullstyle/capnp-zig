@@ -46,6 +46,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`canonical` — spec-faithful, schema-FREE canonicalization (Experimental
+  top-level module).** `canonical.canonicalize` (framed) /
+  `canonical.canonicalizeFlat` (bare segment, byte-identical to
+  `capnp convert binary:canonical`) walk the raw pointer graph the way the
+  reference implementation's `canonicalize()` does — single segment, preorder
+  layout, trailing-zero data-word and trailing-null pointer truncation,
+  uniform max-truncated inline-composite element sizes, far pointers
+  collapsed, upgraded lists preserved as written, capabilities rejected —
+  each rule cited to the vendored `layout.c++`/`message.c++` at its
+  enforcement site. `canonical.isCanonical` ports
+  `MessageReader::isCanonical`. Unlike the schema-driven
+  `schema_validation.canonicalizeMessage` (unchanged, still the home of
+  schema-aware equality and `omit_default_pointers`), the schema-free form
+  preserves fields the local schema does not know about, making it
+  appropriate as a signing input. Differentially tested byte-for-byte
+  against the reference CLI (multi-segment collapse, truncation,
+  heterogeneous struct lists, text/data/bit/nested lists, null pointers,
+  empty structs) plus ports of the reference's `canonicalize-test.c++`
+  acceptance suite; idempotence, determinism, full-validation and
+  per-allocation OOM invariants; ablation-proven (each canonical rule has a
+  test that goes red without it).
+
 - **Cross-impl coverage for the failed-answer directions of the broken-pipeline
   rule** — a new `park-expiry` scenario in the `e2e-l3-vatc` lane (Zig VatC
   host, C++ recipient+introducer driver). The ANSWERED direction already had

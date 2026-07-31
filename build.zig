@@ -696,6 +696,7 @@ pub fn build(b: *std.Build) void {
     const run_capnp_testdata_tests = addLibTest(b, "tests/serialization/capnp_testdata_test.zig", target, optimize, lib_module);
     const run_capnp_test_vendor_tests = addLibTest(b, "tests/serialization/capnp_test_vendor_test.zig", target, optimize, lib_module);
     const run_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, optimize, lib_module);
+    const run_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, optimize, lib_module);
 
     // RPC tests (domain-organized)
     const run_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, optimize, lib_module);
@@ -895,6 +896,7 @@ pub fn build(b: *std.Build) void {
 
     const test_schema_validation_step = b.step("test-schema-validation", "Run schema validation + canonicalization tests");
     test_schema_validation_step.dependOn(run_schema_validation_tests);
+    test_schema_validation_step.dependOn(run_canonical_tests);
 
     const test_serialization_step = b.step("test-serialization", "Run serialization-oriented tests");
     test_serialization_step.dependOn(&run_main_tests.step);
@@ -919,6 +921,7 @@ pub fn build(b: *std.Build) void {
     test_serialization_step.dependOn(run_capnp_testdata_tests);
     test_serialization_step.dependOn(run_capnp_test_vendor_tests);
     test_serialization_step.dependOn(run_schema_validation_tests);
+    test_serialization_step.dependOn(run_canonical_tests);
 
     const test_rpc_wire_step = b.step("test-rpc-wire", "Run RPC wire framing/protocol tests");
     test_rpc_wire_step.dependOn(run_rpc_framing_tests);
@@ -999,6 +1002,7 @@ pub fn build(b: *std.Build) void {
     test_resource_budgets_step.dependOn(run_fuzz_smoke_tests);
     test_resource_budgets_step.dependOn(run_codegen_tests);
     test_resource_budgets_step.dependOn(run_schema_validation_tests);
+    test_resource_budgets_step.dependOn(run_canonical_tests);
     test_resource_budgets_step.dependOn(run_rpc_framing_tests);
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
     test_resource_budgets_step.dependOn(run_rpc_join_readiness_tests);
@@ -1048,6 +1052,7 @@ pub fn build(b: *std.Build) void {
     const run_release_safe_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
@@ -1068,6 +1073,7 @@ pub fn build(b: *std.Build) void {
     test_release_safe_step.dependOn(run_release_safe_codegen_tests);
     test_release_safe_step.dependOn(run_release_safe_codegen_defaults_tests);
     test_release_safe_step.dependOn(run_release_safe_schema_validation_tests);
+    test_release_safe_step.dependOn(run_release_safe_canonical_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
     if (run_release_safe_rpc_quic_transport_tests) |step| test_release_safe_step.dependOn(step);
