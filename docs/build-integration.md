@@ -26,7 +26,7 @@ the command above — do not hand-write it):
 .dependencies = .{
     .capnpc_zig = .{
         .url = "git+https://github.com/nullstyle/capnp-zig.git#v0.7.0",
-        .hash = "capnpc_zig-0.7.0-REPLACE-WITH-VALIDATED-HASH",
+        .hash = "capnpc_zig-0.7.0-nUduFXPzKADQH1Aq946qay4U2GDr66r1k6XebttzN4lU",
     },
 },
 ```
