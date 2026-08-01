@@ -251,11 +251,17 @@ jobs:
       - name: QUIC-enabled API snapshot
         run: zig build -Dquic=true check-api-quic
 
-      - name: The QUIC experimental snapshot must be committed up to date
-        run: |
-          zig build -Dquic=true api-snapshot-quic
-          git diff --exit-code -- docs/api-snapshot-experimental-quic.txt \
-            || { echo "::error::docs/api-snapshot-experimental-quic.txt is stale; run 'zig build -Dquic=true api-snapshot-quic' and commit"; exit 1; }
+      # NO staleness check on docs/api-snapshot-experimental-quic.txt, and that
+      # is deliberate: the EXPERIMENTAL surface is not byte-stable across
+      # platforms. `std.Thread.Id` is u64 on macOS and u32 on Linux, so
+      # `OwnerThreadId.value`, `ProvisionIndex.thread_id`,
+      # `Connection.owner_thread_id` and `Server.loop_thread_id` all render
+      # differently depending on where the tool ran. A `git diff --exit-code` on
+      # that file therefore fails for whoever did not regenerate it on the CI
+      # platform -- which is what it did the first time this step existed.
+      # `docs/api-snapshot-experimental.txt` has never been diff-checked for the
+      # same reason. What IS gated is above: the FROZEN api-snapshot.txt must be
+      # byte-identical with QUIC enabled, and that holds on every platform.
 
       - name: Compile QUIC documentation snippet fixtures
         run: zig build -Dquic=true test-docs-snippets-quic --summary all

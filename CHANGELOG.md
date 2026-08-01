@@ -44,8 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     * TRACKED, not gated — the QUIC experimental surface, matching how every
       other Experimental surface is treated. A field rename now appears as a
       reviewable diff in a committed file, verified by ablation; previously it
-      produced no artifact anywhere. CI additionally fails if that file is left
-      stale.
+      produced no artifact anywhere. It gets no staleness check, deliberately:
+      the experimental surface is NOT byte-stable across platforms
+      (`std.Thread.Id` is `u64` on macOS and `u32` on Linux, so every thread-id
+      field renders differently), which is exactly why
+      `docs/api-snapshot-experimental.txt` has never had one either. Only the
+      Stable file can be a contract. An earlier revision of this entry added
+      such a check and CI rejected it on the first run.
 
 ### Added
 

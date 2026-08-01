@@ -30,7 +30,11 @@ version (`zig fetch --save …#v0.9.0`) and read the CHANGELOG before bumping.
   because `check-api` runs without `-Dquic=true` and otherwise sees only the
   disabled stub. `zig build -Dquic=true check-api-quic` maintains it and gates
   one real invariant: enabling QUIC must leave the FROZEN
-  `api-snapshot.txt` byte-identical.
+  `api-snapshot.txt` byte-identical. Neither experimental snapshot is
+  diff-checked in CI: their contents are not byte-stable across platforms
+  (`std.Thread.Id` is `u64` on macOS and `u32` on Linux, so every thread-id
+  field renders differently), which is precisely why only the Stable file can
+  be a contract.
 
 ## Modules — which to import
 
