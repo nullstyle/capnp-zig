@@ -898,6 +898,51 @@ pub fn build(b: *std.Build) !void {
     const check_api_step = b.step("check-api", "Fail when the public API drifts from docs/api-snapshot.txt");
     check_api_step.dependOn(&run_api_snapshot_check.step);
 
+    // The QUIC-enabled surface, snapshotted separately.
+    //
+    // `check-api` runs WITHOUT `-Dquic=true`, so the snapshot it maintains sees
+    // `rpc.transport.quic` as the disabled stub — the real `ServerOptions`
+    // fields are absent from it entirely. quic-zig v0.10.0's breaking
+    // `Server.Config` rename therefore produced ZERO snapshot movement, which
+    // is exactly the drift a snapshot exists to catch.
+    //
+    // Two assertions, and the first is the valuable one:
+    //   * the STABLE file is checked with its DEFAULT path, so enabling QUIC
+    //     must leave the frozen contract byte-identical. An Experimental
+    //     transport that alters the frozen surface is a bug by definition.
+    //   * the experimental surface goes to its own file, since it legitimately
+    //     differs between the two roots.
+    //
+    // Registered only under `-Dquic=true`: without the dependency the tool
+    // would render the stub surface and fight the non-QUIC snapshot.
+    if (enable_quic) {
+        const run_api_snapshot_write_quic = b.addRunArtifact(api_snapshot_tool);
+        run_api_snapshot_write_quic.addArgs(&.{
+            "--write",
+            "--experimental-path",
+            "docs/api-snapshot-experimental-quic.txt",
+        });
+        run_api_snapshot_write_quic.setCwd(b.path("."));
+        const api_snapshot_quic_step = b.step(
+            "api-snapshot-quic",
+            "Regenerate the QUIC-enabled experimental snapshot (requires -Dquic=true)",
+        );
+        api_snapshot_quic_step.dependOn(&run_api_snapshot_write_quic.step);
+
+        const run_api_snapshot_check_quic = b.addRunArtifact(api_snapshot_tool);
+        run_api_snapshot_check_quic.addArgs(&.{
+            "--check",
+            "--experimental-path",
+            "docs/api-snapshot-experimental-quic.txt",
+        });
+        run_api_snapshot_check_quic.setCwd(b.path("."));
+        const check_api_quic_step = b.step(
+            "check-api-quic",
+            "Fail when the QUIC-enabled public API drifts (requires -Dquic=true)",
+        );
+        check_api_quic_step.dependOn(&run_api_snapshot_check_quic.step);
+    }
+
     const test_codegen_step = b.step("test-codegen", "Run code generation tests");
     test_codegen_step.dependOn(run_codegen_tests);
     test_codegen_step.dependOn(run_codegen_defaults_tests);

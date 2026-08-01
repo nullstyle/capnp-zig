@@ -59,3 +59,21 @@ test "quic root exposes every serialization export the default root does" {
         }
     }
 }
+
+// The `rpc` exemption above is about VALUES, not NAMES: this root deliberately
+// swaps in a different rpc surface, but it must still expose the same set of
+// submodules. Exempting `rpc` wholesale hid `vat` missing from
+// `src/rpc/mod_core.zig` -- the third module-root divergence found in two days,
+// after the same class had already been fixed at the library-root level twice.
+// Compare the name sets so the coarse exemption cannot hide another one.
+test "quic rpc surface exposes every submodule the full rpc surface does" {
+    const full_rpc = @import("rpc/mod.zig");
+    const this_rpc = @import("rpc/mod_quic.zig");
+    inline for (@typeInfo(full_rpc).@"struct".decl_names) |name| {
+        if (!@hasDecl(this_rpc, name)) {
+            @compileError("src/rpc/mod.zig exports '" ++ name ++
+                "' but src/rpc/mod_quic.zig does not. Add it there, or exempt it here " ++
+                "with a reason if it genuinely requires a transport/runtime.");
+        }
+    }
+}

@@ -242,6 +242,21 @@ jobs:
       - name: The QUIC lane must not be a silent no-op
         run: just check-quic-not-noop
 
+      # The default `check-api` job runs WITHOUT -Dquic=true, so it sees
+      # `rpc.transport.quic` as the disabled stub and the real ServerOptions
+      # fields not at all — quic-zig v0.10.0's breaking Config rename moved
+      # ZERO snapshot lines. This checks the QUIC-enabled surface, and gates the
+      # invariant that matters: enabling an Experimental transport must leave
+      # docs/api-snapshot.txt (the FROZEN contract) byte-identical.
+      - name: QUIC-enabled API snapshot
+        run: zig build -Dquic=true check-api-quic
+
+      - name: The QUIC experimental snapshot must be committed up to date
+        run: |
+          zig build -Dquic=true api-snapshot-quic
+          git diff --exit-code -- docs/api-snapshot-experimental-quic.txt \
+            || { echo "::error::docs/api-snapshot-experimental-quic.txt is stale; run 'zig build -Dquic=true api-snapshot-quic' and commit"; exit 1; }
+
       - name: Compile QUIC documentation snippet fixtures
         run: zig build -Dquic=true test-docs-snippets-quic --summary all
 

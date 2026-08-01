@@ -25,6 +25,12 @@ version (`zig fetch --save …#v0.9.0`) and read the CHANGELOG before bumping.
   variants): may break at any 0.x minor bump. Functional and tested, but the API
   is not frozen; its surface evolves in
   [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt) (ungated).
+  The QUIC-enabled surface is recorded separately in
+  [`docs/api-snapshot-experimental-quic.txt`](api-snapshot-experimental-quic.txt),
+  because `check-api` runs without `-Dquic=true` and otherwise sees only the
+  disabled stub. `zig build -Dquic=true check-api-quic` maintains it and gates
+  one real invariant: enabling QUIC must leave the FROZEN
+  `api-snapshot.txt` byte-identical.
 
 ## Modules — which to import
 

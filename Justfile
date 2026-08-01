@@ -175,6 +175,7 @@ ci-quic:
     just test-docs-snippets-quic
     just test-quic-full
     just check-quic-not-noop
+    zig build -Dquic=true check-api-quic
 
 # The FULL suite against the QUIC library ROOT. `-Dquic=true` swaps the root to
 # src/lib_quic.zig, and the targeted lanes above never compile the non-QUIC
