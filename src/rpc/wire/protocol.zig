@@ -1019,8 +1019,8 @@ pub const Join = struct {
 };
 
 /// Write `Exception.type` through the generated forward-compatible ordinal view.
-fn writeExceptionType(ex: *rpc_capnp.Exception.Builder, ex_type: ExceptionType) !void {
-    try ex.enumOrdinals().setType(@backingInt(ex_type));
+fn writeExceptionType(ex: *rpc_capnp.Exception.Builder, ex_type: ExceptionType) void {
+    ex.enumOrdinals().setType(@backingInt(ex_type)) catch unreachable;
 }
 
 /// An RPC exception with a human-readable reason, optional stack trace, and type code.
@@ -1082,7 +1082,7 @@ pub const MessageBuilder = struct {
         var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
         var ex_builder = try root_builder.initAbort();
         try ex_builder.setReason(reason);
-        try writeExceptionType(&ex_builder, ex_type);
+        writeExceptionType(&ex_builder, ex_type);
     }
 
     pub fn buildRelease(self: *MessageBuilder, id: u32, reference_count: u32) !void {
@@ -1354,7 +1354,7 @@ pub const ReturnBuilder = struct {
         var ret_builder = rpc_capnp.Return.Builder.wrap(self.ret);
         var ex_builder = try ret_builder.initException();
         try ex_builder.setReason(reason);
-        try writeExceptionType(&ex_builder, ex_type);
+        writeExceptionType(&ex_builder, ex_type);
     }
 
     pub fn setCanceled(self: *ReturnBuilder) void {

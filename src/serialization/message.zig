@@ -45,6 +45,16 @@ fn makeStructPointer(offset_words: i32, data_words: u16, pointer_words: u16) !u6
     return pointer;
 }
 
+/// Encode the root pointer's fixed offset without widening `allocateStruct`'s
+/// public error set. Non-empty roots start after the pointer (offset 0), while
+/// an explicitly allocated empty root points back at the pointer (offset -1).
+fn makeRootStructPointer(data_words: u16, pointer_words: u16) u64 {
+    const offset_bits: u64 = if (data_words == 0 and pointer_words == 0) 0x3fffffff else 0;
+    return (offset_bits << 2) |
+        (@as(u64, data_words) << 32) |
+        (@as(u64, pointer_words) << 48);
+}
+
 /// Maximum value representable in a Cap'n Proto list-pointer count field.
 ///
 /// The count occupies bits 35..64 of a list pointer (29 bits). For inline
@@ -2683,7 +2693,7 @@ pub const MessageBuilder = struct {
             // A zero-sized root is explicitly present and points back at its
             // own pointer word (offset -1). Non-empty roots begin immediately
             // after the root pointer (offset 0).
-            const root_pointer = try makeStructPointer(if (total_words == 0) -1 else 0, data_words, pointer_words);
+            const root_pointer = makeRootStructPointer(data_words, pointer_words);
 
             // Reserve the whole root allocation in one growth step.
             try segment.ensureUnusedCapacity(self.allocator, 8 + total_bytes);
