@@ -2683,7 +2683,7 @@ pub const MessageBuilder = struct {
             // A zero-sized root is explicitly present and points back at its
             // own pointer word (offset -1). Non-empty roots begin immediately
             // after the root pointer (offset 0).
-            const root_pointer = makeStructPointer(if (total_words == 0) -1 else 0, data_words, pointer_words) catch unreachable;
+            const root_pointer = try makeStructPointer(if (total_words == 0) -1 else 0, data_words, pointer_words);
 
             // Reserve the whole root allocation in one growth step.
             try segment.ensureUnusedCapacity(self.allocator, 8 + total_bytes);
