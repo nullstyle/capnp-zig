@@ -208,10 +208,20 @@ pub const StructGenerator = struct {
 
         // Generate group Reader
         try self.writeGroupWrapStruct(writer, "Reader", "_reader", "message.StructReader", "reader");
+        try self.generateEnumOrdinalsReaderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
         if (group_struct_info.discriminant_count > 0) {
             const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
+            try writer.writeAll("            pub fn whichOrdinal(self: @This()) u16 {\n");
+            try writer.print("                return self._reader.readUnionDiscriminant({});\n", .{disc_byte_offset});
+            try writer.writeAll("            }\n\n");
             try writer.writeAll("            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {\n");
-            try writer.print("                return std.enums.fromInt(WhichTag, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{disc_byte_offset});
+            try writer.writeAll("                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;\n");
             try writer.writeAll("            }\n\n");
         }
         for (group_struct_info.fields) |group_field| {
@@ -225,6 +235,13 @@ pub const StructGenerator = struct {
 
         // Generate group Builder
         try self.writeGroupWrapStruct(writer, "Builder", "_builder", "message.StructBuilder", "builder");
+        try self.generateEnumOrdinalsBuilderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
         for (group_struct_info.fields) |group_field| {
             if (group_field.group != null) {
                 try self.generateGroupNestedBuilderAccessor(group_field, group_struct_info, writer);
@@ -400,6 +417,206 @@ pub const StructGenerator = struct {
         }
     }
 
+    fn hasDirectEnumSlot(struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type == .@"enum") return true;
+        }
+        return false;
+    }
+
+    fn isPointerSlotType(typ: schema.Type) bool {
+        return switch (typ) {
+            .text, .data, .list, .@"struct", .any_pointer, .interface => true,
+            else => false,
+        };
+    }
+
+    /// Emit the raw-enum reader view nested in a generated Reader. The view is
+    /// intentionally separate from typed getters: typed access remains
+    /// exhaustive, while this path can preserve ordinals introduced by a newer
+    /// schema version.
+    fn generateEnumOrdinalsReaderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!hasDirectEnumSlot(struct_info)) return;
+
+        try writer.print("{s}pub const EnumOrdinals = struct {{\n", .{decl_indent});
+        try writer.print("{s}_reader: message.StructReader,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .@"enum") continue;
+
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+
+            try writer.print("{s}pub fn get{s}(self: @This()) !u16 {{\n", .{ member_indent, cap_name });
+            try self.writeOrdinalUnionGuard(field, struct_info, "_reader", body_indent, writer);
+            try self.writeEnumOrdinalGetterBody(slot, body_indent, writer);
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn enumOrdinals(self: @This()) EnumOrdinals {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    /// Emit the raw-enum builder view nested in a generated Builder.
+    fn generateEnumOrdinalsBuilderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!hasDirectEnumSlot(struct_info)) return;
+
+        try writer.print("{s}pub const EnumOrdinals = struct {{\n", .{decl_indent});
+        try writer.print("{s}_builder: message.StructBuilder,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .@"enum") continue;
+
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+
+            try writer.print("{s}pub fn set{s}(self: @This(), value: u16) !void {{\n", .{ member_indent, cap_name });
+            try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
+            try self.writeEnumOrdinalSetterBody(slot, body_indent, writer);
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn enumOrdinals(self: @This()) EnumOrdinals {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    fn writeEnumOrdinalGetterBody(self: *StructGenerator, slot: schema.FieldSlot, indent: []const u8, writer: anytype) !void {
+        const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
+        if (slot.default_value) |default_value| {
+            if (!self.hasZeroDefaultBits(.uint16, default_value)) {
+                if (try self.defaultLiteral(.uint16, default_value)) |literal| {
+                    defer self.allocator.free(literal);
+                    try writer.print("{s}return self._reader.readU16({}) ^ {s};\n", .{ indent, byte_offset, literal });
+                    return;
+                }
+            }
+        }
+        try writer.print("{s}return self._reader.readU16({});\n", .{ indent, byte_offset });
+    }
+
+    fn writeEnumOrdinalSetterBody(self: *StructGenerator, slot: schema.FieldSlot, indent: []const u8, writer: anytype) !void {
+        const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
+        if (slot.default_value) |default_value| {
+            if (!self.hasZeroDefaultBits(.uint16, default_value)) {
+                if (try self.defaultLiteral(.uint16, default_value)) |literal| {
+                    defer self.allocator.free(literal);
+                    try writer.print("{s}self._builder.writeU16({}, value ^ {s});\n", .{ indent, byte_offset, literal });
+                    return;
+                }
+            }
+        }
+        try writer.print("{s}self._builder.writeU16({}, value);\n", .{ indent, byte_offset });
+    }
+
+    fn writeOrdinalUnionGuard(
+        self: *StructGenerator,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        comptime storage_field: []const u8,
+        indent: []const u8,
+        writer: anytype,
+    ) !void {
+        _ = self;
+        if (field.discriminant_value == 0xFFFF or parent_struct_info.discriminant_count == 0) return;
+        const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
+        try writer.print(
+            "{s}if (self.{s}.readUnionDiscriminant({}) != {}) return error.WrongUnionMember;\n",
+            .{ indent, storage_field, disc_byte_offset, field.discriminant_value },
+        );
+    }
+
+    fn writeOrdinalUnionDiscriminant(
+        self: *StructGenerator,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        indent: []const u8,
+        writer: anytype,
+    ) !void {
+        _ = self;
+        if (field.discriminant_value == 0xFFFF or parent_struct_info.discriminant_count == 0) return;
+        const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
+        try writer.print("{s}self._builder.writeU16({}, {});\n", .{ indent, disc_byte_offset, field.discriminant_value });
+    }
+
+    fn generatePointerPresenceReader(
+        self: *StructGenerator,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        receiver_type: []const u8,
+        decl_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        const slot = field.slot orelse return;
+        if (!isPointerSlotType(slot.type)) return;
+
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const cap_name = try self.capitalizeFirst(zig_name);
+        defer self.allocator.free(cap_name);
+
+        try writer.print("{s}pub fn has{s}(self: {s}) bool {{\n", .{ decl_indent, cap_name, receiver_type });
+        if (field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0) {
+            const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
+            try writer.print(
+                "{s}if (self._reader.readUnionDiscriminant({}) != {}) return false;\n",
+                .{ body_indent, disc_byte_offset, field.discriminant_value },
+            );
+        }
+        try writer.print("{s}return !self._reader.isPointerNull({});\n", .{ body_indent, slot.offset });
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    fn generatePointerPresenceBuilder(
+        self: *StructGenerator,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        receiver_type: []const u8,
+        decl_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        const slot = field.slot orelse return;
+        if (!isPointerSlotType(slot.type)) return;
+
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const cap_name = try self.capitalizeFirst(zig_name);
+        defer self.allocator.free(cap_name);
+
+        try writer.print("{s}pub fn has{s}(self: {s}) bool {{\n", .{ decl_indent, cap_name, receiver_type });
+        if (field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0) {
+            const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
+            try writer.print(
+                "{s}if (self._builder.readUnionDiscriminant({}) != {}) return false;\n",
+                .{ body_indent, disc_byte_offset, field.discriminant_value },
+            );
+        }
+        try writer.print("{s}return !self._builder.isPointerNull({});\n", .{ body_indent, slot.offset });
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
     fn generateReader(
         self: *StructGenerator,
         struct_info: schema.StructNode,
@@ -425,11 +642,22 @@ pub const StructGenerator = struct {
         try writer.writeAll("            return .{ ._reader = reader };\n");
         try writer.writeAll("        }\n\n");
 
+        try self.generateEnumOrdinalsReaderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+
         // Generate which() method if this struct has a union
         if (struct_info.discriminant_count > 0) {
             const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
+            try writer.print("        pub fn whichOrdinal(self: {s}) u16 {{\n", .{self.reader_ref});
+            try writer.print("            return self._reader.readUnionDiscriminant({});\n", .{disc_byte_offset});
+            try writer.writeAll("        }\n\n");
             try writer.print("        pub fn which(self: {s}) error{{InvalidEnumValue}}!{s} {{\n", .{ self.reader_ref, self.whichtag_ref });
-            try writer.print("            return std.enums.fromInt({s}, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{ self.whichtag_ref, disc_byte_offset });
+            try writer.print("            return std.enums.fromInt({s}, self.whichOrdinal()) orelse return error.InvalidEnumValue;\n", .{self.whichtag_ref});
             try writer.writeAll("        }\n\n");
         }
 
@@ -478,12 +706,26 @@ pub const StructGenerator = struct {
 
         const is_union_member = field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0;
 
+        try self.generatePointerPresenceReader(
+            field,
+            parent_struct_info,
+            self.reader_ref,
+            "        ",
+            "            ",
+            writer,
+        );
+
         try writer.print("        pub fn get{s}(self: {s}) !{s} {{\n", .{
             cap_name,
             self.reader_ref,
             zig_type,
         });
 
+        // Preserve the typed accessor's historical error distinction: an
+        // unknown union tag fails through `which()` with InvalidEnumValue,
+        // while a different known arm returns WrongUnionMember. The ordinal
+        // view performs its own raw guard because it must not call typed
+        // `which()` for a schema-new tag.
         try self.writeUnionMemberGuard(field, parent_struct_info, "            ", writer);
 
         switch (slot.type) {
@@ -540,34 +782,13 @@ pub const StructGenerator = struct {
                 }
             },
             .@"enum" => |enum_info| {
-                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
-                const zero_default = if (slot.default_value) |default_value|
-                    self.hasZeroDefaultBits(.uint16, default_value)
-                else
-                    false;
-                var emitted_default_path = false;
-
-                if (!zero_default) if (slot.default_value) |default_value| {
-                    if (try self.defaultLiteral(.uint16, default_value)) |literal| {
-                        defer self.allocator.free(literal);
-                        try writer.print("            const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
-                        if (enum_name) |en| {
-                            try writer.print("            return std.enums.fromInt({s}, raw) orelse return error.InvalidEnumValue;\n", .{en});
-                        } else {
-                            try writer.writeAll("            return raw;\n");
-                        }
-                        emitted_default_path = true;
-                    }
-                };
-
-                if (!emitted_default_path) {
-                    if (enum_name) |en| {
-                        try writer.print("            return std.enums.fromInt({s}, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{ en, byte_offset });
-                    } else {
-                        try writer.print("            return self._reader.readU16({});\n", .{byte_offset});
-                    }
+                try writer.print("            const ordinal = try self.enumOrdinals().get{s}();\n", .{cap_name});
+                if (enum_name) |en| {
+                    try writer.print("            return std.enums.fromInt({s}, ordinal) orelse return error.InvalidEnumValue;\n", .{en});
+                } else {
+                    try writer.writeAll("            return ordinal;\n");
                 }
             },
             .text => {
@@ -943,8 +1164,19 @@ pub const StructGenerator = struct {
 
         const is_union_member = field.discriminant_value != 0xFFFF and parent_struct_info.discriminant_count > 0;
 
+        try self.generatePointerPresenceReader(
+            field,
+            parent_struct_info,
+            "@This()",
+            "            ",
+            "                ",
+            writer,
+        );
+
         try writer.print("            pub fn get{s}(self: @This()) !{s} {{\n", .{ cap_name, zig_type });
 
+        // Keep typed union errors backward-compatible; see the top-level
+        // getter's matching guard above.
         try self.writeUnionMemberGuard(field, parent_struct_info, "                ", writer);
 
         switch (slot.type) {
@@ -999,34 +1231,13 @@ pub const StructGenerator = struct {
                 }
             },
             .@"enum" => |enum_info| {
-                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
-                const zero_default = if (slot.default_value) |default_value|
-                    self.hasZeroDefaultBits(.uint16, default_value)
-                else
-                    false;
-                var emitted_default_path = false;
-
-                if (!zero_default) if (slot.default_value) |default_value| {
-                    if (try self.defaultLiteral(.uint16, default_value)) |literal| {
-                        defer self.allocator.free(literal);
-                        try writer.print("                const raw = self._reader.readU16({}) ^ {s};\n", .{ byte_offset, literal });
-                        if (enum_name) |en| {
-                            try writer.print("                return std.enums.fromInt({s}, raw) orelse return error.InvalidEnumValue;\n", .{en});
-                        } else {
-                            try writer.writeAll("                return raw;\n");
-                        }
-                        emitted_default_path = true;
-                    }
-                };
-
-                if (!emitted_default_path) {
-                    if (enum_name) |en| {
-                        try writer.print("                return std.enums.fromInt({s}, self._reader.readU16({})) orelse return error.InvalidEnumValue;\n", .{ en, byte_offset });
-                    } else {
-                        try writer.print("                return self._reader.readU16({});\n", .{byte_offset});
-                    }
+                try writer.print("                const ordinal = try self.enumOrdinals().get{s}();\n", .{cap_name});
+                if (enum_name) |en| {
+                    try writer.print("                return std.enums.fromInt({s}, ordinal) orelse return error.InvalidEnumValue;\n", .{en});
+                } else {
+                    try writer.writeAll("                return ordinal;\n");
                 }
             },
             .text => {
@@ -1223,6 +1434,15 @@ pub const StructGenerator = struct {
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
 
+        try self.generatePointerPresenceBuilder(
+            field,
+            parent_struct_info,
+            "@This()",
+            "            ",
+            "                ",
+            writer,
+        );
+
         switch (slot.type) {
             .list => |list_info| {
                 const unresolved_struct_layout = switch (list_info.element_type.*) {
@@ -1308,7 +1528,9 @@ pub const StructGenerator = struct {
         defer self.allocator.free(zig_type);
 
         try writer.print("            pub fn set{s}(self: *@This(), value: {s}) !void {{\n", .{ cap_name, zig_type });
-        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
+        if (slot.type != .@"enum") {
+            try self.writeUnionDiscriminant(field, parent_struct_info, writer);
+        }
 
         switch (slot.type) {
             .void => try writer.writeAll("                _ = value;\n"),
@@ -1331,24 +1553,10 @@ pub const StructGenerator = struct {
             .int32, .uint32, .float32 => try self.writeNumericSetterBody(slot, "writeU32", "u32", "                ", writer),
             .int64, .uint64, .float64 => try self.writeNumericSetterBody(slot, "writeU64", "u64", "                ", writer),
             .@"enum" => |enum_info| {
-                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
-                if (slot.default_value) |default_value| {
-                    if (self.hasZeroDefaultBits(.uint16, default_value)) {
-                        try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
-                    } else if (try self.defaultLiteral(.uint16, default_value)) |literal| {
-                        defer self.allocator.free(literal);
-                        try writer.print("                const raw = {s};\n", .{raw_expr});
-                        try writer.print("                const stored = raw ^ {s};\n", .{literal});
-                        try writer.print("                self._builder.writeU16({}, stored);\n", .{byte_offset});
-                    } else {
-                        try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
-                    }
-                } else {
-                    try writer.print("                self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
-                }
+                try writer.print("                return self.enumOrdinals().set{s}({s});\n", .{ cap_name, raw_expr });
             },
             .text => try writer.print("                try self._builder.writeText({}, value);\n", .{slot.offset}),
             .data => try writer.print("                try self._builder.writeData({}, value);\n", .{slot.offset}),
@@ -1450,6 +1658,14 @@ pub const StructGenerator = struct {
         try writer.writeAll("            return .{ ._builder = builder };\n");
         try writer.writeAll("        }\n\n");
 
+        try self.generateEnumOrdinalsBuilderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+
         // Generate field setters
         for (struct_info.fields) |field| {
             if (field.group != null) {
@@ -1468,6 +1684,15 @@ pub const StructGenerator = struct {
         defer self.allocator.free(zig_name);
         const cap_name = try self.capitalizeFirst(zig_name);
         defer self.allocator.free(cap_name);
+
+        try self.generatePointerPresenceBuilder(
+            field,
+            parent_struct_info,
+            self.builder_ref,
+            "        ",
+            "            ",
+            writer,
+        );
 
         switch (slot.type) {
             .list => |list_info| {
@@ -1610,7 +1835,9 @@ pub const StructGenerator = struct {
         });
 
         // Write union discriminant if this is a union field
-        try self.writeUnionDiscriminant(field, parent_struct_info, writer);
+        if (slot.type != .@"enum") {
+            try self.writeUnionDiscriminant(field, parent_struct_info, writer);
+        }
 
         switch (slot.type) {
             .void => try writer.writeAll("            _ = value;\n"),
@@ -1633,24 +1860,10 @@ pub const StructGenerator = struct {
             .int32, .uint32, .float32 => try self.writeNumericSetterBody(slot, "writeU32", "u32", "            ", writer),
             .int64, .uint64, .float64 => try self.writeNumericSetterBody(slot, "writeU64", "u64", "            ", writer),
             .@"enum" => |enum_info| {
-                const byte_offset = try self.dataByteOffset(slot.type, slot.offset);
                 const enum_name = try self.enumTypeName(enum_info.type_id);
                 defer if (enum_name) |name| self.allocator.free(name);
                 const raw_expr = if (enum_name != null) "@as(u16, @intFromEnum(value))" else "@as(u16, value)";
-                if (slot.default_value) |default_value| {
-                    if (self.hasZeroDefaultBits(.uint16, default_value)) {
-                        try writer.print("            self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
-                    } else if (try self.defaultLiteral(.uint16, default_value)) |literal| {
-                        defer self.allocator.free(literal);
-                        try writer.print("            const raw = {s};\n", .{raw_expr});
-                        try writer.print("            const stored = raw ^ {s};\n", .{literal});
-                        try writer.print("            self._builder.writeU16({}, stored);\n", .{byte_offset});
-                    } else {
-                        try writer.print("            self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
-                    }
-                } else {
-                    try writer.print("            self._builder.writeU16({}, {s});\n", .{ byte_offset, raw_expr });
-                }
+                try writer.print("            return self.enumOrdinals().set{s}({s});\n", .{ cap_name, raw_expr });
             },
             .text => try writer.print("            try self._builder.writeText({}, value);\n", .{slot.offset}),
             .data => try writer.print("            try self._builder.writeData({}, value);\n", .{slot.offset}),

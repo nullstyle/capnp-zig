@@ -251,6 +251,19 @@ check-generated:
     zig build
     cd src/rpc && just gen-rpc
     cd tests/e2e/schemas && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/tests/e2e/zig/generated game_types.capnp bootstrap.capnp game_world.capnp inventory.capnp chat.capnp matchmaking.capnp resolve_disembargo.capnp l3_l4_interop.capnp
+    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}} examples/addressbook.capnp examples/pingpong.capnp
+    cd examples/kvstore && capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/examples/kvstore/gen kvstore.capnp
+    mkdir -p zig-out/check-generated/tests/test_schemas
+    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/example.capnp
+    cp zig-out/check-generated/tests/test_schemas/example.zig src/wasm/generated/example.zig
+    mkdir -p tests/serialization/generated
+    # These revisions share a file ID, so capnp must compile them in separate
+    # requests even though their generated modules are checked together.
+    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/enum_evolution_v1.capnp
+    cp zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig tests/serialization/generated/schema_evolution_v1.zig
+    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/enum_evolution_v2.capnp
+    cp zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig tests/serialization/generated/schema_evolution_v2.zig
+    CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build test-codegen
     zig build api-snapshot
     just fmt
     # docs/api-snapshot-experimental.txt is deliberately NOT diffed here. It is
@@ -259,7 +272,7 @@ check-generated:
     # `std.Thread.Id`, which renders u64 on macOS and u32 on Linux, so a committed
     # copy can never match on every OS. The Stable file MUST be target-stable and
     # stays in the diff — `zig build check-api` enforces that on all three tiers.
-    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
+    git diff --exit-code -- src/rpc/gen tests/e2e/zig/generated tests/golden examples/addressbook.zig examples/pingpong.zig examples/kvstore/gen/kvstore.zig src/wasm/generated/example.zig tests/serialization/generated docs/api-snapshot.txt || { echo "ERROR: committed generated artifacts are stale — run 'just check-generated' locally and commit the result"; exit 1; }
 
 # Assert the Zig on PATH is the one mise.toml pins — the same check
 # .github/actions/setup-zig makes, so a local gate proves the same thing CI's

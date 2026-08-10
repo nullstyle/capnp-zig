@@ -42,8 +42,17 @@ pub const Message = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(0);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn hasUnimplemented(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 0) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getUnimplemented(self: Reader) !Message.Reader {
@@ -53,11 +62,21 @@ pub const Message = struct {
             return Message.Reader{ ._reader = value };
         }
 
+        pub fn hasAbort(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 1) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getAbort(self: Reader) !Exception.Reader {
             if ((try self.which()) != .abort) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Exception.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Exception.Reader{ ._reader = value };
+        }
+
+        pub fn hasCall(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 2) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getCall(self: Reader) !Call.Reader {
@@ -67,11 +86,21 @@ pub const Message = struct {
             return Call.Reader{ ._reader = value };
         }
 
+        pub fn hasReturn(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 3) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getReturn(self: Reader) !Return.Reader {
             if ((try self.which()) != .@"return") return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Return.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Return.Reader{ ._reader = value };
+        }
+
+        pub fn hasFinish(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 4) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getFinish(self: Reader) !Finish.Reader {
@@ -81,11 +110,21 @@ pub const Message = struct {
             return Finish.Reader{ ._reader = value };
         }
 
+        pub fn hasResolve(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 5) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getResolve(self: Reader) !Resolve.Reader {
             if ((try self.which()) != .resolve) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Resolve.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Resolve.Reader{ ._reader = value };
+        }
+
+        pub fn hasRelease(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 6) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getRelease(self: Reader) !Release.Reader {
@@ -95,9 +134,19 @@ pub const Message = struct {
             return Release.Reader{ ._reader = value };
         }
 
+        pub fn hasObsoleteSave(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 7) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getObsoleteSave(self: Reader) !message.AnyPointerReader {
             if ((try self.which()) != .obsoleteSave) return error.WrongUnionMember;
             return try self._reader.readAnyPointer(0);
+        }
+
+        pub fn hasBootstrap(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 8) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getBootstrap(self: Reader) !Bootstrap.Reader {
@@ -107,9 +156,19 @@ pub const Message = struct {
             return Bootstrap.Reader{ ._reader = value };
         }
 
+        pub fn hasObsoleteDelete(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 9) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getObsoleteDelete(self: Reader) !message.AnyPointerReader {
             if ((try self.which()) != .obsoleteDelete) return error.WrongUnionMember;
             return try self._reader.readAnyPointer(0);
+        }
+
+        pub fn hasProvide(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 10) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getProvide(self: Reader) !Provide.Reader {
@@ -119,11 +178,21 @@ pub const Message = struct {
             return Provide.Reader{ ._reader = value };
         }
 
+        pub fn hasAccept(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 11) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getAccept(self: Reader) !Accept.Reader {
             if ((try self.which()) != .accept) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Accept.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Accept.Reader{ ._reader = value };
+        }
+
+        pub fn hasJoin(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 12) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getJoin(self: Reader) !Join.Reader {
@@ -133,11 +202,21 @@ pub const Message = struct {
             return Join.Reader{ ._reader = value };
         }
 
+        pub fn hasDisembargo(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 13) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getDisembargo(self: Reader) !Disembargo.Reader {
             if ((try self.which()) != .disembargo) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Disembargo.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Disembargo.Reader{ ._reader = value };
+        }
+
+        pub fn hasThirdPartyAnswer(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 14) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getThirdPartyAnswer(self: Reader) !ThirdPartyAnswer.Reader {
@@ -161,10 +240,20 @@ pub const Message = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasUnimplemented(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 0) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initUnimplemented(self: *Builder) !Message.Builder {
             self._builder.writeU16(0, 0);
             const builder = try self._builder.initStruct(0, 1, 1);
             return Message.Builder{ ._builder = builder };
+        }
+
+        pub fn hasAbort(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 1) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initAbort(self: *Builder) !Exception.Builder {
@@ -173,10 +262,20 @@ pub const Message = struct {
             return Exception.Builder{ ._builder = builder };
         }
 
+        pub fn hasCall(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 2) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initCall(self: *Builder) !Call.Builder {
             self._builder.writeU16(0, 2);
             const builder = try self._builder.initStruct(0, 3, 3);
             return Call.Builder{ ._builder = builder };
+        }
+
+        pub fn hasReturn(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 3) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initReturn(self: *Builder) !Return.Builder {
@@ -185,10 +284,20 @@ pub const Message = struct {
             return Return.Builder{ ._builder = builder };
         }
 
+        pub fn hasFinish(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 4) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initFinish(self: *Builder) !Finish.Builder {
             self._builder.writeU16(0, 4);
             const builder = try self._builder.initStruct(0, 1, 0);
             return Finish.Builder{ ._builder = builder };
+        }
+
+        pub fn hasResolve(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 5) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initResolve(self: *Builder) !Resolve.Builder {
@@ -197,10 +306,20 @@ pub const Message = struct {
             return Resolve.Builder{ ._builder = builder };
         }
 
+        pub fn hasRelease(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 6) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initRelease(self: *Builder) !Release.Builder {
             self._builder.writeU16(0, 6);
             const builder = try self._builder.initStruct(0, 1, 0);
             return Release.Builder{ ._builder = builder };
+        }
+
+        pub fn hasObsoleteSave(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 7) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initObsoleteSave(self: *Builder) !message.AnyPointerBuilder {
@@ -232,10 +351,20 @@ pub const Message = struct {
             try any.setCapability(cap);
         }
 
+        pub fn hasBootstrap(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 8) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initBootstrap(self: *Builder) !Bootstrap.Builder {
             self._builder.writeU16(0, 8);
             const builder = try self._builder.initStruct(0, 1, 1);
             return Bootstrap.Builder{ ._builder = builder };
+        }
+
+        pub fn hasObsoleteDelete(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 9) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initObsoleteDelete(self: *Builder) !message.AnyPointerBuilder {
@@ -267,10 +396,20 @@ pub const Message = struct {
             try any.setCapability(cap);
         }
 
+        pub fn hasProvide(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 10) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initProvide(self: *Builder) !Provide.Builder {
             self._builder.writeU16(0, 10);
             const builder = try self._builder.initStruct(0, 1, 2);
             return Provide.Builder{ ._builder = builder };
+        }
+
+        pub fn hasAccept(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 11) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initAccept(self: *Builder) !Accept.Builder {
@@ -279,16 +418,31 @@ pub const Message = struct {
             return Accept.Builder{ ._builder = builder };
         }
 
+        pub fn hasJoin(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 12) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initJoin(self: *Builder) !Join.Builder {
             self._builder.writeU16(0, 12);
             const builder = try self._builder.initStruct(0, 1, 2);
             return Join.Builder{ ._builder = builder };
         }
 
+        pub fn hasDisembargo(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 13) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initDisembargo(self: *Builder) !Disembargo.Builder {
             self._builder.writeU16(0, 13);
             const builder = try self._builder.initStruct(0, 1, 2);
             return Disembargo.Builder{ ._builder = builder };
+        }
+
+        pub fn hasThirdPartyAnswer(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 14) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initThirdPartyAnswer(self: *Builder) !ThirdPartyAnswer.Builder {
@@ -317,6 +471,10 @@ pub const Bootstrap = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasDeprecatedObjectId(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getDeprecatedObjectId(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
@@ -337,6 +495,10 @@ pub const Bootstrap = struct {
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
+        }
+
+        pub fn hasDeprecatedObjectId(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initDeprecatedObjectId(self: *Builder) !message.AnyPointerBuilder {
@@ -381,8 +543,12 @@ pub const Call = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn whichOrdinal(self: @This()) u16 {
+                return self._reader.readUnionDiscriminant(6);
+            }
+
             pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.enums.fromInt(WhichTag, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
+                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getCaller(self: @This()) !void {
@@ -393,6 +559,11 @@ pub const Call = struct {
             pub fn getYourself(self: @This()) !void {
                 if ((try self.which()) != .yourself) return error.WrongUnionMember;
                 return {};
+            }
+
+            pub fn hasThirdParty(self: @This()) bool {
+                if (self._reader.readUnionDiscriminant(6) != 2) return false;
+                return !self._reader.isPointerNull(2);
             }
 
             pub fn getThirdParty(self: @This()) !message.AnyPointerReader {
@@ -419,6 +590,11 @@ pub const Call = struct {
                 _ = value;
             }
 
+            pub fn hasThirdParty(self: @This()) bool {
+                if (self._builder.readUnionDiscriminant(6) != 2) return false;
+                return !self._builder.isPointerNull(2);
+            }
+
             pub fn initThirdParty(self: *@This()) !message.AnyPointerBuilder {
             self._builder.writeU16(6, 2);
                 return try self._builder.getAnyPointer(2);
@@ -443,6 +619,10 @@ pub const Call = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasTarget(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
             if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
@@ -455,6 +635,10 @@ pub const Call = struct {
 
         pub fn getMethodId(self: Reader) !u16 {
             return self._reader.readU16(4);
+        }
+
+        pub fn hasParams(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getParams(self: Reader) !Payload.Reader {
@@ -497,6 +681,10 @@ pub const Call = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasTarget(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
             const builder = try self._builder.initStruct(0, 1, 1);
             return MessageTarget.Builder{ ._builder = builder };
@@ -508,6 +696,10 @@ pub const Call = struct {
 
         pub fn setMethodId(self: *Builder, value: u16) !void {
             self._builder.writeU16(4, @bitCast(value));
+        }
+
+        pub fn hasParams(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initParams(self: *Builder) !Payload.Builder {
@@ -556,8 +748,12 @@ pub const Return = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(6);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(6)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
         pub fn getAnswerId(self: Reader) !u32 {
@@ -568,11 +764,21 @@ pub const Return = struct {
             return self._reader.readBool(4, 0) != true;
         }
 
+        pub fn hasResults(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(6) != 0) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getResults(self: Reader) !Payload.Reader {
             if ((try self.which()) != .results) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return Payload.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return Payload.Reader{ ._reader = value };
+        }
+
+        pub fn hasException(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(6) != 1) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getException(self: Reader) !Exception.Reader {
@@ -595,6 +801,11 @@ pub const Return = struct {
         pub fn getTakeFromOtherQuestion(self: Reader) !u32 {
             if ((try self.which()) != .takeFromOtherQuestion) return error.WrongUnionMember;
             return self._reader.readU32(8);
+        }
+
+        pub fn hasAwaitFromThirdParty(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(6) != 5) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getAwaitFromThirdParty(self: Reader) !message.AnyPointerReader {
@@ -628,10 +839,20 @@ pub const Return = struct {
             self._builder.writeBool(4, 0, value != true);
         }
 
+        pub fn hasResults(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(6) != 0) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initResults(self: *Builder) !Payload.Builder {
             self._builder.writeU16(6, 0);
             const builder = try self._builder.initStruct(0, 0, 2);
             return Payload.Builder{ ._builder = builder };
+        }
+
+        pub fn hasException(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(6) != 1) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initException(self: *Builder) !Exception.Builder {
@@ -653,6 +874,11 @@ pub const Return = struct {
         pub fn setTakeFromOtherQuestion(self: *Builder, value: u32) !void {
             self._builder.writeU16(6, 4);
             self._builder.writeU32(8, @bitCast(value));
+        }
+
+        pub fn hasAwaitFromThirdParty(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(6) != 5) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initAwaitFromThirdParty(self: *Builder) !message.AnyPointerBuilder {
@@ -763,12 +989,21 @@ pub const Resolve = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(4);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
         pub fn getPromiseId(self: Reader) !u32 {
             return self._reader.readU32(0);
+        }
+
+        pub fn hasCap(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(4) != 0) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getCap(self: Reader) !CapDescriptor.Reader {
@@ -776,6 +1011,11 @@ pub const Resolve = struct {
             if (self._reader.isPointerNull(0)) return CapDescriptor.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return CapDescriptor.Reader{ ._reader = value };
+        }
+
+        pub fn hasException(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(4) != 1) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getException(self: Reader) !Exception.Reader {
@@ -803,10 +1043,20 @@ pub const Resolve = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasCap(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(4) != 0) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initCap(self: *Builder) !CapDescriptor.Builder {
             self._builder.writeU16(4, 0);
             const builder = try self._builder.initStruct(0, 1, 1);
             return CapDescriptor.Builder{ ._builder = builder };
+        }
+
+        pub fn hasException(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(4) != 1) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initException(self: *Builder) !Exception.Builder {
@@ -879,8 +1129,12 @@ pub const Disembargo = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn whichOrdinal(self: @This()) u16 {
+                return self._reader.readUnionDiscriminant(4);
+            }
+
             pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
+                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getSenderLoopback(self: @This()) !u32 {
@@ -891,6 +1145,11 @@ pub const Disembargo = struct {
             pub fn getReceiverLoopback(self: @This()) !u32 {
                 if ((try self.which()) != .receiverLoopback) return error.WrongUnionMember;
                 return self._reader.readU32(0);
+            }
+
+            pub fn hasAccept(self: @This()) bool {
+                if (self._reader.readUnionDiscriminant(4) != 2) return false;
+                return !self._reader.isPointerNull(1);
             }
 
             pub fn getAccept(self: @This()) ![]const u8 {
@@ -918,6 +1177,11 @@ pub const Disembargo = struct {
                 self._builder.writeU32(0, @bitCast(value));
             }
 
+            pub fn hasAccept(self: @This()) bool {
+                if (self._builder.readUnionDiscriminant(4) != 2) return false;
+                return !self._builder.isPointerNull(1);
+            }
+
             pub fn setAccept(self: *@This(), value: []const u8) !void {
             self._builder.writeU16(4, 2);
                 try self._builder.writeData(1, value);
@@ -936,6 +1200,10 @@ pub const Disembargo = struct {
 
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
+        }
+
+        pub fn hasTarget(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
@@ -960,6 +1228,10 @@ pub const Disembargo = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub fn hasTarget(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
@@ -991,10 +1263,18 @@ pub const Provide = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasTarget(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
             if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return MessageTarget.Reader{ ._reader = value };
+        }
+
+        pub fn hasRecipient(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getRecipient(self: Reader) !message.AnyPointerReader {
@@ -1019,9 +1299,17 @@ pub const Provide = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasTarget(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
             const builder = try self._builder.initStruct(0, 1, 1);
             return MessageTarget.Builder{ ._builder = builder };
+        }
+
+        pub fn hasRecipient(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initRecipient(self: *Builder) !message.AnyPointerBuilder {
@@ -1068,8 +1356,16 @@ pub const Accept = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasProvision(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getProvision(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
+        }
+
+        pub fn hasEmbargo(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getEmbargo(self: Reader) ![]const u8 {
@@ -1093,6 +1389,10 @@ pub const Accept = struct {
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
+        }
+
+        pub fn hasProvision(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initProvision(self: *Builder) !message.AnyPointerBuilder {
@@ -1119,6 +1419,10 @@ pub const Accept = struct {
             try any.setCapability(cap);
         }
 
+        pub fn hasEmbargo(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
+        }
+
         pub fn setEmbargo(self: *Builder, value: []const u8) !void {
             try self._builder.writeData(1, value);
         }
@@ -1137,6 +1441,10 @@ pub const ThirdPartyAnswer = struct {
 
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
+        }
+
+        pub fn hasCompletion(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getCompletion(self: Reader) !message.AnyPointerReader {
@@ -1159,6 +1467,10 @@ pub const ThirdPartyAnswer = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub fn hasCompletion(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initCompletion(self: *Builder) !message.AnyPointerBuilder {
@@ -1209,10 +1521,18 @@ pub const Join = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasTarget(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getTarget(self: Reader) !MessageTarget.Reader {
             if (self._reader.isPointerNull(0)) return MessageTarget.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return MessageTarget.Reader{ ._reader = value };
+        }
+
+        pub fn hasKeyPart(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getKeyPart(self: Reader) !message.AnyPointerReader {
@@ -1237,9 +1557,17 @@ pub const Join = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasTarget(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initTarget(self: *Builder) !MessageTarget.Builder {
             const builder = try self._builder.initStruct(0, 1, 1);
             return MessageTarget.Builder{ ._builder = builder };
+        }
+
+        pub fn hasKeyPart(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initKeyPart(self: *Builder) !message.AnyPointerBuilder {
@@ -1287,13 +1615,22 @@ pub const MessageTarget = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(4);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
         pub fn getImportedCap(self: Reader) !u32 {
             if ((try self.which()) != .importedCap) return error.WrongUnionMember;
             return self._reader.readU32(0);
+        }
+
+        pub fn hasPromisedAnswer(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(4) != 1) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getPromisedAnswer(self: Reader) !PromisedAnswer.Reader {
@@ -1322,6 +1659,11 @@ pub const MessageTarget = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasPromisedAnswer(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(4) != 1) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initPromisedAnswer(self: *Builder) !PromisedAnswer.Builder {
             self._builder.writeU16(4, 1);
             const builder = try self._builder.initStruct(0, 1, 1);
@@ -1347,8 +1689,16 @@ pub const Payload = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasContent(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getContent(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
+        }
+
+        pub fn hasCapTable(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getCapTable(self: Reader) !StructListReader(CapDescriptor) {
@@ -1369,6 +1719,10 @@ pub const Payload = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub fn hasContent(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initContent(self: *Builder) !message.AnyPointerBuilder {
@@ -1393,6 +1747,10 @@ pub const Payload = struct {
         pub fn setContentCapability(self: *Builder, cap: message.Capability) !void {
             var any = try self._builder.getAnyPointer(0);
             try any.setCapability(cap);
+        }
+
+        pub fn hasCapTable(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initCapTable(self: *Builder, element_count: u32) !StructListBuilder(CapDescriptor) {
@@ -1425,8 +1783,12 @@ pub const CapDescriptor = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(0);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
         pub fn getNone(self: Reader) !void {
@@ -1449,11 +1811,21 @@ pub const CapDescriptor = struct {
             return self._reader.readU32(4);
         }
 
+        pub fn hasReceiverAnswer(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 4) return false;
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getReceiverAnswer(self: Reader) !PromisedAnswer.Reader {
             if ((try self.which()) != .receiverAnswer) return error.WrongUnionMember;
             if (self._reader.isPointerNull(0)) return PromisedAnswer.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return PromisedAnswer.Reader{ ._reader = value };
+        }
+
+        pub fn hasThirdPartyHosted(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 5) return false;
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getThirdPartyHosted(self: Reader) !ThirdPartyCapDescriptor.Reader {
@@ -1503,10 +1875,20 @@ pub const CapDescriptor = struct {
             self._builder.writeU32(4, @bitCast(value));
         }
 
+        pub fn hasReceiverAnswer(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 4) return false;
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initReceiverAnswer(self: *Builder) !PromisedAnswer.Builder {
             self._builder.writeU16(0, 4);
             const builder = try self._builder.initStruct(0, 1, 1);
             return PromisedAnswer.Builder{ ._builder = builder };
+        }
+
+        pub fn hasThirdPartyHosted(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 5) return false;
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initThirdPartyHosted(self: *Builder) !ThirdPartyCapDescriptor.Builder {
@@ -1543,6 +1925,10 @@ pub const PromisedAnswer = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasTransform(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getTransform(self: Reader) !StructListReader(PromisedAnswer.Op) {
             if (self._reader.isPointerNull(0)) return StructListReader(PromisedAnswer.Op){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(0);
@@ -1565,6 +1951,10 @@ pub const PromisedAnswer = struct {
 
         pub fn setQuestionId(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
+        }
+
+        pub fn hasTransform(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initTransform(self: *Builder, element_count: u32) !StructListBuilder(PromisedAnswer.Op) {
@@ -1591,8 +1981,12 @@ pub const PromisedAnswer = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn whichOrdinal(self: @This()) u16 {
+                return self._reader.readUnionDiscriminant(0);
+            }
+
             pub fn which(self: @This()) error{InvalidEnumValue}!Op.WhichTag {
-                return std.enums.fromInt(Op.WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                return std.enums.fromInt(Op.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getNoop(self: @This()) !void {
@@ -1647,6 +2041,10 @@ pub const ThirdPartyCapDescriptor = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasId(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getId(self: Reader) !message.AnyPointerReader {
             return try self._reader.readAnyPointer(0);
         }
@@ -1667,6 +2065,10 @@ pub const ThirdPartyCapDescriptor = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub fn hasId(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initId(self: *Builder) !message.AnyPointerBuilder {
@@ -1716,6 +2118,23 @@ pub const Exception = struct {
             return .{ ._reader = reader };
         }
 
+        pub const EnumOrdinals = struct {
+            _reader: message.StructReader,
+
+            pub fn getType(self: @This()) !u16 {
+                return self._reader.readU16(4);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._reader = self._reader };
+        }
+
+        pub fn hasReason(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getReason(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
@@ -1730,12 +2149,21 @@ pub const Exception = struct {
         }
 
         pub fn getType(self: Reader) !Exception.Type {
-            return std.enums.fromInt(Exception.Type, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getType();
+            return std.enums.fromInt(Exception.Type, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn hasTrace(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getTrace(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
             return try self._reader.readText(1);
+        }
+
+        pub fn hasDetails(self: Reader) bool {
+            return !self._reader.isPointerNull(2);
         }
 
         pub fn getDetails(self: Reader) !StructListReader(Exception.Detail) {
@@ -1758,6 +2186,23 @@ pub const Exception = struct {
             return .{ ._builder = builder };
         }
 
+        pub const EnumOrdinals = struct {
+            _builder: message.StructBuilder,
+
+            pub fn setType(self: @This(), value: u16) !void {
+                self._builder.writeU16(4, value);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._builder = self._builder };
+        }
+
+        pub fn hasReason(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setReason(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
         }
@@ -1771,11 +2216,19 @@ pub const Exception = struct {
         }
 
         pub fn setType(self: *Builder, value: Exception.Type) !void {
-            self._builder.writeU16(4, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setType(@as(u16, @intFromEnum(value)));
+        }
+
+        pub fn hasTrace(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setTrace(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(1, value);
+        }
+
+        pub fn hasDetails(self: Builder) bool {
+            return !self._builder.isPointerNull(2);
         }
 
         pub fn initDetails(self: *Builder, element_count: u32) !StructListBuilder(Exception.Detail) {
@@ -1808,6 +2261,10 @@ pub const Exception = struct {
                 return self._reader.readU64(0);
             }
 
+            pub fn hasData(self: @This()) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getData(self: @This()) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return &[_]u8{};
                 return try self._reader.readData(0);
@@ -1829,6 +2286,10 @@ pub const Exception = struct {
 
             pub fn setDetailId(self: *@This(), value: u64) !void {
                 self._builder.writeU64(0, @bitCast(value));
+            }
+
+            pub fn hasData(self: @This()) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn setData(self: *@This(), value: []const u8) !void {

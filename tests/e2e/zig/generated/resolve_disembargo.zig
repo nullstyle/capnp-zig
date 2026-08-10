@@ -1256,6 +1256,10 @@ pub const Reflector = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasTarget(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getTarget(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -1283,6 +1287,10 @@ pub const Reflector = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasTarget(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initTarget(self: *Builder) !message.AnyPointerBuilder {
@@ -1326,6 +1334,10 @@ pub const Reflector = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasPromise(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getPromise(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -1353,6 +1365,10 @@ pub const Reflector = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasPromise(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initPromise(self: *Builder) !message.AnyPointerBuilder {
@@ -1456,6 +1472,10 @@ pub const Reflector = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasCb(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getCb(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -1483,6 +1503,10 @@ pub const Reflector = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasCb(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initCb(self: *Builder) !message.AnyPointerBuilder {

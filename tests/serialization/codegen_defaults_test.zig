@@ -60,6 +60,9 @@ test "Codegen defaults and constants" {
     try expectContains(output, "segments_owned = false");
     try expectContains(output, "value != true");
     try expectContains(output, "const stored = @as(u32, @bitCast(value)) ^ @as(u32, 123);");
-    try expectContains(output, "const stored = raw ^ @as(u16, 1);");
+    try expectContains(output, "return self.enumOrdinals().setColor(@as(u16, @intFromEnum(value)));");
+    try expectContains(output, "pub const EnumOrdinals = struct");
+    try expectContains(output, "return self._reader.readU16(6) ^ @as(u16, 1);");
+    try expectContains(output, "self._builder.writeU16(6, value ^ @as(u16, 1));");
     try expectNotContains(output, "const rpc = capnpc.rpc;");
 }

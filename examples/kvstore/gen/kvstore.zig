@@ -25,9 +25,17 @@ pub const Entry = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasKey(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getKey(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
+        }
+
+        pub fn hasValue(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getValue(self: Reader) ![]const u8 {
@@ -53,8 +61,16 @@ pub const Entry = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasKey(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setKey(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasValue(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setValue(self: *Builder, value: []const u8) !void {
@@ -86,13 +102,26 @@ pub const WriteOp = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(0);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn hasKey(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getKey(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
+        }
+
+        pub fn hasPut(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 0) return false;
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getPut(self: Reader) ![]const u8 {
@@ -120,8 +149,17 @@ pub const WriteOp = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasKey(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setKey(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasPut(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 0) return false;
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setPut(self: *Builder, value: []const u8) !void {
@@ -155,13 +193,26 @@ pub const WriteOpResult = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(0);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn hasKey(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getKey(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
+        }
+
+        pub fn hasPut(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(0) != 0) return false;
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getPut(self: Reader) !Entry.Reader {
@@ -190,8 +241,17 @@ pub const WriteOpResult = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasKey(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setKey(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasPut(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(0) != 0) return false;
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initPut(self: *Builder) !Entry.Builder {
@@ -294,20 +354,28 @@ pub const KvClientNotifier = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -436,20 +504,28 @@ pub const KvClientNotifier = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -634,20 +710,28 @@ pub const KvClientNotifier = struct {
         accept_from_third_party,
 
         /// Collapse this BootstrapResponse into its Client or a typed
-        /// rpc.peer.CallError. Locally synthesized exception reasons map to
-        /// their dedicated errors; every other exception is RemoteException
-        /// (reason available on the union arm).
+        /// rpc.peer.CallError. Classification comes from the exception's
+        /// spec `Exception.Type`, so a disconnect reported by ANY
+        /// implementation is recognized; every other exception is
+        /// RemoteException (reason available on the union arm).
         pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
             return switch (self) {
                 .client => |c| c,
-                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                    error.Disconnected
-                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                    error.Disconnected
-                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                    error.CallTimedOut
-                else
-                    error.RemoteException,
+                .exception => |ex| switch (ex.kind()) {
+                    .disconnected => error.Disconnected,
+                    // The spec has no distinct timeout type and classes
+                    // timeouts as overloaded, so our own deadline sentinel
+                    // still separates a local timeout from a remote's
+                    // genuine backpressure.
+                    .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    // .failed, .unimplemented (spec: treat like failed), and
+                    // any future code. `else` is required: the enum is
+                    // non-exhaustive because the wire field is remote-controlled.
+                    else => error.RemoteException,
+                },
                 .canceled => error.Canceled,
                 .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
             };
@@ -749,6 +833,10 @@ pub const KvClientNotifier = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasChanges(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getChanges(self: Reader) !StructListReader(WriteOpResult) {
                 if (self._reader.isPointerNull(0)) return StructListReader(WriteOpResult){ ._list = self._reader.emptyStructList() };
                 const raw = try self._reader.readStructList(0);
@@ -767,6 +855,10 @@ pub const KvClientNotifier = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasChanges(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initChanges(self: *Builder, element_count: u32) !StructListBuilder(WriteOpResult) {
@@ -915,20 +1007,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1057,20 +1157,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1199,20 +1307,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1341,20 +1457,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1483,20 +1607,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1625,20 +1757,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1767,20 +1907,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -1909,20 +2057,28 @@ pub const KvStore = struct {
             accept_from_third_party,
 
             /// Collapse this Response into its success payload or a typed
-            /// rpc.peer.CallError. Locally synthesized exception reasons map to
-            /// their dedicated errors; every other exception is RemoteException
-            /// (reason available on the union arm).
+            /// rpc.peer.CallError. Classification comes from the exception's
+            /// spec `Exception.Type`, so a disconnect reported by ANY
+            /// implementation is recognized; every other exception is
+            /// RemoteException (reason available on the union arm).
             pub fn unwrap(self: Response) rpc.peer.CallError!Results.Reader {
                 return switch (self) {
                     .results => |r| r,
-                    .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                        error.Disconnected
-                    else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                        error.CallTimedOut
-                    else
-                        error.RemoteException,
+                    .exception => |ex| switch (ex.kind()) {
+                        .disconnected => error.Disconnected,
+                        // The spec has no distinct timeout type and classes
+                        // timeouts as overloaded, so our own deadline sentinel
+                        // still separates a local timeout from a remote's
+                        // genuine backpressure.
+                        .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                            error.CallTimedOut
+                        else
+                            error.RemoteException,
+                        // .failed, .unimplemented (spec: treat like failed), and
+                        // any future code. `else` is required: the enum is
+                        // non-exhaustive because the wire field is remote-controlled.
+                        else => error.RemoteException,
+                    },
                     .canceled => error.Canceled,
                     .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
                 };
@@ -2215,20 +2371,28 @@ pub const KvStore = struct {
         accept_from_third_party,
 
         /// Collapse this BootstrapResponse into its Client or a typed
-        /// rpc.peer.CallError. Locally synthesized exception reasons map to
-        /// their dedicated errors; every other exception is RemoteException
-        /// (reason available on the union arm).
+        /// rpc.peer.CallError. Classification comes from the exception's
+        /// spec `Exception.Type`, so a disconnect reported by ANY
+        /// implementation is recognized; every other exception is
+        /// RemoteException (reason available on the union arm).
         pub fn unwrap(self: BootstrapResponse) rpc.peer.CallError!Client {
             return switch (self) {
                 .client => |c| c,
-                .exception => |ex| if (std.mem.eql(u8, ex.reason, rpc.peer.disconnected_reason))
-                    error.Disconnected
-                else if (std.mem.eql(u8, ex.reason, rpc.peer.shutdown_reason))
-                    error.Disconnected
-                else if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
-                    error.CallTimedOut
-                else
-                    error.RemoteException,
+                .exception => |ex| switch (ex.kind()) {
+                    .disconnected => error.Disconnected,
+                    // The spec has no distinct timeout type and classes
+                    // timeouts as overloaded, so our own deadline sentinel
+                    // still separates a local timeout from a remote's
+                    // genuine backpressure.
+                    .overloaded => if (std.mem.eql(u8, ex.reason, rpc.peer.deadline_reason))
+                        error.CallTimedOut
+                    else
+                        error.RemoteException,
+                    // .failed, .unimplemented (spec: treat like failed), and
+                    // any future code. `else` is required: the enum is
+                    // non-exhaustive because the wire field is remote-controlled.
+                    else => error.RemoteException,
+                },
                 .canceled => error.Canceled,
                 .results_sent_elsewhere, .take_from_other_question, .accept_from_third_party => error.UnexpectedReturn,
             };
@@ -2345,6 +2509,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasKey(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getKey(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
                 return try self._reader.readText(0);
@@ -2362,6 +2530,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasKey(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn setKey(self: *Builder, value: []const u8) !void {
@@ -2382,6 +2554,10 @@ pub const KvStore = struct {
 
             pub fn wrap(reader: message.StructReader) Reader {
                 return .{ ._reader = reader };
+            }
+
+            pub fn hasEntry(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
             }
 
             pub fn getEntry(self: Reader) !Entry.Reader {
@@ -2406,6 +2582,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasEntry(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initEntry(self: *Builder) !Entry.Builder {
@@ -2436,6 +2616,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasOps(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getOps(self: Reader) !StructListReader(WriteOp) {
                 if (self._reader.isPointerNull(0)) return StructListReader(WriteOp){ ._list = self._reader.emptyStructList() };
                 const raw = try self._reader.readStructList(0);
@@ -2454,6 +2638,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasOps(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initOps(self: *Builder, element_count: u32) !StructListBuilder(WriteOp) {
@@ -2478,6 +2666,10 @@ pub const KvStore = struct {
 
             pub fn wrap(reader: message.StructReader) Reader {
                 return .{ ._reader = reader };
+            }
+
+            pub fn hasResults(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
             }
 
             pub fn getResults(self: Reader) !StructListReader(WriteOpResult) {
@@ -2506,6 +2698,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasResults(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initResults(self: *Builder, element_count: u32) !StructListBuilder(WriteOpResult) {
@@ -2537,6 +2733,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasPrefix(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getPrefix(self: Reader) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
                 return try self._reader.readText(0);
@@ -2558,6 +2758,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasPrefix(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn setPrefix(self: *Builder, value: []const u8) !void {
@@ -2587,6 +2791,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasEntries(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getEntries(self: Reader) !StructListReader(Entry) {
                 if (self._reader.isPointerNull(0)) return StructListReader(Entry){ ._list = self._reader.emptyStructList() };
                 const raw = try self._reader.readStructList(0);
@@ -2605,6 +2813,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasEntries(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initEntries(self: *Builder, element_count: u32) !StructListBuilder(Entry) {
@@ -2626,6 +2838,10 @@ pub const KvStore = struct {
 
             pub fn wrap(reader: message.StructReader) Reader {
                 return .{ ._reader = reader };
+            }
+
+            pub fn hasNotifier(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
             }
 
             pub fn getNotifier(self: Reader) !message.Capability {
@@ -2655,6 +2871,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasNotifier(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initNotifier(self: *Builder) !message.AnyPointerBuilder {
@@ -2728,6 +2948,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasKeys(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getKeys(self: Reader) !message.TextListReader {
                 if (self._reader.isPointerNull(0)) return self._reader.emptyList(message.TextListReader);
                 return try self._reader.readTextList(0);
@@ -2745,6 +2969,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasKeys(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initKeys(self: *Builder, element_count: u32) !message.TextListBuilder {
@@ -2835,6 +3063,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasBackup(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getBackup(self: Reader) !BackupInfo.Reader {
                 if (self._reader.isPointerNull(0)) return BackupInfo.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -2857,6 +3089,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasBackup(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initBackup(self: *Builder) !BackupInfo.Builder {
@@ -2917,6 +3153,10 @@ pub const KvStore = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasBackups(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getBackups(self: Reader) !StructListReader(BackupInfo) {
                 if (self._reader.isPointerNull(0)) return StructListReader(BackupInfo){ ._list = self._reader.emptyStructList() };
                 const raw = try self._reader.readStructList(0);
@@ -2935,6 +3175,10 @@ pub const KvStore = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasBackups(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initBackups(self: *Builder, element_count: u32) !StructListBuilder(BackupInfo) {

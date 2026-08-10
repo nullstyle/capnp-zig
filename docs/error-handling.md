@@ -76,6 +76,14 @@ Pointer-section methods (`readPointer`, `readText`, `readStruct`, `readListOf*`)
 | `InvalidUtf8` | From `readTextStrict()` only -- the text is not valid UTF-8. |
 | `IndexOutOfBounds` | List element index exceeds the element count. |
 
+`StructReader.isPointerNull()` and generated pointer-field `hasXxx()` methods do
+not resolve a pointer. They only distinguish a zero (or old-layout-missing)
+pointer slot from a nonzero one. Therefore `hasXxx() == true` is not a promise
+that `getXxx()` will succeed: a malformed nonzero pointer is structurally
+present and is rejected when the getter resolves it. Generated union accessors
+first check the arm; an inactive or unknown arm reports false regardless of the
+shared pointer word.
+
 ## Builder Errors
 
 Returned by `MessageBuilder` and `StructBuilder` methods during message construction.
@@ -203,7 +211,7 @@ Returned by functions in `src/serialization/schema_validation.zig` when validati
 | `SchemaRecursionLimitExceeded` | Schema traversal depth exceeds the internal limit during type/field validation. | The schema has excessively deep type nesting. Simplify the schema or report as a bug if the depth is reasonable. |
 | `SchemaCycleDetected` | A cycle is detected in the schema node graph during validation. | The schema is malformed (struct A contains struct B contains struct A without indirection through a pointer). Fix the `.capnp` schema. |
 | `StructSizeTooSmall` | A struct's declared data or pointer section is too small to hold all its fields. | The schema and message are inconsistent. Re-run codegen to ensure they match. |
-| `InvalidEnumValue` | An enum field's discriminant value exceeds the number of enumerants defined in the schema. | The message was built with a newer schema that has more enum values. Handle as an unknown enum or reject. |
+| `InvalidEnumValue` | An enum field's ordinal exceeds the enumerants defined in the schema. | Schema-aware validation is intentionally strict: reject it. Generated consumers that deliberately forward newer values may inspect the ordinal before schema-aware validation with `enumOrdinals()` / `getOrdinal()`. |
 | `InvalidListElementSize` | A list's wire element size does not match what the schema expects (e.g., a `List(UInt32)` encoded with byte-sized elements). | The message is corrupt or schema-mismatched. Reject. |
 | `InvalidTextPointer` | A text field has zero length, wrong element size, or missing NUL terminator during schema validation. | The message is corrupt. Reject. |
 | `OutOfBounds` | A struct or list field's byte range extends past the segment during schema-aware validation. | The message is corrupt. Reject. |
@@ -292,3 +300,18 @@ const flags = try reader.readU32Strict(2);
 ```
 
 For application messages where schema evolution is expected, use the default (non-strict) readers that return zero/false for missing fields.
+
+### Preserve unknown enum values in forwarding code
+
+Generated typed enum getters and `which()` remain exhaustive and return
+`error.InvalidEnumValue` for values introduced by a newer schema. Do not catch
+that error and substitute an arbitrary known value in a proxy. Use the generated
+ordinal APIs to carry the logical wire value unchanged:
+
+```zig
+const ordinal = try source.enumOrdinals().getStatus();
+try destination.enumOrdinals().setStatus(ordinal);
+```
+
+This forwarding API does not make schema-aware validation permissive;
+`schema_validation.validateMessage` continues to reject unknown enum ordinals.

@@ -8,13 +8,20 @@ const request_reader = capnpc.request;
 const schema_validation = capnpc.schema_validation;
 
 fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorRequest {
+    return loadCodeGeneratorRequestForSchema(allocator, "tests/capnp_testdata/test.capnp");
+}
+
+fn loadCodeGeneratorRequestForSchema(
+    allocator: std.mem.Allocator,
+    schema_path: []const u8,
+) !schema.CodeGeneratorRequest {
     const argv = [_][]const u8{
         "capnp",
         "compile",
         "--no-standard-import",
         "-Itests/capnp_testdata",
         "-o-",
-        "tests/capnp_testdata/test.capnp",
+        schema_path,
     };
 
     const result = std.process.run(allocator, std.testing.io, .{
@@ -45,6 +52,39 @@ fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorR
     const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
     allocator.free(result.stdout);
     return request;
+}
+
+test "schema-aware validation remains strict for unknown enum ordinals" {
+    const allocator = std.testing.allocator;
+
+    const request = try loadCodeGeneratorRequestForSchema(
+        allocator,
+        "tests/test_schemas/enum_evolution_v1.capnp",
+    );
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+
+    const root_node = compare.findStructBySuffix(request.nodes, "Evolution") orelse
+        return error.InvalidSchema;
+
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+
+    // Status has schema default ordinal 1, so logical unknown ordinal 2 is
+    // stored XOR 1. The generated raw ordinal view may forward it, but the
+    // schema-aware validator intentionally remains exhaustive.
+    var root = try builder.allocateStruct(1, 10);
+    root.writeU16(0, 2 ^ 1);
+
+    const bytes = try builder.toBytes();
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.init(allocator, bytes, .{});
+    defer msg.deinit();
+
+    try std.testing.expectError(
+        error.InvalidEnumValue,
+        schema_validation.validateMessage(&msg, request.nodes, root_node, .{}),
+    );
 }
 
 fn capnpConvertCanonical(allocator: std.mem.Allocator, input: []const u8) ![]u8 {

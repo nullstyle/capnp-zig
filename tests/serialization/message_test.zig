@@ -379,6 +379,162 @@ fn makeFarPointer(landing_pad_is_double: bool, landing_pad_offset_words: u32, se
     return pointer;
 }
 
+test "StructBuilder: tolerant pointer inspection and union discriminant reads" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(1, 2);
+    try testing.expectEqual(@as(u16, 0), root.readUnionDiscriminant(0));
+    try testing.expectEqual(@as(u16, 0), root.readUnionDiscriminant(8));
+    try testing.expectEqual(@as(u16, 0), root.readUnionDiscriminant(std.math.maxInt(usize)));
+
+    root.writeUnionDiscriminant(2, 0xbeef);
+    try testing.expectEqual(@as(u16, 0xbeef), root.readUnionDiscriminant(2));
+
+    try testing.expect(root.isPointerNull(0));
+    try testing.expect(root.isPointerNull(1));
+    try testing.expect(root.isPointerNull(2));
+    try testing.expect(root.isPointerNull(std.math.maxInt(usize)));
+
+    try root.writeText(0, "present");
+    try testing.expect(!root.isPointerNull(0));
+    root.clearPointer(0);
+    try testing.expect(root.isPointerNull(0));
+
+    // Presence is structural: a malformed but nonzero pointer word is still
+    // present. Decoding/validation is responsible for rejecting its shape.
+    const pointer_one_pos: usize = 8 + 8 + 8;
+    const malformed_capability = (@as(u64, 1) << 2) | 3;
+    std.mem.writeInt(u64, builder.segments.items[0].items[pointer_one_pos..][0..8], malformed_capability, .little);
+    try testing.expect(!root.isPointerNull(1));
+    root.clearPointer(1);
+    try testing.expect(root.isPointerNull(1));
+
+    var invalid_segment = root;
+    invalid_segment.segment_id = std.math.maxInt(u32);
+    try testing.expect(invalid_segment.isPointerNull(0));
+}
+
+test "MessageBuilder: explicit empty root uses offset minus one pointer" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    _ = try builder.allocateStruct(0, 0);
+    const segment = builder.segments.items[0].items;
+    try testing.expectEqual(@as(usize, 8), segment.len);
+    try testing.expectEqual(makeStructPointer(-1, 0, 0), std.mem.readInt(u64, segment[0..8], .little));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    // One-segment framing occupies eight bytes, followed by the root word.
+    try testing.expectEqual(makeStructPointer(-1, 0, 0), std.mem.readInt(u64, bytes[8..16], .little));
+
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+    const root = try msg.getRootStruct();
+    try testing.expectEqual(@as(u16, 0), root.data_size);
+    try testing.expectEqual(@as(u16, 0), root.pointer_count);
+}
+
+test "MessageBuilder: empty nested struct is present without allocating storage" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(0, 1);
+    const before_len = builder.segments.items[0].items.len;
+    _ = try root.initStruct(0, 0, 0);
+
+    const segment = builder.segments.items[0].items;
+    try testing.expectEqual(before_len, segment.len);
+    try testing.expectEqual(makeStructPointer(-1, 0, 0), std.mem.readInt(u64, segment[8..16], .little));
+    try testing.expect(!root.isPointerNull(0));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+    const root_reader = try msg.getRootStruct();
+    try testing.expect(!root_reader.isPointerNull(0));
+    const child = try root_reader.readStruct(0);
+    try testing.expectEqual(@as(u16, 0), child.data_size);
+    try testing.expectEqual(@as(u16, 0), child.pointer_count);
+
+    root.clearPointer(0);
+    try testing.expect(root.isPointerNull(0));
+    try testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, segment[8..16], .little));
+}
+
+test "AnyPointerBuilder: explicit empty struct root is non-null" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    const any = try builder.initRootAnyPointer();
+    _ = try any.initStruct(0, 0);
+    const segment = builder.segments.items[0].items;
+    try testing.expectEqual(@as(usize, 8), segment.len);
+    try testing.expectEqual(makeStructPointer(-1, 0, 0), std.mem.readInt(u64, segment[0..8], .little));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+    const root_any = try msg.getRootAnyPointer();
+    _ = try root_any.getStruct();
+}
+
+test "MessageBuilder: empty nested struct across segments uses far landing pointer" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var root = try builder.allocateStruct(0, 1);
+    const target_segment = try builder.createSegment();
+    _ = try builder.allocateStructInSegment(target_segment, 1, 0);
+    const child = try root.initStructInSegment(0, 0, 0, target_segment);
+
+    try testing.expectEqual(target_segment, child.segment_id);
+    try testing.expectEqual(@as(usize, 8), child.offset);
+    try testing.expect(!root.isPointerNull(0));
+
+    const source = builder.segments.items[0].items;
+    const target = builder.segments.items[target_segment].items;
+    try testing.expectEqual(@as(usize, 16), target.len);
+    try testing.expectEqual(makeFarPointer(false, 1, target_segment), std.mem.readInt(u64, source[8..16], .little));
+    try testing.expectEqual(makeStructPointer(-1, 0, 0), std.mem.readInt(u64, target[8..16], .little));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+    const root_reader = try msg.getRootStruct();
+    try testing.expect(!root_reader.isPointerNull(0));
+    _ = try root_reader.readStruct(0);
+}
+
+test "MessageBuilder: empty root in another segment uses far landing pointer" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    const target_segment: u32 = 2;
+    const root = try builder.allocateRootStructInSegment(target_segment, 0, 0);
+    try testing.expectEqual(target_segment, root.segment_id);
+    try testing.expectEqual(@as(usize, 0), root.offset);
+
+    const source = builder.segments.items[0].items;
+    const target = builder.segments.items[target_segment].items;
+    try testing.expectEqual(@as(usize, 8), source.len);
+    try testing.expectEqual(@as(usize, 8), target.len);
+    try testing.expectEqual(makeFarPointer(false, 0, target_segment), std.mem.readInt(u64, source[0..8], .little));
+    try testing.expectEqual(makeStructPointer(-1, 0, 0), std.mem.readInt(u64, target[0..8], .little));
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    var msg = try message.Message.init(testing.allocator, bytes, .{});
+    defer msg.deinit();
+    const root_reader = try msg.getRootStruct();
+    try testing.expectEqual(@as(u16, 0), root_reader.data_size);
+    try testing.expectEqual(@as(u16, 0), root_reader.pointer_count);
+}
+
 test "Message: negative list pointer offset" {
     const allocator = testing.allocator;
 

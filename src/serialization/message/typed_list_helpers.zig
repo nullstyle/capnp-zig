@@ -19,7 +19,13 @@ pub fn define(
                 }
 
                 pub fn get(self: @This(), index: u32) !EnumType {
-                    return std.enums.fromInt(EnumType, try self._list.get(index)) orelse return error.InvalidEnumValue;
+                    return std.enums.fromInt(EnumType, try self.getOrdinal(index)) orelse return error.InvalidEnumValue;
+                }
+
+                /// Return the logical wire ordinal without requiring it to be a
+                /// currently-known member of `EnumType`.
+                pub fn getOrdinal(self: @This(), index: u32) !u16 {
+                    return try self._list.get(index);
                 }
 
                 pub fn raw(self: @This()) MessageModule.U16ListReader {
@@ -37,7 +43,13 @@ pub fn define(
                 }
 
                 pub fn set(self: @This(), index: u32, value: EnumType) !void {
-                    try self._list.set(index, @backingInt(value));
+                    try self.setOrdinal(index, @backingInt(value));
+                }
+
+                /// Store a logical wire ordinal, including values added by a
+                /// newer version of the schema.
+                pub fn setOrdinal(self: @This(), index: u32, value: u16) !void {
+                    try self._list.set(index, value);
                 }
 
                 pub fn raw(self: @This()) MessageModule.U16ListBuilder {
@@ -156,4 +168,56 @@ pub fn define(
             }
         };
     };
+}
+
+test "enum list ordinal access preserves unknown values" {
+    const FakeMessage = struct {
+        pub const U16ListReader = struct {
+            values: []const u16,
+
+            pub fn len(self: @This()) u32 {
+                return @intCast(self.values.len);
+            }
+
+            pub fn get(self: @This(), index: u32) !u16 {
+                if (index >= self.values.len) return error.IndexOutOfBounds;
+                return self.values[index];
+            }
+        };
+
+        pub const U16ListBuilder = struct {
+            values: []u16,
+
+            pub fn len(self: @This()) u32 {
+                return @intCast(self.values.len);
+            }
+
+            pub fn set(self: @This(), index: u32, value: u16) !void {
+                if (index >= self.values.len) return error.IndexOutOfBounds;
+                self.values[index] = value;
+            }
+        };
+
+        // The remaining types are referenced only by lazy declarations in the
+        // generic helper namespace and are not instantiated by this test.
+        pub const StructListReader = struct {};
+        pub const StructListBuilder = struct {};
+        pub const PointerListReader = struct {};
+        pub const PointerListBuilder = struct {};
+        pub const Capability = struct { id: u32 };
+    };
+    const State = enum(u16) { ready = 1 };
+    const Helpers = define(FakeMessage);
+
+    const source = [_]u16{ 1, 77 };
+    const reader = Helpers.EnumListReader(State){ ._list = .{ .values = &source } };
+    try std.testing.expectEqual(State.ready, try reader.get(0));
+    try std.testing.expectEqual(@as(u16, 77), try reader.getOrdinal(1));
+    try std.testing.expectError(error.InvalidEnumValue, reader.get(1));
+
+    var destination = [_]u16{ 0, 0 };
+    const builder = Helpers.EnumListBuilder(State){ ._list = .{ .values = &destination } };
+    try builder.set(0, .ready);
+    try builder.setOrdinal(1, 77);
+    try std.testing.expectEqualSlices(u16, &source, &destination);
 }

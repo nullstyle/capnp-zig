@@ -514,6 +514,36 @@ pub fn define(
                 self.writeU16(byte_offset, value);
             }
 
+            /// Read a union discriminant from the struct's data section.
+            ///
+            /// Returns zero when `byte_offset` falls outside the allocated data
+            /// section, matching `StructReader.readUnionDiscriminant` and the
+            /// Cap'n Proto schema-evolution rule for missing fields.
+            pub fn readUnionDiscriminant(self: @This(), byte_offset: usize) u16 {
+                const data = self.getDataSection();
+                if (byte_offset > data.len or data.len - byte_offset < 2) return 0;
+                return std.mem.readInt(u16, data[byte_offset..][0..2], .little);
+            }
+
+            /// Check whether the pointer at `pointer_index` is null.
+            ///
+            /// A pointer slot outside this struct's allocated pointer section is
+            /// treated as null, matching `StructReader.isPointerNull` and the
+            /// schema-evolution behavior of fields added by a newer schema.
+            pub fn isPointerNull(self: @This(), pointer_index: usize) bool {
+                if (pointer_index >= self.pointer_count) return true;
+                if (self.segment_id >= self.builder.segments.items.len) return true;
+
+                const data_bytes = @as(usize, self.data_size) * 8;
+                const pointer_bytes = std.math.mul(usize, pointer_index, 8) catch return true;
+                const pointer_section = std.math.add(usize, self.offset, data_bytes) catch return true;
+                const pointer_pos = std.math.add(usize, pointer_section, pointer_bytes) catch return true;
+
+                const segment = self.builder.segments.items[self.segment_id].items;
+                if (pointer_pos > segment.len or segment.len - pointer_pos < 8) return true;
+                return std.mem.readInt(u64, segment[pointer_pos..][0..8], .little) == 0;
+            }
+
             /// Write a NUL-terminated text pointer at the given pointer index.
             pub fn writeText(self: @This(), pointer_index: usize, text: []const u8) !void {
                 return self.writeTextInSegment(pointer_index, text, self.segment_id);

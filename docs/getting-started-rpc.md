@@ -200,10 +200,9 @@ fn onPingReturn(
 | `Return` received | `unwrap()` yields | Notes |
 |---|---|---|
 | results | `Results.Reader` | Success. |
-| exception, reason == `rpc.peer.disconnected_reason` (`"disconnected"`) | `error.Disconnected` | Locally synthesized: transport closed / peer shut down / peer deinit. |
-| exception, reason == `rpc.peer.shutdown_reason` (`"peer shutting down"`) | `error.Disconnected` | Locally synthesized when the graceful-shutdown drain bound expires. |
-| exception, reason == `rpc.peer.deadline_reason` (`"deadline exceeded"`) | `error.CallTimedOut` | Locally synthesized by deadline expiry. |
-| exception, any other reason | `error.RemoteException` | The reason string stays available on the union arm. |
+| exception, type == `.disconnected` | `error.Disconnected` | Recognized across implementations; local transport-close and shutdown sentinels use this type. |
+| exception, type == `.overloaded` and reason == `rpc.peer.deadline_reason` (`"deadline exceeded"`) | `error.CallTimedOut` | The spec has no separate timeout type, so the local sentinel reason disambiguates it from backpressure. |
+| exception, any other type/reason | `error.RemoteException` | The reason string stays available on the union arm. |
 | canceled | `error.Canceled` | The remote confirmed a cancellation we initiated. |
 | resultsSentElsewhere / takeFromOtherQuestion / acceptFromThirdParty | `error.UnexpectedReturn` | Return arms the plain-call path never initiates. |
 

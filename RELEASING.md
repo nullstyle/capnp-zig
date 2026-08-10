@@ -35,8 +35,10 @@ plugin **emits** passes the freeze gate green. `da60cb6` (group-typed union
 member getters becoming fallible) is the worked example — it is a compile break
 for every downstream consumer with a group inside a union, and the gate could
 not see it. Until the freeze gate covers generated shape, classify codegen
-output changes by reading the diff to `tests/golden/` and the checked-in
-generated files.
+output changes by reading the diff to `tests/golden/` and running
+`just check-generated`. That gate regenerates the RPC and e2e bindings,
+addressbook, ping-pong, kvstore, the WASM binding, and the checked-in V1/V2
+schema-evolution fixtures; all of their diffs are part of the review surface.
 
 A minor bump with any breaking content needs a `### Breaking` heading in the
 CHANGELOG with a **Migration** paragraph. Do not file breaking changes under
@@ -54,6 +56,8 @@ git status --short          # must be empty
       last tag. Check with `git log --oneline <last-tag>..HEAD` and reconcile
       one line at a time.
 - [ ] The bump is classified per the table above.
+- [ ] `just check-generated` is clean; no committed consumer binding was made
+      stale by a generator change.
 
 ## 2. The commit's CI must already be green
 

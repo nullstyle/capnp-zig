@@ -5,161 +5,13 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
-const rpc = capnpc.rpc;
 
-pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"tests/test_schemas/example.capnp\",\"module\":\"example\",\"serde\":[{\"id\":10276275038482591170,\"type_name\":\"Person\",\"to_json_export\":\"capnp_example_person_to_json\",\"from_json_export\":\"capnp_example_person_from_json\"}]}";
-
+pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"tests/test_schemas/example.capnp\",\"module\":\"example\",\"serde\":[{\"id\":18320018141330966238,\"type_name\":\"Address\",\"to_json_export\":\"capnp_example_address_to_json\",\"from_json_export\":\"capnp_example_address_from_json\"},{\"id\":10988939875124296728,\"type_name\":\"Person\",\"to_json_export\":\"capnp_example_person_to_json\",\"from_json_export\":\"capnp_example_person_from_json\"}]}";
 pub fn capnpSchemaManifestJson() []const u8 {
     return CAPNP_SCHEMA_MANIFEST_JSON;
 }
 
 pub const Person = struct {
-    fn EnumListReader(comptime EnumType: type) type {
-        return struct {
-            _list: message.U16ListReader,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn get(self: @This(), index: u32) !EnumType {
-                return @fromBackingInt(@intCast(try self._list.get(index)));
-            }
-
-            pub fn raw(self: @This()) message.U16ListReader {
-                return self._list;
-            }
-        };
-    }
-
-    fn EnumListBuilder(comptime EnumType: type) type {
-        return struct {
-            _list: message.U16ListBuilder,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn set(self: @This(), index: u32, value: EnumType) !void {
-                try self._list.set(index, @backingInt(value));
-            }
-
-            pub fn raw(self: @This()) message.U16ListBuilder {
-                return self._list;
-            }
-        };
-    }
-
-    fn StructListReader(comptime StructType: type) type {
-        return struct {
-            _list: message.StructListReader,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn get(self: @This(), index: u32) !StructType.Reader {
-                const item = try self._list.get(index);
-                return StructType.Reader.wrap(item);
-            }
-
-            pub fn raw(self: @This()) message.StructListReader {
-                return self._list;
-            }
-        };
-    }
-
-    fn StructListBuilder(comptime StructType: type) type {
-        return struct {
-            _list: message.StructListBuilder,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn get(self: @This(), index: u32) !StructType.Builder {
-                const item = try self._list.get(index);
-                return StructType.Builder.wrap(item);
-            }
-
-            pub fn raw(self: @This()) message.StructListBuilder {
-                return self._list;
-            }
-        };
-    }
-
-    const DataListReader = struct {
-        _list: message.PointerListReader,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn get(self: @This(), index: u32) ![]const u8 {
-            return try self._list.getData(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListReader {
-            return self._list;
-        }
-    };
-
-    const DataListBuilder = struct {
-        _list: message.PointerListBuilder,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn set(self: @This(), index: u32, value: []const u8) !void {
-            try self._list.setData(index, value);
-        }
-
-        pub fn setNull(self: @This(), index: u32) !void {
-            try self._list.setNull(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListBuilder {
-            return self._list;
-        }
-    };
-
-    const CapabilityListReader = struct {
-        _list: message.PointerListReader,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn get(self: @This(), index: u32) !message.Capability {
-            return try self._list.getCapability(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListReader {
-            return self._list;
-        }
-    };
-
-    const CapabilityListBuilder = struct {
-        _list: message.PointerListBuilder,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn set(self: @This(), index: u32, cap: message.Capability) !void {
-            try self._list.setCapability(index, cap);
-        }
-
-        pub fn setNull(self: @This(), index: u32) !void {
-            try self._list.setNull(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListBuilder {
-            return self._list;
-        }
-    };
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -172,15 +24,21 @@ pub const Person = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
         }
 
         pub fn getAge(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
+        }
+
+        pub fn hasEmail(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getEmail(self: Reader) ![]const u8 {
@@ -201,13 +59,20 @@ pub const Person = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setName(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
         }
 
         pub fn setAge(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
+        }
+
+        pub fn hasEmail(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setEmail(self: *Builder, value: []const u8) !void {
@@ -217,152 +82,6 @@ pub const Person = struct {
 };
 
 pub const Address = struct {
-    fn EnumListReader(comptime EnumType: type) type {
-        return struct {
-            _list: message.U16ListReader,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn get(self: @This(), index: u32) !EnumType {
-                return @fromBackingInt(@intCast(try self._list.get(index)));
-            }
-
-            pub fn raw(self: @This()) message.U16ListReader {
-                return self._list;
-            }
-        };
-    }
-
-    fn EnumListBuilder(comptime EnumType: type) type {
-        return struct {
-            _list: message.U16ListBuilder,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn set(self: @This(), index: u32, value: EnumType) !void {
-                try self._list.set(index, @backingInt(value));
-            }
-
-            pub fn raw(self: @This()) message.U16ListBuilder {
-                return self._list;
-            }
-        };
-    }
-
-    fn StructListReader(comptime StructType: type) type {
-        return struct {
-            _list: message.StructListReader,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn get(self: @This(), index: u32) !StructType.Reader {
-                const item = try self._list.get(index);
-                return StructType.Reader.wrap(item);
-            }
-
-            pub fn raw(self: @This()) message.StructListReader {
-                return self._list;
-            }
-        };
-    }
-
-    fn StructListBuilder(comptime StructType: type) type {
-        return struct {
-            _list: message.StructListBuilder,
-
-            pub fn len(self: @This()) u32 {
-                return self._list.len();
-            }
-
-            pub fn get(self: @This(), index: u32) !StructType.Builder {
-                const item = try self._list.get(index);
-                return StructType.Builder.wrap(item);
-            }
-
-            pub fn raw(self: @This()) message.StructListBuilder {
-                return self._list;
-            }
-        };
-    }
-
-    const DataListReader = struct {
-        _list: message.PointerListReader,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn get(self: @This(), index: u32) ![]const u8 {
-            return try self._list.getData(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListReader {
-            return self._list;
-        }
-    };
-
-    const DataListBuilder = struct {
-        _list: message.PointerListBuilder,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn set(self: @This(), index: u32, value: []const u8) !void {
-            try self._list.setData(index, value);
-        }
-
-        pub fn setNull(self: @This(), index: u32) !void {
-            try self._list.setNull(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListBuilder {
-            return self._list;
-        }
-    };
-
-    const CapabilityListReader = struct {
-        _list: message.PointerListReader,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn get(self: @This(), index: u32) !message.Capability {
-            return try self._list.getCapability(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListReader {
-            return self._list;
-        }
-    };
-
-    const CapabilityListBuilder = struct {
-        _list: message.PointerListBuilder,
-
-        pub fn len(self: @This()) u32 {
-            return self._list.len();
-        }
-
-        pub fn set(self: @This(), index: u32, cap: message.Capability) !void {
-            try self._list.setCapability(index, cap);
-        }
-
-        pub fn setNull(self: @This(), index: u32) !void {
-            try self._list.setNull(index);
-        }
-
-        pub fn raw(self: @This()) message.PointerListBuilder {
-            return self._list;
-        }
-    };
-
     pub const Reader = struct {
         _reader: message.StructReader,
 
@@ -375,9 +94,17 @@ pub const Address = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasStreet(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getStreet(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
+        }
+
+        pub fn hasCity(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getCity(self: Reader) ![]const u8 {
@@ -386,9 +113,7 @@ pub const Address = struct {
         }
 
         pub fn getZipCode(self: Reader) !u32 {
-            const raw = self._reader.readU32(0);
-            const value = raw ^ @as(u32, 0);
-            return value;
+            return self._reader.readU32(0);
         }
     };
 
@@ -404,8 +129,16 @@ pub const Address = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasStreet(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setStreet(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasCity(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setCity(self: *Builder, value: []const u8) !void {
@@ -413,8 +146,7 @@ pub const Address = struct {
         }
 
         pub fn setZipCode(self: *Builder, value: u32) !void {
-            const stored = @as(u32, @bitCast(value)) ^ @as(u32, 0);
-            self._builder.writeU32(0, stored);
+            self._builder.writeU32(0, @bitCast(value));
         }
     };
 };

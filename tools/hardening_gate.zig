@@ -66,6 +66,7 @@ const allowlist = [_]Allow{
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderHosted(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setSenderPromise(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "generated.setReceiverHosted(id) catch unreachable", .reason = "generated builder setter is infallible for scalar capability descriptor" },
+    .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "ex.enumOrdinals().setType(@backingInt(ex_type)) catch unreachable", .reason = "generated ordinal setter has a uniform fallible signature but only writes an already-allocated scalar slot" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .optional_unwrap, .needle = "message_tag.?", .reason = "validated tag presence before Unimplemented construction" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "send_results_to.setCaller({}) catch unreachable", .reason = "generated union setter is infallible for empty variant" },
     .{ .path = "src/rpc/wire/protocol.zig", .kind = .catch_unreachable, .needle = "send_results_to.setYourself({}) catch unreachable", .reason = "generated union setter is infallible for empty variant" },

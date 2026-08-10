@@ -103,7 +103,10 @@ switch (try kind.which()) {
 }
 ```
 
-Note: `which()` returns `error.InvalidEnumValue` if the discriminant does not match any known variant (e.g., the message was built with a newer schema).
+Note: `which()` returns `error.InvalidEnumValue` if the discriminant does not
+match any known variant (e.g., the message was built with a newer schema). Use
+`whichOrdinal()` to log or forward that unknown discriminant; continue to use
+`which()` before accessing a known arm.
 
 ---
 
@@ -134,6 +137,22 @@ const version = reader._reader.readU32Strict(0) catch |err| switch (err) {
 ```
 
 For application messages where schema evolution is expected, the default (non-strict) readers are correct -- zero/false is the intended default. See the "Use strict readers for required fields" section in [error-handling.md](error-handling.md).
+
+Pointer getters have the same default-value ambiguity: an absent Text field and
+a present empty Text field both read as `""`. Generated `hasXxx()` methods
+separate those cases:
+
+```zig
+if (!reader.hasDisplayName()) {
+    // The pointer slot is null, or is outside this older message's layout.
+} else {
+    const display_name = try reader.getDisplayName(); // may still be empty
+}
+```
+
+Presence is not validation. A malformed nonzero pointer makes `hasXxx()` true
+and still makes `getXxx()` fail. For union fields, `hasXxx()` is false unless
+that arm is active, even if another arm left nonzero data in shared storage.
 
 ---
 

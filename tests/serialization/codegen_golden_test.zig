@@ -3,11 +3,26 @@ const testing = std.testing;
 const schema = @import("capnpc-zig").schema;
 const Generator = @import("capnpc-zig").codegen.Generator;
 
+fn shouldUpdateGoldens() !bool {
+    var environ = try std.process.Environ.createMap(std.testing.environ, testing.allocator);
+    defer environ.deinit();
+    const value = environ.get("CAPNPC_ZIG_UPDATE_GOLDENS") orelse return false;
+    return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
+}
+
 /// Compare generated code against a golden file. If the golden file does not
 /// exist, write the output to disk and return an error so the developer can
-/// review the snapshot before checking it in.
+/// review the snapshot before checking it in. `just check-generated` sets the
+/// explicit update flag to rewrite every snapshot before diffing the directory.
 fn expectGolden(actual: []const u8, golden_path: []const u8) !void {
     const io = std.testing.io;
+    if (try shouldUpdateGoldens()) {
+        const file = try std.Io.Dir.cwd().createFile(io, golden_path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, actual);
+        return;
+    }
+
     const golden = std.Io.Dir.cwd().readFileAlloc(io, golden_path, testing.allocator, .limited(1024 * 1024)) catch |err| {
         if (err == error.FileNotFound) {
             // Write the golden file so the developer can review it.

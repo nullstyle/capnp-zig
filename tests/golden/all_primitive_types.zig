@@ -68,8 +68,16 @@ pub const AllTypes = struct {
             return @bitCast(self._reader.readU64(24));
         }
 
+        pub fn hasTextField(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getTextField(self: Reader) ![]const u8 {
             return try self._reader.readText(0);
+        }
+
+        pub fn hasDataField(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getDataField(self: Reader) ![]const u8 {
@@ -135,8 +143,16 @@ pub const AllTypes = struct {
             self._builder.writeU64(24, @bitCast(value));
         }
 
+        pub fn hasTextField(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setTextField(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasDataField(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setDataField(self: *Builder, value: []const u8) !void {

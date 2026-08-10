@@ -889,7 +889,14 @@ pub const Generator = struct {
         try scope.addCopy("_reader");
         try scope.addCopy("wrap");
         if (self.api_profile == .full) try scope.addCopy("init");
-        if (struct_info.discriminant_count > 0) try scope.addCopy("which");
+        if (struct_info.discriminant_count > 0) {
+            try scope.addCopy("which");
+            try scope.addCopy("whichOrdinal");
+        }
+        if (structHasDirectEnumSlot(struct_info)) {
+            try scope.addCopy("EnumOrdinals");
+            try scope.addCopy("enumOrdinals");
+        }
 
         for (struct_info.fields) |field| {
             if (field.group == null and field.slot == null) continue;
@@ -900,6 +907,9 @@ pub const Generator = struct {
             try scope.addPrint("get{s}", .{cap_name});
 
             if (field.slot) |slot| {
+                if (isPointerSlotType(slot.type)) {
+                    try scope.addPrint("has{s}", .{cap_name});
+                }
                 if (self.defaultPointerBytes(slot.default_value)) |_| {
                     const default_name = try self.allocDefaultConstName(field.name);
                     defer self.allocator.free(default_name);
@@ -925,6 +935,10 @@ pub const Generator = struct {
         try scope.addCopy("_builder");
         try scope.addCopy("wrap");
         if (self.api_profile == .full) try scope.addCopy("init");
+        if (structHasDirectEnumSlot(struct_info)) {
+            try scope.addCopy("EnumOrdinals");
+            try scope.addCopy("enumOrdinals");
+        }
 
         for (struct_info.fields) |field| {
             const cap_name = try self.allocFieldCapName(field.name);
@@ -940,6 +954,9 @@ pub const Generator = struct {
             }
 
             const slot = field.slot orelse continue;
+            if (isPointerSlotType(slot.type)) {
+                try scope.addPrint("has{s}", .{cap_name});
+            }
             switch (slot.type) {
                 .list, .@"struct" => try scope.addPrint("init{s}", .{cap_name}),
                 .any_pointer => {
@@ -959,6 +976,21 @@ pub const Generator = struct {
                 else => try scope.addPrint("set{s}", .{cap_name}),
             }
         }
+    }
+
+    fn structHasDirectEnumSlot(struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type == .@"enum") return true;
+        }
+        return false;
+    }
+
+    fn isPointerSlotType(typ: schema.Type) bool {
+        return switch (typ) {
+            .text, .data, .list, .@"struct", .any_pointer, .interface => true,
+            else => false,
+        };
     }
 
     fn validateUnionTagNames(self: *Generator, fields: []const schema.Field) !void {
@@ -3755,6 +3787,32 @@ test "Generator.generateFile compact api profile omits root init helpers" {
         .annotation_node = null,
     };
 
+    var root_fields = [_]schema.Field{
+        .{
+            .name = "state",
+            .code_order = 0,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = .{ .@"enum" = .{ .type_id = 999 } },
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "label",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = .text,
+                .default_value = null,
+            },
+            .group = null,
+        },
+    };
     const root_struct = schema.Node{
         .id = 2,
         .display_name = "Root",
@@ -3764,13 +3822,13 @@ test "Generator.generateFile compact api profile omits root init helpers" {
         .annotations = &[_]schema.AnnotationUse{},
         .kind = .@"struct",
         .struct_node = .{
-            .data_word_count = 0,
-            .pointer_count = 0,
+            .data_word_count = 1,
+            .pointer_count = 1,
             .preferred_list_encoding = .inline_composite,
             .is_group = false,
             .discriminant_count = 0,
             .discriminant_offset = 0,
-            .fields = &[_]schema.Field{},
+            .fields = &root_fields,
         },
         .enum_node = null,
         .interface_node = null,
@@ -3796,6 +3854,10 @@ test "Generator.generateFile compact api profile omits root init helpers" {
     try std.testing.expect(!std.mem.containsAtLeast(u8, output, 1, "pub fn init(msg: *message.MessageBuilder) !Builder"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn wrap(reader: message.StructReader) Reader"));
     try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn wrap(builder: message.StructBuilder) Builder"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub const EnumOrdinals = struct"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub fn enumOrdinals(self: @This()) EnumOrdinals"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasLabel(self: Reader) bool"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasLabel(self: Builder) bool"));
 }
 
 test "Generator.generateFile shape sharing aliases identical structs" {

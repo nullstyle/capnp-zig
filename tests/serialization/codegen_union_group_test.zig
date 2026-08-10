@@ -104,8 +104,10 @@ test "Codegen: union generates WhichTag enum and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "square = 1,"));
 
     // Should have which() method
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: Reader) u16"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readUnionDiscriminant(8);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self._reader.readU16(8)) orelse return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;"));
 
     // Non-union field should NOT appear in WhichTag
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "area = "));
@@ -223,10 +225,16 @@ test "Codegen: union setter writes discriminant before value" {
     // For text field (message), the setter should write discriminant 2
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setMessage(self: *Builder, value: []const u8) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(0, 2)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasMessage(self: Reader) bool"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(0) != 2) return false;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return !self._reader.isPointerNull(0);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasMessage(self: Builder) bool"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._builder.readUnionDiscriminant(0) != 2) return false;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return !self._builder.isPointerNull(0);"));
 
     // which() method should read from correct offset
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self._reader.readU16(0)) orelse return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;"));
 }
 
 test "Codegen: struct without union does not generate WhichTag" {
@@ -648,6 +656,18 @@ test "Codegen: group union generates WhichTag and which method" {
             },
             .group = null,
         },
+        .{
+            .name = "mode",
+            .code_order = 3,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 3,
+            .slot = .{
+                .offset = 3,
+                .type = .{ .@"enum" = .{ .type_id = 999 } },
+                .default_value = .{ .@"enum" = 1 },
+            },
+            .group = null,
+        },
     };
 
     const context_group_node = schema.Node{
@@ -663,7 +683,7 @@ test "Codegen: group union generates WhichTag and which method" {
             .pointer_count = 1,
             .preferred_list_encoding = .inline_composite,
             .is_group = true,
-            .discriminant_count = 3,
+            .discriminant_count = 4,
             .discriminant_offset = 2, // byte offset = 2 * 2 = 4
             .fields = &group_fields,
         },
@@ -744,14 +764,26 @@ test "Codegen: group union generates WhichTag and which method" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "senderLoopback = 0,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "receiverLoopback = 1,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "accept = 2,"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "mode = 3,"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: @This()) u16"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readUnionDiscriminant(4);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub const EnumOrdinals = struct"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(4) != 3) return error.WrongUnionMember;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU16(6) ^ @as(u16, 1);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .mode) return error.WrongUnionMember;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 3);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(6, value ^ @as(u16, 1));"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setSenderLoopback(self: *@This(), value: u32) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 0)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setReceiverLoopback(self: *@This(), value: u32) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 1)"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setAccept(self: *@This(), value: []const u8) !void"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(4, 2)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn hasAccept(self: @This()) bool"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(4) != 2) return false;"));
+    try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "hasContext"));
 }
 
 test "Codegen: group-typed union variant emits nested type and accessors" {

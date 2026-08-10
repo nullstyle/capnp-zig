@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Explicitly initialized zero-sized structs are no longer encoded as null.**
+  Root, nested, AnyPointer, and segment-targeted construction now use Cap'n
+  Proto's reference-compatible offset -1 struct pointer when both the data and
+  pointer sections are empty. Generated `hasXxx()` therefore distinguishes an
+  initialized empty struct from an absent field.
+
 - **`rpc.vat` was missing from the core RPC surface, and the guard that should
   have caught it was too coarse.** `src/rpc/mod_core.zig` — the surface behind
   `capnpc-zig-core` and the wasm build — never exported `vat`, so
@@ -26,6 +32,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only found by a consumer build against a published tag.
 
 ### Added
+
+- **Generated schema-evolution APIs can preserve values unknown to an older
+  schema without weakening typed access.** Structs and groups with enum fields
+  now expose `Reader.EnumOrdinals` / `Builder.EnumOrdinals` through
+  `enumOrdinals()`; enum lists add `getOrdinal()` / `setOrdinal()`; and union
+  Readers add infallible `whichOrdinal()`. These APIs use logical `u16` values
+  and apply enum-default XOR. Existing exhaustive enums, typed getters,
+  `which()`, and strict schema-aware validation still reject unknown ordinals.
+
+  Generated Readers and Builders also add structural `hasXxx()` checks for
+  Text, Data, struct, list, AnyPointer, and interface fields. Null and
+  old-layout-missing slots are absent even with pointer defaults, explicitly
+  encoded empty values are present, and inactive union arms are absent before
+  shared pointer storage is inspected. Stable `StructBuilder.isPointerNull()`
+  and `readUnionDiscriminant()` provide the matching low-level behavior.
+
+  A checked-in V1/V2 fixture with shared schema/type IDs exercises unknown enum
+  forwarding, enum defaults, new union arms, pointer presence, and old-layout
+  reads as ordinary Zig tests on every OS. `just check-generated` now also
+  covers those bindings plus addressbook, ping-pong, kvstore, and WASM output.
 
 - **The QUIC-enabled API surface is now snapshotted.** `check-api` runs without
   `-Dquic=true`, so it saw `rpc.transport.quic` as the disabled stub and the

@@ -1433,9 +1433,9 @@ test "schema manifest export returns deterministic valid json" {
     try std.testing.expectEqualStrings("tests/test_schemas/example.capnp", parsed.value.schema);
     try std.testing.expectEqualStrings("example", parsed.value.module);
     try std.testing.expect(parsed.value.serde.len > 0);
-    try std.testing.expectEqualStrings("Person", parsed.value.serde[0].type_name);
-    try std.testing.expectEqualStrings("capnp_example_person_to_json", parsed.value.serde[0].to_json_export);
-    try std.testing.expectEqualStrings("capnp_example_person_from_json", parsed.value.serde[0].from_json_export);
+    try std.testing.expectEqualStrings("Address", parsed.value.serde[0].type_name);
+    try std.testing.expectEqualStrings("capnp_example_address_to_json", parsed.value.serde[0].to_json_export);
+    try std.testing.expectEqualStrings("capnp_example_address_from_json", parsed.value.serde[0].from_json_export);
 
     abi.capnp_buf_free(out_ptr_a, out_len_a);
     abi.capnp_buf_free(out_ptr_b, out_len_b);
