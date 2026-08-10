@@ -2319,14 +2319,17 @@ pub const MessageBuilder = struct {
             _ = try self.createSegmentWithCapacity(initial_segment_capacity_bytes);
         }
 
-        const root_segment = &self.segments.items[0];
-        if (root_segment.items.len != 0) return error.RootAlreadyAllocated;
+        if (self.segments.items[0].items.len != 0) return error.RootAlreadyAllocated;
 
         try self.segments.ensureTotalCapacity(self.allocator, segment_id + 1);
         while (self.segments.items.len <= segment_id) {
             _ = try self.createSegment();
         }
 
+        // Reacquire this pointer after growing `segments`; the ArrayList's
+        // backing allocation may have moved while the missing segments were
+        // created.
+        const root_segment = &self.segments.items[0];
         const target_segment = &self.segments.items[segment_id];
         const landing_pad_pos = target_segment.items.len;
         {
@@ -2336,13 +2339,18 @@ pub const MessageBuilder = struct {
 
         const total_words = @as(usize, data_words) + @as(usize, pointer_words);
         const total_bytes = total_words * 8;
-        const struct_offset = target_segment.items.len;
-        {
+        const struct_offset = if (total_words == 0)
+            landing_pad_pos
+        else
+            target_segment.items.len;
+        if (total_bytes != 0) {
             const struct_storage = try target_segment.addManyAsSlice(self.allocator, total_bytes);
             @memset(struct_storage, 0);
         }
 
-        const struct_ptr = try makeStructPointer(0, data_words, pointer_words);
+        // A zero-sized struct is present, not null. The reference encoding
+        // points the landing-pad struct pointer back at its own word.
+        const struct_ptr = try makeStructPointer(if (total_words == 0) -1 else 0, data_words, pointer_words);
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], struct_ptr, .little);
 
         {
@@ -2432,19 +2440,21 @@ pub const MessageBuilder = struct {
         const pointer_segment = &self.segments.items[pointer_segment_id];
         try bounds.checkBoundsMut(pointer_segment.items, pointer_pos, 8);
 
-        // Empty structs (0 data words, 0 pointers) are canonically represented
-        // as NULL pointers per the Cap'n Proto spec. Writing a non-zero struct
-        // pointer with an offset causes strict validators (e.g. capnp-rust) to
-        // reject the message.
+        // An explicitly initialized empty struct is distinct from an absent
+        // pointer. The reference implementation encodes it as a zero-sized
+        // struct whose target is the pointer word itself (offset -1).
         if (data_words == 0 and pointer_words == 0) {
-            std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], 0, .little);
-            return StructBuilder{
-                .builder = self,
-                .segment_id = pointer_segment_id,
-                .offset = pointer_pos,
-                .data_size = 0,
-                .pointer_count = 0,
-            };
+            if (pointer_segment_id == target_segment_id) {
+                const pointer = try makeStructPointer(-1, 0, 0);
+                std.mem.writeInt(u64, pointer_segment.items[pointer_pos..][0..8], pointer, .little);
+                return StructBuilder{
+                    .builder = self,
+                    .segment_id = pointer_segment_id,
+                    .offset = pointer_pos,
+                    .data_size = 0,
+                    .pointer_count = 0,
+                };
+            }
         }
 
         if (target_segment_id >= self.segments.items.len) return error.InvalidSegmentId;
@@ -2476,10 +2486,13 @@ pub const MessageBuilder = struct {
         const landing_pad_pos = target_segment.items.len;
         try target_segment.appendNTimes(self.allocator, 0, 8);
 
-        const struct_offset = target_segment.items.len;
+        const struct_offset = if (total_words == 0)
+            landing_pad_pos
+        else
+            target_segment.items.len;
         try target_segment.appendNTimes(self.allocator, 0, total_bytes);
 
-        const struct_ptr = try makeStructPointer(0, data_words, pointer_words);
+        const struct_ptr = try makeStructPointer(if (total_words == 0) -1 else 0, data_words, pointer_words);
         std.mem.writeInt(u64, target_segment.items[landing_pad_pos..][0..8], struct_ptr, .little);
 
         const far_ptr = try makeFarPointer(false, @as(u32, @intCast(landing_pad_pos / 8)), target_segment_id);
@@ -2667,11 +2680,10 @@ pub const MessageBuilder = struct {
             const total_words = @as(usize, data_words) + @as(usize, pointer_words);
             const total_bytes = total_words * 8;
 
-            // Root pointer points to offset 0 (next word after the pointer)
-            var root_pointer: u64 = 0; // Struct pointer tag
-            root_pointer |= @as(u64, 0) << 2; // Offset = 0
-            root_pointer |= @as(u64, data_words) << 32;
-            root_pointer |= @as(u64, pointer_words) << 48;
+            // A zero-sized root is explicitly present and points back at its
+            // own pointer word (offset -1). Non-empty roots begin immediately
+            // after the root pointer (offset 0).
+            const root_pointer = makeStructPointer(if (total_words == 0) -1 else 0, data_words, pointer_words) catch unreachable;
 
             // Reserve the whole root allocation in one growth step.
             try segment.ensureUnusedCapacity(self.allocator, 8 + total_bytes);
@@ -2682,9 +2694,11 @@ pub const MessageBuilder = struct {
             std.mem.writeInt(u64, segment.items[0..8], root_pointer, .little);
 
             // Allocate struct data
-            const struct_offset = segment.items.len;
-            const struct_storage = try segment.addManyAsSlice(self.allocator, total_bytes);
-            @memset(struct_storage, 0);
+            const struct_offset = if (total_words == 0) 0 else segment.items.len;
+            if (total_bytes != 0) {
+                const struct_storage = try segment.addManyAsSlice(self.allocator, total_bytes);
+                @memset(struct_storage, 0);
+            }
 
             return StructBuilder{
                 .builder = self,
