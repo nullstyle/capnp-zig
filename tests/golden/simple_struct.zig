@@ -24,12 +24,20 @@ pub const Person = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getName(self: Reader) ![]const u8 {
             return try self._reader.readText(0);
         }
 
         pub fn getAge(self: Reader) !u32 {
             return self._reader.readU32(0);
+        }
+
+        pub fn hasEmail(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getEmail(self: Reader) ![]const u8 {
@@ -50,12 +58,20 @@ pub const Person = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setName(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
         }
 
         pub fn setAge(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
+        }
+
+        pub fn hasEmail(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setEmail(self: *Builder, value: []const u8) !void {

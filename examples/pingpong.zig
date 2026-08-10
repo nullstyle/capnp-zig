@@ -195,7 +195,6 @@ pub const PingPong = struct {
         pub fn fromBootstrap(peer: *rpc.peer.Peer, user_ctx: *anyopaque, callback: BootstrapCallback) !u32 {
             return bootstrap(peer, user_ctx, callback);
         }
-
     };
 
     pub const PipelinedClient = struct {
@@ -211,7 +210,6 @@ pub const PingPong = struct {
             self.peer.setQuestionDeinitCtx(question_id, Ping.CallContext.deinitCtx);
             return question_id;
         }
-
     };
 
     pub const BootstrapResponse = union(enum) {
@@ -343,7 +341,6 @@ pub const PingPong = struct {
             pub fn getCount(self: Reader) !u32 {
                 return self._reader.readU32(0);
             }
-
         };
 
         pub const Builder = struct {
@@ -361,7 +358,6 @@ pub const PingPong = struct {
             pub fn setCount(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
-
         };
     };
 
@@ -381,7 +377,6 @@ pub const PingPong = struct {
             pub fn getCount(self: Reader) !u32 {
                 return self._reader.readU32(0);
             }
-
         };
 
         pub const Builder = struct {
@@ -399,9 +394,6 @@ pub const PingPong = struct {
             pub fn setCount(self: *Builder, value: u32) !void {
                 self._builder.writeU32(0, @bitCast(value));
             }
-
         };
     };
-
 };
-

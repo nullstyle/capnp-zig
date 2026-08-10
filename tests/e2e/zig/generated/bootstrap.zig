@@ -950,6 +950,10 @@ pub const Bootstrap = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasService(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getService(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -977,6 +981,10 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasService(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initService(self: *Builder) !message.AnyPointerBuilder {
@@ -1050,6 +1058,10 @@ pub const Bootstrap = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasService(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getService(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -1077,6 +1089,10 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasService(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initService(self: *Builder) !message.AnyPointerBuilder {
@@ -1150,6 +1166,10 @@ pub const Bootstrap = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasService(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getService(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -1177,6 +1197,10 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasService(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initService(self: *Builder) !message.AnyPointerBuilder {
@@ -1250,6 +1274,10 @@ pub const Bootstrap = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasService(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getService(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -1277,6 +1305,10 @@ pub const Bootstrap = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasService(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initService(self: *Builder) !message.AnyPointerBuilder {

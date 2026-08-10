@@ -24,6 +24,10 @@ pub const Person = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
@@ -33,11 +37,14 @@ pub const Person = struct {
             return self._reader.readU32(0);
         }
 
+        pub fn hasEmail(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
+        }
+
         pub fn getEmail(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
             return try self._reader.readText(1);
         }
-
     };
 
     pub const Builder = struct {
@@ -52,6 +59,10 @@ pub const Person = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setName(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
         }
@@ -60,10 +71,13 @@ pub const Person = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasEmail(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
+        }
+
         pub fn setEmail(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(1, value);
         }
-
     };
 };
 
@@ -80,9 +94,17 @@ pub const Address = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasStreet(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getStreet(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
+        }
+
+        pub fn hasCity(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getCity(self: Reader) ![]const u8 {
@@ -93,7 +115,6 @@ pub const Address = struct {
         pub fn getZipCode(self: Reader) !u32 {
             return self._reader.readU32(0);
         }
-
     };
 
     pub const Builder = struct {
@@ -108,8 +129,16 @@ pub const Address = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasStreet(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setStreet(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasCity(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setCity(self: *Builder, value: []const u8) !void {
@@ -119,7 +148,6 @@ pub const Address = struct {
         pub fn setZipCode(self: *Builder, value: u32) !void {
             self._builder.writeU32(0, @bitCast(value));
         }
-
     };
 };
 
@@ -128,4 +156,3 @@ pub const Color = enum(u16) {
     Green = 1,
     Blue = 2,
 };
-

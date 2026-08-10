@@ -75,10 +75,10 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 
 | Feature | Status | Notes |
 |---|---|---|
-| Structs, groups, named/unnamed unions | supported | Union members (slot *and* group) guard on the discriminant and return `error.WrongUnionMember` for the wrong variant. |
-| Enums | supported (exhaustive) | Generated as exhaustive `enum(u16)`; an unknown/out-of-range ordinal is rejected with `error.InvalidEnumValue` (see caveat). |
-| Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. |
-| Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. |
+| Structs, groups, named/unnamed unions | supported | Union members (slot *and* group) guard on the discriminant and return `error.WrongUnionMember` for the wrong variant. `whichOrdinal()` exposes an unknown discriminant without weakening typed `which()`. |
+| Enums | supported (exhaustive + forwarding) | Generated as exhaustive `enum(u16)`; typed getters reject an unknown ordinal with `error.InvalidEnumValue`, while the generated `enumOrdinals()` view reads/writes its logical `u16` value for forwarding. |
+| Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. Generated pointer-field `hasXxx()` methods report structural presence separately from the logical default. |
+| Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. Enum lists also provide `getOrdinal()` / `setOrdinal()` and retain their `raw()` accessors. |
 | Nested lists `List(List(T))` | partial | Read via the untyped `message.PointerListReader`; no typed wrapper. Its inner-list accessors honour both directions of the list-upgrade rule, so an inner list reads back at the element size the schema declares regardless of which one the peer wrote. Writable only when the inner element is a primitive — `List(List(Text))`, `List(List(Struct))`, and deeper nesting are readable but **not** writable. |
 | `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | partial | All collapse to one untyped `AnyPointerReader` / `AnyPointerBuilder` accessor (the sub-variant is erased during parsing). A *named interface* type does get a typed capability accessor. |
 | Generics / parameterized types / brands | unsupported | Type parameters and brand bindings are silently erased to `AnyPointer` — no error, no specialization. e.g. `Persistent(SturdyRef, Owner)` exposes its parameter fields as `AnyPointer`. |
@@ -90,13 +90,17 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 
 **Caveats worth pinning to memory:**
 
-- **Enums are not forward-compatible.** An older generated reader that meets a
-  newly-added enumerant (or any unknown ordinal) gets `error.InvalidEnumValue`
-  and cannot see the raw value — unlike the C++/Rust reference impls, which pass
-  unknown ordinals through. Plan enum evolution accordingly.
-- **No `has<Field>()` accessor.** A pointer getter returns an empty/default
-  value for an absent field, so a getter alone cannot distinguish "unset" from
-  "empty".
+- **Typed enum access is deliberately exhaustive.** An older typed getter that
+  meets a newly-added enumerant still gets `error.InvalidEnumValue`. Use the
+  generated `reader.enumOrdinals().getXxx()` /
+  `builder.enumOrdinals().setXxx(value)` view, or an enum list's
+  `getOrdinal()` / `setOrdinal()`, when a proxy must preserve an unknown value.
+  Schema-aware `validateMessage` remains strict and rejects such a value.
+- **Pointer presence is structural, not semantic validation.** `hasXxx()` is
+  generated for Text, Data, struct, list, AnyPointer, and interface slots. It
+  returns false for a null or old-layout-missing slot (even when the field has a
+  non-null schema default), and for an inactive/unknown union arm. A malformed
+  nonzero pointer is present, so its getter may still fail validation.
 - **Generics are erased silently.** If your schema leans on parameterized types
   for type safety, the generated Zig gives you `AnyPointer` and manual casts,
   with no diagnostic.

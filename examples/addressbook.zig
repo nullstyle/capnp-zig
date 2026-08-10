@@ -27,12 +27,15 @@ pub const AddressBook = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasPeople(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getPeople(self: Reader) !StructListReader(Person) {
             if (self._reader.isPointerNull(0)) return StructListReader(Person){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(0);
             return StructListReader(Person){ ._list = raw };
         }
-
     };
 
     pub const Builder = struct {
@@ -47,11 +50,14 @@ pub const AddressBook = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasPeople(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initPeople(self: *Builder, element_count: u32) !StructListBuilder(Person) {
             const raw = try self._builder.writeStructList(0, element_count, 1, 5);
             return StructListBuilder(Person){ ._list = raw };
         }
-
     };
 };
 
@@ -78,12 +84,20 @@ pub const Person = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(4);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(4)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
         pub fn getId(self: Reader) !u32 {
             return self._reader.readU32(0);
+        }
+
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getName(self: Reader) ![]const u8 {
@@ -91,15 +105,27 @@ pub const Person = struct {
             return try self._reader.readText(0);
         }
 
+        pub fn hasEmail(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
+        }
+
         pub fn getEmail(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(1)) return "";
             return try self._reader.readText(1);
+        }
+
+        pub fn hasPhones(self: Reader) bool {
+            return !self._reader.isPointerNull(2);
         }
 
         pub fn getPhones(self: Reader) !StructListReader(Person.PhoneNumber) {
             if (self._reader.isPointerNull(2)) return StructListReader(Person.PhoneNumber){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(2);
             return StructListReader(Person.PhoneNumber){ ._list = raw };
+        }
+
+        pub fn hasAvatar(self: Reader) bool {
+            return !self._reader.isPointerNull(3);
         }
 
         pub fn getAvatar(self: Reader) ![]const u8 {
@@ -112,10 +138,20 @@ pub const Person = struct {
             return {};
         }
 
+        pub fn hasEmployer(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(4) != 1) return false;
+            return !self._reader.isPointerNull(4);
+        }
+
         pub fn getEmployer(self: Reader) ![]const u8 {
             if ((try self.which()) != .employer) return error.WrongUnionMember;
             if (self._reader.isPointerNull(4)) return "";
             return try self._reader.readText(4);
+        }
+
+        pub fn hasSchool(self: Reader) bool {
+            if (self._reader.readUnionDiscriminant(4) != 2) return false;
+            return !self._reader.isPointerNull(4);
         }
 
         pub fn getSchool(self: Reader) ![]const u8 {
@@ -128,7 +164,6 @@ pub const Person = struct {
             if ((try self.which()) != .selfEmployed) return error.WrongUnionMember;
             return {};
         }
-
     };
 
     pub const Builder = struct {
@@ -147,17 +182,33 @@ pub const Person = struct {
             self._builder.writeU32(0, @bitCast(value));
         }
 
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn setName(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(0, value);
+        }
+
+        pub fn hasEmail(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setEmail(self: *Builder, value: []const u8) !void {
             try self._builder.writeText(1, value);
         }
 
+        pub fn hasPhones(self: Builder) bool {
+            return !self._builder.isPointerNull(2);
+        }
+
         pub fn initPhones(self: *Builder, element_count: u32) !StructListBuilder(Person.PhoneNumber) {
             const raw = try self._builder.writeStructList(2, element_count, 1, 1);
             return StructListBuilder(Person.PhoneNumber){ ._list = raw };
+        }
+
+        pub fn hasAvatar(self: Builder) bool {
+            return !self._builder.isPointerNull(3);
         }
 
         pub fn setAvatar(self: *Builder, value: []const u8) !void {
@@ -169,9 +220,19 @@ pub const Person = struct {
             _ = value;
         }
 
+        pub fn hasEmployer(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(4) != 1) return false;
+            return !self._builder.isPointerNull(4);
+        }
+
         pub fn setEmployer(self: *Builder, value: []const u8) !void {
             self._builder.writeU16(4, 1);
             try self._builder.writeText(4, value);
+        }
+
+        pub fn hasSchool(self: Builder) bool {
+            if (self._builder.readUnionDiscriminant(4) != 2) return false;
+            return !self._builder.isPointerNull(4);
         }
 
         pub fn setSchool(self: *Builder, value: []const u8) !void {
@@ -183,7 +244,6 @@ pub const Person = struct {
             self._builder.writeU16(4, 3);
             _ = value;
         }
-
     };
     pub const PhoneNumber = struct {
         pub const Reader = struct {
@@ -198,15 +258,31 @@ pub const Person = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getType(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
+            pub fn hasNumber(self: @This()) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getNumber(self: @This()) ![]const u8 {
                 if (self._reader.isPointerNull(0)) return "";
                 return try self._reader.readText(0);
             }
 
             pub fn getType(self: @This()) !Person.PhoneType {
-                return std.enums.fromInt(Person.PhoneType, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getType();
+                return std.enums.fromInt(Person.PhoneType, ordinal) orelse return error.InvalidEnumValue;
             }
-
         };
 
         pub const Builder = struct {
@@ -221,14 +297,29 @@ pub const Person = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setType(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
+            pub fn hasNumber(self: @This()) bool {
+                return !self._builder.isPointerNull(0);
+            }
+
             pub fn setNumber(self: *@This(), value: []const u8) !void {
                 try self._builder.writeText(0, value);
             }
 
             pub fn setType(self: *@This(), value: Person.PhoneType) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setType(@as(u16, @backingInt(value)));
             }
-
         };
     };
 
@@ -237,6 +328,4 @@ pub const Person = struct {
         Home = 1,
         Work = 2,
     };
-
 };
-

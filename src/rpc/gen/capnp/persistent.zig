@@ -340,6 +340,10 @@ pub const Persistent = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasSealFor(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getSealFor(self: Reader) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(0);
             }
@@ -356,6 +360,10 @@ pub const Persistent = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasSealFor(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initSealFor(self: *Builder) !message.AnyPointerBuilder {
@@ -398,6 +406,10 @@ pub const Persistent = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasSturdyRef(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getSturdyRef(self: Reader) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(0);
             }
@@ -414,6 +426,10 @@ pub const Persistent = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasSturdyRef(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initSturdyRef(self: *Builder) !message.AnyPointerBuilder {

@@ -86,6 +86,33 @@ For use cases where an out-of-bounds access indicates a real bug (e.g. protocol-
 
 Generated code and normal application code should use the non-strict (default-returning) variants. Strict variants are intended for internal protocol parsing and debugging.
 
+## Generated Schema-Evolution Views
+
+- Generated enum types remain exhaustive `enum(u16)` values. Typed field/list
+  getters return `error.InvalidEnumValue` for an ordinal unknown to their schema.
+- Structs and groups with enum slots expose `Reader.EnumOrdinals` and
+  `Builder.EnumOrdinals` through `enumOrdinals()`. Their `u16` accessors apply
+  enum-default XOR and therefore expose logical, not encoded, ordinals.
+- Enum lists expose `getOrdinal()` / `setOrdinal()` alongside the typed APIs and
+  existing `raw()` accessors.
+- Generated union Readers expose infallible `whichOrdinal() u16`; typed
+  `which()` remains strict. Builders intentionally do not expose a raw union-tag
+  setter because a discriminant cannot safely initialize an unknown arm's
+  storage.
+
+Generated `hasXxx()` methods on Reader and Builder report structural presence
+for Text, Data, struct, list, AnyPointer, and interface slots. A null or
+out-of-layout slot is absent even when schema defaults make its getter return a
+non-empty value. An explicitly encoded empty value is present. Union fields are
+present only while their arm is active. Presence does not resolve or validate a
+nonzero pointer.
+
+`StructBuilder.isPointerNull()` follows the same out-of-layout-as-null rule as
+`StructReader.isPointerNull()`. `StructBuilder.readUnionDiscriminant()` likewise
+returns zero when the discriminant lies beyond the allocated data section.
+Explicitly initialized zero-sized structs use the reference-compatible non-null
+offset -1 struct pointer; an absent struct remains a zero pointer.
+
 ## Compatibility Policy
 - New error variants may be added.
 - Existing successful behavior and existing error classes/reasons should not be silently repurposed.

@@ -1105,8 +1105,8 @@ test "Codegen: unresolved enum uses u16 setter value path" {
             .pointer_count = 0,
             .preferred_list_encoding = .inline_composite,
             .is_group = false,
-            .discriminant_count = 0,
-            .discriminant_offset = 0,
+            .discriminant_count = 1,
+            .discriminant_offset = 1,
             .fields = &fields,
         },
         .enum_node = null,
@@ -1148,7 +1148,15 @@ test "Codegen: unresolved enum uses u16 setter value path" {
     defer testing.allocator.free(output);
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: *Builder, value: u16) !void"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "writeU16(0, @as(u16, value));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setStatus(@as(u16, value));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if ((try self.which()) != .status) return error.WrongUnionMember;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub const EnumOrdinals = struct"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatus(self: @This()) !u16"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "if (self._reader.readUnionDiscriminant(2) != 0) return error.WrongUnionMember;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setStatus(self: @This(), value: u16) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, 0);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn enumOrdinals(self: @This()) EnumOrdinals"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: Reader) u16"));
 }
 
 test "Codegen: unresolved struct getter falls back to StructReader" {
@@ -1845,8 +1853,13 @@ test "Codegen: zero numeric and enum defaults skip xor paths" {
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU32(0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU32(0, @bitCast(value));"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(State, self._reader.readU16(2)) orelse return error.InvalidEnumValue;"));
-    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, @as(u16, @intFromEnum(value)));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "const ordinal = try self.enumOrdinals().getState();"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return std.enums.fromInt(State, ordinal) orelse return error.InvalidEnumValue;"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self.enumOrdinals().setState(@as(u16, @intFromEnum(value)));"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getState(self: @This()) !u16"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return self._reader.readU16(2);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn setState(self: @This(), value: u16) !void"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, value);"));
 
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u32, 0)"));
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "^ @as(u16, 0)"));

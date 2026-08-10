@@ -195,6 +195,25 @@ switch (phone_type) {
 }
 ```
 
+Generated enums stay exhaustive: `getType()` returns
+`error.InvalidEnumValue` if a newer peer sends an enumerant this schema does
+not know. A proxy that needs to preserve that value can use the parallel raw
+ordinal view without changing normal typed application code:
+
+```zig
+const ordinal = try phone.enumOrdinals().getType();
+try forwarded_phone.enumOrdinals().setType(ordinal);
+
+const types = try reader.getTypes();
+const first_ordinal = try types.getOrdinal(0);
+var forwarded_types = try builder.initTypes(types.len());
+try forwarded_types.setOrdinal(0, first_ordinal);
+```
+
+The ordinal accessors return logical `u16` values, so enum defaults are applied
+for you. Existing typed getters/setters and enum-list `raw()` accessors remain
+available.
+
 ## 7. Lists
 
 ### Primitive lists
@@ -378,6 +397,26 @@ Cap'n Proto is designed for safe schema evolution. You can:
 
 This works because readers return type defaults for any field that falls outside the struct's data section. No versioning metadata is needed.
 
+For pointer fields, use the generated `hasXxx()` method when the distinction
+between absent and present-but-empty matters:
+
+```zig
+if (person.hasEmail()) {
+    const email = try person.getEmail(); // may still be ""
+}
+```
+
+`hasXxx()` is generated on Readers and Builders for Text, Data, struct, list,
+AnyPointer, and interface fields. It is a structural check: null pointers and
+fields outside an older struct layout are absent; explicitly encoded empty
+values are present. A non-null schema default does not make a null slot present,
+and inactive union arms report false. Pointer getters still perform their normal
+validation.
+
+For unions, typed `which()` remains exhaustive. Use `whichOrdinal()` when an
+older proxy must observe an arm introduced by a newer schema; it returns the
+raw logical `u16` discriminant and never turns an unknown arm into a known one.
+
 ## Quick Reference
 
 | Schema Type | Zig Read Type | Zig Write Method |
@@ -390,5 +429,5 @@ This works because readers return type defaults for any field that falls outside
 | `Data` | `[]const u8` | `setField([]const u8)` |
 | `List(T)` | typed list reader | `initField(count)` |
 | `struct` | `StructName.Reader` | `initField()` |
-| `enum` | `EnumName` | `setField(.Variant)` |
-| `union` | check `which()` | `setVariant()`/`initVariant()` |
+| `enum` | `EnumName`, or forwarding `u16` via `enumOrdinals()` | `setField(.Variant)` or `enumOrdinals().setField(value)` |
+| `union` | check `which()`; inspect unknown arms with `whichOrdinal()` | `setVariant()`/`initVariant()` |

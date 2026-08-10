@@ -71,12 +71,30 @@ pub const Shape = struct {
             return .{ ._reader = reader };
         }
 
+        pub const EnumOrdinals = struct {
+            _reader: message.StructReader,
+
+            pub fn getColor(self: @This()) !u16 {
+                return self._reader.readU16(0);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._reader = self._reader };
+        }
+
+        pub fn whichOrdinal(self: Reader) u16 {
+            return self._reader.readUnionDiscriminant(2);
+        }
+
         pub fn which(self: Reader) error{InvalidEnumValue}!WhichTag {
-            return std.enums.fromInt(WhichTag, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
+            return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
         }
 
         pub fn getColor(self: Reader) !Color {
-            return std.enums.fromInt(Color, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getColor();
+            return std.enums.fromInt(Color, ordinal) orelse return error.InvalidEnumValue;
         }
 
         pub fn getCircle(self: Reader) !f64 {
@@ -103,8 +121,21 @@ pub const Shape = struct {
             return .{ ._builder = builder };
         }
 
+        pub const EnumOrdinals = struct {
+            _builder: message.StructBuilder,
+
+            pub fn setColor(self: @This(), value: u16) !void {
+                self._builder.writeU16(0, value);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._builder = self._builder };
+        }
+
         pub fn setColor(self: *Builder, value: Color) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setColor(@as(u16, @intFromEnum(value)));
         }
 
         pub fn setCircle(self: *Builder, value: f64) !void {

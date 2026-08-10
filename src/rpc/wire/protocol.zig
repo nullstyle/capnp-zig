@@ -304,12 +304,6 @@ const THIRD_PARTY_CAP_DESCRIPTOR_POINTER_WORDS: u16 = 1;
 const THIRD_PARTY_CAP_DESCRIPTOR_VINE_ID_OFFSET: u32 = 0;
 const THIRD_PARTY_CAP_DESCRIPTOR_ID_PTR: usize = 0;
 
-const EXCEPTION_DATA_WORDS: u16 = 1;
-const EXCEPTION_POINTER_WORDS: u16 = 2;
-const EXCEPTION_REASON_PTR: usize = 0;
-const EXCEPTION_TRACE_PTR: usize = 1;
-const EXCEPTION_TYPE_OFFSET: u32 = 2;
-
 fn byteOffsetU16(offset: u32) usize {
     return @as(usize, @intCast(offset)) * 2;
 }
@@ -1024,17 +1018,9 @@ pub const Join = struct {
     }
 };
 
-/// Write `Exception.type` as a raw u16.
-///
-/// Deliberately not the generated `setType`, which takes an exhaustive enum: an
-/// unknown type relayed from a foreign peer must survive the round trip
-/// verbatim rather than being coerced or rejected.
+/// Write `Exception.type` through the generated forward-compatible ordinal view.
 fn writeExceptionType(ex: *rpc_capnp.Exception.Builder, ex_type: ExceptionType) void {
-    // Write the raw u16. The generated `setType` takes the exhaustive generated
-    // enum, so reaching it via @enumFromInt on a relayed unknown code would be
-    // illegal behavior. The data section is already allocated by initException /
-    // initAbort, so this cannot fail.
-    ex._builder.writeU16(EXCEPTION_TYPE_OFFSET * 2, @backingInt(ex_type));
+    ex.enumOrdinals().setType(@backingInt(ex_type)) catch unreachable;
 }
 
 /// An RPC exception with a human-readable reason, optional stack trace, and type code.
@@ -1050,9 +1036,10 @@ pub const Exception = struct {
     }
 
     fn fromReader(reader: message.StructReader) !Exception {
-        const reason = try reader.readText(EXCEPTION_REASON_PTR);
-        const trace = reader.readText(EXCEPTION_TRACE_PTR) catch "";
-        const type_value = reader.readU16(byteOffsetU16(EXCEPTION_TYPE_OFFSET));
+        const generated = rpc_capnp.Exception.Reader.wrap(reader);
+        const reason = try generated.getReason();
+        const trace = generated.getTrace() catch "";
+        const type_value = try generated.enumOrdinals().getType();
         return .{ .reason = reason, .trace = trace, .type_value = type_value };
     }
 };

@@ -719,6 +719,36 @@ pub fn build(b: *std.Build) !void {
     const run_codegen_rpc_nested_tests = addLibTest(b, "tests/serialization/codegen_rpc_nested_test.zig", target, optimize, lib_module);
     const run_codegen_streaming_tests = addLibTest(b, "tests/serialization/codegen_streaming_test.zig", target, optimize, lib_module);
     const run_codegen_generated_runtime_tests = addLibTest(b, "tests/serialization/codegen_generated_runtime_test.zig", target, optimize, lib_module);
+    // These bindings are checked in so schema-evolution behavior runs as an
+    // ordinary test on every platform, including Windows workers without the
+    // `capnp` executable. The V1 and V2 modules use identical schema/type IDs
+    // and intentionally describe different revisions of the same protocol.
+    const schema_evolution_v1_module = b.createModule(.{
+        .root_source_file = b.path("tests/serialization/generated/schema_evolution_v1.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }},
+    });
+    const schema_evolution_v2_module = b.createModule(.{
+        .root_source_file = b.path("tests/serialization/generated/schema_evolution_v2.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "capnpc-zig", .module = lib_module }},
+    });
+    const schema_evolution_api_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/serialization/schema_evolution_api_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "capnpc-zig", .module = lib_module },
+                .{ .name = "schema-evolution-v1", .module = schema_evolution_v1_module },
+                .{ .name = "schema-evolution-v2", .module = schema_evolution_v2_module },
+            },
+        }),
+    });
+    registered_test_compile_steps.append(b.allocator, &schema_evolution_api_tests.step) catch @panic("OOM");
+    const run_schema_evolution_api_tests = &b.addRunArtifact(schema_evolution_api_tests).step;
     const run_integration_tests = addLibTest(b, "tests/serialization/integration_test.zig", target, optimize, lib_module);
     const run_interop_tests = addLibTest(b, "tests/serialization/interop_test.zig", target, optimize, lib_module);
     const run_interop_roundtrip_tests = addLibTest(b, "tests/serialization/interop_roundtrip_test.zig", target, optimize, lib_module);
@@ -950,6 +980,7 @@ pub fn build(b: *std.Build) !void {
     test_codegen_step.dependOn(run_codegen_rpc_nested_tests);
     test_codegen_step.dependOn(run_codegen_streaming_tests);
     test_codegen_step.dependOn(run_codegen_generated_runtime_tests);
+    test_codegen_step.dependOn(run_schema_evolution_api_tests);
     test_codegen_step.dependOn(run_codegen_union_group_tests);
     test_codegen_step.dependOn(run_codegen_golden_tests);
 
@@ -978,6 +1009,9 @@ pub fn build(b: *std.Build) !void {
     test_schema_validation_step.dependOn(run_schema_validation_tests);
     test_schema_validation_step.dependOn(run_canonical_tests);
 
+    const test_schema_evolution_step = b.step("test-schema-evolution", "Run checked-in V1/V2 schema-evolution API tests");
+    test_schema_evolution_step.dependOn(run_schema_evolution_api_tests);
+
     const test_serialization_step = b.step("test-serialization", "Run serialization-oriented tests");
     test_serialization_step.dependOn(&run_main_tests.step);
     test_serialization_step.dependOn(&run_lib_tests.step);
@@ -990,6 +1024,7 @@ pub fn build(b: *std.Build) !void {
     test_serialization_step.dependOn(run_codegen_rpc_nested_tests);
     test_serialization_step.dependOn(run_codegen_streaming_tests);
     test_serialization_step.dependOn(run_codegen_generated_runtime_tests);
+    test_serialization_step.dependOn(run_schema_evolution_api_tests);
     test_serialization_step.dependOn(run_integration_tests);
     test_serialization_step.dependOn(run_interop_tests);
     test_serialization_step.dependOn(run_interop_roundtrip_tests);

@@ -226,10 +226,31 @@ pub const Item = struct {
             return .{ ._reader = reader };
         }
 
+        pub const EnumOrdinals = struct {
+            _reader: message.StructReader,
+
+            pub fn getRarity(self: @This()) !u16 {
+                return self._reader.readU16(0);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._reader = self._reader };
+        }
+
+        pub fn hasId(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getId(self: Reader) !ItemId.Reader {
             if (self._reader.isPointerNull(0)) return ItemId.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return ItemId.Reader{ ._reader = value };
+        }
+
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getName(self: Reader) ![]const u8 {
@@ -238,7 +259,8 @@ pub const Item = struct {
         }
 
         pub fn getRarity(self: Reader) !Rarity {
-            return std.enums.fromInt(Rarity, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getRarity();
+            return std.enums.fromInt(Rarity, ordinal) orelse return error.InvalidEnumValue;
         }
 
         pub fn getLevel(self: Reader) !u16 {
@@ -249,6 +271,10 @@ pub const Item = struct {
             const raw = self._reader.readU32(4);
             const value = raw ^ @as(u32, 1);
             return value;
+        }
+
+        pub fn hasAttributes(self: Reader) bool {
+            return !self._reader.isPointerNull(2);
         }
 
         pub fn getAttributes(self: Reader) !StructListReader(Attribute) {
@@ -271,9 +297,30 @@ pub const Item = struct {
             return .{ ._builder = builder };
         }
 
+        pub const EnumOrdinals = struct {
+            _builder: message.StructBuilder,
+
+            pub fn setRarity(self: @This(), value: u16) !void {
+                self._builder.writeU16(0, value);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._builder = self._builder };
+        }
+
+        pub fn hasId(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initId(self: *Builder) !ItemId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return ItemId.Builder{ ._builder = builder };
+        }
+
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setName(self: *Builder, value: []const u8) !void {
@@ -281,7 +328,7 @@ pub const Item = struct {
         }
 
         pub fn setRarity(self: *Builder, value: Rarity) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setRarity(@as(u16, @intFromEnum(value)));
         }
 
         pub fn setLevel(self: *Builder, value: u16) !void {
@@ -291,6 +338,10 @@ pub const Item = struct {
         pub fn setStackSize(self: *Builder, value: u32) !void {
             const stored = @as(u32, @bitCast(value)) ^ @as(u32, 1);
             self._builder.writeU32(4, stored);
+        }
+
+        pub fn hasAttributes(self: Builder) bool {
+            return !self._builder.isPointerNull(2);
         }
 
         pub fn initAttributes(self: *Builder, element_count: u32) !StructListBuilder(Attribute) {
@@ -314,6 +365,10 @@ pub const Attribute = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getName(self: Reader) ![]const u8 {
             if (self._reader.isPointerNull(0)) return "";
             return try self._reader.readText(0);
@@ -335,6 +390,10 @@ pub const Attribute = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn setName(self: *Builder, value: []const u8) !void {
@@ -399,10 +458,31 @@ pub const PlayerInfo = struct {
             return .{ ._reader = reader };
         }
 
+        pub const EnumOrdinals = struct {
+            _reader: message.StructReader,
+
+            pub fn getFaction(self: @This()) !u16 {
+                return self._reader.readU16(0);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._reader = self._reader };
+        }
+
+        pub fn hasId(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getId(self: Reader) !PlayerId.Reader {
             if (self._reader.isPointerNull(0)) return PlayerId.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
             return PlayerId.Reader{ ._reader = value };
+        }
+
+        pub fn hasName(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getName(self: Reader) ![]const u8 {
@@ -411,7 +491,8 @@ pub const PlayerInfo = struct {
         }
 
         pub fn getFaction(self: Reader) !Faction {
-            return std.enums.fromInt(Faction, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getFaction();
+            return std.enums.fromInt(Faction, ordinal) orelse return error.InvalidEnumValue;
         }
 
         pub fn getLevel(self: Reader) !u16 {
@@ -432,9 +513,30 @@ pub const PlayerInfo = struct {
             return .{ ._builder = builder };
         }
 
+        pub const EnumOrdinals = struct {
+            _builder: message.StructBuilder,
+
+            pub fn setFaction(self: @This(), value: u16) !void {
+                self._builder.writeU16(0, value);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._builder = self._builder };
+        }
+
+        pub fn hasId(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initId(self: *Builder) !PlayerId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return PlayerId.Builder{ ._builder = builder };
+        }
+
+        pub fn hasName(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn setName(self: *Builder, value: []const u8) !void {
@@ -442,7 +544,7 @@ pub const PlayerInfo = struct {
         }
 
         pub fn setFaction(self: *Builder, value: Faction) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setFaction(@as(u16, @intFromEnum(value)));
         }
 
         pub fn setLevel(self: *Builder, value: u16) !void {

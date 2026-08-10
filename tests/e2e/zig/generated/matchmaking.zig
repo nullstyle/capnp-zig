@@ -79,8 +79,25 @@ pub const QueueTicket = struct {
             return .{ ._reader = reader };
         }
 
+        pub const EnumOrdinals = struct {
+            _reader: message.StructReader,
+
+            pub fn getMode(self: @This()) !u16 {
+                return self._reader.readU16(8);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._reader = self._reader };
+        }
+
         pub fn getTicketId(self: Reader) !u64 {
             return self._reader.readU64(0);
+        }
+
+        pub fn hasPlayer(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getPlayer(self: Reader) !game_types.PlayerInfo.Reader {
@@ -90,7 +107,12 @@ pub const QueueTicket = struct {
         }
 
         pub fn getMode(self: Reader) !GameMode {
-            return std.enums.fromInt(GameMode, self._reader.readU16(8)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getMode();
+            return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn hasEnqueuedAt(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getEnqueuedAt(self: Reader) !game_types.Timestamp.Reader {
@@ -117,8 +139,25 @@ pub const QueueTicket = struct {
             return .{ ._builder = builder };
         }
 
+        pub const EnumOrdinals = struct {
+            _builder: message.StructBuilder,
+
+            pub fn setMode(self: @This(), value: u16) !void {
+                self._builder.writeU16(8, value);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._builder = self._builder };
+        }
+
         pub fn setTicketId(self: *Builder, value: u64) !void {
             self._builder.writeU64(0, @bitCast(value));
+        }
+
+        pub fn hasPlayer(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
@@ -127,7 +166,11 @@ pub const QueueTicket = struct {
         }
 
         pub fn setMode(self: *Builder, value: GameMode) !void {
-            self._builder.writeU16(8, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
+        }
+
+        pub fn hasEnqueuedAt(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initEnqueuedAt(self: *Builder) !game_types.Timestamp.Builder {
@@ -158,6 +201,27 @@ pub const MatchInfo = struct {
             return .{ ._reader = reader };
         }
 
+        pub const EnumOrdinals = struct {
+            _reader: message.StructReader,
+
+            pub fn getMode(self: @This()) !u16 {
+                return self._reader.readU16(0);
+            }
+
+            pub fn getState(self: @This()) !u16 {
+                return self._reader.readU16(2);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._reader = self._reader };
+        }
+
+        pub fn hasId(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getId(self: Reader) !MatchId.Reader {
             if (self._reader.isPointerNull(0)) return MatchId.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
@@ -165,11 +229,17 @@ pub const MatchInfo = struct {
         }
 
         pub fn getMode(self: Reader) !GameMode {
-            return std.enums.fromInt(GameMode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getMode();
+            return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
         }
 
         pub fn getState(self: Reader) !MatchState {
-            return std.enums.fromInt(MatchState, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
+            const ordinal = try self.enumOrdinals().getState();
+            return std.enums.fromInt(MatchState, ordinal) orelse return error.InvalidEnumValue;
+        }
+
+        pub fn hasTeamA(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getTeamA(self: Reader) !StructListReader(game_types.PlayerInfo) {
@@ -178,10 +248,18 @@ pub const MatchInfo = struct {
             return StructListReader(game_types.PlayerInfo){ ._list = raw };
         }
 
+        pub fn hasTeamB(self: Reader) bool {
+            return !self._reader.isPointerNull(2);
+        }
+
         pub fn getTeamB(self: Reader) !StructListReader(game_types.PlayerInfo) {
             if (self._reader.isPointerNull(2)) return StructListReader(game_types.PlayerInfo){ ._list = self._reader.emptyStructList() };
             const raw = try self._reader.readStructList(2);
             return StructListReader(game_types.PlayerInfo){ ._list = raw };
+        }
+
+        pub fn hasCreatedAt(self: Reader) bool {
+            return !self._reader.isPointerNull(3);
         }
 
         pub fn getCreatedAt(self: Reader) !game_types.Timestamp.Reader {
@@ -204,17 +282,42 @@ pub const MatchInfo = struct {
             return .{ ._builder = builder };
         }
 
+        pub const EnumOrdinals = struct {
+            _builder: message.StructBuilder,
+
+            pub fn setMode(self: @This(), value: u16) !void {
+                self._builder.writeU16(0, value);
+            }
+
+            pub fn setState(self: @This(), value: u16) !void {
+                self._builder.writeU16(2, value);
+            }
+
+        };
+
+        pub fn enumOrdinals(self: @This()) EnumOrdinals {
+            return .{ ._builder = self._builder };
+        }
+
+        pub fn hasId(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initId(self: *Builder) !MatchId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return MatchId.Builder{ ._builder = builder };
         }
 
         pub fn setMode(self: *Builder, value: GameMode) !void {
-            self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
         }
 
         pub fn setState(self: *Builder, value: MatchState) !void {
-            self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
+            return self.enumOrdinals().setState(@as(u16, @intFromEnum(value)));
+        }
+
+        pub fn hasTeamA(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initTeamA(self: *Builder, element_count: u32) !StructListBuilder(game_types.PlayerInfo) {
@@ -222,9 +325,17 @@ pub const MatchInfo = struct {
             return StructListBuilder(game_types.PlayerInfo){ ._list = raw };
         }
 
+        pub fn hasTeamB(self: Builder) bool {
+            return !self._builder.isPointerNull(2);
+        }
+
         pub fn initTeamB(self: *Builder, element_count: u32) !StructListBuilder(game_types.PlayerInfo) {
             const raw = try self._builder.writeStructList(2, element_count, 1, 2);
             return StructListBuilder(game_types.PlayerInfo){ ._list = raw };
+        }
+
+        pub fn hasCreatedAt(self: Builder) bool {
+            return !self._builder.isPointerNull(3);
         }
 
         pub fn initCreatedAt(self: *Builder) !game_types.Timestamp.Builder {
@@ -251,6 +362,10 @@ pub const MatchResult = struct {
             return .{ ._reader = reader };
         }
 
+        pub fn hasMatchId(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
+        }
+
         pub fn getMatchId(self: Reader) !MatchId.Reader {
             if (self._reader.isPointerNull(0)) return MatchId.Reader{ ._reader = self._reader.emptyStruct() };
             const value = try self._reader.readStruct(0);
@@ -263,6 +378,10 @@ pub const MatchResult = struct {
 
         pub fn getDuration(self: Reader) !u32 {
             return self._reader.readU32(4);
+        }
+
+        pub fn hasPlayerStats(self: Reader) bool {
+            return !self._reader.isPointerNull(1);
         }
 
         pub fn getPlayerStats(self: Reader) !StructListReader(PlayerMatchStats) {
@@ -285,6 +404,10 @@ pub const MatchResult = struct {
             return .{ ._builder = builder };
         }
 
+        pub fn hasMatchId(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
+        }
+
         pub fn initMatchId(self: *Builder) !MatchId.Builder {
             const builder = try self._builder.initStruct(0, 1, 0);
             return MatchId.Builder{ ._builder = builder };
@@ -296,6 +419,10 @@ pub const MatchResult = struct {
 
         pub fn setDuration(self: *Builder, value: u32) !void {
             self._builder.writeU32(4, @bitCast(value));
+        }
+
+        pub fn hasPlayerStats(self: Builder) bool {
+            return !self._builder.isPointerNull(1);
         }
 
         pub fn initPlayerStats(self: *Builder, element_count: u32) !StructListBuilder(PlayerMatchStats) {
@@ -317,6 +444,10 @@ pub const PlayerMatchStats = struct {
 
         pub fn wrap(reader: message.StructReader) Reader {
             return .{ ._reader = reader };
+        }
+
+        pub fn hasPlayer(self: Reader) bool {
+            return !self._reader.isPointerNull(0);
         }
 
         pub fn getPlayer(self: Reader) !game_types.PlayerInfo.Reader {
@@ -353,6 +484,10 @@ pub const PlayerMatchStats = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub fn hasPlayer(self: Builder) bool {
+            return !self._builder.isPointerNull(0);
         }
 
         pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
@@ -1253,6 +1388,10 @@ pub const MatchController = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasInfo(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getInfo(self: Reader) !MatchInfo.Reader {
                 if (self._reader.isPointerNull(0)) return MatchInfo.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -1271,6 +1410,10 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasInfo(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initInfo(self: *Builder) !MatchInfo.Builder {
@@ -1294,6 +1437,10 @@ pub const MatchController = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasPlayer(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getPlayer(self: Reader) !game_types.PlayerId.Reader {
                 if (self._reader.isPointerNull(0)) return game_types.PlayerId.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -1312,6 +1459,10 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasPlayer(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initPlayer(self: *Builder) !game_types.PlayerId.Builder {
@@ -1335,12 +1486,26 @@ pub const MatchController = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getStatus(self: @This()) !u16 {
+                    return self._reader.readU16(2);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
             pub fn getAllReady(self: Reader) !bool {
                 return self._reader.readBool(0, 0) != false;
             }
 
             pub fn getStatus(self: Reader) !game_types.StatusCode {
-                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(2)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -1357,12 +1522,25 @@ pub const MatchController = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setStatus(self: @This(), value: u16) !void {
+                    self._builder.writeU16(2, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
             pub fn setAllReady(self: *Builder, value: bool) !void {
                 self._builder.writeBool(0, 0, value != false);
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-                self._builder.writeU16(2, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -1379,6 +1557,10 @@ pub const MatchController = struct {
 
             pub fn wrap(reader: message.StructReader) Reader {
                 return .{ ._reader = reader };
+            }
+
+            pub fn hasResult(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
             }
 
             pub fn getResult(self: Reader) !MatchResult.Reader {
@@ -1399,6 +1581,10 @@ pub const MatchController = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasResult(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initResult(self: *Builder) !MatchResult.Builder {
@@ -1422,8 +1608,22 @@ pub const MatchController = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getStatus(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
             pub fn getStatus(self: Reader) !game_types.StatusCode {
-                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -1440,8 +1640,21 @@ pub const MatchController = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setStatus(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -1490,8 +1703,22 @@ pub const MatchController = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getStatus(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
             pub fn getStatus(self: Reader) !game_types.StatusCode {
-                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -1508,8 +1735,21 @@ pub const MatchController = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setStatus(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -2548,6 +2788,23 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getMode(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
+            pub fn hasPlayer(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getPlayer(self: Reader) !game_types.PlayerInfo.Reader {
                 if (self._reader.isPointerNull(0)) return game_types.PlayerInfo.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -2555,7 +2812,8 @@ pub const MatchmakingService = struct {
             }
 
             pub fn getMode(self: Reader) !GameMode {
-                return std.enums.fromInt(GameMode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getMode();
+                return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -2572,13 +2830,30 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setMode(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
+            pub fn hasPlayer(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
+            }
+
             pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return game_types.PlayerInfo.Builder{ ._builder = builder };
             }
 
             pub fn setMode(self: *Builder, value: GameMode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -2597,6 +2872,23 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getStatus(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
+            pub fn hasTicket(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getTicket(self: Reader) !QueueTicket.Reader {
                 if (self._reader.isPointerNull(0)) return QueueTicket.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -2604,7 +2896,8 @@ pub const MatchmakingService = struct {
             }
 
             pub fn getStatus(self: Reader) !game_types.StatusCode {
-                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -2621,13 +2914,30 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setStatus(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
+            pub fn hasTicket(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
+            }
+
             pub fn initTicket(self: *Builder) !QueueTicket.Builder {
                 const builder = try self._builder.initStruct(0, 2, 2);
                 return QueueTicket.Builder{ ._builder = builder };
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -2684,8 +2994,22 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getStatus(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
             pub fn getStatus(self: Reader) !game_types.StatusCode {
-                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -2702,8 +3026,21 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setStatus(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -2722,6 +3059,23 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getMode(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
+            pub fn hasPlayer(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getPlayer(self: Reader) !game_types.PlayerInfo.Reader {
                 if (self._reader.isPointerNull(0)) return game_types.PlayerInfo.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -2729,7 +3083,8 @@ pub const MatchmakingService = struct {
             }
 
             pub fn getMode(self: Reader) !GameMode {
-                return std.enums.fromInt(GameMode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getMode();
+                return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -2746,13 +3101,30 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setMode(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
+            pub fn hasPlayer(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
+            }
+
             pub fn initPlayer(self: *Builder) !game_types.PlayerInfo.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return game_types.PlayerInfo.Builder{ ._builder = builder };
             }
 
             pub fn setMode(self: *Builder, value: GameMode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -2771,6 +3143,10 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasController(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getController(self: Reader) !message.Capability {
                 return try self._reader.readCapability(0);
             }
@@ -2784,6 +3160,10 @@ pub const MatchmakingService = struct {
                     .imported => |imported| return MatchController.Client.init(peer, imported.id),
                     else => return error.UnexpectedCapabilityType,
                 }
+            }
+
+            pub fn hasMatchId(self: Reader) bool {
+                return !self._reader.isPointerNull(1);
             }
 
             pub fn getMatchId(self: Reader) !MatchId.Reader {
@@ -2804,6 +3184,10 @@ pub const MatchmakingService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasController(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initController(self: *Builder) !message.AnyPointerBuilder {
@@ -2831,6 +3215,10 @@ pub const MatchmakingService = struct {
                 try any.setCapability(.{ .id = client.cap_id });
             }
 
+            pub fn hasMatchId(self: Builder) bool {
+                return !self._builder.isPointerNull(1);
+            }
+
             pub fn initMatchId(self: *Builder) !MatchId.Builder {
                 const builder = try self._builder.initStruct(1, 1, 0);
                 return MatchId.Builder{ ._builder = builder };
@@ -2852,8 +3240,22 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getMode(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
             pub fn getMode(self: Reader) !GameMode {
-                return std.enums.fromInt(GameMode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getMode();
+                return std.enums.fromInt(GameMode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -2870,8 +3272,21 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setMode(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
             pub fn setMode(self: *Builder, value: GameMode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setMode(@as(u16, @intFromEnum(value)));
             }
 
         };
@@ -2936,6 +3351,10 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub fn hasId(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getId(self: Reader) !MatchId.Reader {
                 if (self._reader.isPointerNull(0)) return MatchId.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -2954,6 +3373,10 @@ pub const MatchmakingService = struct {
 
             pub fn wrap(builder: message.StructBuilder) Builder {
                 return .{ ._builder = builder };
+            }
+
+            pub fn hasId(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
             }
 
             pub fn initId(self: *Builder) !MatchId.Builder {
@@ -2977,6 +3400,23 @@ pub const MatchmakingService = struct {
                 return .{ ._reader = reader };
             }
 
+            pub const EnumOrdinals = struct {
+                _reader: message.StructReader,
+
+                pub fn getStatus(self: @This()) !u16 {
+                    return self._reader.readU16(0);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._reader = self._reader };
+            }
+
+            pub fn hasResult(self: Reader) bool {
+                return !self._reader.isPointerNull(0);
+            }
+
             pub fn getResult(self: Reader) !MatchResult.Reader {
                 if (self._reader.isPointerNull(0)) return MatchResult.Reader{ ._reader = self._reader.emptyStruct() };
                 const value = try self._reader.readStruct(0);
@@ -2984,7 +3424,8 @@ pub const MatchmakingService = struct {
             }
 
             pub fn getStatus(self: Reader) !game_types.StatusCode {
-                return std.enums.fromInt(game_types.StatusCode, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
+                const ordinal = try self.enumOrdinals().getStatus();
+                return std.enums.fromInt(game_types.StatusCode, ordinal) orelse return error.InvalidEnumValue;
             }
 
         };
@@ -3001,13 +3442,30 @@ pub const MatchmakingService = struct {
                 return .{ ._builder = builder };
             }
 
+            pub const EnumOrdinals = struct {
+                _builder: message.StructBuilder,
+
+                pub fn setStatus(self: @This(), value: u16) !void {
+                    self._builder.writeU16(0, value);
+                }
+
+            };
+
+            pub fn enumOrdinals(self: @This()) EnumOrdinals {
+                return .{ ._builder = self._builder };
+            }
+
+            pub fn hasResult(self: Builder) bool {
+                return !self._builder.isPointerNull(0);
+            }
+
             pub fn initResult(self: *Builder) !MatchResult.Builder {
                 const builder = try self._builder.initStruct(0, 1, 2);
                 return MatchResult.Builder{ ._builder = builder };
             }
 
             pub fn setStatus(self: *Builder, value: game_types.StatusCode) !void {
-                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
+                return self.enumOrdinals().setStatus(@as(u16, @intFromEnum(value)));
             }
 
         };
