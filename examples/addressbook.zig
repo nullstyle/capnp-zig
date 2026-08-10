@@ -32,6 +32,7 @@ pub const AddressBook = struct {
             const raw = try self._reader.readStructList(0);
             return StructListReader(Person){ ._list = raw };
         }
+
     };
 
     pub const Builder = struct {
@@ -50,6 +51,7 @@ pub const AddressBook = struct {
             const raw = try self._builder.writeStructList(0, element_count, 1, 5);
             return StructListBuilder(Person){ ._list = raw };
         }
+
     };
 };
 
@@ -126,6 +128,7 @@ pub const Person = struct {
             if ((try self.which()) != .selfEmployed) return error.WrongUnionMember;
             return {};
         }
+
     };
 
     pub const Builder = struct {
@@ -180,6 +183,7 @@ pub const Person = struct {
             self._builder.writeU16(4, 3);
             _ = value;
         }
+
     };
     pub const PhoneNumber = struct {
         pub const Reader = struct {
@@ -202,6 +206,7 @@ pub const Person = struct {
             pub fn getType(self: @This()) !Person.PhoneType {
                 return std.enums.fromInt(Person.PhoneType, self._reader.readU16(0)) orelse return error.InvalidEnumValue;
             }
+
         };
 
         pub const Builder = struct {
@@ -221,8 +226,9 @@ pub const Person = struct {
             }
 
             pub fn setType(self: *@This(), value: Person.PhoneType) !void {
-                self._builder.writeU16(0, @as(u16, @backingInt(value)));
+                self._builder.writeU16(0, @as(u16, @intFromEnum(value)));
             }
+
         };
     };
 
@@ -231,4 +237,6 @@ pub const Person = struct {
         Home = 1,
         Work = 2,
     };
+
 };
+

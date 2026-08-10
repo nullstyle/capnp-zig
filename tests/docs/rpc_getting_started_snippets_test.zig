@@ -341,21 +341,21 @@ test "unwrap table: every Return arm maps to the CallError the guide documents" 
     const disconnected = PingPong.Ping.Response{ .exception = .{
         .reason = rpc.peer.disconnected_reason,
         .trace = "",
-        .type_value = 0,
+        .type_value = @backingInt(rpc.wire.protocol.ExceptionType.disconnected),
     } };
     try std.testing.expectError(error.Disconnected, disconnected.unwrap());
 
     const shutdown = PingPong.Ping.Response{ .exception = .{
         .reason = rpc.peer.shutdown_reason,
         .trace = "",
-        .type_value = 0,
+        .type_value = @backingInt(rpc.wire.protocol.ExceptionType.disconnected),
     } };
     try std.testing.expectError(error.Disconnected, shutdown.unwrap());
 
     const timed_out = PingPong.Ping.Response{ .exception = .{
         .reason = rpc.peer.deadline_reason,
         .trace = "",
-        .type_value = 0,
+        .type_value = @backingInt(rpc.wire.protocol.ExceptionType.overloaded),
     } };
     try std.testing.expectError(error.CallTimedOut, timed_out.unwrap());
 
@@ -379,7 +379,7 @@ test "unwrap table: every Return arm maps to the CallError the guide documents" 
     const bootstrap_gone = PingPong.BootstrapResponse{ .exception = .{
         .reason = rpc.peer.disconnected_reason,
         .trace = "",
-        .type_value = 0,
+        .type_value = @backingInt(rpc.wire.protocol.ExceptionType.disconnected),
     } };
     try std.testing.expectError(error.Disconnected, bootstrap_gone.unwrap());
 }
