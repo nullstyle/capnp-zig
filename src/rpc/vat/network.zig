@@ -61,11 +61,16 @@ pub const Introduction = struct {
     /// Kept distinct from the token payloads so the concrete network can encode
     /// tokens however it likes without the peer layer reaching into them.
     nonce: []u8,
+    /// Allocator that owns all three payloads. Optional for source compatibility
+    /// with existing VatNetwork implementations, which continue to use the
+    /// caller-provided fallback passed to `deinit`.
+    owner_allocator: ?std.mem.Allocator = null,
 
     pub fn deinit(self: *Introduction, allocator: std.mem.Allocator) void {
-        allocator.free(self.to_await);
-        allocator.free(self.to_contact);
-        allocator.free(self.nonce);
+        const owner = self.owner_allocator orelse allocator;
+        owner.free(self.to_await);
+        owner.free(self.to_contact);
+        owner.free(self.nonce);
     }
 };
 
@@ -82,9 +87,14 @@ pub fn Introduced(comptime PeerType: type) type {
         /// message to present as `Accept.provision`. Owned; `Peer.sendAccept`
         /// frees it once the Accept has been serialized.
         completion: []u8,
+        /// Allocator that owns `completion`. Optional so existing implementations
+        /// that allocate with the consuming peer's allocator remain source- and
+        /// behavior-compatible.
+        owner_allocator: ?std.mem.Allocator = null,
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-            allocator.free(self.completion);
+            const owner = self.owner_allocator orelse allocator;
+            owner.free(self.completion);
         }
     };
 }
@@ -235,7 +245,12 @@ pub fn LoopbackVatNetwork(comptime PeerType: type) type {
             const to_contact = try encodeNonceToken(self.allocator, recipient_hint);
             errdefer self.allocator.free(to_contact);
 
-            return .{ .to_await = to_await, .to_contact = to_contact, .nonce = nonce };
+            return .{
+                .to_await = to_await,
+                .to_contact = to_contact,
+                .nonce = nonce,
+                .owner_allocator = self.allocator,
+            };
         }
 
         fn connectToIntroduced(
@@ -250,7 +265,11 @@ pub fn LoopbackVatNetwork(comptime PeerType: type) type {
             // The completion token is byte-identical to the await token because
             // both encode the same nonce with the same encoder.
             const completion = try encodeNonceToken(self.allocator, nonce);
-            return .{ .peer = third_vat_peer, .completion = completion };
+            return .{
+                .peer = third_vat_peer,
+                .completion = completion,
+                .owner_allocator = self.allocator,
+            };
         }
     };
 }

@@ -27,12 +27,13 @@ pub fn queuePendingCall(
     // Decode the call's question id once, here, so the per-inbound-message
     // duplicate-id and cancellation scans can match on the stored id instead of
     // re-validating-parsing every queued frame (an O(n)-decode amplifier). A
-    // non-call/undecodable frame stores 0; such frames are skipped by the drain.
-    const call_question_id: u32 = blk: {
-        var decoded = protocol.DecodedMessage.init(allocator, copy) catch break :blk 0;
+    // non-call/undecodable frame stores null; question id zero is valid and must
+    // remain distinguishable so cancellation/failure drains still settle it.
+    const call_question_id: ?u32 = blk: {
+        var decoded = protocol.DecodedMessage.init(allocator, copy) catch break :blk null;
         defer decoded.deinit();
-        if (decoded.tag != .call) break :blk 0;
-        const call = decoded.asCall() catch break :blk 0;
+        if (decoded.tag != .call) break :blk null;
+        const call = decoded.asCall() catch break :blk null;
         break :blk call.question_id;
     };
 
@@ -258,7 +259,7 @@ test "pending_calls queuePendingCall clones frame and appends" {
     const PendingCall = struct {
         frame: []u8,
         caps: DummyCaps,
-        question_id: u32 = 0,
+        question_id: ?u32 = null,
     };
 
     var pending = std.AutoHashMap(u32, std.ArrayList(PendingCall)).init(std.testing.allocator);
@@ -300,6 +301,8 @@ test "pending_calls queuePendingCall clones frame and appends" {
     try std.testing.expectEqual(@as(usize, 2), entry.items.len);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, entry.items[0].frame);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 4, 5 }, entry.items[1].frame);
+    try std.testing.expectEqual(@as(?u32, null), entry.items[0].question_id);
+    try std.testing.expectEqual(@as(?u32, null), entry.items[1].question_id);
 }
 
 test "pending_calls deinitPendingCallOwnedFrameForPeerFn releases caps and frame" {
@@ -316,7 +319,7 @@ test "pending_calls deinitPendingCallOwnedFrameForPeerFn releases caps and frame
     const PendingCall = struct {
         frame: []u8,
         caps: DummyCaps,
-        question_id: u32 = 0,
+        question_id: ?u32 = null,
     };
     const Peer = struct {};
 
@@ -340,7 +343,7 @@ test "pending_calls replayResolvedPromiseExport none sends exception and release
     const PendingCall = struct {
         frame: []u8,
         caps: DummyCaps,
-        question_id: u32 = 0,
+        question_id: ?u32 = null,
     };
     const FakePeer = struct {
         exception_count: usize = 0,
