@@ -20,7 +20,7 @@ docker-server container host="0.0.0.0" port="4000" schema="game_world":
     docker compose -f {{compose_file}} run -d --name {{container}} --service-ports cpp-rpc server --host {{host}} --port {{port}} --schema {{schema}}
 
 # Cross-impl L3 HOSTING: C++ plays vats A+B against a Zig VatC host on the
-# docker host. scenario in {happy, embargo, unknown-token, disconnect}.
+# docker host. The orchestrator passes one of the documented VatC scenarios.
 docker-l3-vatc-client host="host.docker.internal" port="4707" scenario="happy" timeout_sec="20":
     docker compose -f {{compose_file}} run --rm -T -e E2E_TIMEOUT_SEC={{timeout_sec}} --entrypoint /app/entrypoint.sh cpp-rpc l3-vatc-client {{host}} {{port}} {{scenario}}
 

@@ -1090,6 +1090,18 @@ pub fn build(b: *std.Build) !void {
     test_rpc_peer_step.dependOn(run_rpc_deadline_tests);
     test_rpc_peer_step.dependOn(run_rpc_persistence_tests);
 
+    // Focused Level-3 handoff gate. These are the same run nodes already
+    // included by test-rpc-peer, so selecting both steps never duplicates a
+    // compile in one build graph.
+    const test_rpc_l3_step = b.step("test-rpc-l3", "Run the seven RPC Level-3 handoff suites");
+    test_rpc_l3_step.dependOn(run_rpc_three_party_handoff_origination_tests);
+    test_rpc_l3_step.dependOn(run_rpc_three_party_handoff_pickup_tests);
+    test_rpc_l3_step.dependOn(run_rpc_three_party_handoff_embargo_tests);
+    test_rpc_l3_step.dependOn(run_rpc_handoff_export_pin_tests);
+    test_rpc_l3_step.dependOn(run_rpc_handoff_import_pin_tests);
+    test_rpc_l3_step.dependOn(run_rpc_three_party_handoff_vatc_tests);
+    test_rpc_l3_step.dependOn(run_rpc_three_party_handoff_redirected_return_tests);
+
     const test_rpc_integration_step = b.step("test-rpc-integration", "Run RPC integration tests");
     test_rpc_integration_step.dependOn(run_rpc_host_peer_tests);
     test_rpc_integration_step.dependOn(run_rpc_worker_pool_tests);
@@ -1123,6 +1135,7 @@ pub fn build(b: *std.Build) !void {
     test_resource_budgets_step.dependOn(run_rpc_connection_failure_tests);
     test_resource_budgets_step.dependOn(run_rpc_join_readiness_tests);
     test_resource_budgets_step.dependOn(run_rpc_persistence_tests);
+    test_resource_budgets_step.dependOn(run_rpc_three_party_handoff_vatc_tests);
     if (run_rpc_quic_transport_tests) |step| test_resource_budgets_step.dependOn(step);
     if (run_rpc_quic_connection_internal_tests) |step| test_resource_budgets_step.dependOn(step);
     test_resource_budgets_step.dependOn(run_rpc_raw_frame_security_tests);
@@ -1138,6 +1151,7 @@ pub fn build(b: *std.Build) !void {
     test_oom_step.dependOn(run_rpc_connection_failure_tests);
     test_oom_step.dependOn(run_rpc_join_readiness_tests);
     test_oom_step.dependOn(run_rpc_persistence_tests);
+    test_oom_step.dependOn(run_rpc_three_party_handoff_vatc_tests);
     test_oom_step.dependOn(run_rpc_raw_frame_security_tests);
     test_oom_step.dependOn(&run_wasm_host_abi_tests.step);
 
@@ -1172,6 +1186,7 @@ pub fn build(b: *std.Build) !void {
     const run_release_safe_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_connection_failure_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_failure_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_rpc_vatc_tests = addLibTest(b, "tests/rpc/peer/rpc_three_party_handoff_vatc_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_quic_transport_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
     else
@@ -1193,6 +1208,7 @@ pub fn build(b: *std.Build) !void {
     test_release_safe_step.dependOn(run_release_safe_canonical_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
+    test_release_safe_step.dependOn(run_release_safe_rpc_vatc_tests);
     if (run_release_safe_rpc_quic_transport_tests) |step| test_release_safe_step.dependOn(step);
     if (run_release_safe_rpc_quic_connection_internal_tests) |step| test_release_safe_step.dependOn(step);
     test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);

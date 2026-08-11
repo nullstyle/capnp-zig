@@ -465,23 +465,10 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
 
-      # STILL THE TEN-BINARY SUBSET, and that is a known gap rather than a
-      # choice. Promoting this to the full suite
-      # (`zig build test -Doptimize=ReleaseSafe`) is correct and was attempted:
-      # it passes locally on macOS at 1291/1291, and it immediately found a
-      # real defect on the other two tiers --
-      # `rpc_join_readiness_test."L4 Join proxy relay rolls back state under
-      # OOM injection"` fails under ReleaseSafe on BOTH ubuntu-latest and
-      # windows-latest, consistently, while passing in Debug everywhere and in
-      # ReleaseSafe on macOS. That test drives `checkAllAllocationFailures`, so
-      # the likely shape is an OOM rollback path whose behaviour depends on an
-      # allocation sequence that optimization changes.
-      #
-      # The promotion lands once that is fixed. Recorded here rather than left
-      # as a silently narrow lane: the subset covers message/codegen/framing/
-      # fuzz-smoke and two transport files, so most of the RPC runtime -- peer,
-      # caps, promises, vat, integration -- is still never executed with safety
-      # checks on in an optimized build.
+      # Run every registered test binary with safety checks enabled in an
+      # optimized build. This includes the L3 VatC hardening regressions on all
+      # three native CI platforms; the smaller `test-release-safe` step remains
+      # only a fast local/preflight subset.
       - name: Run the full suite under ReleaseSafe
         run: zig build test -Doptimize=ReleaseSafe --summary all
 

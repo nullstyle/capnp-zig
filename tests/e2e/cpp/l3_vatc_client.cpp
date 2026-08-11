@@ -20,8 +20,8 @@
 //     address, token = counter, sentBy = introducing vat's name} and
 //     ThirdPartyToAwait{token}.
 //   - connectToIntroduced: returns this vat's pre-dialed TCP connection to the
-//     host and fills ThirdPartyCompletion{token} (token+1 under the
-//     unknown-token scenario).
+//     host and fills ThirdPartyCompletion{token}; park scenarios can rewrite
+//     it to an unmatchable high-bit token or the next sequential provision.
 //   - generateEmbargoId: fresh 8-byte counter (the default throws).
 //
 // Scenarios (argv: <host> <port> <scenario>):
@@ -32,11 +32,21 @@
 //                 (rpc-test.c++:2272 shape) so the Accept goes out immediately
 //                 WITH an embargo; both the pipelined and a direct
 //                 post-resolution call must return 42.
-//   unknown-token completion token corrupted (+1); the Accept must PARK (the
+//   unknown-token completion token rewritten with an unmatchable high bit;
+//                 the Accept must PARK (the
 //                 rendezvous is order-independent, rpc.h:483-492) rather than
 //                 fail, and must not wedge either leg to the host.
 //   disconnect    happy, then both host connections are dropped abruptly (no
 //                 clean shutdown) via _exit(0).
+//   park-fairness one recipient fills its one-entry test quota with an
+//                 unmatched Accept and gets a second park refused; the sibling
+//                 recipient completes a legitimate reverse-direction handoff
+//                 while the first park is still live, then ordinary traffic
+//                 expires it and recovers the attacker's share.
+//   park-adopt    Accept arrives first and remains parked just long enough for
+//                 the matching Provide to adopt it and complete the call.
+//   park-expiry   an unmatched Accept crosses a short explicit TTL; its call
+//                 pipeline receives the same terminal expiry exception.
 //   pipelined-provide, pipelined-provide-chain
 //                 B introduces a still-PIPELINED result cap that re-resolves
 //                 to B's own local cap — one the host merely IMPORTS. With
@@ -117,8 +127,9 @@ struct DriverNetwork {
   enum class TokenRewrite {
     // Spec-correct: the Accept names the Provide that introduced this cap.
     none,
-    // Names a Provide that will NEVER exist, so the Accept parks forever.
-    // A high-bit flip, chosen so it cannot collide with any minted token.
+    // Names a Provide that will never exist, so the Accept parks until expiry
+    // or terminal transport cleanup. A high-bit flip, chosen so it cannot
+    // collide with any minted token.
     unmatchable,
     // Names the token the NEXT introduction is about to register. `newToken()`
     // hands out small sequential values, so `+1` is exactly "the next
@@ -547,10 +558,12 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
   shared.hostAddr = hostAddr;
   // All three park-flavoured cells send an Accept whose token names no
   // provision that exists YET, so the host must park it. They differ only in
-  // what happens next: `unknown-token` stops there (parked forever),
+  // what happens next: `unknown-token` stays parked for the live observation
+  // window and is reclaimed when its transport closes,
   // `park-expiry` lets the L9 TTL evict it, and `park-adopt` names the NEXT
   // introduction's Provide so the park is later ADOPTED and served.
-  if (scenario == "unknown-token" || scenario == "park-expiry") {
+  if (scenario == "unknown-token" || scenario == "park-expiry" ||
+      scenario == "park-fairness") {
     shared.tokenRewrite = DriverNetwork::TokenRewrite::unmatchable;
   } else if (scenario == "park-adopt") {
     shared.tokenRewrite = DriverNetwork::TokenRewrite::next_provision;
@@ -565,8 +578,13 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
 
   auto holderOwn = kj::heap<HolderImpl>();
   HolderImpl& holder = *holderOwn;
+  auto holderAOwn = kj::heap<HolderImpl>();
+  HolderImpl& holderA = *holderAOwn;
   auto rpcB = capnp::makeRpcServer(vatB, capnp::Capability::Client(kj::mv(holderOwn)));
-  auto rpcA = capnp::makeRpcClient(vatA);
+  // A normally only consumes B's bootstrap, but making its endpoint a server
+  // too lets park-fairness reverse the roles: B can accept a capability A
+  // imported from the host, proving an attacker on A cannot consume B's share.
+  auto rpcA = capnp::makeRpcServer(vatA, capnp::Capability::Client(kj::mv(holderAOwn)));
 
   // B: bootstrap the host's returner and import Carol wire-honestly (she is
   // Return-carried, not the bootstrap).
@@ -703,6 +721,97 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
   bId.setHost("b");
   auto holderCap = rpcA.bootstrap(bId.asReader());
 
+  if (scenario == "park-fairness") {
+    auto& timer = io.provider->getTimer();
+
+    // Fill A's deliberately tiny (one-entry) park share. The high-bit token
+    // rewrite guarantees neither Accept can match a real provision.
+    Number::Client attackerFirst(nullptr);
+    {
+      auto resp = holderCap
+          .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+          .send().wait(ws);
+      attackerFirst = readRootCap(resp).castAs<Number>();
+    }
+    auto firstProbe = attackerFirst.getNumberRequest().send();
+
+    Number::Client attackerSecond(nullptr);
+    {
+      auto resp = holderCap
+          .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+          .send().wait(ws);
+      attackerSecond = readRootCap(resp).castAs<Number>();
+    }
+    auto secondProbe = attackerSecond.getNumberRequest().send();
+    auto quotaOutcome = secondProbe
+        .then([](auto&&) { return kj::str("<resolved>"); },
+              [](kj::Exception&& e) { return kj::str("exception: ", e.getDescription()); })
+        .exclusiveJoin(timer.afterDelay(500 * kj::MILLISECONDS)
+            .then([]() { return kj::str("<timed out>"); }))
+        .wait(ws);
+    printf("# per-peer quota outcome: %s\n", quotaOutcome.cStr());
+    fflush(stdout);
+    tap.ok(strcmp(quotaOutcome.cStr(), "<timed out>") != 0,
+        "the second unmatched Accept was answered (did not park forever)");
+    tap.ok(strncmp(quotaOutcome.cStr(), "exception:", 10) == 0,
+        "the attacker's second park was refused at its per-peer quota");
+
+    // Reverse the ordinary scenario while A's first park is still live: A
+    // imports Carol from its host leg and introduces that cap to B. Switching
+    // back to a correct completion token makes B the accepting peer, so this
+    // is a legitimate sibling handoff under active pressure, not a liveness
+    // call on an unrelated connection.
+    shared.tokenRewrite = DriverNetwork::TokenRewrite::none;
+    auto returnerA = rpcA.bootstrap(hostId.asReader());
+    auto returnerAResp = returnerA
+        .typelessRequest(RETURNER_INTERFACE_ID, RETURNER_METHOD_ID, kj::none, {})
+        .send().wait(ws);
+    holderA.held = readRootCap(returnerAResp);
+    capnp::MallocMessageBuilder aIdMsg(8);
+    auto aId = aIdMsg.initRoot<VatId>();
+    aId.setHost("a");
+    auto holderAFromB = rpcB.bootstrap(aId.asReader());
+    Number::Client siblingAccepted(nullptr);
+    {
+      auto resp = holderAFromB
+          .typelessRequest(HOLDER_INTERFACE_ID, HOLDER_METHOD_ID, kj::none, {})
+          .send().wait(ws);
+      siblingAccepted = readRootCap(resp).castAs<Number>();
+    }
+    uint32_t n = siblingAccepted.getNumberRequest().send().wait(ws).getN();
+    tap.ok(n == 42, "the sibling peer completed a legitimate reverse-direction handoff");
+    tap.ok(!firstProbe.poll(ws),
+        "the sibling handoff completed while the attacker's first park remained live");
+
+    siblingAccepted = nullptr;
+    timer.afterDelay(250 * kj::MILLISECONDS).wait(ws);
+    tap.ok(true, "released the sibling's accepted cap and flushed its Release");
+
+    // Outlive the short test TTL, then send ordinary traffic on A's host leg.
+    // Expiry is checked at the start of every inbound-frame path, so this
+    // ordinary call — not another Accept — must reclaim the first park.
+    timer.afterDelay(3250 * kj::MILLISECONDS).wait(ws);
+    auto sweepDriver = returnerA
+        .typelessRequest(RETURNER_INTERFACE_ID, RETURNER_METHOD_ID, kj::none, {})
+        .send().wait(ws);
+    (void)sweepDriver;
+    tap.ok(true, "ordinary recipient traffic remained live and drove the expiry sweep");
+
+    auto expiryOutcome = firstProbe
+        .then([](auto&&) { return kj::str("<resolved>"); },
+              [](kj::Exception&& e) { return kj::str("exception: ", e.getDescription()); })
+        .exclusiveJoin(timer.afterDelay(5 * kj::SECONDS)
+            .then([]() { return kj::str("<timed out>"); }))
+        .wait(ws);
+    printf("# first parked Accept outcome: %s\n", expiryOutcome.cStr());
+    fflush(stdout);
+    tap.ok(strncmp(expiryOutcome.cStr(), "exception:", 10) == 0,
+        "the first parked Accept expired and refunded A's share");
+
+    tap.plan();
+    return tap.failed ? 1 : 0;
+  }
+
   if (scenario == "embargo") {
     // Pipelined-resolve shape (rpc-test.c++:2272): pipeline a call on the
     // still-unresolved holder result so the promise resolves to the
@@ -826,8 +935,8 @@ int runDriver(kj::StringPtr host, kj::StringPtr port, kj::StringPtr scenario) {
       // and this wait hung until the lane's timeout killed it.
       auto pipelined = carol.getNumberRequest().send();
 
-      // Outlive the host's TTL. The eviction sweep runs lazily from the Accept
-      // path and nowhere else, so nothing has happened yet at this point.
+      // Outlive the host's TTL. No background task runs the sweep, so nothing
+      // has happened yet; the next inbound frame will perform the due check.
       auto& timer = io.provider->getTimer();
       timer.afterDelay(1 * kj::SECONDS).wait(ws);
 
@@ -992,7 +1101,7 @@ int main(int argc, char* argv[]) {
   if (argc != 4) {
     fprintf(stderr, "usage: l3_vatc_client <host> <port> <scenario>\n"
                     "  scenario: happy | embargo | unknown-token | disconnect |\n"
-                    "            park-expiry | park-adopt |\n"
+                    "            park-expiry | park-adopt | park-fairness |\n"
                     "            pipelined-provide |\n"
                     "            pipelined-provide-chain\n");
     return 2;
@@ -1004,6 +1113,7 @@ int main(int argc, char* argv[]) {
   if (scenario != "happy" && scenario != "embargo" &&
       scenario != "unknown-token" && scenario != "disconnect" &&
       scenario != "park-expiry" && scenario != "park-adopt" &&
+      scenario != "park-fairness" &&
       scenario != "pipelined-provide" && scenario != "pipelined-provide-chain") {
     fprintf(stderr, "unknown scenario: %s\n", scenario.cStr());
     return 2;

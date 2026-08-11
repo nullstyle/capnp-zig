@@ -46,8 +46,13 @@ const scenarios = [_][]const u8{
     // The other half of the order-independent rendezvous: the driver's Accept
     // names the token its NEXT introduction will register, so the Accept lands
     // BEFORE its Provide, parks, and must then be ADOPTED and served. Pairs
-    // with `unknown-token` (parks forever) and `park-expiry` (parks, expires).
+    // with `unknown-token` (parks through its live observation window, then
+    // terminal close reclaims it) and `park-expiry` (parks, expires).
     "park-adopt",
+    // A one-entry per-peer quota lets A exhaust only its own park share. Its
+    // second Accept is refused while B completes a legitimate reverse-direction
+    // handoff; ordinary traffic then expires A's first park and recovers it.
+    "park-fairness",
     // receiverHosted lift cells: the C++ driver provides a still-pipelined
     // (promisedAnswer-target) cap that re-resolves to a cap the host only
     // imports; the host must SERVE the Accept via deferred-Release import
