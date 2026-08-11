@@ -62,6 +62,7 @@ const EventRecorder = struct {
     call_deadline_timeouts: usize = 0,
     shutdown_drain_timeouts: usize = 0,
     idle_timeouts: usize = 0,
+    parked_accept_timeouts: usize = 0,
     backpressure_events: usize = 0,
     last_timeout_question_id: ?u32 = null,
 
@@ -76,6 +77,7 @@ const EventRecorder = struct {
                     },
                     .shutdown_drain => self.shutdown_drain_timeouts += 1,
                     .idle_connection => self.idle_timeouts += 1,
+                    .parked_accept => self.parked_accept_timeouts += 1,
                 }
             },
             .backpressure => self.backpressure_events += 1,
@@ -487,6 +489,8 @@ test "peer stats snapshot tracks questions, cancellations, and queued state" {
     var stats = peer.stats();
     try std.testing.expectEqual(@as(u32, 0), stats.outbound_questions);
     try std.testing.expectEqual(@as(u32, 0), stats.cancelled_questions);
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accept_bytes);
 
     const q1 = try peer.sendBootstrap(&recorder, ReturnRecorder.onReturn);
     _ = try peer.sendBootstrap(&recorder, ReturnRecorder.onReturn);

@@ -37,6 +37,30 @@ The same gate now also covers the major C++-interop failure contours:
 - every scenario checks local question/provide/vine/embargo state drains after
   releases.
 
+## L3 VatC Hosting Result
+
+`just e2e-l3-vatc` reverses the roles: one vendored C++ process plays vats A
+(recipient) and B (introducer) over real TCP against a two-peer Zig VatC. Both
+sides emit TAP and must pass. Its nine scenarios are:
+
+- `happy`, `embargo`, and `disconnect` for ordinary serving, accept-Disembargo
+  ordering, Release, and abrupt-close lifecycle;
+- `unknown-token`, `park-expiry`, and `park-adopt` for the order-independent
+  rendezvous, failed-answer pipelining, timeout, and later-Provide adoption;
+- `pipelined-provide` and `pipelined-provide-chain` for both live
+  `receiverHosted` import-pin shapes (the accepted cap reaches C++'s own local
+  service, not a host substitute);
+- `park-fairness`, which gives A a one-entry park quota, requires its second
+  unmatched Accept to be refused, proves sibling B can complete a legitimate
+  reverse-direction handoff while the first park remains live, and then expires
+  it from ordinary non-Accept traffic. The manual Zig frame pump reports EOF/reset/write
+  failure through idempotent `HostPeer.notifyTransportClosed()`, and host-side
+  assertions require holder reservations and gauges to drain.
+
+This is containment evidence, not authentication: completion tokens remain
+opaque application data. Go is still source-recon only, and the Rust/Python
+adapters remain two-party, so no broader L3 hosting interop claim is made.
+
 ## C++ Notes
 
 The Docker C++ backend builds vendored Cap'n Proto 2.0, whose generic

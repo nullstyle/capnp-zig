@@ -44,6 +44,7 @@ const default_seed: u64 = 0x6c33_7661_7463_5eed;
 /// almost nothing, long enough that it cannot fire between the Accept arriving
 /// and the driver's pipelined Call landing behind it.
 const park_expiry_ttl_ms: u64 = 300;
+const park_fairness_ttl_ms: u64 = 3_000;
 
 const Scenario = enum {
     happy,
@@ -72,12 +73,10 @@ const Scenario = enum {
     /// event loop in between — frame order on one connection does the rest.
     /// Before the fix in v0.7.0 that call queued forever and the driver hung.
     ///
-    /// The eviction is driven by that SECOND Accept, not by a timer: the TTL
-    /// sweep runs lazily from the Accept path and from nowhere else
-    /// (deliberately — `on_tick` only fires when the transport poll times out,
-    /// so a busy connection would suppress its own reclamation). "A later
-    /// Accept reclaims an expired parked one" is therefore also part of what
-    /// this cell proves.
+    /// The eviction is driven by that SECOND Accept, not by a background
+    /// timer. Expiry is checked at every inbound-frame boundary, so busy
+    /// traffic cannot suppress reclamation; this cell happens to use a later
+    /// Accept while park-fairness uses an ordinary call.
     park_expiry,
     /// The ORDER-INDEPENDENT rendezvous, other half: Accept BEFORE Provide.
     ///
@@ -91,6 +90,11 @@ const Scenario = enum {
     /// needed — which is what made this cell cheap once the token-rewrite modes
     /// were made explicit.
     park_adopt,
+    /// One recipient peer fills its one-entry test quota with an unmatched
+    /// Accept. A second park on that peer is refused, while the sibling peer
+    /// completes a legitimate reverse-direction handoff. Ordinary traffic
+    /// after the short TTL sweeps the attacker's first park.
+    park_fairness,
     // The C++ driver provides a still-PIPELINED (promisedAnswer-target) cap
     // that ultimately re-resolves to a cap this host only IMPORTS (a cap the
     // introducer itself hosts). With the receiverHosted lift the host SERVES
@@ -119,6 +123,7 @@ const Scenario = enum {
         if (std.mem.eql(u8, text, "disconnect")) return .disconnect;
         if (std.mem.eql(u8, text, "park-expiry")) return .park_expiry;
         if (std.mem.eql(u8, text, "park-adopt")) return .park_adopt;
+        if (std.mem.eql(u8, text, "park-fairness")) return .park_fairness;
         if (std.mem.eql(u8, text, "pipelined-provide")) return .pipelined_provide;
         if (std.mem.eql(u8, text, "pipelined-provide-chain")) return .pipelined_provide_chain;
         return null;
@@ -132,6 +137,7 @@ const Scenario = enum {
             .disconnect => "disconnect",
             .park_expiry => "park-expiry",
             .park_adopt => "park-adopt",
+            .park_fairness => "park-fairness",
             .pipelined_provide => "pipelined-provide",
             .pipelined_provide_chain => "pipelined-provide-chain",
         };
@@ -195,7 +201,7 @@ const Tap = struct {
 
 fn usage() void {
     std.debug.print(
-        \\Usage: e2e-l3-vatc-host [--host 0.0.0.0] [--port 4707] [--seed N] [--scenario happy|embargo|unknown-token|disconnect|pipelined-provide|pipelined-provide-chain]
+        \\Usage: e2e-l3-vatc-host [--host 0.0.0.0] [--port 4707] [--seed N] [--scenario happy|embargo|unknown-token|disconnect|park-expiry|park-adopt|park-fairness|pipelined-provide|pipelined-provide-chain]
         \\
     , .{});
 }
@@ -501,6 +507,16 @@ const HostConn = struct {
         self.host.deinit();
     }
 
+    /// Terminal transport notification for this manual socket harness. The
+    /// production bound-transport path does this internally; raw EOF/reset and
+    /// write failure have to report it explicitly. HostPeer and this guard are
+    /// both idempotent, so later deinit cannot detach holder state twice.
+    fn markTransportClosed(self: *HostConn) void {
+        if (self.closed) return;
+        self.closed = true;
+        self.host.notifyTransportClosed();
+    }
+
     fn flush(self: *HostConn, io: std.Io) !bool {
         if (self.closed) return false;
         var progressed = false;
@@ -511,7 +527,7 @@ const HostConn = struct {
             writeAll(io, self.socket, frame) catch {
                 // Abrupt driver disconnect (EPIPE/reset) is a tolerated end
                 // state in every scenario; the drain asserts decide pass/fail.
-                self.closed = true;
+                self.markTransportClosed();
                 return true;
             };
             progressed = true;
@@ -530,7 +546,7 @@ const HostConn = struct {
             switch (std.posix.errno(rc)) {
                 .SUCCESS => {
                     if (rc == 0) {
-                        self.closed = true;
+                        self.markTransportClosed();
                         return true;
                     }
                     const n: usize = @intCast(rc);
@@ -549,7 +565,7 @@ const HostConn = struct {
                 .AGAIN => return false,
                 // Connection reset et al: the abrupt-disconnect end state.
                 else => {
-                    self.closed = true;
+                    self.markTransportClosed();
                     return true;
                 },
             }
@@ -601,6 +617,7 @@ const Probes = struct {
     proxy_seen: bool = false,
     queued_seen: bool = false,
     parked_seen: bool = false,
+    max_peer_parked_peak: usize = 0,
     /// Which STORED form the provide target took after the host's
     /// Provide-time resolution — `.local{receiverHosted}` routes the serve to
     /// the direct fail-closed gate (site 1), `.promised` routes it to the
@@ -625,6 +642,7 @@ const Sampler = struct {
         if (self.vat.index.parked_accept_count > 0) self.probes.parked_seen = true;
         for (self.conns[0..self.inited.*]) |*conn| {
             const peer = &conn.host.peer;
+            self.probes.max_peer_parked_peak = @max(self.probes.max_peer_parked_peak, peer.parked_accept_count);
             if (peer.provisions_by_question.count() > 0) self.probes.provide_seen = true;
             if (peer.cross_peer_proxy_links.items.len > 0) self.probes.proxy_seen = true;
             // Record the STORED provide-target form (site discriminator).
@@ -699,25 +717,12 @@ fn liveProxyLinks(conns: []HostConn) usize {
     return total;
 }
 
-/// The unknown-token end state. Unlike `drainedTransient` this asserts a
-/// SPECIFIC non-empty shape, because that scenario deliberately ends with the
-/// rendezvous unresolved: the corrupted token's Accept is parked forever (no
-/// Provide will ever carry that token) and the genuine Provide's question is
-/// never Finished (the recipient's promise never resolves, so it never
-/// releases the cap). Demanding zeros here would be demanding the host forget
-/// a rendezvous that is still legitimately in flight.
-///
-/// Every counter is named with its expected value, so this is strictly more
-/// specific than an all-zero check: over-parking, double-parking, serving the
-/// bad token, or leaking an embargo all fail it. Reaping of this residue at
-/// peer teardown is proven separately by the DebugAllocator leak verdict.
 /// `park-adopt`: the park must have been CONSUMED by adoption, not left
 /// outstanding.
 ///
-/// This is the one assertion that separates this scenario from
-/// `unknown-token`, which ends with its parked accept still pending. Everything
-/// else about the end state is the ordinary drained shape and is checked by
-/// `drainedTransient`.
+/// This is the assertion that separates this scenario from a park which merely
+/// remained outstanding until transport-close cleanup. Everything else about
+/// the end state is the ordinary drained shape.
 fn parkWasAdopted(vat: *Vat, conns: []HostConn, tap: *Tap) bool {
     var ok = true;
     if (vat.index.parked_accept_count != 0) {
@@ -736,76 +741,39 @@ fn parkWasAdopted(vat: *Vat, conns: []HostConn, tap: *Tap) bool {
     return ok;
 }
 
-fn pendingRendezvousShape(vat: *Vat, conns: []HostConn, tap: *Tap) bool {
-    var ok = true;
-    const Expect = struct { name: []const u8, got: usize, want: usize };
-
-    var parked_peers: usize = 0;
-    var provision_owner_peers: usize = 0;
+/// Holder-side parks and embargo queues are transport-scoped. The manual
+/// harness samples their live state before EOF, then calls
+/// `HostPeer.notifyTransportClosed()` and uses this checkpoint to prove the
+/// close path detached them. Owner provisions are intentionally excluded:
+/// they remain valid across provider transport close until Finish or peer
+/// teardown.
+fn closedHolderStateClean(vat: *Vat, conns: []HostConn, tap: *Tap, label: []const u8) bool {
+    var clean = true;
     for (conns, 0..) |*conn, i| {
         const peer = &conn.host.peer;
-        if (peer.cross_peer_pending_accepts.count() > 0) parked_peers += 1;
-        if (peer.provisions_by_question.count() > 0) provision_owner_peers += 1;
-
-        // `provides_by_key` is not legacy residue: it is the duplicate-recipient
-        // index written next to `provides_by_question` for EVERY Provide
-        // (peer_provide_join_orchestration.handleProvide), index-attached or
-        // not, and cleared with it. So the invariant is that the two agree.
-        if (peer.provides_by_key.count() != peer.provides_by_question.count()) {
-            ok = false;
-            tap.diag("unknown-token shape: peer{d}.provides_by_key = {d}, provides_by_question = {d} (must agree)", .{
-                i, peer.provides_by_key.count(), peer.provides_by_question.count(),
-            });
-        }
-
-        const per_peer = [_]Expect{
-            // The corrupted Accept is parked on exactly ONE peer; the total is
-            // checked below, so here no peer may hold MORE than one record.
-            .{ .name = "cross_peer_pending_accepts", .got = peer.cross_peer_pending_accepts.count(), .want = 1 },
-            .{ .name = "provides_by_question", .got = peer.provides_by_question.count(), .want = 1 },
-            .{ .name = "provisions_by_question", .got = peer.provisions_by_question.count(), .want = 1 },
+        const counters = [_]struct { name: []const u8, n: usize }{
+            .{ .name = "cross_peer_pending_accepts", .n = peer.cross_peer_pending_accepts.count() },
+            .{ .name = "pending_accepts_by_embargo", .n = peer.pending_accepts_by_embargo.count() },
+            .{ .name = "pending_accept_embargo_by_question", .n = peer.pending_accept_embargo_by_question.count() },
         };
-        for (per_peer) |e| {
-            if (e.got <= e.want) continue;
-            ok = false;
-            tap.diag("unknown-token shape: peer{d}.{s} = {d}, want at most {d}", .{ i, e.name, e.got, e.want });
-        }
-
-        // These stores are only written by embargoed / served handoffs, of
-        // which this scenario has none.
-        const per_peer_zero = [_]Expect{
-            .{ .name = "pending_accepts_by_embargo", .got = peer.pending_accepts_by_embargo.count(), .want = 0 },
-            .{ .name = "pending_accept_embargo_by_question", .got = peer.pending_accept_embargo_by_question.count(), .want = 0 },
-            .{ .name = "cross_peer_proxy_links", .got = peer.cross_peer_proxy_links.items.len, .want = 0 },
-            .{ .name = "outbound_provides", .got = peer.outbound_provides.count(), .want = 0 },
-            .{ .name = "pending_third_party_awaits", .got = peer.pending_third_party_awaits.count(), .want = 0 },
-        };
-        for (per_peer_zero) |e| {
-            if (e.got == e.want) continue;
-            ok = false;
-            tap.diag("unknown-token shape: peer{d}.{s} = {d}, want {d}", .{ i, e.name, e.got, e.want });
+        for (counters) |c| {
+            if (c.n == 0) continue;
+            clean = false;
+            tap.diag("residue [{s}] peer{d}.{s} = {d} after transport close", .{ label, i, c.name, c.n });
         }
     }
-
-    const totals = [_]Expect{
-        // The genuine Provide is still registered and still owned...
-        .{ .name = "peers owning a provision", .got = provision_owner_peers, .want = 1 },
-        // ...alongside the `.awaiting` provision minted for the bad token.
-        .{ .name = "index.by_key", .got = vat.index.by_key.count(), .want = 2 },
-        .{ .name = "index.provision_count", .got = vat.index.provision_count, .want = 2 },
-        .{ .name = "index.parked_accept_count", .got = vat.index.parked_accept_count, .want = 1 },
-        .{ .name = "peers holding a parked accept", .got = parked_peers, .want = 1 },
-        // Nothing was ever embargoed or served in this scenario.
-        .{ .name = "index.queued_accept_count", .got = vat.index.queued_accept_count, .want = 0 },
-        .{ .name = "index.queued_accept_bytes", .got = vat.index.queued_accept_bytes, .want = 0 },
-        .{ .name = "index.parked_accept_bytes", .got = vat.index.parked_accept_bytes, .want = 0 },
+    const counters = [_]struct { name: []const u8, n: usize }{
+        .{ .name = "parked_accept_count", .n = vat.index.parked_accept_count },
+        .{ .name = "parked_accept_bytes", .n = vat.index.parked_accept_bytes },
+        .{ .name = "queued_accept_count", .n = vat.index.queued_accept_count },
+        .{ .name = "queued_accept_bytes", .n = vat.index.queued_accept_bytes },
     };
-    for (totals) |e| {
-        if (e.got == e.want) continue;
-        ok = false;
-        tap.diag("unknown-token shape: {s} = {d}, want {d}", .{ e.name, e.got, e.want });
+    for (counters) |c| {
+        if (c.n == 0) continue;
+        clean = false;
+        tap.diag("residue [{s}] index.{s} = {d} after transport close", .{ label, c.name, c.n });
     }
-    return ok;
+    return clean;
 }
 
 /// Prove the cross-peer proxy's LIFECYCLE end, which the transient-drain check
@@ -902,29 +870,27 @@ fn boundPort(listener: *const rpc.transport.tcp.Listener, fallback: u16) u16 {
 fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
     tap.diag("scenario: {s}", .{args.scenario.name()});
 
-    // `Clock.fromIo` borrows this storage, and the vat below borrows the clock,
-    // so it has to be a named local declared FIRST — reverse-order destruction
-    // is what keeps it alive for the vat's whole life. (`io` itself is a
-    // by-value parameter; taking its address would work here too, but only by
-    // accident of it outliving the vat.)
-    var clock_io = io;
-
     // One vat; deterministic embargo-id entropy from the CLI seed.
     //
-    // The parked-accept TTL needs BOTH a limit and a vat-owned clock, and only
-    // `park-expiry` gets either: with no clock the sweep is inert, which is
-    // exactly the pre-L9 behaviour every other scenario is written against.
-    var vat = try Vat.init(allocator, .{
+    // Vat's secure default gets monotonic time from the by-value Io option.
+    // Timed scenarios override only the duration: park-expiry retains its
+    // deliberately short regression bound, while park-fairness also shrinks
+    // the per-peer quota so one C++ connection can exhaust its own share
+    // without consuming the sibling's.
+    var vat_options: Vat.Options = .{
         .seed = seedBytes(args.seed),
-        .limits = if (args.scenario == .park_expiry)
-            .{ .park_ttl_ms = park_expiry_ttl_ms }
-        else
-            .{},
-        .clock = if (args.scenario == .park_expiry)
-            rpc.time.Clock.fromIo(&clock_io)
-        else
-            null,
-    });
+        .io = io,
+    };
+    switch (args.scenario) {
+        .park_expiry => vat_options.limits.park_ttl_ms = park_expiry_ttl_ms,
+        .park_fairness => {
+            vat_options.limits.park_ttl_ms = park_fairness_ttl_ms;
+            vat_options.limits.max_parked_accepts_per_peer = 1;
+            vat_options.limits.max_parked_accept_bytes_per_peer = 64;
+        },
+        else => {},
+    }
+    var vat = try Vat.init(allocator, vat_options);
     defer vat.deinit();
 
     const bind_addr = try std.Io.net.IpAddress.parse(args.host, args.port);
@@ -1112,20 +1078,13 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
             tap.ok(probes.parked_seen, "the Accept with an unmatched completion token parked (order-independent rendezvous)");
             tap.ok(!probes.proxy_seen, "no provision was served for the corrupted token (no proxy export minted)");
             tap.ok(carol.calls >= 1, "the parked Accept did not wedge the peer: an ordinary call still reached Carol");
-            // NOT a drain assertion. This scenario ends with the rendezvous
-            // still PENDING by construction — the unmatched token's Accept can
-            // never retire (nothing will ever Provide that token) and the real
-            // Provide's question is never Finished (A never resolves, so the
-            // cap is never released). Bookkeeping for a pending rendezvous is
-            // SUPPOSED to be live here, so `drainedTransient` is the wrong
-            // question. What must hold is that the residue is EXACTLY the
-            // pending rendezvous and nothing more — one active provision, one
-            // awaiting provision, one parked accept, zero queued accepts, zero
-            // proxy links — and that it is all reaped at peer teardown, which
-            // the DebugAllocator verdict below proves.
+            // The park was sampled while the transport was live. Both sockets
+            // have since reached EOF, so the manual harness's exactly-once
+            // close notification must detach the holder-side reservation even
+            // though its unmatched token could never be adopted.
             tap.ok(
-                pendingRendezvousShape(&vat, conns[0..inited], tap),
-                "residue is exactly the still-pending rendezvous (1 active + 1 awaiting provision, 1 parked accept)",
+                closedHolderStateClean(&vat, conns[0..inited], tap, "unknown-token"),
+                "transport close detached the unmatched parked Accept and refunded its gauges",
             );
         },
         .park_expiry => {
@@ -1169,12 +1128,11 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
             // owned it, and must not disturb the introducer leg.
             tap.ok(carol.calls >= 1, "an ordinary call still reached Carol after the eviction");
 
-            // Residue is the SECOND rendezvous, in exactly the shape
-            // `unknown-token` ends in: the first parked accept is gone, so a
-            // count above one would mean the sweep evicted nothing.
+            // The second Accept parks after driving the first eviction. EOF on
+            // its transport must detach that remaining holder record.
             tap.ok(
-                pendingRendezvousShape(&vat, conns[0..inited], tap),
-                "residue is exactly one still-pending rendezvous (the evicted accept is gone)",
+                closedHolderStateClean(&vat, conns[0..inited], tap, "park-expiry"),
+                "transport close detached the remaining park after expiry",
             );
         },
         .park_adopt => {
@@ -1206,6 +1164,31 @@ fn runHost(allocator: Allocator, io: std.Io, args: CliArgs, tap: *Tap) !void {
             tap.ok(
                 drainedTransient(&vat, conns[0..inited], tap, "park-adopt"),
                 "all transient handoff state drained after the driver's Release",
+            );
+        },
+        .park_fairness => {
+            tap.ok(probes.provide_seen, "attacker and sibling registered provisions in the vat index");
+            tap.ok(probes.parked_seen, "the attacker's first unmatched Accept parked");
+            tap.ok(probes.max_peer_parked_peak == 1, "the one-entry per-peer quota prevented a second park on either peer");
+            tap.ok(probes.proxy_seen, "the sibling peer completed a legitimate cross-peer handoff");
+            tap.ok(carol.calls >= 1, "the sibling's accepted cap remained callable under attacker pressure");
+            tap.ok(
+                closedHolderStateClean(&vat, conns[0..inited], tap, "park-fairness"),
+                "expiry and transport close drained every holder-side reservation",
+            );
+
+            // Active owner provisions deliberately survive transport close.
+            // Peer teardown is their terminal cleanup path; run it here so the
+            // scenario proves the entire vat returns to zero, not merely that
+            // its per-peer quota recovered.
+            for (conns[0..inited], 0..) |*conn, i| {
+                conn.deinit(io);
+                deinited[i] = true;
+            }
+            tap.ok(
+                vat.index.by_key.count() == 0 and vat.index.provision_count == 0 and
+                    vat.index.parked_accept_count == 0 and vat.index.queued_accept_count == 0,
+                "peer teardown drained all remaining vat provision state",
             );
         },
         // The C++ driver introduced a still-unresolved PIPELINED cap that

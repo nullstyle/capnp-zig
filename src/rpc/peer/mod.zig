@@ -1507,6 +1507,11 @@ pub const Peer = struct {
     /// pending slot / parked entry; a record exists IFF its slot/entry exists;
     /// removing a record NEVER releases (invariant INV-REC).
     cross_peer_pending_accepts: std.AutoHashMap(u32, CrossPeerAcceptRecord),
+    /// Peer-local subset of vat-wide parked-Accept accounting. These gauges
+    /// enforce fair admission across sibling connections and are updated only
+    /// through `ProvisionIndex.commit/refundParkAdmission`.
+    parked_accept_count: usize = 0,
+    parked_accept_bytes: usize = 0,
     /// ORIGINATION (mirror of the inbound provide tables): vine export id ->
     /// the paired held-open Provide question this peer originated. Keyed by the
     /// vine export minted on THIS connection; the Provide question it anchors
@@ -1640,6 +1645,10 @@ pub const Peer = struct {
     callback_ctx: ?*anyopaque = null,
     on_error: ?*const fn (ctx: ?*anyopaque, peer: *Peer, err: anyerror) void = null,
     on_close: ?*const fn (ctx: ?*anyopaque, peer: *Peer) void = null,
+    /// Terminal transport-close notification is delivered at most once.
+    /// `detachTransport` deliberately does not set this bit: detaching a live
+    /// transport is non-terminal and permits rebinding.
+    transport_close_notified: bool = false,
     observer: ?events.Observer = null,
 
     // -- Time / deadlines -----------------------------------------------------
@@ -2412,6 +2421,12 @@ pub const Peer = struct {
         pending_queued_calls: usize,
         /// Bytes held by calls queued behind unresolved promises.
         pending_queued_call_bytes: usize,
+        /// Accepts parked by this connection in its vat's shared provision
+        /// index while they await a matching Provide.
+        parked_accepts: usize,
+        /// Per-Accept attributable bytes for `parked_accepts`: normalized
+        /// recipient-token bytes plus embargo bytes.
+        parked_accept_bytes: usize,
         /// Exports with persistence hooks installed.
         persistent_exports: u32,
         /// Total `Persistent.save()` calls served since peer creation.
@@ -2437,6 +2452,8 @@ pub const Peer = struct {
             .resolved_imports = self.resolved_imports.count(),
             .pending_queued_calls = queued.calls,
             .pending_queued_call_bytes = queued.bytes,
+            .parked_accepts = self.parked_accept_count,
+            .parked_accept_bytes = self.parked_accept_bytes,
             .persistent_exports = self.persistent_exports.count(),
             .saves_served = self.saves_served,
             .restores_served = self.restores_served,
@@ -3779,6 +3796,13 @@ pub const Peer = struct {
     /// without a clock returns 0 immediately.
     pub fn checkDeadlines(self: *Peer) usize {
         self.assertThreadAffinity();
+
+        // The vat-wide parked-Accept clock may be configured independently of
+        // this peer's outbound-question clock. Sweep it before the early
+        // return below, and do not include detached parks in this method's
+        // documented outbound-question cancellation count.
+        if (self.provision_index) |idx| _ = idx.sweepExpiredParkedAccepts();
+
         const now = self.clockNow() orelse return 0;
 
         var expired: std.ArrayList(u32) = .empty;
@@ -4410,7 +4434,7 @@ pub const Peer = struct {
                     build,
                     on_return,
                     Peer.allocateLoopbackQuestion,
-                    Peer.handleFrame,
+                    Peer.handleLoopbackFrame,
                 );
             },
             .none => error.CapabilityUnavailable,
@@ -5587,14 +5611,17 @@ pub const Peer = struct {
     //
     // Everything below implements the VatC hosting design (docs: FINAL-v2 as
     // amended by its adversarial verdict). The canonical drain/teardown
-    // choreography is centralized here: failPendingAccept is the ONLY place a
-    // queued/parked accept's +1 is released, closeProvisionAsOwner is the ONLY
-    // owner-close procedure, and every send-bearing walk operates on a
-    // moved-out container, never a live map.
+    // choreography is centralized here: every path detaches/refunds before
+    // releasing a queued/parked Accept's +1, owner close and peer deinit both
+    // neutralize shared state before callbacks, and every send-bearing walk
+    // operates on a moved-out or pre-neutralized container, never a live map.
 
     /// Attach this peer to a vat-wide provision index. Preconditions: not
-    /// already attached, and no pre-existing per-peer handoff state (the index
-    /// must see every provision from the first one).
+    /// already attached, and no pre-existing per-peer or new-L3 handoff state
+    /// (the index must see every provision and pending cross-peer Accept from
+    /// the first one). In particular, index-first teardown severs the borrowed
+    /// pointer but deliberately leaves active provisions/queues alive; those
+    /// records must drain before this peer can join a different index.
     /// Install the random source for accept-embargo ids (see `EntropySource`).
     pub fn setEntropySource(self: *Peer, source: EntropySource) void {
         self.assertThreadAffinity();
@@ -5606,7 +5633,9 @@ pub const Peer = struct {
         index.assertThreadAffinity();
         if (self.provision_index != null) return error.PeerAlreadyAttachedToProvisionIndex;
         if (self.provides_by_question.count() != 0 or
-            self.pending_accepts_by_embargo.count() != 0)
+            self.pending_accepts_by_embargo.count() != 0 or
+            self.provisions_by_question.count() != 0 or
+            self.cross_peer_pending_accepts.count() != 0)
         {
             return error.PeerAlreadyHasHandoffState;
         }
@@ -5792,19 +5821,16 @@ pub const Peer = struct {
         // index.
         idx.assertThreadAffinity();
 
-        // L9 parked-accept TTL, driven LAZILY from the Accept path and from
-        // NOWHERE ELSE. Deliberately not a tick: `on_tick` fires only when the
-        // transport poll TIMES OUT, and the tick interval is null unless a
-        // default call timeout is configured — so a connection that keeps
-        // itself busy suppresses its own ticks, which is exactly the attacker
-        // this bound exists to stop. Driving it here (rather than inside the
-        // two park helpers) is load-bearing in TWO ways: every park-budget
-        // check below now sees post-eviction counters, AND the eviction
+        // Accept is one of several parked-expiry drivers (every inbound frame,
+        // Provide, deadline maintenance, and the public Vat/index sweep are
+        // the others). Keeping this explicit pre-lookup sweep is load-bearing
+        // in TWO ways: every park-budget check below sees post-eviction
+        // counters, AND the eviction
         // happens strictly BEFORE `by_key.get` — a sweep that ran after the
         // lookup could unindex the very `.awaiting` provision this Accept is
         // about to park onto, orphaning a legitimate accept on a provision no
         // later `Provide` can ever adopt.
-        sweepExpiredParkedAccepts(idx);
+        _ = idx.sweepExpiredParkedAccepts();
 
         const key_opt = try peer_provide_join_orchestration.captureAcceptProvisionForPeer(
             Peer,
@@ -5819,8 +5845,14 @@ pub const Peer = struct {
             // Accept-before-Provide: PARK (the rendezvous contract is
             // order-independent; an Accept may be the first frame on a
             // brand-new connection). A fresh `.awaiting` provision holds it.
-            self.parkAcceptBeforeProvide(idx, key, accept.question_id, accept.embargo) catch |err|
+            self.parkAcceptBeforeProvide(idx, key, accept.question_id, accept.embargo) catch |err| {
+                // A host Clock callback may inject another Accept. That nested
+                // park must unwind without emitting a Return from inside the
+                // clock; the outer sampling operation remains the sole owner
+                // of this inbound answer.
+                if (err == error.ParkClockReentrant) return err;
                 try self.convertParkErrorToReturn(accept.question_id, err);
+            };
             return;
         };
 
@@ -5829,8 +5861,10 @@ pub const Peer = struct {
             // park alongside them.
             prov.retain();
             defer prov.release();
-            self.parkAcceptOntoAwaiting(idx, prov, accept.question_id, accept.embargo) catch |err|
+            self.parkAcceptOntoAwaiting(idx, prov, accept.question_id, accept.embargo) catch |err| {
+                if (err == error.ParkClockReentrant) return err;
                 try self.convertParkErrorToReturn(accept.question_id, err);
+            };
             return;
         }
 
@@ -5975,7 +6009,9 @@ pub const Peer = struct {
     fn convertParkErrorToReturn(self: *Peer, answer_id: u32, err: anyerror) !void {
         switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.ParkBudgetExceeded => try self.sendReturnException(answer_id, "provision park budget exhausted"),
+            error.ParkBudgetExceeded,
+            error.PeerParkBudgetExceeded,
+            => try self.sendReturnException(answer_id, "provision park budget exhausted"),
             error.DuplicateAcceptQuestionId => try self.sendReturnException(answer_id, "duplicate accept question id"),
             else => try self.sendReturnException(answer_id, @errorName(err)),
         }
@@ -5984,8 +6020,24 @@ pub const Peer = struct {
     /// Park an early Accept onto a freshly-created `.awaiting` provision.
     /// Ladder discipline: all fallible work first, one infallible tail.
     fn parkAcceptBeforeProvide(self: *Peer, idx: *ProvisionIndex, key: []const u8, answer_id: u32, embargo: ?[]const u8) !void {
+        // Clock.now is arbitrary host code. Sample before duplicate/admission
+        // checks and, critically, before a ref_count=0 provision is exposed in
+        // by_key. After it returns there are no callback seams in this ladder.
+        const deadline_ns = try parkDeadlineNs(idx);
+        if (self.transport_close_notified) return error.ProvisionClosed;
+        const attached_idx = self.provision_index orelse return error.ProvisionClosed;
+        if (attached_idx != idx) return error.ProvisionClosed;
+        // A reentrant callback may have registered this token. Never replace
+        // that live entry with the fresh provision this miss path was about to
+        // construct; the outer Accept fails cleanly and may be retried.
+        if (idx.by_key.contains(key)) return error.ProvisionClosed;
+        if (self.cross_peer_pending_accepts.contains(answer_id)) return error.DuplicateAcceptQuestionId;
+        const embargo_len: usize = if (embargo) |e| e.len else 0;
+        const charge = try self.checkParkAdmissionWithEvents(idx, key.len, embargo_len);
         if (idx.provision_count >= idx.limits.max_provisions) return error.ParkBudgetExceeded;
-        if (idx.provision_key_bytes + key.len > idx.limits.max_provision_key_bytes) return error.ParkBudgetExceeded;
+        const provision_key_bytes = std.math.add(usize, idx.provision_key_bytes, key.len) catch
+            return error.ParkBudgetExceeded;
+        if (provision_key_bytes > idx.limits.max_provision_key_bytes) return error.ParkBudgetExceeded;
 
         const prov = try idx.allocator.create(ProvisionIndex.Provision);
         errdefer idx.allocator.destroy(prov);
@@ -5995,6 +6047,10 @@ pub const Peer = struct {
             .embargoes = std.StringHashMap(ProvisionIndex.ProvisionEmbargo).init(idx.allocator),
         };
         errdefer prov.embargoes.deinit();
+        // Parking may reserve the list before the holder map's final fallible
+        // insertion. A brand-new provision is destroyed on that failure, so
+        // its separately allocated list capacity must unwind with it.
+        errdefer prov.parked.deinit(idx.allocator);
         prov.recipient_key = try idx.allocator.dupe(u8, key);
         errdefer idx.allocator.free(prov.recipient_key);
         try idx.by_key.put(prov.recipient_key, prov);
@@ -6005,11 +6061,12 @@ pub const Peer = struct {
         // refcount is still zero, so no release choreography is needed).
         prov.indexed = true;
         errdefer prov.indexed = false;
-        try self.parkAcceptOntoAwaiting(idx, prov, answer_id, embargo);
+        try self.parkAcceptOntoAwaitingCharged(idx, prov, answer_id, embargo, charge, deadline_ns);
         // INFALLIBLE TAIL for the provision itself.
         prov.retain(); // the index's +1
         idx.provision_count += 1;
         idx.provision_key_bytes += prov.recipient_key.len;
+        self.emitParkAdmissionPressure(idx, charge);
     }
 
     /// True when this parked entry's TTL has run out. An unstamped entry (the
@@ -6020,28 +6077,55 @@ pub const Peer = struct {
     }
 
     /// L9: evict every parked accept whose TTL has run out. Inert unless the
-    /// index has BOTH `limits.park_ttl_ms` and an index-owned `clock` — with
-    /// either missing this is a no-op and parking behaves exactly as it did
-    /// before the TTL existed.
+    /// index has both `limits.park_ttl_ms` and an index-owned time source (a
+    /// custom Clock or value-stored Io fallback); without either, parking
+    /// behaves exactly as it did before the TTL existed.
     ///
-    /// Restricted to `.awaiting` provisions: the index's design contract is
-    /// that Release/Finish/teardown never consult it, so index-first death
-    /// cannot wedge a matched handoff. An `.active` provision's parked list
-    /// belongs to adoption, not to this sweep.
+    /// Restricted to `.awaiting` provisions. An `.active` provision's parked
+    /// list belongs to adoption, not to this sweep; its independent refs keep
+    /// a matched handoff live across index-first teardown.
     ///
     /// OOM POLICY (deliberate; the codebase has three): BEST-EFFORT, like
     /// `failPendingAccept(.best_effort)` and unlike `convertParkErrorToReturn`.
     /// This is background reclamation running underneath an unrelated inbound
     /// Accept, so it must never convert that Accept into a terminal error. An
-    /// OOM in either collection pass abandons the round — the next park
-    /// attempt retries it, and the budget check that follows still fails
-    /// closed — and an exception `Return` that cannot be built is logged and
-    /// dropped rather than re-raised.
-    fn sweepExpiredParkedAccepts(idx: *ProvisionIndex) void {
-        if (idx.limits.park_ttl_ms == null) return;
-        const clock = idx.clock orelse return;
-        if (idx.parked_accept_count == 0) return;
-        const now = clock.now();
+    /// OOM in either collection pass abandons the round — the next inbound,
+    /// deadline, or explicit-sweep trigger retries it, and subsequent budget
+    /// checks still fail closed — and an exception `Return` that cannot be
+    /// built is logged and dropped rather than re-raised.
+    pub fn sweepExpiredParkedAcceptsForProvisionIndex(idx: *ProvisionIndex) usize {
+        idx.assertThreadAffinity();
+        if (idx.limits.park_ttl_ms == null) return 0;
+        if (idx.parked_accept_count == 0) return 0;
+        if (idx.park_sweep_in_progress or idx.park_clock_sample_in_progress) return 0;
+        const next_deadline = idx.next_park_deadline_ns orelse return 0;
+
+        // Guard BEFORE sampling the host-supplied clock: a custom Clock.now
+        // callback may re-enter the public sweep. The common not-due path is
+        // still O(1) and does not rebuild the deadline cache.
+        idx.park_sweep_in_progress = true;
+        idx.park_clock_sample_in_progress = true;
+        const now_opt = idx.clockNow();
+        // Clock.now may deinitialize and reconstruct the Index at this exact
+        // address. Reconstruction clears both guards; in that case this stack
+        // frame belongs to the old generation and must not read, sweep, or
+        // clear any state in the replacement.
+        if (!idx.park_sweep_in_progress or !idx.park_clock_sample_in_progress) return 0;
+        const now = now_opt orelse {
+            idx.park_clock_sample_in_progress = false;
+            idx.park_sweep_in_progress = false;
+            return 0;
+        };
+        idx.park_clock_sample_in_progress = false;
+        if (now < next_deadline) {
+            idx.park_sweep_in_progress = false;
+            return 0;
+        }
+        defer {
+            idx.park_sweep_in_progress = false;
+            idx.refreshNextParkDeadline();
+        }
+        var detached: usize = 0;
 
         // PHASE 1 — collect. No sends here, so nothing re-enters dispatch and
         // the `by_key` iterator stays valid. Each candidate is RETAINED for
@@ -6064,25 +6148,30 @@ pub const Peer = struct {
                 }
             }
             if (!any_expired) continue;
-            expired_provs.append(idx.allocator, prov) catch return; // OOM: skip this round
+            expired_provs.append(idx.allocator, prov) catch return detached; // OOM: retry later
             prov.retain();
         }
 
         // PHASE 2 — act. Sends re-enter dispatch (a nested Finish can mutate
         // `prov.parked`, and a nested path can unindex a provision), so this
         // walks the collected list, never the live map.
-        for (expired_provs.items) |prov| sweepExpiredParkedAcceptsOn(idx, prov, now);
+        for (expired_provs.items) |prov| detached += sweepExpiredParkedAcceptsOn(idx, prov, now);
+        return detached;
     }
 
     /// Evict one provision's expired parked accepts. The caller holds a ref on
     /// `prov` for the whole call.
-    fn sweepExpiredParkedAcceptsOn(idx: *ProvisionIndex, prov: *ProvisionIndex.Provision, now: i64) void {
+    fn sweepExpiredParkedAcceptsOn(idx: *ProvisionIndex, prov: *ProvisionIndex.Provision, now: i64) usize {
         // A nested frame during an earlier provision's sends may have adopted
         // (or closed) this one since phase 1.
-        if (prov.state != .awaiting) return;
+        if (prov.state != .awaiting) return 0;
 
         // Move the expired entries OUT of the live list BEFORE any send.
-        var expired: std.ArrayList(ProvisionIndex.ParkedAccept) = .empty;
+        const ExpiredParkedAccept = struct {
+            parked: ProvisionIndex.ParkedAccept,
+            observer: ?events.Observer,
+        };
+        var expired: std.ArrayList(ExpiredParkedAccept) = .empty;
         defer expired.deinit(idx.allocator);
         var i: usize = prov.parked.items.len;
         while (i > 0) {
@@ -6090,35 +6179,41 @@ pub const Peer = struct {
             if (!isParkExpired(prov.parked.items[i], now)) continue;
             // Append (fallible) BEFORE the removal (infallible), so an OOM
             // leaves the entry parked and intact rather than orphaned.
-            expired.append(idx.allocator, prov.parked.items[i]) catch break;
+            const parked = prov.parked.items[i];
+            expired.append(idx.allocator, .{
+                .parked = parked,
+                .observer = parked.accept_peer.observer,
+            }) catch break;
             _ = prov.parked.orderedRemove(i);
         }
 
-        for (expired.items) |parked| {
-            // (b) the length is read BEFORE anything is freed — `failPendingAccept`
-            //     frees the accept peer's key dupe out from under us.
-            const embargo_len: usize = if (parked.embargo) |b| b.len else 0;
-            // (c) the parked dupe is INDEX-allocator owned (the accept peer's
-            //     own dupe is NOT — two allocators per entry).
+        // SEND-FREE NEUTRALIZATION for the entire moved batch. A first expiry
+        // Return may close its holder synchronously; that callback must see no
+        // later moved park charges or holder records that the close walk can
+        // no longer reach.
+        for (expired.items) |*item| {
+            const parked = &item.parked;
             if (parked.embargo) |b| idx.allocator.free(b);
-            // (d) `failPendingAccept` adjusts only the QUEUED counters, and
-            //     only for non-parked records: the PARKED budget is ours to
-            //     give back. Without this every eviction would ratchet
-            //     `parked_accept_count`/`_bytes` upward forever and
-            //     permanently shrink the very bound this TTL protects.
-            idx.parked_accept_count -= 1;
-            idx.parked_accept_bytes -= embargo_len;
-            // (e)(f)(g) canonical ordering, shared with every other fail path:
-            //     the holder record removed and its key freed with the ACCEPT
-            //     PEER's allocator BEFORE the exception Return, then exactly
-            //     one ref released via `defer` so it drops once even if the
-            //     send fails.
+            parked.embargo = null;
+            idx.refundParkAdmission(parked.accept_peer, parked.*);
+            detachPendingAcceptRecord(.{
+                .accept_peer = parked.accept_peer,
+                .answer_id = parked.answer_id,
+            });
+        }
+
+        // SEND/EVENT PHASE. Observers were captured during collection, before
+        // any callback could mutate peer lifecycle. Each moved entry still
+        // owns exactly its parked +1 until failPendingAccept returns.
+        for (expired.items) |item| {
+            const parked = item.parked;
             failPendingAccept(
                 .{ .accept_peer = parked.accept_peer, .answer_id = parked.answer_id },
                 prov,
                 "parked accept expired",
                 .best_effort,
             ) catch {};
+            events.emitParkedAcceptTimeout(item.observer, parked.answer_id);
         }
 
         // Nothing can ever adopt an `.awaiting` provision with no parked
@@ -6127,36 +6222,106 @@ pub const Peer = struct {
         // THE CALLER STILL HOLDS A REF: `by_key`'s key BORROWS
         // `prov.recipient_key`, and `Provision.release` asserts `!indexed` at
         // ref zero, so unindex must strictly precede the last release.
-        if (prov.state != .awaiting) return;
-        if (prov.parked.items.len != 0) return;
-        if (!prov.indexed) return;
+        if (prov.state != .awaiting) return expired.items.len;
+        if (prov.parked.items.len != 0) return expired.items.len;
+        if (!prov.indexed) return expired.items.len;
         _ = idx.by_key.remove(prov.recipient_key);
         idx.provision_count -= 1;
         idx.provision_key_bytes -= prov.recipient_key.len;
         prov.indexed = false;
         prov.release(); // the index's +1
+        return expired.items.len;
     }
 
     /// Absolute expiry stamp for a parked accept, read from the INDEX-owned
     /// clock — never from a peer's, so the connection whose accepts are being
     /// timed out cannot steer its own deadline. Null (TTL off, or no index
     /// clock) marks an entry that never expires: the pre-TTL behaviour.
-    fn parkDeadlineNs(idx: *ProvisionIndex) ?i64 {
+    fn parkDeadlineNs(idx: *ProvisionIndex) !?i64 {
         const ttl_ms = idx.limits.park_ttl_ms orelse return null;
-        const clock = idx.clock orelse return null;
+        if (idx.park_clock_sample_in_progress) return error.ParkClockReentrant;
+        idx.park_clock_sample_in_progress = true;
+        const now_opt = idx.clockNow();
+        // A same-address Index replacement resets this ownership bit. Do not
+        // let an old-generation deadline (or the deferred guard clear) escape
+        // into the replacement generation.
+        if (!idx.park_clock_sample_in_progress) return error.ProvisionClosed;
+        idx.park_clock_sample_in_progress = false;
+        const now = now_opt orelse return null;
         // Saturating throughout: an absurd configured TTL must clamp to "never
         // expires", not panic on the integer cast.
         const ttl_ms_i: i64 = std.math.cast(i64, ttl_ms) orelse std.math.maxInt(i64);
-        return clock.now() +| (ttl_ms_i *| std.time.ns_per_ms);
+        return now +| (ttl_ms_i *| std.time.ns_per_ms);
     }
 
     /// Park an early Accept onto an existing `.awaiting` provision.
     fn parkAcceptOntoAwaiting(self: *Peer, idx: *ProvisionIndex, prov: *ProvisionIndex.Provision, answer_id: u32, embargo: ?[]const u8) !void {
-        std.debug.assert(prov.state == .awaiting);
+        // Sample before every state/duplicate/admission check. The caller's
+        // transient provision ref keeps `prov` alive if the callback adopts,
+        // expires, or tears down the index; the checks below then fail closed.
+        const deadline_ns = try parkDeadlineNs(idx);
+        if (prov.state != .awaiting or self.transport_close_notified) return error.ProvisionClosed;
+        const attached_idx = self.provision_index orelse return error.ProvisionClosed;
+        if (attached_idx != idx) return error.ProvisionClosed;
+        // Pointer identity alone is insufficient: Clock.now can deinit and
+        // reinitialize the same Index storage, then reattach this peer. The
+        // retained old provision must still be the indexed value in the new
+        // generation or parking here would create an unreachable orphan.
+        if (!prov.indexed) return error.ProvisionClosed;
+        const indexed_prov = idx.by_key.get(prov.recipient_key) orelse return error.ProvisionClosed;
+        if (indexed_prov != prov) return error.ProvisionClosed;
         if (self.cross_peer_pending_accepts.contains(answer_id)) return error.DuplicateAcceptQuestionId;
-        if (idx.parked_accept_count >= idx.limits.max_parked_accepts) return error.ParkBudgetExceeded;
         const embargo_len: usize = if (embargo) |e| e.len else 0;
-        if (idx.parked_accept_bytes + embargo_len > idx.limits.max_parked_accept_bytes) return error.ParkBudgetExceeded;
+        const charge = try self.checkParkAdmissionWithEvents(idx, prov.recipient_key.len, embargo_len);
+        try self.parkAcceptOntoAwaitingCharged(idx, prov, answer_id, embargo, charge, deadline_ns);
+        self.emitParkAdmissionPressure(idx, charge);
+    }
+
+    /// Admission diagnostics run before any new awaiting provision is exposed
+    /// in the index. This keeps synchronous observer re-entry from seeing a
+    /// half-constructed rendezvous.
+    fn checkParkAdmissionWithEvents(
+        self: *Peer,
+        idx: *ProvisionIndex,
+        recipient_bytes: usize,
+        embargo_bytes: usize,
+    ) !ProvisionIndex.ParkCharge {
+        return idx.checkParkAdmission(self, recipient_bytes, embargo_bytes) catch |err| {
+            const attributed = std.math.add(usize, recipient_bytes, embargo_bytes) catch std.math.maxInt(usize);
+            const peer_failure = err == error.PeerParkBudgetExceeded;
+            const count_current = if (peer_failure) self.parked_accept_count else idx.parked_accept_count;
+            const bytes_current = if (peer_failure) self.parked_accept_bytes else idx.parked_accept_bytes;
+            const count_limit = if (peer_failure) idx.limits.max_parked_accepts_per_peer else idx.limits.max_parked_accepts;
+            const bytes_limit = if (peer_failure) idx.limits.max_parked_accept_bytes_per_peer else idx.limits.max_parked_accept_bytes;
+            const count_attempted = std.math.add(usize, count_current, 1) catch std.math.maxInt(usize);
+            const byte_attempted = std.math.add(usize, bytes_current, attributed) catch std.math.maxInt(usize);
+            const count_exhausted = count_attempted > count_limit;
+            events.emitResourceRejection(
+                self.observer,
+                .peer,
+                .unknown,
+                if (count_exhausted) .parked_accepts else .parked_accept_bytes,
+                if (count_exhausted) count_attempted else byte_attempted,
+                if (count_exhausted) count_limit else bytes_limit,
+                err,
+            );
+            return err;
+        };
+    }
+
+    /// Allocate and publish one parked entry after admission has been checked.
+    /// No observer callbacks run until the caller has completed any enclosing
+    /// provision-index ownership tail.
+    fn parkAcceptOntoAwaitingCharged(
+        self: *Peer,
+        idx: *ProvisionIndex,
+        prov: *ProvisionIndex.Provision,
+        answer_id: u32,
+        embargo: ?[]const u8,
+        charge: ProvisionIndex.ParkCharge,
+        deadline_ns: ?i64,
+    ) !void {
+        std.debug.assert(prov.state == .awaiting);
 
         const parked_embargo: ?[]u8 = if (embargo) |e| try idx.allocator.dupe(u8, e) else null;
         errdefer if (parked_embargo) |b| idx.allocator.free(b);
@@ -6170,24 +6335,67 @@ pub const Peer = struct {
         });
 
         // INFALLIBLE TAIL.
-        prov.parked.appendAssumeCapacity(.{
+        const parked: ProvisionIndex.ParkedAccept = .{
             .accept_peer = self,
             .answer_id = answer_id,
             .embargo = parked_embargo,
-            .deadline_ns = parkDeadlineNs(idx),
-        });
+            .attributed_bytes = charge.attributed_bytes,
+            .embargo_bytes = charge.embargo_bytes,
+            .deadline_ns = deadline_ns,
+        };
+        prov.parked.appendAssumeCapacity(parked);
         prov.retain(); // the parked entry's +1
-        idx.parked_accept_count += 1;
-        idx.parked_accept_bytes += embargo_len;
+        idx.commitParkAdmission(self, charge);
+        idx.noteParkDeadline(deadline_ns);
     }
 
-    /// PHASE B of adoption: a Provide just activated an `.awaiting` provision;
-    /// drain its parked accepts. Every entry ends TERMINALLY handled (served /
-    /// queued / failed) before any error propagates; only a terminal OOM —
-    /// one where even the exception Return could not be built — re-raises,
-    /// after the walk.
-    fn drainAdoptedParkedAccepts(self: *Peer, prov: *ProvisionIndex.Provision) !void {
+    fn emitParkAdmissionPressure(self: *Peer, idx: *ProvisionIndex, charge: ProvisionIndex.ParkCharge) void {
+        const count_after = self.parked_accept_count;
+        const bytes_after = self.parked_accept_bytes;
+        std.debug.assert(count_after > 0);
+        std.debug.assert(bytes_after >= charge.attributed_bytes);
+        const count_before = count_after - 1;
+        const bytes_before = bytes_after - charge.attributed_bytes;
+        const park_observer = self.observer;
+        events.emitPressureCrossing(
+            park_observer,
+            .peer,
+            .unknown,
+            .parked_accepts,
+            count_before,
+            count_after,
+            idx.limits.max_parked_accepts_per_peer,
+        );
+        events.emitPressureCrossing(
+            park_observer,
+            .peer,
+            .unknown,
+            .parked_accept_bytes,
+            bytes_before,
+            bytes_after,
+            idx.limits.max_parked_accept_bytes_per_peer,
+        );
+    }
+
+    /// PHASE B of adoption: a Provide just activated an `.awaiting` provision.
+    /// Transition the WHOLE moved parked batch without sends first, then emit
+    /// terminal Returns. This ordering is load-bearing: the first Return may
+    /// synchronously deliver Finish, Disembargo, or holder transport-close.
+    /// Before that callback can run, every later entry must already be either
+    /// visible in its live embargo slot or fully detached as a terminal action.
+    /// The moved parked buffer doubles as the action buffer after its admission
+    /// fields have been refunded, avoiding a new allocation/OOM seam.
+    fn drainAdoptedParkedAccepts(self: *Peer, idx: *ProvisionIndex, prov: *ProvisionIndex.Provision) !void {
         _ = self;
+        const Disposition = enum(u8) {
+            queued,
+            serve,
+            fail_closed,
+            fail_budget,
+            fail_oom,
+            fail_duplicate,
+        };
+
         prov.retain();
         defer prov.release();
         var owned = prov.parked;
@@ -6195,78 +6403,165 @@ pub const Peer = struct {
         defer owned.deinit(prov.allocator);
         var terminal_oom = false;
 
-        for (owned.items) |parked| {
+        // SEND-FREE PREPARATION. `embargo_bytes` was consumed by the refund and
+        // is repurposed as a compact disposition tag for the later send pass.
+        for (owned.items) |*parked| {
             const accept_peer = parked.accept_peer;
+            idx.refundParkAdmission(accept_peer, parked.*);
+
+            if (prov.state != .active or prov.owner == null) {
+                prepareAdoptedParkedTerminal(prov, parked);
+                parked.embargo_bytes = @backingInt(Disposition.fail_closed);
+                continue;
+            }
             if (parked.embargo) |embargo_bytes| {
+                // A Disembargo that beat Provide left the normal pre-Accept
+                // tombstone. Consume it before queue admission: this entry
+                // needs no slot/gauge and belongs in the later serve pass.
+                if (prov.embargoes.get(embargo_bytes)) |existing| {
+                    if (!existing.used_by_accept and existing.disembargoed) {
+                        eraseProvisionEmbargoEntry(prov, embargo_bytes);
+                        prepareAdoptedParkedTerminal(prov, parked);
+                        parked.embargo_bytes = @backingInt(Disposition.serve);
+                        continue;
+                    }
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_duplicate);
+                    continue;
+                }
+
+                // Admission must match the normal active-provision queue path.
+                // Adoption transfers a PARKED charge into a QUEUED charge; it
+                // must not bypass either aggregate ceiling or wrap its byte
+                // arithmetic merely because all allocations happened earlier.
+                const provision_bytes_after = std.math.add(
+                    usize,
+                    prov.embargo_key_bytes,
+                    embargo_bytes.len,
+                ) catch {
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_budget);
+                    continue;
+                };
+                if (prov.embargoes.count() >= idx.limits.max_embargoes_per_provision or
+                    provision_bytes_after > idx.limits.max_embargo_key_bytes_per_provision)
+                {
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_budget);
+                    continue;
+                }
+                const queued_count_after = std.math.add(usize, idx.queued_accept_count, 1) catch {
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_budget);
+                    continue;
+                };
+                const queued_bytes_after = std.math.add(
+                    usize,
+                    idx.queued_accept_bytes,
+                    embargo_bytes.len,
+                ) catch {
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_budget);
+                    continue;
+                };
+                if (queued_count_after > idx.limits.max_queued_accepts or
+                    queued_bytes_after > idx.limits.max_queued_accept_bytes)
+                {
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_budget);
+                    continue;
+                }
+
+                // The parked half and holder record are published together.
+                // Treat a missing holder record as terminal corruption rather
+                // than assuming it cannot happen in a security boundary.
+                const accept_record = accept_peer.cross_peer_pending_accepts.getPtr(parked.answer_id) orelse {
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_closed);
+                    continue;
+                };
+
                 // OWNERSHIP TRANSFER into the embargo map: the parked dupe
                 // becomes the map key (both index-allocator-owned), the
                 // parked +1 becomes the pending slot's +1, and the R-side
                 // record is mutated in place — nothing re-allocated.
                 const gop = prov.embargoes.getOrPut(embargo_bytes) catch {
-                    failAdoptedParkedEntry(prov, parked, &terminal_oom);
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_oom);
                     continue;
                 };
                 if (gop.found_existing) {
-                    // A second parked accept reused live embargo bytes.
-                    prov.allocator.free(embargo_bytes);
-                    if (accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
-                        if (kv.value.embargo_key) |k| accept_peer.allocator.free(k);
-                    }
-                    accept_peer.sendReturnException(parked.answer_id, "duplicate embargo id") catch |err| {
-                        if (err == error.OutOfMemory) terminal_oom = true;
-                    };
-                    prov.release();
+                    prepareAdoptedParkedTerminal(prov, parked);
+                    parked.embargo_bytes = @backingInt(Disposition.fail_duplicate);
                 } else {
                     gop.key_ptr.* = embargo_bytes;
                     gop.value_ptr.* = .{
                         .used_by_accept = true,
                         .pending = .{ .accept_peer = accept_peer, .answer_id = parked.answer_id },
                     };
-                    prov.embargo_key_bytes += embargo_bytes.len;
-                    if (accept_peer.cross_peer_pending_accepts.getPtr(parked.answer_id)) |rec| {
-                        rec.parked = false;
-                    }
-                    if (accept_peer.provision_index) |idx| {
-                        idx.parked_accept_count -= 1;
-                        idx.parked_accept_bytes -= embargo_bytes.len;
-                        idx.queued_accept_count += 1;
-                        idx.queued_accept_bytes += embargo_bytes.len;
-                    }
+                    prov.embargo_key_bytes = provision_bytes_after;
+                    parked.embargo = null; // map key inherited the index-owned dupe
+                    accept_record.parked = false;
+                    idx.queued_accept_count = queued_count_after;
+                    idx.queued_accept_bytes = queued_bytes_after;
+                    parked.embargo_bytes = @backingInt(Disposition.queued);
                     // The parked +1 became the slot's +1: no release.
                 }
             } else {
-                if (accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
-                    if (kv.value.embargo_key) |k| accept_peer.allocator.free(k);
-                }
-                if (accept_peer.provision_index) |idx| {
-                    idx.parked_accept_count -= 1;
-                }
-                serveProvisionOnPeer(accept_peer, prov, parked.answer_id) catch |serve_err| {
-                    accept_peer.sendReturnException(parked.answer_id, @errorName(serve_err)) catch |err| {
-                        if (err == error.OutOfMemory) terminal_oom = true;
-                    };
-                };
-                prov.release(); // the parked entry's +1
+                prepareAdoptedParkedTerminal(prov, parked);
+                parked.embargo_bytes = @backingInt(Disposition.serve);
             }
         }
+        idx.refreshNextParkDeadline();
         std.debug.assert(prov.parked.items.len == 0);
+
+        // SEND-BEARING TERMINAL PASS. Reentrant lifecycle work now sees every
+        // queued tail entry in the live maps and every non-queued one already
+        // absent, so it cannot miss a moved-out park or double-transfer a ref.
+        for (owned.items) |parked| {
+            const disposition: Disposition = @fromBackingInt(@intCast(@as(u8, @intCast(parked.embargo_bytes))));
+            switch (disposition) {
+                .queued => {},
+                .serve => {
+                    serveProvisionOnPeer(parked.accept_peer, prov, parked.answer_id) catch |serve_err| {
+                        parked.accept_peer.sendReturnException(parked.answer_id, @errorName(serve_err)) catch |err| {
+                            if (err == error.OutOfMemory) terminal_oom = true;
+                        };
+                    };
+                    prov.release(); // the parked entry's +1
+                },
+                .fail_closed, .fail_budget, .fail_oom, .fail_duplicate => {
+                    const reason: []const u8 = switch (disposition) {
+                        .fail_closed => "provision finished before disembargo",
+                        .fail_budget => "provision queued-accept budget exhausted",
+                        .fail_oom => "OutOfMemory",
+                        .fail_duplicate => "duplicate embargo id",
+                        .queued, .serve => "provision adoption failed",
+                    };
+                    parked.accept_peer.sendReturnException(parked.answer_id, reason) catch |err| {
+                        if (err == error.OutOfMemory) terminal_oom = true;
+                    };
+                    prov.release(); // the parked entry's +1
+                },
+            }
+        }
         if (terminal_oom) return error.OutOfMemory;
     }
 
-    /// Terminal failure of one adopted parked entry (OOM in its queueing).
-    fn failAdoptedParkedEntry(prov: *ProvisionIndex.Provision, parked: ProvisionIndex.ParkedAccept, terminal_oom: *bool) void {
-        if (parked.embargo) |b| prov.allocator.free(b);
+    /// Send-free half of a terminal adopted action. The caller already
+    /// refunded its park charge. Free both embargo dupes and remove the holder
+    /// record, but retain the parked +1 until the later send pass completes.
+    fn prepareAdoptedParkedTerminal(
+        prov: *ProvisionIndex.Provision,
+        parked: *ProvisionIndex.ParkedAccept,
+    ) void {
+        if (parked.embargo) |b| {
+            prov.allocator.free(b);
+            parked.embargo = null;
+        }
         if (parked.accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
             if (kv.value.embargo_key) |k| parked.accept_peer.allocator.free(k);
         }
-        if (parked.accept_peer.provision_index) |idx| {
-            idx.parked_accept_count -= 1;
-            if (parked.embargo) |b| idx.parked_accept_bytes -= b.len;
-        }
-        parked.accept_peer.sendReturnException(parked.answer_id, "OutOfMemory") catch |err| {
-            if (err == error.OutOfMemory) terminal_oom.* = true;
-        };
-        prov.release();
     }
 
     /// Release (or pre-mark) one embargo on a provision — the host arm of a
@@ -6339,8 +6634,7 @@ pub const Peer = struct {
                     const parked = prov.parked.items[i];
                     if (parked.accept_peer == peer and parked.answer_id == question_id) {
                         if (peer.provision_index) |idx| {
-                            idx.parked_accept_count -= 1;
-                            if (parked.embargo) |bytes| idx.parked_accept_bytes -= bytes.len;
+                            idx.refundParkAdmission(peer, parked);
                         }
                         if (parked.embargo) |bytes| prov.allocator.free(bytes);
                         _ = prov.parked.swapRemove(i);
@@ -6371,6 +6665,7 @@ pub const Peer = struct {
                 // unreachable garbage: unindex it while alive so it dies with
                 // the release below instead of squatting on the budget.
                 maybeUnindexEmptyAwaiting(peer, prov);
+                if (peer.provision_index) |idx| idx.refreshNextParkDeadline();
                 prov.release(); // the slot's/parked entry's +1
             }
         }
@@ -6534,6 +6829,12 @@ pub const Peer = struct {
         };
     }
 
+    fn detachPendingAcceptRecord(pending: ProvisionIndex.PendingAccept) void {
+        if (pending.accept_peer.cross_peer_pending_accepts.fetchRemove(pending.answer_id)) |kv| {
+            if (kv.value.embargo_key) |k| pending.accept_peer.allocator.free(k);
+        }
+    }
+
     /// THE one shared fail helper for a queued/parked accept. Input: a pending
     /// ALREADY detached from its slot/list by the caller. Order is law: holder
     /// record removed (and the accept peer's key dupe freed) BEFORE the send;
@@ -6547,21 +6848,7 @@ pub const Peer = struct {
         reason: []const u8,
         comptime posture: DrainPosture,
     ) DrainError(posture)!void {
-        if (pending.accept_peer.cross_peer_pending_accepts.fetchRemove(pending.answer_id)) |kv| {
-            if (kv.value.embargo_key) |k| {
-                if (!kv.value.parked) {
-                    // Queued (non-parked) accepts carry the vat-wide budget;
-                    // adjust it where the record dies. Reachability is via the
-                    // accept peer's own index pointer — absent after index
-                    // death, an accepted (documented) counter skew.
-                    if (pending.accept_peer.provision_index) |idx| {
-                        idx.queued_accept_count -= 1;
-                        idx.queued_accept_bytes -= k.len;
-                    }
-                }
-                pending.accept_peer.allocator.free(k);
-            }
-        }
+        detachPendingAcceptRecord(pending);
         defer prov.release();
         pending.accept_peer.sendReturnException(pending.answer_id, reason) catch |err| {
             if (posture == .fallible and err == error.OutOfMemory) return error.OutOfMemory;
@@ -6569,36 +6856,73 @@ pub const Peer = struct {
         };
     }
 
+    /// Callback-free close preparation. Refund each gauge only while its
+    /// holder still names this exact live index, detach all holder records,
+    /// and free parked embargo dupes. Slot/list entries retain their +1 refs
+    /// for the later send-bearing drain. Idempotence is explicit because an
+    /// import-unpin or question-cancel callback may re-enter teardown.
+    fn neutralizeProvisionEntries(idx: ?*ProvisionIndex, prov: *ProvisionIndex.Provision) void {
+        if (prov.entries_neutralized) return;
+
+        var embargo_it = prov.embargoes.iterator();
+        while (embargo_it.next()) |entry| {
+            const pending = entry.value_ptr.pending orelse continue;
+            if (idx) |index| {
+                if (pending.accept_peer.provision_index == index) {
+                    std.debug.assert(index.queued_accept_count > 0);
+                    std.debug.assert(index.queued_accept_bytes >= entry.key_ptr.*.len);
+                    index.queued_accept_count -= 1;
+                    index.queued_accept_bytes -= entry.key_ptr.*.len;
+                }
+            }
+            detachPendingAcceptRecord(pending);
+        }
+        for (prov.parked.items) |*parked| {
+            if (idx) |index| {
+                if (parked.accept_peer.provision_index == index) {
+                    index.refundParkAdmission(parked.accept_peer, parked.*);
+                }
+            }
+            if (parked.embargo) |bytes| prov.allocator.free(bytes);
+            parked.embargo = null;
+            detachPendingAcceptRecord(.{
+                .accept_peer = parked.accept_peer,
+                .answer_id = parked.answer_id,
+            });
+        }
+        if (idx) |index| index.refreshNextParkDeadline();
+        prov.entries_neutralized = true;
+    }
+
     /// Drain a provision's embargo slots and parked accepts through
     /// failPendingAccept, over MOVED-OUT containers (nested frames see the
     /// fresh empty containers, and `.closed`-state guards forbid new
-    /// insertions). Under `.fallible`, an OOM mid-walk moves the residue back
-    /// so the owner-deinit drain can later complete it best-effort.
+    /// insertions). All index/holder state is neutralized before the first
+    /// send, so this phase never dereferences `idx` after callback reentry.
+    /// Under `.fallible`, send OOM is remembered while the entire moved set is
+    /// still retired.
     fn drainProvisionEntries(
+        idx: ?*ProvisionIndex,
         prov: *ProvisionIndex.Provision,
         reason: []const u8,
         comptime posture: DrainPosture,
     ) DrainError(posture)!void {
+        neutralizeProvisionEntries(idx, prov);
         var owned_embargoes = prov.embargoes;
         prov.embargoes = std.StringHashMap(ProvisionIndex.ProvisionEmbargo).init(prov.allocator);
         prov.embargo_key_bytes = 0;
         var owned_parked = prov.parked;
         prov.parked = .empty;
+        var terminal_oom = false;
 
-        var it = owned_embargoes.iterator();
-        while (it.next()) |entry| {
+        // This phase may send/re-enter, but all close-visible records and gauges
+        // are already gone. Every slot/list entry now owns only its final +1.
+        var send_it = owned_embargoes.iterator();
+        while (send_it.next()) |entry| {
             if (entry.value_ptr.pending) |pending| {
                 entry.value_ptr.pending = null;
-                failPendingAccept(pending, prov, reason, posture) catch |err| {
-                    // Residue rule: restore both containers, re-raise. The
-                    // fresh maps are still empty (guaranteed by the `.closed`
-                    // guards), so plain moves are safe.
-                    prov.embargoes.deinit();
-                    prov.embargoes = owned_embargoes;
-                    var parked_tmp = prov.parked;
-                    parked_tmp.deinit(prov.allocator);
-                    prov.parked = owned_parked;
-                    return err;
+                failPendingAccept(pending, prov, reason, posture) catch {
+                    terminal_oom = true;
                 };
             }
         }
@@ -6609,102 +6933,84 @@ pub const Peer = struct {
         var i: usize = 0;
         while (i < owned_parked.items.len) : (i += 1) {
             const parked = owned_parked.items[i];
-            if (parked.embargo) |bytes| prov.allocator.free(bytes);
-            owned_parked.items[i].embargo = null;
             failPendingAccept(
                 .{ .accept_peer = parked.accept_peer, .answer_id = parked.answer_id },
                 prov,
                 reason,
                 posture,
-            ) catch |err| {
-                // Residue: keep the not-yet-drained tail parked.
-                var rest: std.ArrayList(ProvisionIndex.ParkedAccept) = .empty;
-                rest.appendSlice(prov.allocator, owned_parked.items[i + 1 ..]) catch {
-                    // Cannot even keep the tail: fail it best-effort so no
-                    // accept is silently stranded, then fall through.
-                    for (owned_parked.items[i + 1 ..]) |tail| {
-                        if (tail.embargo) |bytes| prov.allocator.free(bytes);
-                        failPendingAccept(
-                            .{ .accept_peer = tail.accept_peer, .answer_id = tail.answer_id },
-                            prov,
-                            reason,
-                            .best_effort,
-                        ) catch {};
-                    }
-                    owned_parked.deinit(prov.allocator);
-                    return err;
-                };
-                owned_parked.deinit(prov.allocator);
-                var parked_tmp = prov.parked;
-                parked_tmp.deinit(prov.allocator);
-                prov.parked = rest;
-                return err;
+            ) catch {
+                terminal_oom = true;
             };
         }
         owned_parked.deinit(prov.allocator);
+        if (posture == .fallible and terminal_oom) return error.OutOfMemory;
     }
 
     const CloseOutcome = enum { closed_now, already_closed };
 
-    /// THE canonical owner close. Two entry contexts: Finish (`.fallible`,
-    /// `.release` the pin) and owner-deinit drain (`.best_effort`, `.abandon`
-    /// the pin — the export table dies with the peer). The `.closed`
-    /// transition is the OWNERSHIP TOKEN: exactly one caller observes
-    /// `.closed_now` and may drop the owner map entry + its +1; every nested
-    /// or duplicate entry sees `.already_closed` and must transfer NOTHING.
+    /// Canonical wire-Finish close. The `.closed` transition is the ownership
+    /// token: exactly one caller may unindex, unpin, drain, and drop the owner
+    /// map ref; nested/duplicate Finish observes `.already_closed`.
     fn closeProvisionAsOwner(
         self: *Peer,
         idx: ?*ProvisionIndex,
         prov: *ProvisionIndex.Provision,
-        comptime unpin: enum { release, abandon },
-        comptime posture: DrainPosture,
-    ) DrainError(posture)!CloseOutcome {
+    ) error{ OutOfMemory, ProvisionIndexUnavailable }!CloseOutcome {
         if (prov.state == .closed) return .already_closed;
+        // Do not begin the terminal ownership transition unless an indexed
+        // provision can also be removed from its owning index. Supported
+        // index-first teardown clears `indexed`, so this is a fail-closed
+        // invariant check rather than a normal lifecycle branch.
+        if (prov.indexed and idx == null) return error.ProvisionIndexUnavailable;
         prov.retain();
         defer prov.release();
         prov.state = .closed;
-        if (unpin == .release) {
-            if (prov.target_export_pinned) {
-                if (prov.target) |t| switch (t) {
-                    .local => |lt| self.releaseHandoffHeldExport(lt.cap_id),
-                    else => {},
-                };
-                prov.target_export_pinned = false;
-            }
-            if (prov.target_import_pinned) {
-                // Table-correct unpin: `target_import_pinned` names the
-                // IMPORT table (bare ids collide across tables — see
-                // registerProvisionForProvide). Flag cleared FIRST so no
-                // path can ever double-unpin. Rule-5 posture: the
-                // wire-driven Finish (.fallible) re-raises OOM; any other
-                // send failure — and the whole `.best_effort` owner-deinit
-                // drain — is the documented deinit best-effort exception
-                // (the connection is dying; the remote reconciles at
-                // disconnect).
-                prov.target_import_pinned = false;
-                if (prov.target) |t| switch (t) {
-                    .local => |lt| self.releaseHandoffImportPin(lt.cap_id) catch |err| {
-                        if (posture == .fallible and err == error.OutOfMemory) return error.OutOfMemory;
-                        log.debug("provision close: handoff import unpin for {} failed: {}", .{ lt.cap_id, err });
-                    },
-                    else => {},
-                };
-            }
-        }
+        var terminal_oom = false;
+
+        // CALLBACK-FREE OWNERSHIP CUT. The index entry, every aggregate/peer
+        // charge, and every holder back-link disappear before an export/import
+        // unpin can emit Release and synchronously deinitialize the index.
+        // No code below this point may dereference `idx`.
         prov.owner = null;
         if (prov.indexed) {
-            if (idx) |i| {
-                _ = i.by_key.remove(prov.recipient_key);
-                i.provision_count -= 1;
-                i.provision_key_bytes -= prov.recipient_key.len;
+            if (idx) |index| {
+                _ = index.by_key.remove(prov.recipient_key);
+                index.provision_count -= 1;
+                index.provision_key_bytes -= prov.recipient_key.len;
                 prov.indexed = false;
                 prov.release(); // the index's +1
-            }
+            } else return error.ProvisionIndexUnavailable;
         }
-        try drainProvisionEntries(prov, switch (posture) {
-            .fallible => "provision finished before disembargo",
-            .best_effort => "provision lost: provider connection closed",
-        }, posture);
+        neutralizeProvisionEntries(idx, prov);
+
+        if (prov.target_export_pinned) {
+            if (prov.target) |t| switch (t) {
+                .local => |lt| self.releaseHandoffHeldExport(lt.cap_id),
+                else => {},
+            };
+            prov.target_export_pinned = false;
+        }
+        if (prov.target_import_pinned) {
+            // Table-correct unpin: the flag names the IMPORT table (bare ids
+            // collide across tables). Clear it first so callback reentry can
+            // never double-unpin; deferred Release OOM propagates after the
+            // locally terminal close has retired all shared state.
+            prov.target_import_pinned = false;
+            if (prov.target) |t| switch (t) {
+                .local => |lt| self.releaseHandoffImportPin(lt.cap_id) catch |err| {
+                    if (err == error.OutOfMemory) {
+                        terminal_oom = true;
+                    } else {
+                        log.debug("provision close: handoff import unpin for {} failed: {}", .{ lt.cap_id, err });
+                    }
+                },
+                else => {},
+            };
+        }
+        drainProvisionEntries(null, prov, "provision finished before disembargo", .fallible) catch {
+            terminal_oom = true;
+        };
+        if (terminal_oom) return error.OutOfMemory;
         return .closed_now;
     }
 
@@ -6716,7 +7022,16 @@ pub const Peer = struct {
     fn detachProvisionForFinish(self: *Peer, question_id: u32) !void {
         const prov = self.provisions_by_question.get(question_id) orelse return;
         if (prov.state == .closed) return;
-        const outcome = try self.closeProvisionAsOwner(self.provision_index, prov, .release, .fallible);
+        const outcome = self.closeProvisionAsOwner(self.provision_index, prov) catch |err| {
+            // The close transition is terminal even when a best-effort wire
+            // notification or deferred import Release ran out of memory. Drop
+            // the owner map ref before propagating so a retry is a clean miss
+            // instead of a permanently closed entry with live tail state.
+            if (prov.state == .closed and prov.owner == null) {
+                if (self.provisions_by_question.remove(question_id)) prov.release();
+            }
+            return err;
+        };
         if (outcome != .closed_now) return;
         // Only after the close COMPLETED (no residue): drop the map entry and
         // the owner's +1.
@@ -6727,15 +7042,40 @@ pub const Peer = struct {
     /// State threaded from the neutralize step of Peer.deinit to its drain
     /// phase (after forceCancelAllQuestions).
     const OwnerProvisionTeardown = struct {
-        saved_idx: ?*ProvisionIndex,
         owned_provisions: std.AutoHashMap(u32, *ProvisionIndex.Provision),
     };
 
-    /// Neutralize step (infallible; template-conformant: marks, moves, and
-    /// back-link removal only — no sends, no frees of shared state). Runs for
-    /// HOLDER-only peers too: the index self-removal must be unconditional.
+    /// Neutralize step: callback-free unindex/account/holder retirement for
+    /// every owned provision, followed by index back-link removal. It must
+    /// finish before forceCancelAllQuestions, whose user callbacks may destroy
+    /// the index. Runs for HOLDER-only peers too: self-removal is unconditional.
     fn neutralizeProvisionsOnOwnerPeer(self: *Peer) OwnerProvisionTeardown {
         const saved_idx = self.provision_index;
+        var owned = self.provisions_by_question;
+        self.provisions_by_question = std.AutoHashMap(u32, *ProvisionIndex.Provision).init(self.allocator);
+        var it = owned.valueIterator();
+        while (it.next()) |prov_ptr| {
+            const prov = prov_ptr.*;
+            prov.state = .closed;
+            prov.owner = null; // pins abandoned (the export/import tables die with us)
+            if (prov.indexed) {
+                if (saved_idx) |idx| {
+                    _ = idx.by_key.remove(prov.recipient_key);
+                    idx.provision_count -= 1;
+                    idx.provision_key_bytes -= prov.recipient_key.len;
+                    prov.indexed = false;
+                    prov.release(); // the index's +1
+                } else {
+                    // Supported index-first teardown clears `indexed`. If a
+                    // corrupted host state violates that contract, preserve
+                    // the unknown index ref rather than freeing an object a
+                    // still-live map may borrow as its key.
+                    log.err("peer deinit found an indexed provision without its owning index; retaining the index ref", .{});
+                }
+            }
+            neutralizeProvisionEntries(saved_idx, prov);
+        }
+
         if (saved_idx) |idx| {
             var i: usize = 0;
             while (i < idx.attached_peers.items.len) {
@@ -6745,15 +7085,7 @@ pub const Peer = struct {
             }
             self.provision_index = null;
         }
-        var owned = self.provisions_by_question;
-        self.provisions_by_question = std.AutoHashMap(u32, *ProvisionIndex.Provision).init(self.allocator);
-        var it = owned.valueIterator();
-        while (it.next()) |prov_ptr| {
-            const prov = prov_ptr.*;
-            prov.state = .closed;
-            prov.owner = null; // pins abandoned (the export/import tables die with us)
-        }
-        return .{ .saved_idx = saved_idx, .owned_provisions = owned };
+        return .{ .owned_provisions = owned };
     }
 
     /// Drain phase: send-bearing, runs AFTER forceCancelAllQuestions over the
@@ -6764,16 +7096,7 @@ pub const Peer = struct {
         while (it.next()) |prov_ptr| {
             const prov = prov_ptr.*;
             prov.retain();
-            if (prov.indexed) {
-                if (teardown.saved_idx) |idx| {
-                    _ = idx.by_key.remove(prov.recipient_key);
-                    idx.provision_count -= 1;
-                    idx.provision_key_bytes -= prov.recipient_key.len;
-                    prov.indexed = false;
-                    prov.release(); // the index's +1
-                }
-            }
-            drainProvisionEntries(prov, "provision lost: provider connection closed", .best_effort) catch {};
+            drainProvisionEntries(null, prov, "provision lost: provider connection closed", .best_effort) catch {};
             prov.release(); // the transient guard
             prov.release(); // the owner map's +1
         }
@@ -6801,8 +7124,7 @@ pub const Peer = struct {
                     const parked = prov.parked.items[i];
                     if (parked.accept_peer == self and parked.answer_id == answer_id) {
                         if (self.provision_index) |idx| {
-                            idx.parked_accept_count -= 1;
-                            if (parked.embargo) |bytes| idx.parked_accept_bytes -= bytes.len;
+                            idx.refundParkAdmission(self, parked);
                         }
                         if (parked.embargo) |bytes| prov.allocator.free(bytes);
                         _ = prov.parked.swapRemove(i);
@@ -6837,6 +7159,7 @@ pub const Peer = struct {
             }
             if (cleared_live) {
                 maybeUnindexEmptyAwaiting(self, prov);
+                if (self.provision_index) |idx| idx.refreshNextParkDeadline();
                 prov.release(); // the slot's/parked entry's +1
             }
         }
@@ -7786,8 +8109,21 @@ pub const Peer = struct {
         if (self.on_error) |cb| cb(self.callback_ctx, self, err);
     }
 
-    fn onConnectionClose(self: *Peer) void {
+    /// Deliver terminal transport-close lifecycle exactly once.
+    ///
+    /// Bound transports reach this path through `onConnectionClose`; manual
+    /// integrations such as `HostPeer` call it when their socket reaches EOF
+    /// or reset. Holder-side parked and embargo-queued Accept reservations are
+    /// detached before the user callback. Provider-owned active provisions
+    /// deliberately remain live until Finish or peer deinit, preserving the
+    /// disconnect-after-Provide direct-pickup contract.
+    pub fn notifyTransportClosed(self: *Peer) void {
+        self.assertThreadAffinity();
+        if (self.transport_close_notified) return;
+        self.transport_close_notified = true;
+
         log.debug("connection closed", .{});
+        self.detachCrossPeerAcceptsOnHolderPeer();
         events.emitClose(self.observer, .peer, .unknown, null);
         events.emitConnection(self.observer, .peer, .unknown, .closed);
         // Resolve every still-outstanding question with a synthetic
@@ -7800,6 +8136,10 @@ pub const Peer = struct {
         // callback and is never cached as an answer or replayed to pipelining.
         _ = self.forceCancelAllQuestions(disconnected_reason, .disconnected);
         if (self.on_close) |cb| cb(self.callback_ctx, self);
+    }
+
+    fn onConnectionClose(self: *Peer) void {
+        self.notifyTransportClosed();
     }
 
     /// Process a single inbound Cap'n Proto RPC frame.
@@ -7838,6 +8178,27 @@ pub const Peer = struct {
 
     pub fn handleFrame(self: *Peer, frame: []const u8) !void {
         self.assertThreadAffinity();
+        if (self.transport_close_notified) return error.TransportClosed;
+
+        return self.handleFrameImpl(frame);
+    }
+
+    /// Dispatch an in-process call to one of this peer's local exports. Local
+    /// capabilities deliberately remain callable after transport close (the
+    /// L3 disconnect-after-Provide contract), while public/transport ingress
+    /// is rejected by `handleFrame` once close has been notified.
+    fn handleLoopbackFrame(self: *Peer, frame: []const u8) !void {
+        self.assertThreadAffinity();
+        return self.handleFrameImpl(frame);
+    }
+
+    fn handleFrameImpl(self: *Peer, frame: []const u8) !void {
+
+        // Drive vat-wide expiry before decoding or validation. A connection
+        // that stays busy — including one sending malformed traffic — must not
+        // suppress reclamation merely by avoiding Accept frames or idle ticks.
+        if (self.provision_index) |idx| _ = idx.sweepExpiredParkedAccepts();
+
         events.emitFrame(self.observer, .peer, .unknown, .received, frame.len);
 
         // Decode with cost accounting so the validation-work budget is charged
@@ -9391,6 +9752,10 @@ pub const Peer = struct {
     }
 
     fn handleProvide(self: *Peer, provide: protocol.Provide) !void {
+        // Expire due Accept-before-Provide reservations before a Provide can
+        // adopt them. The cached due check makes the common path O(1).
+        if (self.provision_index) |idx| _ = idx.sweepExpiredParkedAccepts();
+
         // A Provide must not reuse a question id already live as a Call /
         // Bootstrap answer or a pending Join (spec violation). Same-type
         // (provide) collisions fall through to the orchestration's specific
@@ -9452,7 +9817,7 @@ pub const Peer = struct {
             // provision is active and may serve accepts — a Provide rollback
             // would be wrong here. Only a terminal OOM re-raises, after every
             // parked entry was terminally handled.
-            if (adopted) |prov| try self.drainAdoptedParkedAccepts(prov);
+            if (adopted) |prov| try self.drainAdoptedParkedAccepts(idx, prov);
         }
     }
 

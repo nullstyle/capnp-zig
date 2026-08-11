@@ -142,6 +142,41 @@ inbound restore params), emitting a `sturdy_ref_bytes` resource rejection on
 violation. `PeerStats` gains `persistent_exports`, `saves_served`, and
 `restores_served`.
 
+## L3 VatC Parked-Accept Lifecycle
+
+`ProvisionIndex` is the Experimental vat-wide rendezvous for a `Provide` and
+`Accept` arriving on different peers. An unmatched Accept may park, but
+admission is bounded twice: the vat-wide defaults remain 1024 entries / 256
+KiB, while each enrolled peer defaults to 64 entries / 16 KiB. Byte admission
+charges the normalized recipient token plus embargo bytes for every Accept,
+even when multiple parks share one token.
+
+Every parked record has one centralized retirement path. Adoption, Finish,
+expiry, transport close, rollback, peer teardown, and index teardown detach the
+holder/back-link before best-effort sends or callbacks, then refund peer and
+index gauges exactly once. Transport close removes only that connection's
+parked and embargo-queued holder state; an active provider-owned provision
+survives so disconnect-after-Provide pickup keeps working. `detachTransport()`
+is non-terminal. Bound transports notify this lifecycle automatically; a raw
+frame-pump host must call idempotent `HostPeer.notifyTransportClosed()` once on
+EOF, reset, or explicit terminal close.
+
+The raw index leaves `park_ttl_ms = null`. The higher-level `Vat` defaults it
+to 30 seconds and requires a custom `Options.clock` or value-stored
+`Options.io`; a custom clock wins. Expiry uses an O(1) next-deadline check at
+every inbound-frame boundary and from `Peer.checkDeadlines()`, followed by a
+reentrancy-safe full sweep only when due. `now >= deadline` expires. Explicit
+`ProvisionIndex.sweepExpiredParkedAccepts()` and `Vat`'s forwarding method
+return the number detached; exception Returns remain best-effort. Since each
+park stores an absolute deadline, `Vat.setClock()` rejects an effective clock
+domain change while parks are live or a new deadline sample is in flight
+(`error.ParkClockInUse`); identical-source calls remain no-ops.
+
+Operability stays redacted: index/vat stats expose provision, attributable,
+embargo, and queued gauges; `PeerStats` exposes only that peer's park count and
+bytes; resource events use `parked_accepts` / `parked_accept_bytes`; and a
+`parked_accept` timeout carries only the inbound answer ID.
+
 ## L4 Join Readiness
 
 Level 4 `Join` remains Experimental. The runtime has receive-side Join state
@@ -288,6 +323,9 @@ Contract:
 
 ## Test Plan
 - Unit tests for framing and state machines.
+- The seven focused Level-3 handoff binaries through `zig build test-rpc-l3`,
+  with VatC also present in resource-budget, OOM, ReleaseSafe, and ReleaseFast
+  hardening lanes.
 - Loopback tests with in-process client/server.
 - Interop tests against reference backends in the canonical `tests/e2e` harness.
 - Documentation/API smoke checks through `zig build docs-smoke` and snippet

@@ -33,6 +33,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Experimental L3 parked-Accept admission is now fair, time-bounded, and
+  observable.** `ProvisionIndexLimits` adds per-peer defaults of 64 entries and
+  16 KiB, enforced before the larger vat-wide ceilings. Each Accept is charged
+  for its normalized recipient token plus embargo bytes even when tokens are
+  shared. Adoption, Finish, expiry, rollback, transport close, and teardown use
+  centralized exactly-once refunds; terminal close detaches only the closing
+  peer's holder records, preserving active provider provisions for
+  disconnect-after-Provide pickup.
+
+  Raw `ProvisionIndex` expiry remains opt-in, while `Vat` now defaults to a
+  30-second TTL and requires either a custom clock or its value-stored
+  `Options.io` fallback (`error.ParkClockUnavailable` otherwise). A cached next
+  deadline makes the common inbound-frame check O(1); due sweeps are
+  reentrancy-safe, run from every inbound path and deadline maintenance, and
+  are also exposed by `sweepExpiredParkedAccepts()`. `ProvisionIndex.stats()` /
+  `Vat.stats()`, per-peer park gauges, redacted park pressure/rejection events,
+  and `TimeoutKind.parked_accept` add operability without exposing tokens or
+  frame contents. Manual frame pumps can call idempotent
+  `HostPeer.notifyTransportClosed()` on EOF/reset.
+
+  `zig build test-rpc-l3` groups the seven L3 suites; VatC now participates in
+  resource-budget, OOM, ReleaseSafe, and ReleaseFast hardening. The vendored
+  C++→Zig VatC lane has nine scenarios, adding a one-entry attacker fairness
+  case that refuses a second park while a sibling completes a legitimate
+  reverse-direction handoff, then expires the first from ordinary traffic.
+
 - **Generated schema-evolution APIs can preserve values unknown to an older
   schema without weakening typed access.** Structs and groups with enum fields
   now expose `Reader.EnumOrdinals` / `Builder.EnumOrdinals` through

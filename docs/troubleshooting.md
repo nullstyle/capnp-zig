@@ -226,3 +226,52 @@ fn setupPeer(peer: *Peer, allocator: std.mem.Allocator) !void {
 Similarly, `sendCall` takes a context pointer and a `QuestionCallback`. The context must remain valid until the callback fires (when the Return message arrives).
 
 **Release messages**: When the remote peer is done with a capability, it sends a `Release` message that decrements the export's ref count. The peer handles this automatically via `peer_inbound_release`. On `peer.deinit()`, the peer sends best-effort `Release` messages for all remaining imports (via `releaseAllImports`). You do not need to send Release manually under normal operation, but you must ensure the transport is still attached when deinit runs if you want cleanup releases to reach the remote side.
+
+---
+
+## L3 Vat Clock and Manual Transport Close
+
+The high-level Experimental `rpc.peer.Vat` enables a 30-second parked-Accept
+TTL by default. A finite TTL needs monotonic time, so supplying only a
+deterministic entropy seed now returns `error.ParkClockUnavailable`.
+
+```zig
+var vat = try rpc.peer.Vat.init(allocator, .{
+    .seed = deterministic_seed,
+    .io = io, // value-stored monotonic fallback; seed still wins for entropy
+});
+defer vat.deinit();
+```
+
+Use `Options.clock` for a deterministic/test clock; it takes precedence over
+`io`. Other Vat limit overrides retain the 30-second default; set
+`.limits = .{ .park_ttl_ms = null }` only when you deliberately need the
+compatibility behavior. Clearing the only custom clock on a finite-TTL Vat
+returns `error.ParkClockUnavailable`; with `Options.io`, clearing it falls back
+to the value-stored Io clock. Because parked deadlines are absolute in the
+effective clock's domain, changing from Io to a custom clock, from a custom
+clock to Io, or between distinct custom handles while parks are live returns
+`error.ParkClockInUse`. The same guard applies during the clock callback that
+samples a new park's deadline, before its accounting is committed. Reinstalling
+the same handle is a no-op; drain or expire the parks before changing domains.
+A raw `ProvisionIndex` remains opt-in and defaults to a null TTL.
+
+Bound TCP transports report terminal close automatically. If your integration
+feeds a detached `HostPeer` with `pushFrame`, it owns that signal:
+
+```zig
+// On EOF, reset, or explicit terminal socket close. Repeated calls are safe.
+host_peer.notifyTransportClosed();
+```
+
+Do not substitute `detachTransport()`; detach is a non-terminal transport
+handoff. Missing the close notification leaves the peer logically connected
+and delays release of its parked/embargo-queued holder reservations until later
+peer teardown. Active provider-owned provisions intentionally survive the
+notification so a recipient may still pick up a capability after the provider
+transport disconnects.
+
+For diagnosis, inspect `vat.stats()` and `peer.stats().parked_accepts` /
+`.parked_accept_bytes`. Resource and timeout events are redacted: they identify
+only the park resource or inbound answer ID, never recipient tokens, embargo
+bytes, addresses, or frame contents.

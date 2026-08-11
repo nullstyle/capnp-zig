@@ -132,3 +132,23 @@ test "peer observer reports decode failure without raw frame data" {
     try std.testing.expectEqual(error.TruncatedMessage, event.protocol_error.err);
     try std.testing.expect(event.protocol_error.message_tag == null);
 }
+
+test "parked Accept timeout event carries only its answer id" {
+    var recorder = Recorder{};
+
+    rpc_events.emitParkedAcceptTimeout(recorder.observer(), 73);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.count);
+    const event = recorder.last();
+    try std.testing.expect(event == .timeout);
+    try std.testing.expectEqual(rpc_events.Source.peer, event.timeout.source);
+    try std.testing.expectEqual(rpc_events.TimeoutKind.parked_accept, event.timeout.kind);
+    try std.testing.expectEqual(@as(?u32, 73), event.timeout.answer_id);
+    try std.testing.expectEqual(@as(?u32, null), event.timeout.question_id);
+
+    // These compile-time names are the complete resource metadata exposed for
+    // parked-Accept admission; tokens, embargoes, and frame contents have no
+    // place in either event payload.
+    try std.testing.expectEqualStrings("parked_accepts", @tagName(rpc_events.Resource.parked_accepts));
+    try std.testing.expectEqualStrings("parked_accept_bytes", @tagName(rpc_events.Resource.parked_accept_bytes));
+}

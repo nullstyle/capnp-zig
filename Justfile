@@ -39,6 +39,10 @@ test-serialization:
 test-rpc:
     zig build test-rpc --summary all
 
+# Run the seven focused Level-3 handoff suites
+test-rpc-l3:
+    zig build test-rpc-l3 --summary all
+
 # Run resource-budget regression tests
 test-resource-budgets:
     zig build test-resource-budgets --summary all
@@ -69,7 +73,7 @@ test-release-safe:
 
 # Run the FULL suite under ReleaseSafe — the mode CI's per-OS job uses.
 #
-# Not the same thing as `test-release-safe`, which is a ten-binary subset. This
+# Not the same thing as `test-release-safe`, which is an eleven-binary subset. This
 # lane exists because it has now caught two defects nothing else could see: an
 # OOM harness that reported a deterministic function as nondeterministic, and a
 # dangling `ctx` pointer that segfaults on amd64 while a still-mapped stack page

@@ -126,6 +126,18 @@ pub const HostPeer = struct {
         self.peer.start(cb_ctx, on_error, on_close);
     }
 
+    /// Notify a manually-driven host peer that its external transport reached
+    /// terminal close (EOF, reset, or an explicit close).
+    ///
+    /// Bound transports call the same peer lifecycle path automatically.
+    /// Host integrations that feed frames with `pushFrame` must call this once
+    /// when their socket closes so holder-side parked Accept state is detached
+    /// before the user's close callback. Repeated calls are harmless.
+    pub fn notifyTransportClosed(self: *HostPeer) void {
+        self.peer.assertThreadAffinity();
+        self.peer.notifyTransportClosed();
+    }
+
     pub fn setObserver(self: *HostPeer, observer: ?events.Observer) void {
         self.peer.assertThreadAffinity();
         self.observer = observer;
