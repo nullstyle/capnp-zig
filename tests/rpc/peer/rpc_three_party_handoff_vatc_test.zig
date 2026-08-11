@@ -25,6 +25,7 @@ const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.caps.table;
 const vat_network = capnpc.rpc.vat.network;
 const rpc_time = capnpc.rpc.time;
+const events = capnpc.rpc.events;
 const message = capnpc.message;
 const Peer = peer_impl.Peer;
 const ProvisionIndex = peer_impl.ProvisionIndex;
@@ -729,6 +730,54 @@ test "L3 attach ceremony: a peer with pre-existing handoff state is rejected" {
     try setup.teardownImports(&peers);
 }
 
+test "L3 attach ceremony: index-first teardown cannot reattach live new-L3 owner or holder state" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    const token = try host.mintToken(allocator, "l3-index-reattach-live-state");
+    defer allocator.free(token);
+
+    // Install only the new-L3 owner record: the legacy Provide map is empty,
+    // so rejection cannot accidentally be supplied by the older predicate.
+    _ = try installPromisedProvision(&host, &host.peer, token, 73, 973);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.provides_by_question.count());
+    try std.testing.expectEqual(@as(usize, 1), host.peer.provisions_by_question.count());
+
+    // A sibling holder contributes the other new-L3 state class.
+    try FrameHost.injectAcceptOn(&holder, allocator, 730, token, "reattach-embargo");
+    try std.testing.expectEqual(@as(usize, 1), holder.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().queued_accepts);
+
+    // Index-first teardown preserves the active handoff but severs both
+    // borrowed index pointers. Neither peer may join a fresh index while its
+    // old-index state is still live.
+    host.index.deinit();
+    try std.testing.expect(host.peer.provision_index == null);
+    try std.testing.expect(holder.provision_index == null);
+
+    host.index = ProvisionIndex.init(allocator, .{});
+    host.index.disableThreadAffinity();
+    try std.testing.expectError(
+        error.PeerAlreadyHasHandoffState,
+        host.peer.attachProvisionIndex(&host.index),
+    );
+    try std.testing.expectError(
+        error.PeerAlreadyHasHandoffState,
+        holder.attachProvisionIndex(&host.index),
+    );
+    try std.testing.expectEqual(@as(usize, 0), host.index.attached_peers.items.len);
+}
+
 // ============================================================================
 // Vat-wide duplicate-recipient rejection (delta (b) of index mode).
 // ============================================================================
@@ -1249,6 +1298,21 @@ fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32) ![]const u8 
     return builder.finish();
 }
 
+fn buildAcceptFrame(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    token: []const u8,
+    embargo: ?[]const u8,
+) ![]const u8 {
+    var token_msg = try message.Message.initUnvalidated(allocator, token);
+    defer token_msg.deinit();
+    const provision = try token_msg.getRootAnyPointer();
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildAccept(question_id, provision, embargo);
+    return builder.finish();
+}
+
 test "L3 M-7: Provide+Finish naming an app-held never-emitted export leaves it intact" {
     const allocator = std.testing.allocator;
 
@@ -1692,6 +1756,10 @@ const FrameHost = struct {
 
     /// Inject Accept{qid, token, embargo}.
     fn injectAccept(self: *FrameHost, allocator: std.mem.Allocator, qid: u32, token: []const u8, embargo: ?[]const u8) !void {
+        try injectAcceptOn(&self.peer, allocator, qid, token, embargo);
+    }
+
+    fn injectAcceptOn(peer: *Peer, allocator: std.mem.Allocator, qid: u32, token: []const u8, embargo: ?[]const u8) !void {
         var token_msg = try message.Message.initUnvalidated(allocator, token);
         defer token_msg.deinit();
         const provision = try token_msg.getRootAnyPointer();
@@ -1700,7 +1768,7 @@ const FrameHost = struct {
         try builder.buildAccept(qid, provision, embargo);
         const frame = try builder.finish();
         defer allocator.free(frame);
-        try self.peer.handleFrame(frame);
+        try peer.handleFrame(frame);
     }
 
     /// Inject the spec-form accept-Disembargo naming a Provide question.
@@ -1955,6 +2023,277 @@ test "L4 teardown: owner deinit with a queued embargoed accept fails it loudly (
     try peers.a_to_b.releaseImport(setup.introducer_import, 1);
 }
 
+test "L3 transport close: holder reservations drain once before callback while sibling state survives" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    var holder_deinited = false;
+    defer if (!holder_deinited) holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    var sibling_capture = FrameCapture{ .allocator = allocator };
+    defer sibling_capture.deinit();
+    var sibling = Peer.initDetached(allocator);
+    sibling.disableThreadAffinity();
+    sibling.setSendFrameOverride(&sibling_capture, FrameCapture.send);
+    defer sibling.deinit();
+    try sibling.attachProvisionIndex(&host.index);
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const active_token = try host.mintToken(allocator, "close-active");
+    defer allocator.free(active_token);
+    try host.injectProvide(allocator, 701, carol_id, active_token);
+    try FrameHost.injectAcceptOn(&holder, allocator, 7001, active_token, "close-queued-secret");
+
+    const holder_token = try host.mintToken(allocator, "close-holder-park");
+    defer allocator.free(holder_token);
+    try FrameHost.injectAcceptOn(&holder, allocator, 7002, holder_token, "close-park-secret");
+    const sibling_token = try host.mintToken(allocator, "close-sibling-park");
+    defer allocator.free(sibling_token);
+    try FrameHost.injectAcceptOn(&sibling, allocator, 7003, sibling_token, null);
+
+    try std.testing.expectEqual(@as(usize, 2), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 2), holder.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), sibling.cross_peer_pending_accepts.count());
+
+    const CloseState = struct {
+        index: *ProvisionIndex,
+        callback_count: usize = 0,
+        observed_peer_parks: usize = std.math.maxInt(usize),
+        observed_peer_bytes: usize = std.math.maxInt(usize),
+        observed_peer_records: usize = std.math.maxInt(usize),
+        observed_index_parks: usize = std.math.maxInt(usize),
+        observed_index_queued: usize = std.math.maxInt(usize),
+
+        fn onClose(ctx_opt: ?*anyopaque, peer: *Peer) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_opt.?));
+            const peer_stats = peer.stats();
+            const index_stats = self.index.stats();
+            self.callback_count += 1;
+            self.observed_peer_parks = peer_stats.parked_accepts;
+            self.observed_peer_bytes = peer_stats.parked_accept_bytes;
+            self.observed_peer_records = peer.cross_peer_pending_accepts.count();
+            self.observed_index_parks = index_stats.parked_accepts;
+            self.observed_index_queued = index_stats.queued_accepts;
+        }
+    };
+
+    var close_state = CloseState{ .index = &host.index };
+    holder.start(&close_state, null, CloseState.onClose);
+    holder.notifyTransportClosed();
+
+    // Holder cleanup precedes the callback; the sibling's park and the
+    // provider-owned active provision are untouched.
+    try std.testing.expectEqual(@as(usize, 1), close_state.callback_count);
+    try std.testing.expectEqual(@as(usize, 0), close_state.observed_peer_parks);
+    try std.testing.expectEqual(@as(usize, 0), close_state.observed_peer_bytes);
+    try std.testing.expectEqual(@as(usize, 0), close_state.observed_peer_records);
+    try std.testing.expectEqual(@as(usize, 1), close_state.observed_index_parks);
+    try std.testing.expectEqual(@as(usize, 0), close_state.observed_index_queued);
+    try std.testing.expectEqual(@as(usize, 1), sibling.stats().parked_accepts);
+    try std.testing.expect(host.peer.provisions_by_question.contains(701));
+
+    // Repeated notification transfers no ownership and fires no callback.
+    holder.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 1), close_state.callback_count);
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+
+    // A later full deinit sees already-drained holder records and is safe.
+    holder.deinit();
+    holder_deinited = true;
+    try std.testing.expectEqual(@as(usize, 1), sibling.stats().parked_accepts);
+
+    const provider_finish = try buildFinishFrame(allocator, 701);
+    defer allocator.free(provider_finish);
+    try host.peer.handleFrame(provider_finish);
+}
+
+test "L3 transport close: observer reentry cannot recreate holder reservations" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    const token = try host.mintToken(allocator, "close-observer-reentry");
+    defer allocator.free(token);
+    const accept_frame = try buildAcceptFrame(allocator, 7099, token, "secret-embargo");
+    defer allocator.free(accept_frame);
+
+    const Reentry = struct {
+        peer: *Peer,
+        frame: []const u8,
+        close_events: usize = 0,
+        dispatch_succeeded: bool = false,
+        dispatch_error: ?anyerror = null,
+
+        fn onEvent(ctx: *anyopaque, event: events.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (event) {
+                .close => {
+                    self.close_events += 1;
+                    self.peer.handleFrame(self.frame) catch |err| {
+                        self.dispatch_error = err;
+                        return;
+                    };
+                    self.dispatch_succeeded = true;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var reentry = Reentry{ .peer = &host.peer, .frame = accept_frame };
+    host.peer.setObserver(events.Observer.init(&reentry, Reentry.onEvent));
+    host.peer.notifyTransportClosed();
+
+    try std.testing.expectEqual(@as(usize, 1), reentry.close_events);
+    try std.testing.expect(!reentry.dispatch_succeeded);
+    try std.testing.expectEqual(@as(?anyerror, error.TransportClosed), reentry.dispatch_error);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+}
+
+test "L3 transport close: an active provider provision survives and serves direct pickup" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const token = try host.mintToken(allocator, "provider-close-direct");
+    defer allocator.free(token);
+    try host.injectProvide(allocator, 702, carol_id, token);
+    try std.testing.expect(host.peer.provisions_by_question.contains(702));
+
+    host.peer.notifyTransportClosed();
+    try std.testing.expect(host.peer.provisions_by_question.contains(702));
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().provisions);
+
+    // The recipient connects through a sibling after the provider transport
+    // has closed. The active owner state remains a valid direct-pickup source.
+    try FrameHost.injectAcceptOn(&holder, allocator, 7100, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), holder_capture.returnFor(7100));
+    const proxy_id = holder_capture.capIdFor(7100) orelse return error.NoProxyCap;
+
+    try injectNumberCall(&holder, allocator, 7101, proxy_id);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), holder_capture.returnFor(7101));
+    try std.testing.expectEqual(@as(u32, 1), carol.get_number_calls);
+
+    try injectFinish(&holder, allocator, 7101);
+    try injectFinish(&holder, allocator, 7100);
+    try injectRelease(&holder, allocator, proxy_id, 1);
+    // The provider's transport is terminal, so no later inbound Finish can
+    // arrive on it. The active owner record remains until peer teardown.
+    try std.testing.expect(host.peer.provisions_by_question.contains(702));
+}
+
+test "L3 peer deinit neutralizes owner queues and holder parks before a question callback destroys the index" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    var owner_deinited = false;
+    defer {
+        host.dummy.deinit();
+        host.net.deinit();
+        if (!owner_deinited) host.peer.deinit();
+        host.index.deinit();
+        host.capture.deinit();
+    }
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    const active_token = try host.mintToken(allocator, "l3-deinit-owner-queue");
+    defer allocator.free(active_token);
+    try host.injectProvide(allocator, 703, carol_id, active_token);
+    const queued_embargo = "deinit-queued";
+    try FrameHost.injectAcceptOn(&holder, allocator, 7031, active_token, queued_embargo);
+
+    const parked_token = try host.mintToken(allocator, "l3-deinit-holder-park");
+    defer allocator.free(parked_token);
+    const parked_embargo = "deinit-parked";
+    try host.injectAccept(allocator, 7032, parked_token, parked_embargo);
+
+    const before = host.index.stats();
+    try std.testing.expectEqual(@as(usize, 1), before.queued_accepts);
+    try std.testing.expectEqual(@as(usize, queued_embargo.len), before.queued_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 1), before.parked_accepts);
+    try std.testing.expectEqual(parked_token.len + parked_embargo.len, before.parked_accept_attributed_bytes);
+    try std.testing.expectEqual(@as(usize, parked_embargo.len), before.parked_accept_embargo_bytes);
+
+    const CancelDeinitsIndex = struct {
+        index: *ProvisionIndex,
+        holder: *Peer,
+        fired: bool = false,
+        observed_queued: usize = std.math.maxInt(usize),
+        observed_parked: usize = std.math.maxInt(usize),
+        observed_records: usize = std.math.maxInt(usize),
+
+        fn onReturn(
+            ctx: *anyopaque,
+            _: *Peer,
+            _: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.fired = true;
+            const stats = self.index.stats();
+            self.observed_queued = stats.queued_accepts;
+            self.observed_parked = stats.parked_accepts;
+            self.observed_records = self.holder.cross_peer_pending_accepts.count();
+            self.index.deinit();
+        }
+    };
+    var callback = CancelDeinitsIndex{ .index = &host.index, .holder = &holder };
+    _ = try host.peer.sendBootstrap(&callback, CancelDeinitsIndex.onReturn);
+
+    host.peer.deinit();
+    owner_deinited = true;
+
+    try std.testing.expect(callback.fired);
+    try std.testing.expectEqual(@as(usize, 0), callback.observed_queued);
+    try std.testing.expectEqual(@as(usize, 0), callback.observed_parked);
+    try std.testing.expectEqual(@as(usize, 0), callback.observed_records);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), holder_capture.returnFor(7031));
+    const after = host.index.stats();
+    try std.testing.expectEqual(@as(usize, 0), after.queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), after.queued_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), after.parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), after.parked_accept_attributed_bytes);
+    try std.testing.expectEqual(@as(usize, 0), after.parked_accept_embargo_bytes);
+
+    host.index = ProvisionIndex.init(allocator, .{});
+    host.index.disableThreadAffinity();
+}
+
 // ============================================================================
 // L5: Accept-before-Provide parks (order-independent rendezvous), and the
 // Provide adopts the awaiting provision and drains its parked accepts.
@@ -1998,6 +2337,316 @@ test "L5: an early Accept parks; the Provide adopts and serves it (both orders, 
     try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
 }
 
+test "L5 adoption reentrancy: plain Return Finish closes provision before a later embargo can queue" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    const token = try host.mintToken(allocator, "l5-adopt-reentrant-finish");
+    defer allocator.free(token);
+    // List order is load-bearing: the plain entry serves first; the embargoed
+    // sibling is the moved-out tail that must observe the reentrant close.
+    try FrameHost.injectAcceptOn(&holder, allocator, 680, token, null);
+    try FrameHost.injectAcceptOn(&holder, allocator, 681, token, "must-not-queue");
+
+    const ReentrantFinish = struct {
+        allocator: std.mem.Allocator,
+        owner: *Peer,
+        provide_question_id: u32,
+        plain_answer_id: u32,
+        embargo_answer_id: u32,
+        reentered: bool = false,
+        plain_results: usize = 0,
+        embargo_exceptions: usize = 0,
+        embargo_reason_matches: bool = false,
+
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == self.plain_answer_id and ret.tag == .results) {
+                self.plain_results += 1;
+                if (!self.reentered) {
+                    self.reentered = true;
+                    const finish = try buildFinishFrame(self.allocator, self.provide_question_id);
+                    defer self.allocator.free(finish);
+                    try self.owner.handleFrame(finish);
+                }
+            } else if (ret.answer_id == self.embargo_answer_id and ret.tag == .exception) {
+                self.embargo_exceptions += 1;
+                if (ret.exception) |exception| {
+                    self.embargo_reason_matches = std.mem.eql(
+                        u8,
+                        exception.reason,
+                        "provision finished before disembargo",
+                    );
+                }
+            }
+        }
+    };
+
+    var reentrant = ReentrantFinish{
+        .allocator = allocator,
+        .owner = &host.peer,
+        .provide_question_id = 68,
+        .plain_answer_id = 680,
+        .embargo_answer_id = 681,
+    };
+    holder.setSendFrameOverride(&reentrant, ReentrantFinish.send);
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    try host.injectProvide(allocator, 68, carol_id, token);
+
+    try std.testing.expect(reentrant.reentered);
+    try std.testing.expectEqual(@as(usize, 1), reentrant.plain_results);
+    try std.testing.expectEqual(@as(usize, 1), reentrant.embargo_exceptions);
+    try std.testing.expect(reentrant.embargo_reason_matches);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+    try std.testing.expectEqual(@as(usize, 0), host.peer.provisions_by_question.count());
+    try std.testing.expectEqual(@as(usize, 0), holder.cross_peer_pending_accepts.count());
+}
+
+test "L5 adoption reentrancy: a plain Return can create the later embargo tombstone" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    const token = try host.mintToken(allocator, "l5-adopt-reentrant-tombstone");
+    defer allocator.free(token);
+    const embargo = "later-embargo";
+    // List order is load-bearing: serving the plain entry re-enters the owner
+    // and creates the Disembargo tombstone before the embargoed tail is seen.
+    try FrameHost.injectAcceptOn(&holder, allocator, 682, token, null);
+    try FrameHost.injectAcceptOn(&holder, allocator, 683, token, embargo);
+
+    const ReentrantDisembargo = struct {
+        allocator: std.mem.Allocator,
+        host: *FrameHost,
+        provide_question_id: u32,
+        plain_answer_id: u32,
+        embargo_answer_id: u32,
+        embargo: []const u8,
+        reentered: bool = false,
+        plain_results: usize = 0,
+        embargo_results: usize = 0,
+        embargo_exceptions: usize = 0,
+
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == self.plain_answer_id and ret.tag == .results) {
+                self.plain_results += 1;
+                if (!self.reentered) {
+                    self.reentered = true;
+                    try self.host.injectAcceptDisembargo(
+                        self.allocator,
+                        self.provide_question_id,
+                        self.embargo,
+                    );
+                }
+            } else if (ret.answer_id == self.embargo_answer_id) {
+                switch (ret.tag) {
+                    .results => self.embargo_results += 1,
+                    .exception => self.embargo_exceptions += 1,
+                    else => {},
+                }
+            }
+        }
+    };
+
+    var reentrant = ReentrantDisembargo{
+        .allocator = allocator,
+        .host = &host,
+        .provide_question_id = 68,
+        .plain_answer_id = 682,
+        .embargo_answer_id = 683,
+        .embargo = embargo,
+    };
+    holder.setSendFrameOverride(&reentrant, ReentrantDisembargo.send);
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    try host.injectProvide(allocator, 68, carol_id, token);
+
+    try std.testing.expect(reentrant.reentered);
+    try std.testing.expectEqual(@as(usize, 1), reentrant.plain_results);
+    try std.testing.expectEqual(@as(usize, 1), reentrant.embargo_results);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.embargo_exceptions);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accept_bytes);
+    const prov = host.peer.provisions_by_question.get(68) orelse return error.NoProvision;
+    try std.testing.expectEqual(@as(usize, 0), prov.embargoes.count());
+    try std.testing.expectEqual(@as(usize, 0), holder.cross_peer_pending_accepts.count());
+}
+
+test "L5 adoption reentrancy: holder close from the plain Return sees the whole batch transitioned" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    const token = try host.mintToken(allocator, "l5-adopt-reentrant-holder-close");
+    defer allocator.free(token);
+    try FrameHost.injectAcceptOn(&holder, allocator, 684, token, null);
+    try FrameHost.injectAcceptOn(&holder, allocator, 685, token, "close-tail");
+
+    const ReentrantHolderClose = struct {
+        allocator: std.mem.Allocator,
+        holder: *Peer,
+        index: *ProvisionIndex,
+        plain_answer_id: u32,
+        embargo_answer_id: u32,
+        plain_results: usize = 0,
+        embargo_returns: usize = 0,
+        callback_count: usize = 0,
+        callback_peer_parks: usize = std.math.maxInt(usize),
+        callback_peer_bytes: usize = std.math.maxInt(usize),
+        callback_peer_records: usize = std.math.maxInt(usize),
+        callback_index_parks: usize = std.math.maxInt(usize),
+        callback_index_queued: usize = std.math.maxInt(usize),
+
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == self.plain_answer_id and ret.tag == .results) {
+                self.plain_results += 1;
+                self.holder.notifyTransportClosed();
+            } else if (ret.answer_id == self.embargo_answer_id) {
+                self.embargo_returns += 1;
+            }
+        }
+
+        fn onClose(ctx_opt: ?*anyopaque, peer: *Peer) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_opt.?));
+            const peer_stats = peer.stats();
+            const index_stats = self.index.stats();
+            self.callback_count += 1;
+            self.callback_peer_parks = peer_stats.parked_accepts;
+            self.callback_peer_bytes = peer_stats.parked_accept_bytes;
+            self.callback_peer_records = peer.cross_peer_pending_accepts.count();
+            self.callback_index_parks = index_stats.parked_accepts;
+            self.callback_index_queued = index_stats.queued_accepts;
+        }
+    };
+
+    var reentrant = ReentrantHolderClose{
+        .allocator = allocator,
+        .holder = &holder,
+        .index = &host.index,
+        .plain_answer_id = 684,
+        .embargo_answer_id = 685,
+    };
+    holder.setSendFrameOverride(&reentrant, ReentrantHolderClose.send);
+    holder.start(&reentrant, null, ReentrantHolderClose.onClose);
+
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    try host.injectProvide(allocator, 69, carol_id, token);
+
+    try std.testing.expectEqual(@as(usize, 1), reentrant.plain_results);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.embargo_returns);
+    try std.testing.expectEqual(@as(usize, 1), reentrant.callback_count);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.callback_peer_parks);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.callback_peer_bytes);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.callback_peer_records);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.callback_index_parks);
+    try std.testing.expectEqual(@as(usize, 0), reentrant.callback_index_queued);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), holder.cross_peer_pending_accepts.count());
+    const prov = host.peer.provisions_by_question.get(69) orelse return error.NoProvision;
+    try std.testing.expectEqual(@as(usize, 0), prov.embargoes.count());
+}
+
+test "L5 Finish OOM retires the whole queued batch and a retry is a clean completion" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var holder_capture = FrameCapture{ .allocator = allocator };
+    defer holder_capture.deinit();
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+
+    const token = try host.mintToken(allocator, "l5-finish-oom");
+    defer allocator.free(token);
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+    try host.injectProvide(allocator, 69, carol_id, token);
+    try FrameHost.injectAcceptOn(&holder, allocator, 690, token, "finish-oom");
+    try FrameHost.injectAcceptOn(&holder, allocator, 691, token, "finish-oom-tail");
+    try std.testing.expectEqual(@as(usize, 2), host.index.stats().queued_accepts);
+
+    const FailOnce = struct {
+        calls: usize = 0,
+
+        fn send(ctx: *anyopaque, _: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            if (self.calls == 1) return error.OutOfMemory;
+        }
+    };
+    var failed_send = FailOnce{};
+    holder.setSendFrameOverride(&failed_send, FailOnce.send);
+
+    const finish = try buildFinishFrame(allocator, 69);
+    defer allocator.free(finish);
+    try std.testing.expectError(error.OutOfMemory, host.peer.handleFrame(finish));
+    try std.testing.expectEqual(@as(usize, 2), failed_send.calls);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), holder.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.peer.provisions_by_question.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+
+    // The failed notification was terminal locally. Replaying the same Finish
+    // completes the legacy Provide cleanup without replaying any accept send.
+    holder.setSendFrameOverride(&holder_capture, FrameCapture.send);
+    try host.peer.handleFrame(finish);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.provides_by_question.count());
+    try std.testing.expectEqual(@as(usize, 0), host.peer.provisions_by_question.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+}
+
 test "L5 budget: park exhaustion is a distinguishable exception" {
     const allocator = std.testing.allocator;
     var host: FrameHost = undefined;
@@ -2011,6 +2660,293 @@ test "L5 budget: park exhaustion is a distinguishable exception" {
     try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(610));
     try host.injectAccept(allocator, 611, token, null);
     try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(611));
+}
+
+test "L5 adoption admission: queued count, byte, and overflow bounds fail excess parks terminally" {
+    const allocator = std.testing.allocator;
+
+    // Count ceiling: one parked embargo transfers; its sibling fails instead
+    // of publishing a second pending slot.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{ .max_queued_accepts = 1 });
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l5-adopt-queue-count");
+        defer allocator.free(token);
+        try host.injectAccept(allocator, 690, token, "a");
+        try host.injectAccept(allocator, 691, token, "b");
+        var carol = Carol{};
+        const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+        try host.injectProvide(allocator, 69, carol_id, token);
+
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(690));
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(691));
+        try std.testing.expectEqualStrings("provision queued-accept budget exhausted", host.capture.reasonFor(691).?);
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 1), host.index.stats().queued_accepts);
+        try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+
+        try host.injectAcceptDisembargo(allocator, 69, "a");
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(690));
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+    }
+
+    // Byte ceiling is independent of count.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{
+            .max_queued_accepts = 8,
+            .max_queued_accept_bytes = 2,
+        });
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l5-adopt-queue-bytes");
+        defer allocator.free(token);
+        try host.injectAccept(allocator, 692, token, "aa");
+        try host.injectAccept(allocator, 693, token, "bbb");
+        var carol = Carol{};
+        const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+        try host.injectProvide(allocator, 70, carol_id, token);
+
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(692));
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(693));
+        try std.testing.expectEqual(@as(usize, 1), host.index.stats().queued_accepts);
+        try std.testing.expectEqual(@as(usize, 2), host.index.stats().queued_accept_bytes);
+        try host.injectAcceptDisembargo(allocator, 70, "aa");
+    }
+
+    // Checked arithmetic: corrupt-looking near-max aggregate gauges cannot
+    // wrap into an admitted queue entry. Reset the synthetic gauge after each
+    // probe so ordinary teardown retains its real-state invariants.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{
+            .max_queued_accepts = std.math.maxInt(usize),
+            .max_queued_accept_bytes = std.math.maxInt(usize),
+        });
+        defer host.deinitAll();
+        var carol = Carol{};
+        const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+
+        const count_token = try host.mintToken(allocator, "l5-adopt-count-overflow");
+        defer allocator.free(count_token);
+        try host.injectAccept(allocator, 694, count_token, "x");
+        host.index.queued_accept_count = std.math.maxInt(usize);
+        try host.injectProvide(allocator, 71, carol_id, count_token);
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(694));
+        try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+        host.index.queued_accept_count = 0;
+        const finish_count = try buildFinishFrame(allocator, 71);
+        defer allocator.free(finish_count);
+        try host.peer.handleFrame(finish_count);
+
+        const byte_token = try host.mintToken(allocator, "l5-adopt-byte-overflow");
+        defer allocator.free(byte_token);
+        try host.injectAccept(allocator, 695, byte_token, "xx");
+        host.index.queued_accept_bytes = std.math.maxInt(usize) - 1;
+        try host.injectProvide(allocator, 72, carol_id, byte_token);
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(695));
+        try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+        host.index.queued_accept_bytes = 0;
+    }
+}
+
+test "L5 admission defaults pin the per-peer containment policy" {
+    const limits = peer_impl.ProvisionIndexLimits{};
+    try std.testing.expectEqual(@as(usize, 64), limits.max_parked_accepts_per_peer);
+    try std.testing.expectEqual(@as(usize, 16 << 10), limits.max_parked_accept_bytes_per_peer);
+    try std.testing.expectEqual(@as(?u64, null), limits.park_ttl_ms);
+}
+
+test "L5 admission: per-peer count and attributed-byte ceilings preserve sibling capacity and refund on Finish" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{
+        .max_parked_accepts = 4,
+        .max_parked_accepts_per_peer = 1,
+        .max_parked_accept_bytes = 1 << 20,
+        .max_parked_accept_bytes_per_peer = 1 << 20,
+    });
+    defer host.deinitAll();
+
+    var sibling_capture = FrameCapture{ .allocator = allocator };
+    defer sibling_capture.deinit();
+    var sibling = Peer.initDetached(allocator);
+    sibling.disableThreadAffinity();
+    sibling.setSendFrameOverride(&sibling_capture, FrameCapture.send);
+    defer sibling.deinit();
+    try sibling.attachProvisionIndex(&host.index);
+
+    const attacker_one = try host.mintToken(allocator, "l5-peer-attacker-one");
+    defer allocator.free(attacker_one);
+    const attacker_two = try host.mintToken(allocator, "l5-peer-attacker-two");
+    defer allocator.free(attacker_two);
+    const legitimate = try host.mintToken(allocator, "l5-peer-legitimate");
+    defer allocator.free(legitimate);
+
+    try host.injectAccept(allocator, 640, attacker_one, "x");
+    try host.injectAccept(allocator, 641, attacker_two, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(641));
+
+    // The sibling still owns its independent share of the vat-wide budget.
+    try FrameHost.injectAcceptOn(&sibling, allocator, 740, legitimate, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), sibling_capture.returnFor(740));
+    try std.testing.expectEqual(@as(usize, 2), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), sibling.stats().parked_accepts);
+    try std.testing.expectEqual(attacker_one.len + 1, host.peer.stats().parked_accept_bytes);
+    try std.testing.expectEqual(legitimate.len, sibling.stats().parked_accept_bytes);
+
+    // Finish detaches and refunds the first peer's reservation exactly once.
+    const finish = try buildFinishFrame(allocator, 640);
+    defer allocator.free(finish);
+    try host.peer.handleFrame(finish);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+
+    try host.injectAccept(allocator, 642, attacker_two, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(642));
+    try std.testing.expectEqual(@as(usize, 2), host.index.stats().parked_accepts);
+
+    // Arithmetic overflow is a closed admission failure, never wraparound.
+    try std.testing.expectError(
+        error.ParkBudgetExceeded,
+        host.index.checkParkAdmission(&host.peer, std.math.maxInt(usize), 1),
+    );
+}
+
+test "L5 admission: repeated tokens are charged per Accept and the byte ceiling is peer-local" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{
+        .max_parked_accepts_per_peer = 8,
+        .max_parked_accept_bytes_per_peer = 1 << 20,
+    });
+    defer host.deinitAll();
+
+    const token = try host.mintToken(allocator, "l5-repeated-attribution");
+    defer allocator.free(token);
+    host.index.limits.max_parked_accept_bytes_per_peer = token.len * 2 + 1;
+
+    try host.injectAccept(allocator, 650, token, "x");
+    try host.injectAccept(allocator, 651, token, null);
+    try std.testing.expectEqual(token.len * 2 + 1, host.peer.stats().parked_accept_bytes);
+    try std.testing.expectEqual(token.len * 2 + 1, host.index.stats().parked_accept_attributed_bytes);
+
+    try host.injectAccept(allocator, 652, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(652));
+    try std.testing.expectEqual(@as(usize, 2), host.peer.stats().parked_accepts);
+}
+
+test "L5 admission: the vat-wide attributable-byte ceiling remains the final aggregate bound" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{
+        .max_parked_accepts = 8,
+        .max_parked_accepts_per_peer = 8,
+        .max_parked_accept_bytes_per_peer = 1 << 20,
+    });
+    defer host.deinitAll();
+
+    const token = try host.mintToken(allocator, "l5-vat-wide-byte-bound");
+    defer allocator.free(token);
+    host.index.limits.max_parked_accept_bytes = token.len;
+
+    try host.injectAccept(allocator, 653, token, null);
+    try std.testing.expectEqual(token.len, host.index.stats().parked_accept_attributed_bytes);
+    try host.injectAccept(allocator, 654, token, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(654));
+    try std.testing.expectEqualStrings(
+        "provision park budget exhausted",
+        host.capture.reasonFor(654).?,
+    );
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(token.len, host.index.stats().parked_accept_attributed_bytes);
+}
+
+test "L5 operability: per-peer park pressure and rejection events are exact and redacted" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{
+        .max_parked_accepts = 32,
+        .max_parked_accepts_per_peer = 5,
+        .max_parked_accept_bytes = 1 << 20,
+        .max_parked_accept_bytes_per_peer = 1 << 20,
+    });
+    defer host.deinitAll();
+
+    const Recorder = struct {
+        pressure_count: usize = 0,
+        pressure_current: usize = 0,
+        pressure_limit: usize = 0,
+        rejection_count: usize = 0,
+        rejection_resource: ?events.Resource = null,
+        rejection_attempted: ?usize = null,
+        rejection_limit: ?usize = null,
+        rejection_error: ?anyerror = null,
+
+        fn onEvent(ctx: *anyopaque, event: events.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (event) {
+                .pressure => |pressure| if (pressure.resource == .parked_accepts) {
+                    self.pressure_count += 1;
+                    self.pressure_current = pressure.current;
+                    self.pressure_limit = pressure.limit;
+                },
+                .resource_rejection => |rejection| if (rejection.resource == .parked_accepts or
+                    rejection.resource == .parked_accept_bytes)
+                {
+                    self.rejection_count += 1;
+                    self.rejection_resource = rejection.resource;
+                    self.rejection_attempted = rejection.attempted;
+                    self.rejection_limit = rejection.limit;
+                    self.rejection_error = rejection.err;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var recorder = Recorder{};
+    host.peer.setObserver(events.Observer.init(&recorder, Recorder.onEvent));
+    const secret_token = try host.mintToken(allocator, "SECRET-l5-observer-token");
+    defer allocator.free(secret_token);
+
+    // Limit 5 crosses its integer-exact 80% threshold at the fourth park.
+    var answer_id: u32 = 660;
+    while (answer_id < 665) : (answer_id += 1) {
+        try host.injectAccept(allocator, answer_id, secret_token, null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), recorder.pressure_count);
+    try std.testing.expectEqual(@as(usize, 4), recorder.pressure_current);
+    try std.testing.expectEqual(@as(usize, 5), recorder.pressure_limit);
+
+    // The next Accept is refused against the per-peer ceiling. The event
+    // reports only scalar classification/accounting metadata.
+    try host.injectAccept(allocator, 665, secret_token, "SECRET-embargo");
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(665));
+    try std.testing.expectEqual(@as(usize, 1), recorder.rejection_count);
+    try std.testing.expectEqual(@as(?events.Resource, .parked_accepts), recorder.rejection_resource);
+    try std.testing.expectEqual(@as(?usize, 6), recorder.rejection_attempted);
+    try std.testing.expectEqual(@as(?usize, 5), recorder.rejection_limit);
+    try std.testing.expectEqual(@as(?anyerror, error.PeerParkBudgetExceeded), recorder.rejection_error);
+
+    // Both emitted payload types are structurally redacted: neither can
+    // carry token, embargo, address, frame, or other byte slices/pointers.
+    const pressure_field_types = comptime std.meta.fieldTypes(events.PressureEvent);
+    inline for (pressure_field_types) |FieldType| {
+        try std.testing.expect(switch (@typeInfo(FieldType)) {
+            .pointer => false,
+            else => true,
+        });
+    }
+    const rejection_field_types = comptime std.meta.fieldTypes(events.ResourceRejectionEvent);
+    inline for (rejection_field_types) |FieldType| {
+        try std.testing.expect(switch (@typeInfo(FieldType)) {
+            .pointer => false,
+            else => true,
+        });
+    }
 }
 
 test "L5 V2-M5: cancelling the last parked accept unindexes and destroys the awaiting provision" {
@@ -2047,7 +2983,8 @@ test "L5 V2-M5: cancelling the last parked accept unindexes and destroys the awa
 // ============================================================================
 // L9: a TTL for parked accepts. Parking is UNAUTHENTICATED — the recipient
 // token is arbitrary bytes and needs no prior Provide — so without a time
-// bound one stranger connection holds vat-wide park slots until `Peer.deinit`.
+// bound one stranger connection holds vat-wide park slots until Finish,
+// terminal transport close, or peer teardown.
 // ============================================================================
 
 test "L9 characterization (no TTL): a stranger's parked accept starves an unrelated legit token" {
@@ -2068,10 +3005,10 @@ test "L9 characterization (no TTL): a stranger's parked accept starves an unrela
     try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(900));
     try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
 
-    // Arbitrarily long afterwards — the park has NO time bound at all, and the
-    // only release point is `Peer.deinit` — an unrelated legitimate token
-    // cannot park. The budgets are vat-wide, so this starves a SIBLING peer's
-    // legitimate rendezvous just as effectively.
+    // Arbitrarily long while the connection remains live — the park has NO
+    // time bound at all — an unrelated legitimate token cannot park. The
+    // aggregate budget is one slot, so this starves a sibling peer's
+    // legitimate rendezvous until an explicit lifecycle action reclaims it.
     try host.injectAccept(allocator, 901, legit, null);
     try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(901));
     try std.testing.expectEqualStrings(
@@ -2105,7 +3042,11 @@ test "L9: an expired parked accept is evicted at the next park attempt; the legi
     try host.injectAccept(allocator, 910, stranger, embargo);
     try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(910));
     try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
-    try std.testing.expectEqual(@as(usize, embargo.len), host.index.parked_accept_bytes);
+    try std.testing.expectEqual(stranger.len + embargo.len, host.index.parked_accept_bytes);
+    try std.testing.expectEqual(@as(usize, embargo.len), host.index.parked_accept_embargo_bytes);
+    const parked_stats = host.peer.stats();
+    try std.testing.expectEqual(@as(usize, 1), parked_stats.parked_accepts);
+    try std.testing.expectEqual(stranger.len + embargo.len, parked_stats.parked_accept_bytes);
     try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
 
     tc.advanceMs(31_000);
@@ -2124,7 +3065,11 @@ test "L9: an expired parked accept is evicted at the next park attempt; the legi
     //     `failPendingAccept` alone gets wrong: that helper adjusts only the
     //     QUEUED counters, so an eviction would leak the parked byte budget
     //     upward forever and permanently shrink the bound the TTL protects.
-    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_bytes);
+    try std.testing.expectEqual(legit.len, host.index.parked_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_embargo_bytes);
+    const replacement_stats = host.peer.stats();
+    try std.testing.expectEqual(@as(usize, 1), replacement_stats.parked_accepts);
+    try std.testing.expectEqual(legit.len, replacement_stats.parked_accept_bytes);
     // The squatter's now-unadoptable awaiting provision was unindexed; only
     // the legitimate one remains.
     try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
@@ -2132,6 +3077,698 @@ test "L9: an expired parked accept is evicted at the next park attempt; the legi
     try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
     // Teardown under std.testing.allocator proves the eviction freed both
     // owners' allocations (index-owned parked embargo, peer-owned key dupe).
+}
+
+test "L9: explicit sweep uses the exact deadline boundary and refunds all gauges" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+    const token = try host.mintToken(allocator, "l9-boundary");
+    defer allocator.free(token);
+
+    try host.injectAccept(allocator, 915, token, "edge");
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(token.len + 4, host.index.stats().parked_accept_attributed_bytes);
+
+    tc.advanceMs(9);
+    try std.testing.expectEqual(@as(usize, 0), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(915));
+    try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+
+    tc.advanceMs(1);
+    try std.testing.expectEqual(@as(usize, 1), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(915));
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accept_attributed_bytes);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accept_embargo_bytes);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accept_bytes);
+}
+
+test "L9 ordering: Provide immediately before expiry adopts; Provide at expiry refuses the old park" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+    var carol = Carol{};
+    const carol_id = try host.peer.addExport(.{ .ctx = &carol, .on_call = Carol.onCall });
+
+    const before = try host.mintToken(allocator, "l9-provide-before");
+    defer allocator.free(before);
+    try host.injectAccept(allocator, 916, before, null);
+    tc.advanceMs(9);
+    try host.injectProvide(allocator, 816, carol_id, before);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(916));
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expect(host.peer.provisions_by_question.contains(816));
+
+    const before_finish = try buildFinishFrame(allocator, 816);
+    defer allocator.free(before_finish);
+    try host.peer.handleFrame(before_finish);
+
+    const exact = try host.mintToken(allocator, "l9-provide-exact");
+    defer allocator.free(exact);
+    try host.injectAccept(allocator, 917, exact, null);
+    tc.advanceMs(10);
+    try host.injectProvide(allocator, 817, carol_id, exact);
+
+    // Provide drives the sweep before adoption. At `now == deadline`, the old
+    // Accept is terminally expired; the arriving Provide registers afresh.
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(917));
+    try std.testing.expectEqualStrings("parked accept expired", host.capture.reasonFor(917).?);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expect(host.peer.provisions_by_question.contains(817));
+
+    // A new post-expiry Accept uses the fresh active provision normally.
+    try host.injectAccept(allocator, 918, exact, null);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(918));
+}
+
+test "L9 maintenance: non-Accept handleFrame and checkDeadlines both expire parks without changing deadline count" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+
+    const frame_driven = try host.mintToken(allocator, "l9-frame-driver");
+    defer allocator.free(frame_driven);
+    try host.injectAccept(allocator, 919, frame_driven, null);
+    tc.advanceMs(10);
+
+    // A decodable Finish for an unknown answer is a valid, non-Accept frame.
+    // Expiry happens at the frame boundary before that frame dispatches.
+    const benign_finish = try buildFinishFrame(allocator, 0xf001);
+    defer allocator.free(benign_finish);
+    try host.peer.handleFrame(benign_finish);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(919));
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+
+    const deadline_driven = try host.mintToken(allocator, "l9-deadline-driver");
+    defer allocator.free(deadline_driven);
+    try host.injectAccept(allocator, 9200, deadline_driven, null);
+    tc.advanceMs(10);
+
+    // The peer itself has no outbound-question clock or questions. The park
+    // expires, but checkDeadlines keeps its documented cancellation count.
+    try std.testing.expectEqual(@as(usize, 0), host.peer.checkDeadlines());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(9200));
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+}
+
+test "L9 expiry: reentrant Finish and exception-send failure cannot double-refund or orphan a park" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+
+    const ExpirySend = struct {
+        allocator: std.mem.Allocator,
+        peer: *Peer,
+        answer_id: u32,
+        mode: enum { reenter_finish, fail_exception },
+        matching_returns: usize = 0,
+        finish_reentries: usize = 0,
+
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = try decoded.asReturn();
+            if (ret.answer_id != self.answer_id or ret.tag != .exception) return;
+            self.matching_returns += 1;
+            switch (self.mode) {
+                .reenter_finish => {
+                    self.finish_reentries += 1;
+                    const finish = try buildFinishFrame(self.allocator, self.answer_id);
+                    defer self.allocator.free(finish);
+                    try self.peer.handleFrame(finish);
+                },
+                .fail_exception => return error.TestExceptionSendFailure,
+            }
+        }
+    };
+
+    var send = ExpirySend{
+        .allocator = allocator,
+        .peer = &host.peer,
+        .answer_id = 9210,
+        .mode = .reenter_finish,
+    };
+    host.peer.setSendFrameOverride(&send, ExpirySend.send);
+
+    const reentrant_token = try host.mintToken(allocator, "l9-reentrant-expiry");
+    defer allocator.free(reentrant_token);
+    try host.injectAccept(allocator, 9210, reentrant_token, "reenter");
+    tc.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(usize, 1), send.matching_returns);
+    try std.testing.expectEqual(@as(usize, 1), send.finish_reentries);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+
+    // A second entry reaches the same detach/refund point, but the transport
+    // write fails. Best-effort expiry still retires it wholly.
+    send.answer_id = 9211;
+    send.mode = .fail_exception;
+    send.matching_returns = 0;
+    send.finish_reentries = 0;
+    const failed_send_token = try host.mintToken(allocator, "l9-failed-expiry-send");
+    defer allocator.free(failed_send_token);
+    try host.injectAccept(allocator, 9211, failed_send_token, "fail-send");
+    tc.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(usize, 1), send.matching_returns);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accept_attributed_bytes);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+
+    // Natural late cleanup is a clean miss, and another sweep transfers
+    // nothing: no double refund and no retained due marker.
+    const late_finish = try buildFinishFrame(allocator, 9211);
+    defer allocator.free(late_finish);
+    try host.peer.handleFrame(late_finish);
+    try std.testing.expectEqual(@as(usize, 0), host.index.sweepExpiredParkedAccepts());
+}
+
+test "L9 clock reentrancy: nested park and fresh-index teardown leave coherent state" {
+    const allocator = std.testing.allocator;
+
+    // A Clock.now callback that reinjects the same Accept must not reach any
+    // duplicate/admission/publication state. The nested park unwinds at the
+    // clock guard; the outer frame publishes exactly one reservation.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{ .park_ttl_ms = 10 });
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l9-clock-reentrant-same-answer");
+        defer allocator.free(token);
+        const frame = try buildAcceptFrame(allocator, 9212, token, "clock-reenter");
+        defer allocator.free(frame);
+
+        const ReentrantClock = struct {
+            peer: *Peer,
+            frame: []const u8,
+            attempted: bool = false,
+            calls: usize = 0,
+            nested_error: ?anyerror = null,
+
+            fn now(ctx: *anyopaque) i64 {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                self.calls += 1;
+                if (!self.attempted) {
+                    self.attempted = true;
+                    self.peer.handleFrame(self.frame) catch |err| {
+                        self.nested_error = err;
+                    };
+                }
+                return 0;
+            }
+        };
+        var clock_ctx = ReentrantClock{ .peer = &host.peer, .frame = frame };
+        host.index.setClock(.{ .ctx = &clock_ctx, .now_fn = ReentrantClock.now });
+
+        try host.peer.handleFrame(frame);
+        try std.testing.expect(clock_ctx.attempted);
+        try std.testing.expectEqual(error.ParkClockReentrant, clock_ctx.nested_error.?);
+        try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+        try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(9212));
+    }
+
+    // Fresh-token sampling also precedes by_key publication. If host code
+    // tears the index down from Clock.now, no ref_count=0 provision is ever
+    // exposed and the outer Accept fails through the ordinary wire exception.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{ .park_ttl_ms = 10 });
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l9-clock-reentrant-index-deinit");
+        defer allocator.free(token);
+
+        const TeardownClock = struct {
+            index: *ProvisionIndex,
+            fired: bool = false,
+
+            fn now(ctx: *anyopaque) i64 {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                if (!self.fired) {
+                    self.fired = true;
+                    self.index.deinit();
+                }
+                return 0;
+            }
+        };
+        var clock_ctx = TeardownClock{ .index = &host.index };
+        host.index.setClock(.{ .ctx = &clock_ctx, .now_fn = TeardownClock.now });
+        try host.injectAccept(allocator, 9213, token, null);
+
+        try std.testing.expect(clock_ctx.fired);
+        try std.testing.expect(host.peer.provision_index == null);
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(9213));
+        try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+
+        // Replace the already-deinitialized field so FrameHost's ordinary
+        // deferred teardown owns exactly one live index.
+        host.index = ProvisionIndex.init(allocator, .{});
+        host.index.disableThreadAffinity();
+    }
+
+    // Fresh-token sampling must also reject same-address Index replacement.
+    // The clock callback installs a new generation and parks an unrelated
+    // Accept into it; the outer old-generation Accept must fail without
+    // overwriting or inheriting the replacement's clock domain.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{ .park_ttl_ms = 10 });
+        defer host.deinitAll();
+        const outer_token = try host.mintToken(allocator, "l9-clock-fresh-index-aba-outer");
+        defer allocator.free(outer_token);
+        const replacement_token = try host.mintToken(allocator, "l9-clock-fresh-index-aba-new");
+        defer allocator.free(replacement_token);
+        const replacement_frame = try buildAcceptFrame(allocator, 9219, replacement_token, null);
+        defer allocator.free(replacement_frame);
+        var replacement_clock = rpc_time.TestClock{};
+
+        const FreshAbaClock = struct {
+            allocator: std.mem.Allocator,
+            index: *ProvisionIndex,
+            peer: *Peer,
+            replacement_clock: *rpc_time.TestClock,
+            replacement_frame: []const u8,
+            fired: bool = false,
+            reattached: bool = false,
+            attach_error: ?anyerror = null,
+            replacement_error: ?anyerror = null,
+
+            fn now(ctx: *anyopaque) i64 {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                if (!self.fired) {
+                    self.fired = true;
+                    self.index.deinit();
+                    self.index.* = ProvisionIndex.init(self.allocator, .{ .park_ttl_ms = 10 });
+                    self.index.disableThreadAffinity();
+                    self.index.setClock(self.replacement_clock.clock());
+                    self.peer.attachProvisionIndex(self.index) catch |err| {
+                        self.attach_error = err;
+                        return 100 * std.time.ns_per_ms;
+                    };
+                    self.reattached = true;
+                    self.peer.handleFrame(self.replacement_frame) catch |err| {
+                        self.replacement_error = err;
+                    };
+                }
+                return 100 * std.time.ns_per_ms;
+            }
+        };
+        var clock_ctx = FreshAbaClock{
+            .allocator = allocator,
+            .index = &host.index,
+            .peer = &host.peer,
+            .replacement_clock = &replacement_clock,
+            .replacement_frame = replacement_frame,
+        };
+        host.index.setClock(.{ .ctx = &clock_ctx, .now_fn = FreshAbaClock.now });
+        try host.injectAccept(allocator, 9220, outer_token, null);
+
+        try std.testing.expect(clock_ctx.fired);
+        try std.testing.expect(clock_ctx.reattached);
+        try std.testing.expectEqual(@as(?anyerror, null), clock_ctx.attach_error);
+        try std.testing.expectEqual(@as(?anyerror, null), clock_ctx.replacement_error);
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(9220));
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(9219));
+        try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+        try std.testing.expect(host.peer.cross_peer_pending_accepts.contains(9219));
+        try std.testing.expect(!host.peer.cross_peer_pending_accepts.contains(9220));
+        try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+        try std.testing.expectEqual(@as(?i64, 10 * std.time.ns_per_ms), host.index.next_park_deadline_ns);
+    }
+
+    // Existing-provision sampling also rejects ABA reuse of the same Index
+    // address. The retained old provision is not considered live merely
+    // because the callback reinitialized and reattached that storage.
+    {
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{ .park_ttl_ms = 10 });
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l9-clock-index-aba");
+        defer allocator.free(token);
+        // No clock yet: the first park is deliberately unstamped, so the
+        // second frame reaches its own deadline sampling without the
+        // pre-lookup expiry sweep invoking the callback first.
+        try host.injectAccept(allocator, 9217, token, null);
+
+        const AbaClock = struct {
+            allocator: std.mem.Allocator,
+            index: *ProvisionIndex,
+            peer: *Peer,
+            fired: bool = false,
+            reattached: bool = false,
+            attach_error: ?anyerror = null,
+
+            fn now(ctx: *anyopaque) i64 {
+                const self: *@This() = @ptrCast(@alignCast(ctx));
+                if (!self.fired) {
+                    self.fired = true;
+                    self.index.deinit();
+                    self.index.* = ProvisionIndex.init(self.allocator, .{ .park_ttl_ms = 10 });
+                    self.index.disableThreadAffinity();
+                    self.peer.attachProvisionIndex(self.index) catch |err| {
+                        self.attach_error = err;
+                        return 0;
+                    };
+                    self.reattached = true;
+                }
+                return 0;
+            }
+        };
+        var clock_ctx = AbaClock{
+            .allocator = allocator,
+            .index = &host.index,
+            .peer = &host.peer,
+        };
+        host.index.setClock(.{ .ctx = &clock_ctx, .now_fn = AbaClock.now });
+        try host.injectAccept(allocator, 9218, token, null);
+
+        try std.testing.expect(clock_ctx.fired);
+        try std.testing.expect(clock_ctx.reattached);
+        try std.testing.expectEqual(@as(?anyerror, null), clock_ctx.attach_error);
+        try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(9218));
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+        try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+    }
+}
+
+test "L9 clock ABA: an old-generation sweep cannot expire replacement parks" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+
+    var old_clock = rpc_time.TestClock{};
+    host.index.setClock(old_clock.clock());
+    const old_token = try host.mintToken(allocator, "l9-sweep-index-aba-old");
+    defer allocator.free(old_token);
+    try host.injectAccept(allocator, 9221, old_token, null);
+
+    const replacement_token = try host.mintToken(allocator, "l9-sweep-index-aba-new");
+    defer allocator.free(replacement_token);
+    const replacement_frame = try buildAcceptFrame(allocator, 9222, replacement_token, null);
+    defer allocator.free(replacement_frame);
+    var replacement_clock = rpc_time.TestClock{};
+
+    const SweepAbaClock = struct {
+        allocator: std.mem.Allocator,
+        index: *ProvisionIndex,
+        peer: *Peer,
+        replacement_clock: *rpc_time.TestClock,
+        replacement_frame: []const u8,
+        fired: bool = false,
+        reattached: bool = false,
+        attach_error: ?anyerror = null,
+        replacement_error: ?anyerror = null,
+
+        fn now(ctx: *anyopaque) i64 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (!self.fired) {
+                self.fired = true;
+                self.index.deinit();
+                self.index.* = ProvisionIndex.init(self.allocator, .{ .park_ttl_ms = 10 });
+                self.index.disableThreadAffinity();
+                self.index.setClock(self.replacement_clock.clock());
+                self.peer.attachProvisionIndex(self.index) catch |err| {
+                    self.attach_error = err;
+                    return 100 * std.time.ns_per_ms;
+                };
+                self.reattached = true;
+                self.peer.handleFrame(self.replacement_frame) catch |err| {
+                    self.replacement_error = err;
+                };
+            }
+            return 100 * std.time.ns_per_ms;
+        }
+    };
+    var clock_ctx = SweepAbaClock{
+        .allocator = allocator,
+        .index = &host.index,
+        .peer = &host.peer,
+        .replacement_clock = &replacement_clock,
+        .replacement_frame = replacement_frame,
+    };
+    host.index.setClock(.{ .ctx = &clock_ctx, .now_fn = SweepAbaClock.now });
+
+    try std.testing.expectEqual(@as(usize, 0), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expect(clock_ctx.fired);
+    try std.testing.expect(clock_ctx.reattached);
+    try std.testing.expectEqual(@as(?anyerror, null), clock_ctx.attach_error);
+    try std.testing.expectEqual(@as(?anyerror, null), clock_ctx.replacement_error);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(9221));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(9222));
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+    try std.testing.expect(host.peer.cross_peer_pending_accepts.contains(9222));
+    try std.testing.expect(!host.peer.cross_peer_pending_accepts.contains(9221));
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+    try std.testing.expectEqual(@as(?i64, 10 * std.time.ns_per_ms), host.index.next_park_deadline_ns);
+    try std.testing.expect(!host.index.park_sweep_in_progress);
+    try std.testing.expect(!host.index.park_clock_sample_in_progress);
+}
+
+test "L9 clock reentrancy: isParkSweepDue suppresses recursive sampling" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+    const token = try host.mintToken(allocator, "l9-clock-recursive-due");
+    defer allocator.free(token);
+    try host.injectAccept(allocator, 9214, token, null);
+
+    const RecursiveDueClock = struct {
+        index: *ProvisionIndex,
+        calls: usize = 0,
+        nested_due: ?bool = null,
+
+        fn now(ctx: *anyopaque) i64 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            self.nested_due = self.index.isParkSweepDue();
+            return 10 * std.time.ns_per_ms;
+        }
+    };
+    var clock_ctx = RecursiveDueClock{ .index = &host.index };
+    host.index.setClock(.{ .ctx = &clock_ctx, .now_fn = RecursiveDueClock.now });
+    try std.testing.expect(host.index.isParkSweepDue());
+    try std.testing.expectEqual(@as(usize, 1), clock_ctx.calls);
+    try std.testing.expectEqual(@as(?bool, false), clock_ctx.nested_due);
+}
+
+test "L9 expiry reentrancy: first Return holder-close observes the full expired batch neutralized" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+
+    var holder = Peer.initDetached(allocator);
+    holder.disableThreadAffinity();
+    defer holder.deinit();
+    try holder.attachProvisionIndex(&host.index);
+    const token = try host.mintToken(allocator, "l9-expiry-batch-holder-close");
+    defer allocator.free(token);
+    try FrameHost.injectAcceptOn(&holder, allocator, 9215, token, "first");
+    try FrameHost.injectAcceptOn(&holder, allocator, 9216, token, "second");
+    try std.testing.expectEqual(@as(usize, 2), host.index.stats().parked_accepts);
+
+    const ExpiryClose = struct {
+        allocator: std.mem.Allocator,
+        holder: *Peer,
+        index: *ProvisionIndex,
+        returns: usize = 0,
+        close_callbacks: usize = 0,
+        observed_peer_parks: usize = std.math.maxInt(usize),
+        observed_peer_bytes: usize = std.math.maxInt(usize),
+        observed_records: usize = std.math.maxInt(usize),
+        observed_index_parks: usize = std.math.maxInt(usize),
+
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag != .@"return") return;
+            const ret = try decoded.asReturn();
+            if (ret.tag != .exception) return;
+            self.returns += 1;
+            if (self.returns == 1) self.holder.notifyTransportClosed();
+        }
+
+        fn onClose(ctx_opt: ?*anyopaque, peer: *Peer) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_opt.?));
+            const peer_stats = peer.stats();
+            self.close_callbacks += 1;
+            self.observed_peer_parks = peer_stats.parked_accepts;
+            self.observed_peer_bytes = peer_stats.parked_accept_bytes;
+            self.observed_records = peer.cross_peer_pending_accepts.count();
+            self.observed_index_parks = self.index.stats().parked_accepts;
+        }
+    };
+    var close = ExpiryClose{
+        .allocator = allocator,
+        .holder = &holder,
+        .index = &host.index,
+    };
+    holder.setSendFrameOverride(&close, ExpiryClose.send);
+    holder.start(&close, null, ExpiryClose.onClose);
+
+    tc.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 2), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(usize, 1), close.close_callbacks);
+    try std.testing.expectEqual(@as(usize, 0), close.observed_peer_parks);
+    try std.testing.expectEqual(@as(usize, 0), close.observed_peer_bytes);
+    try std.testing.expectEqual(@as(usize, 0), close.observed_records);
+    try std.testing.expectEqual(@as(usize, 0), close.observed_index_parks);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), holder.cross_peer_pending_accepts.count());
+}
+
+test "L9 OOM: due-sweep candidate collection leaves a live due park and retries cleanly" {
+    const base = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(base, .{});
+    const allocator = failing.allocator();
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{ .park_ttl_ms = 10 });
+    defer host.deinitAll();
+    var tc = rpc_time.TestClock{};
+    host.index.setClock(tc.clock());
+
+    const token = try host.mintToken(allocator, "l9-sweep-oom");
+    defer allocator.free(token);
+    try host.injectAccept(allocator, 9212, token, "sweep-oom");
+    tc.advanceMs(10);
+    try std.testing.expect(host.index.isParkSweepDue());
+
+    // The first due-sweep allocation is candidate collection. Keeping the
+    // failing allocator pinned at its current index makes that allocation
+    // fail without detaching any live entry.
+    failing.fail_index = failing.alloc_index;
+    try std.testing.expectEqual(@as(usize, 0), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expect(host.index.isParkSweepDue());
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(9212));
+
+    // Restore allocation capacity and retry the still-due sweep. The same
+    // entry now drains exactly once and all ownership/accounting disappears.
+    failing.fail_index = std.math.maxInt(usize);
+    try std.testing.expectEqual(@as(usize, 1), host.index.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(9212));
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+}
+
+test "L5 OOM: every park insertion allocation rolls back wholly and an immediate retry succeeds" {
+    const base = std.testing.allocator;
+    var window_start: usize = 0;
+    var window_end: usize = 0;
+
+    // Pass 1 records the exact allocation window of handling an already-built
+    // embargoed Accept frame. It includes decode plus the index token/embargo
+    // dupes, parked-list growth, and holder-map insertion.
+    {
+        var failing = std.testing.FailingAllocator.init(base, .{});
+        const allocator = failing.allocator();
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{});
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l5-insert-oom");
+        defer allocator.free(token);
+        const frame = try buildAcceptFrame(allocator, 9213, token, "insert-oom");
+        defer allocator.free(frame);
+
+        window_start = failing.alloc_index;
+        try host.peer.handleFrame(frame);
+        window_end = failing.alloc_index;
+    }
+    try std.testing.expect(window_end > window_start);
+
+    var induced_failures: usize = 0;
+    var fail_index = window_start;
+    while (fail_index < window_end) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(base, .{ .fail_index = fail_index });
+        const allocator = failing.allocator();
+        var host: FrameHost = undefined;
+        try host.init(allocator, .{});
+        defer host.deinitAll();
+        const token = try host.mintToken(allocator, "l5-insert-oom");
+        defer allocator.free(token);
+        const embargo = "insert-oom";
+        const frame = try buildAcceptFrame(allocator, 9213, token, embargo);
+        defer allocator.free(frame);
+
+        try std.testing.expectError(error.OutOfMemory, host.peer.handleFrame(frame));
+        induced_failures += 1;
+        try std.testing.expect(failing.has_induced_failure);
+
+        // Every partially-built owner is gone: no holder record, awaiting
+        // provision, byte charge, or deadline marker escaped the ladder.
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accept_attributed_bytes);
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accept_embargo_bytes);
+        try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accept_bytes);
+        try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+        try std.testing.expectEqual(@as(usize, 0), host.index.by_key.count());
+        try std.testing.expectEqual(@as(?i64, null), host.index.next_park_deadline_ns);
+
+        // Let the failed allocation and every later one proceed. Retrying the
+        // identical frame immediately creates one complete parked record.
+        failing.fail_index = std.math.maxInt(usize);
+        try host.peer.handleFrame(frame);
+        try std.testing.expectEqual(@as(usize, 1), host.index.stats().parked_accepts);
+        try std.testing.expectEqual(token.len + embargo.len, host.index.stats().parked_accept_attributed_bytes);
+        try std.testing.expectEqual(@as(usize, embargo.len), host.index.stats().parked_accept_embargo_bytes);
+        try std.testing.expectEqual(@as(usize, 1), host.peer.stats().parked_accepts);
+        try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+        try std.testing.expectEqual(@as(usize, 1), host.index.by_key.count());
+
+        const finish = try buildFinishFrame(allocator, 9213);
+        defer allocator.free(finish);
+        try host.peer.handleFrame(finish);
+        try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    }
+    try std.testing.expectEqual(window_end - window_start, induced_failures);
 }
 
 test "L9: the sweep evicts only what expired — a younger sibling survives and is still adopted" {
@@ -2167,7 +3804,7 @@ test "L9: the sweep evicts only what expired — a younger sibling survives and 
     try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(921));
     try std.testing.expectEqual(@as(?protocol.ReturnTag, null), host.capture.returnFor(922));
     try std.testing.expectEqual(@as(usize, 2), host.index.parked_accept_count);
-    try std.testing.expectEqual(@as(usize, 0), host.index.parked_accept_bytes);
+    try std.testing.expectEqual(token.len + other.len, host.index.parked_accept_bytes);
     try std.testing.expectEqual(@as(usize, 2), host.index.by_key.count());
 
     // The survivor is still a live rendezvous: the Provide adopts and serves it.
@@ -2176,9 +3813,10 @@ test "L9: the sweep evicts only what expired — a younger sibling survives and 
     try host.injectProvide(allocator, 92, carol_id, token);
     try std.testing.expectEqual(@as(?protocol.ReturnTag, .results), host.capture.returnFor(921));
     try std.testing.expectEqual(@as(usize, 1), host.index.parked_accept_count);
+    try std.testing.expectEqual(other.len, host.index.parked_accept_bytes);
 }
 
-test "L5 F-2: index deinit fails parked accepts; the acceptor's follow-up Finish is a clean miss" {
+test "L5 F-2: index deinit retires a parked accept send-free; a late Finish is a clean miss" {
     const allocator = std.testing.allocator;
 
     var capture = FrameCapture{ .allocator = allocator };
@@ -2215,19 +3853,72 @@ test "L5 F-2: index deinit fails parked accepts; the acceptor's follow-up Finish
     try peer.handleFrame(accept_frame);
     try std.testing.expectEqual(@as(usize, 1), peer.cross_peer_pending_accepts.count());
 
-    // Index dies with the accept parked: the accept fails LOUDLY (delivered
-    // exception Return) and the holder record is removed BEFORE the send —
-    // so the natural follow-ups touch nothing freed.
+    // Index destruction is callback-free: it cannot safely send through a
+    // peer whose close callback may synchronously deinitialize that peer.
+    // The holder record and accounting still retire deterministically.
     index.deinit();
-    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), capture.returnFor(630));
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, null), capture.returnFor(630));
     try std.testing.expectEqual(@as(usize, 0), peer.cross_peer_pending_accepts.count());
 
-    // Follow-up 1: the acceptor Finishes the failed answer — clean miss.
+    // A remote Finish that races or follows administrative index destruction
+    // is a clean miss.
     const finish_frame = try buildFinishFrame(allocator, 630);
     defer allocator.free(finish_frame);
     try peer.handleFrame(finish_frame);
     // Follow-up 2: peer deinit (in the test's defers) — no UAF, no leak,
     // under std.testing.allocator.
+}
+
+test "L5 index deinit: all holder records refund before reachability is severed and no callback runs" {
+    const allocator = std.testing.allocator;
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    var index_deinited = false;
+    defer {
+        host.dummy.deinit();
+        host.net.deinit();
+        host.peer.deinit();
+        if (!index_deinited) host.index.deinit();
+        host.capture.deinit();
+    }
+
+    const first_token = try host.mintToken(allocator, "l5-index-reentrant-a");
+    defer allocator.free(first_token);
+    const second_token = try host.mintToken(allocator, "l5-index-reentrant-b");
+    defer allocator.free(second_token);
+    try host.injectAccept(allocator, 632, first_token, "first-secret");
+    try host.injectAccept(allocator, 633, second_token, "second-secret");
+    try std.testing.expectEqual(@as(usize, 2), host.index.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 2), host.peer.cross_peer_pending_accepts.count());
+
+    const SendCounter = struct {
+        count: usize = 0,
+
+        fn send(ctx: *anyopaque, _: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.count += 1;
+        }
+    };
+
+    var sends = SendCounter{};
+    host.peer.setSendFrameOverride(&sends, SendCounter.send);
+
+    host.index.deinit();
+    index_deinited = true;
+
+    try std.testing.expectEqual(@as(usize, 0), sends.count);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), host.peer.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().parked_accepts);
+    try std.testing.expect(host.peer.provision_index == null);
+
+    // Both natural late Finishes are clean misses after index teardown.
+    const first_finish = try buildFinishFrame(allocator, 632);
+    defer allocator.free(first_finish);
+    try host.peer.handleFrame(first_finish);
+    const second_finish = try buildFinishFrame(allocator, 633);
+    defer allocator.free(second_finish);
+    try host.peer.handleFrame(second_finish);
 }
 
 // ============================================================================
@@ -2552,7 +4243,11 @@ test "L8 Vat: entropy is mandatory (seed or io), enrollment wires index + entrop
     var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
     defer net.deinit();
 
-    var vat = try peer_impl.Vat.init(allocator, .{ .seed = @as([32]u8, @splat(7)) });
+    var tc = rpc_time.TestClock{};
+    var vat = try peer_impl.Vat.init(allocator, .{
+        .seed = @as([32]u8, @splat(7)),
+        .clock = tc.clock(),
+    });
     vat.disableThreadAffinity();
     defer vat.deinit();
     try vat.enroll(&peers.c_to_b);
@@ -2576,10 +4271,16 @@ test "L8 Vat: entropy is mandatory (seed or io), enrollment wires index + entrop
     // Deterministic seed => deterministic stream: two fresh Vats with the
     // same seed produce identical bytes (the L7 wire test pins how a minted
     // id reaches the frame; this pins the seed seam).
-    var vat2 = try peer_impl.Vat.init(allocator, .{ .seed = @as([32]u8, @splat(9)) });
+    var vat2 = try peer_impl.Vat.init(allocator, .{
+        .seed = @as([32]u8, @splat(9)),
+        .limits = .{ .park_ttl_ms = null },
+    });
     vat2.disableThreadAffinity();
     defer vat2.deinit();
-    var vat3 = try peer_impl.Vat.init(allocator, .{ .seed = @as([32]u8, @splat(9)) });
+    var vat3 = try peer_impl.Vat.init(allocator, .{
+        .seed = @as([32]u8, @splat(9)),
+        .limits = .{ .park_ttl_ms = null },
+    });
     vat3.disableThreadAffinity();
     defer vat3.deinit();
     var a: [16]u8 = undefined;
@@ -2592,6 +4293,46 @@ test "L8 Vat: entropy is mandatory (seed or io), enrollment wires index + entrop
     try setup.teardownImports(&peers);
     try harness.expectNoProvideState(&peers.c_to_b);
     try harness.expectNoProvideState(&peers.c_to_a);
+}
+
+test "L8 Vat: value-stored Io time drives the explicit parked-Accept sweep" {
+    const allocator = std.testing.allocator;
+
+    // Reuse the loopback network helper only to mint a well-formed opaque
+    // completion token; the Vat under test owns a separate peer and index.
+    var mint_host: FrameHost = undefined;
+    try mint_host.init(allocator, .{});
+    defer mint_host.deinitAll();
+    const token = try mint_host.mintToken(allocator, "l8-vat-io-sweep");
+    defer allocator.free(token);
+
+    var vat = try peer_impl.Vat.init(allocator, .{
+        .seed = @as([32]u8, @splat(13)),
+        .io = std.testing.io,
+        .limits = .{ .park_ttl_ms = 0 },
+    });
+    vat.disableThreadAffinity();
+    defer vat.deinit();
+
+    var capture = FrameCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    peer.setSendFrameOverride(&capture, FrameCapture.send);
+    defer peer.deinit();
+    try vat.enroll(&peer);
+
+    try std.testing.expect(vat.index.clock == null);
+    try std.testing.expect(vat.index.clock_io != null);
+    try std.testing.expect(vat.index.clockNow() != null);
+    try FrameHost.injectAcceptOn(&peer, allocator, 830, token, null);
+    try std.testing.expectEqual(@as(usize, 1), vat.stats().parked_accepts);
+
+    try std.testing.expectEqual(@as(usize, 1), vat.sweepExpiredParkedAccepts());
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), capture.returnFor(830));
+    try std.testing.expectEqualStrings("parked accept expired", capture.reasonFor(830).?);
+    try std.testing.expectEqual(@as(usize, 0), vat.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().parked_accepts);
 }
 
 // ============================================================================
@@ -2918,6 +4659,83 @@ test "L17 site 1 embargoed: an embargoed Accept of a receiverHosted target compl
     try vat.remote.releaseImport(staged.introducer_import, 1);
     try vat.owner.releaseImport(vat.carol_import, 1);
     try harness.expectNoImport(&vat.owner, vat.carol_import);
+}
+
+test "L17 Finish neutralizes a receiverHosted queue before deferred Release destroys the index" {
+    const allocator = std.testing.allocator;
+
+    var host: FrameHost = undefined;
+    try host.init(allocator, .{});
+    defer host.deinitAll();
+
+    var vat: ImportOwnerVat = undefined;
+    try vat.init(allocator, &host.index);
+    defer vat.deinitAll();
+
+    var introducer = Introducer{};
+    const token = try host.mintToken(allocator, "l17-finish-index-deinit");
+    defer allocator.free(token);
+    const staged = try stageSite1Provide(&vat, allocator, &introducer, token, 94);
+    const embargo = "finish-index-deinit-embargo";
+    try host.injectAccept(allocator, 940, token, embargo);
+    try std.testing.expectEqual(@as(usize, 1), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 1), host.peer.cross_peer_pending_accepts.count());
+
+    // Drain all ordinary target refs while the Provide-time handoff pin keeps
+    // the import alive. Its Finish must emit the deferred Release(1).
+    try vat.remote.releaseImport(staged.promise_import, 1);
+    try vat.owner.releaseImport(vat.carol_import, 1);
+    {
+        const entry = vat.owner.caps.imports.get(vat.carol_import) orelse return error.ImportDiedDespitePin;
+        try std.testing.expectEqual(@as(u32, 1), entry.handoff_pin_count);
+        try std.testing.expectEqual(@as(u32, 1), entry.deferred_release);
+    }
+
+    const ReleaseDeinitsIndex = struct {
+        allocator: std.mem.Allocator,
+        link: *PairLink,
+        index: *ProvisionIndex,
+        holder: *Peer,
+        fired: bool = false,
+        observed_queued: usize = std.math.maxInt(usize),
+        observed_records: usize = std.math.maxInt(usize),
+
+        fn send(ctx: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (!self.fired and decoded.tag == .release) {
+                self.fired = true;
+                self.observed_queued = self.index.stats().queued_accepts;
+                self.observed_records = self.holder.cross_peer_pending_accepts.count();
+                self.index.deinit();
+            }
+            try PairLink.rightSend(self.link, frame);
+        }
+    };
+    var callback = ReleaseDeinitsIndex{
+        .allocator = allocator,
+        .link = &vat.link,
+        .index = &host.index,
+        .holder = &host.peer,
+    };
+    vat.owner.setSendFrameOverride(&callback, ReleaseDeinitsIndex.send);
+
+    const finish = try buildFinishFrame(allocator, 94);
+    defer allocator.free(finish);
+    try vat.owner.handleFrame(finish);
+
+    try std.testing.expect(callback.fired);
+    try std.testing.expectEqual(@as(usize, 0), callback.observed_queued);
+    try std.testing.expectEqual(@as(usize, 0), callback.observed_records);
+    try std.testing.expectEqual(@as(?protocol.ReturnTag, .exception), host.capture.returnFor(940));
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), host.index.stats().queued_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), host.peer.cross_peer_pending_accepts.count());
+
+    host.index = ProvisionIndex.init(allocator, .{});
+    host.index.disableThreadAffinity();
+    try vat.remote.releaseImport(staged.introducer_import, 1);
 }
 
 test "L17 V2-M6: wire refs draining between Provide and Accept cannot kill the serve (deferred-Release pin)" {

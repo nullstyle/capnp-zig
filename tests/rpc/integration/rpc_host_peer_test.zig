@@ -4,7 +4,11 @@ const capnpc = @import("capnpc-zig");
 const cap_table = capnpc.rpc.caps.table;
 const HostPeer = capnpc.rpc.integration.host_peer.HostPeer;
 const Peer = capnpc.rpc.peer.Peer;
+const Vat = capnpc.rpc.peer.Vat;
+const message = capnpc.message;
 const protocol = capnpc.rpc.wire.protocol;
+const rpc_time = capnpc.rpc.time;
+const vat_network = capnpc.rpc.vat.network;
 
 const default_host_error_reason = HostPeer.ErrorDisclosurePolicy.default_generic_reason;
 
@@ -14,6 +18,236 @@ fn pumpAll(src: *HostPeer, dst: *HostPeer) !void {
         try dst.pushFrame(frame);
         src.freeFrame(frame);
     }
+}
+
+fn parkOneAccept(vat: *Vat, peer: *Peer, allocator: std.mem.Allocator, question_id: u32, nonce: []const u8) !void {
+    const token = try vat_network.encodeNonceToken(allocator, nonce);
+    defer allocator.free(token);
+    var token_message = try message.Message.initUnvalidated(allocator, token);
+    defer token_message.deinit();
+    const provision = try token_message.getRootAnyPointer();
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildAccept(question_id, provision, null);
+    const frame = try builder.finish();
+    defer allocator.free(frame);
+    try peer.handleFrame(frame);
+
+    try std.testing.expectEqual(@as(usize, 1), vat.stats().parked_accepts);
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().parked_accepts);
+}
+
+test "Vat secure TTL default requires a vat-owned clock after entropy" {
+    const allocator = std.testing.allocator;
+    const seed: [32]u8 = @splat(7);
+
+    // Preserve the established entropy decision as the first failure.
+    try std.testing.expectError(error.EntropyUnavailable, Vat.init(allocator, .{}));
+    try std.testing.expectError(error.ParkClockUnavailable, Vat.init(allocator, .{ .seed = seed }));
+
+    // The raw index remains opt-in, and a high-level Vat can explicitly select
+    // that compatibility policy.
+    var compatibility_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .limits = .{ .park_ttl_ms = null },
+    });
+    defer compatibility_vat.deinit();
+    try std.testing.expectEqual(@as(?u64, null), compatibility_vat.index.limits.park_ttl_ms);
+
+    var clock = rpc_time.TestClock{};
+    var secure_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .clock = clock.clock(),
+    });
+    defer secure_vat.deinit();
+    try std.testing.expectEqual(
+        @as(?u64, Vat.Options.default_park_ttl_ms),
+        secure_vat.index.limits.park_ttl_ms,
+    );
+    try std.testing.expectError(error.ParkClockUnavailable, secure_vat.setClock(null));
+    try std.testing.expect(secure_vat.index.clock != null);
+
+    // Tuning an unrelated quota keeps the secure Vat expiry default. Only an
+    // explicit `park_ttl_ms = null` selects the raw-index compatibility mode.
+    var tuned_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .clock = clock.clock(),
+        .limits = .{ .max_parked_accepts = 8 },
+    });
+    defer tuned_vat.deinit();
+    try std.testing.expectEqual(@as(usize, 8), tuned_vat.index.limits.max_parked_accepts);
+    try std.testing.expectEqual(
+        @as(?u64, Vat.Options.default_park_ttl_ms),
+        tuned_vat.index.limits.park_ttl_ms,
+    );
+}
+
+test "Vat stores Io fallback while a custom clock takes precedence" {
+    const allocator = std.testing.allocator;
+    const seed: [32]u8 = @splat(9);
+
+    var io_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .io = std.testing.io,
+    });
+    defer io_vat.deinit();
+    try std.testing.expect(io_vat.index.clock == null);
+    try std.testing.expect(io_vat.index.clock_io != null);
+
+    var clock = rpc_time.TestClock{};
+    var custom_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .io = std.testing.io,
+        .clock = clock.clock(),
+    });
+    defer custom_vat.deinit();
+    try std.testing.expect(custom_vat.index.clock != null);
+    try std.testing.expect(custom_vat.index.clock_io != null);
+    try std.testing.expectEqual(@intFromPtr(&clock), @intFromPtr(custom_vat.index.clock.?.ctx));
+    try custom_vat.setClock(null);
+    try std.testing.expect(custom_vat.index.clock == null);
+    try std.testing.expect(custom_vat.index.clock_io != null);
+}
+
+test "Vat rejects effective clock-domain changes while parks are live" {
+    const allocator = std.testing.allocator;
+    const seed: [32]u8 = @splat(10);
+    var first_clock = rpc_time.TestClock{};
+    var second_clock = rpc_time.TestClock{};
+
+    // Custom -> distinct custom and custom -> Io are both cross-domain.
+    var custom_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .io = std.testing.io,
+        .clock = first_clock.clock(),
+    });
+    custom_vat.disableThreadAffinity();
+    defer custom_vat.deinit();
+    var custom_peer = Peer.initDetached(allocator);
+    custom_peer.disableThreadAffinity();
+    defer custom_peer.deinit();
+    try custom_vat.enroll(&custom_peer);
+    try parkOneAccept(&custom_vat, &custom_peer, allocator, 901, "clock-domain-custom");
+
+    try custom_vat.setClock(first_clock.clock()); // identical handle: no-op
+    try std.testing.expectError(error.ParkClockInUse, custom_vat.setClock(second_clock.clock()));
+    try std.testing.expectError(error.ParkClockInUse, custom_vat.setClock(null));
+    try std.testing.expectEqual(@intFromPtr(&first_clock), @intFromPtr(custom_vat.index.clock.?.ctx));
+
+    custom_peer.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 0), custom_vat.stats().parked_accepts);
+    try custom_vat.setClock(null); // source changes are allowed after drain
+    try std.testing.expect(custom_vat.index.clock == null);
+
+    // Io -> custom is the reverse cross-domain transition. Clearing an
+    // already-cleared custom handle keeps the same Io fallback and is allowed.
+    var io_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .io = std.testing.io,
+    });
+    io_vat.disableThreadAffinity();
+    defer io_vat.deinit();
+    var io_peer = Peer.initDetached(allocator);
+    io_peer.disableThreadAffinity();
+    defer io_peer.deinit();
+    try io_vat.enroll(&io_peer);
+    try parkOneAccept(&io_vat, &io_peer, allocator, 902, "clock-domain-io");
+
+    try io_vat.setClock(null); // same effective Io source: no-op
+    try std.testing.expectError(error.ParkClockInUse, io_vat.setClock(first_clock.clock()));
+    try std.testing.expect(io_vat.index.clock == null);
+
+    io_peer.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 0), io_vat.stats().parked_accepts);
+    try io_vat.setClock(first_clock.clock());
+    try std.testing.expect(io_vat.index.clock != null);
+
+    // The first reservation samples its deadline before its parked count is
+    // committed. A Clock.now callback still cannot swap the source out from
+    // under that in-flight sample and stamp a clock-A deadline into clock B.
+    var sampling_vat = try Vat.init(allocator, .{
+        .seed = seed,
+        .clock = first_clock.clock(),
+    });
+    sampling_vat.disableThreadAffinity();
+    defer sampling_vat.deinit();
+    var sampling_peer = Peer.initDetached(allocator);
+    sampling_peer.disableThreadAffinity();
+    defer sampling_peer.deinit();
+    try sampling_vat.enroll(&sampling_peer);
+
+    const ReentrantClock = struct {
+        vat: *Vat,
+        replacement: rpc_time.Clock,
+        attempted: bool = false,
+        swap_error: ?anyerror = null,
+
+        fn now(ctx: *anyopaque) i64 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (!self.attempted) {
+                self.attempted = true;
+                self.vat.setClock(self.replacement) catch |err| {
+                    self.swap_error = err;
+                };
+            }
+            return 0;
+        }
+    };
+    var reentrant_clock = ReentrantClock{
+        .vat = &sampling_vat,
+        .replacement = second_clock.clock(),
+    };
+    try sampling_vat.setClock(.{ .ctx = &reentrant_clock, .now_fn = ReentrantClock.now });
+    try parkOneAccept(&sampling_vat, &sampling_peer, allocator, 903, "clock-domain-sample");
+
+    try std.testing.expect(reentrant_clock.attempted);
+    try std.testing.expectEqual(error.ParkClockInUse, reentrant_clock.swap_error.?);
+    try std.testing.expectEqual(@intFromPtr(&reentrant_clock), @intFromPtr(sampling_vat.index.clock.?.ctx));
+    try std.testing.expectEqual(@as(usize, 1), sampling_vat.stats().parked_accepts);
+}
+
+test "Vat exposes initial stats and an empty expiry sweep" {
+    const allocator = std.testing.allocator;
+
+    var clock = rpc_time.TestClock{};
+    var vat = try Vat.init(allocator, .{
+        .seed = @as([32]u8, @splat(11)),
+        .clock = clock.clock(),
+    });
+    defer vat.deinit();
+
+    const stats = vat.stats();
+    try std.testing.expectEqual(@as(usize, 0), stats.provisions);
+    try std.testing.expectEqual(@as(usize, 0), stats.provision_key_bytes);
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accept_attributed_bytes);
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accept_embargo_bytes);
+    try std.testing.expectEqual(@as(usize, 0), stats.queued_accepts);
+    try std.testing.expectEqual(@as(usize, 0), stats.queued_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), vat.sweepExpiredParkedAccepts());
+}
+
+test "HostPeer manual transport-close notification is exactly once" {
+    const State = struct {
+        close_count: usize = 0,
+
+        fn onClose(ctx: ?*anyopaque, _: *Peer) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx.?));
+            self.close_count += 1;
+        }
+    };
+
+    var state = State{};
+    var host = HostPeer.init(std.testing.allocator);
+    defer host.deinit();
+    host.start(&state, null, State.onClose);
+
+    host.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
+
+    host.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 1), state.close_count);
 }
 
 test "host peer queues outbound frame from detached sendBootstrap" {
@@ -148,6 +382,9 @@ test "host peer defaults bound outbound queues" {
     try std.testing.expectEqual(HostPeer.Limits.default_outbound_bytes_limit, limits.outbound_bytes_limit);
     try std.testing.expectEqual(HostPeer.Limits.default_host_call_count_limit, limits.host_call_count_limit);
     try std.testing.expectEqual(HostPeer.Limits.default_host_call_bytes_limit, limits.host_call_bytes_limit);
+    const stats = host.peer.stats();
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accepts);
+    try std.testing.expectEqual(@as(usize, 0), stats.parked_accept_bytes);
 }
 
 test "host peer redacts captured exception frames by default" {

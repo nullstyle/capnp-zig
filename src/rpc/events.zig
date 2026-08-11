@@ -75,6 +75,10 @@ pub const Resource = enum {
     resolved_imports,
     persistent_exports,
     sturdy_ref_bytes,
+    /// Parked Accept entries held while waiting for a matching Provide.
+    parked_accepts,
+    /// Attributable recipient-token and embargo bytes held by parked Accepts.
+    parked_accept_bytes,
 };
 
 pub const Event = union(enum) {
@@ -141,14 +145,18 @@ pub const TimeoutKind = enum {
     /// A graceful shutdown drain exceeded its bound; remaining in-flight
     /// questions were force-cancelled.
     shutdown_drain,
+    /// An inbound Accept waited past the vat's parked-Accept deadline.
+    parked_accept,
 };
 
 pub const TimeoutEvent = struct {
     source: Source,
     role: Role = .unknown,
     kind: TimeoutKind,
-    /// Question ID for `call_deadline`; null for connection-scoped kinds.
+    /// Outbound question ID for `call_deadline`; null for every other kind.
     question_id: ?u32 = null,
+    /// Inbound answer ID for `parked_accept`; null for every other kind.
+    answer_id: ?u32 = null,
 };
 
 /// Early-warning signal: a bounded resource crossed 80% of its budget.
@@ -281,6 +289,21 @@ pub inline fn emitTimeout(
         .role = role,
         .kind = kind,
         .question_id = question_id,
+    } });
+}
+
+/// Emit a redacted parked-Accept expiry. The answer id is enough to correlate
+/// the lifecycle locally; recipient tokens, embargoes, and frame bytes never
+/// enter the event API.
+pub inline fn emitParkedAcceptTimeout(
+    observer: ?Observer,
+    answer_id: u32,
+) void {
+    emit(observer, .{ .timeout = .{
+        .source = .peer,
+        .role = .unknown,
+        .kind = .parked_accept,
+        .answer_id = answer_id,
     } });
 }
 

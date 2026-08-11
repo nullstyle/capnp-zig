@@ -9,9 +9,9 @@
 //! vendor/ext/capnproto/c++/src/capnp/rpc.c++).
 //!
 //! Design contract (docs: the L3 VatC design, FINAL-v2 §3.1/§5):
-//! - The index is consulted ONLY at Provide registration, Accept lookup, and
-//!   (later) Accept parking. Release, Finish, and teardown paths never touch
-//!   it — index-first death cannot wedge a matched handoff.
+//! - The index owns admission, accounting, and expiry for unmatched Accepts.
+//!   Matched provisions retain independent refs, so index-first death cannot
+//!   wedge an active handoff even though Finish/teardown refund index gauges.
 //! - The `Provision` owns COPIES of its key and target (index allocator);
 //!   per-peer `ProvideEntry` ownership is untouched.
 //! - Refcount protocol: `by_key` (+1 while `indexed`), the owner peer's
@@ -32,7 +32,16 @@ pub const ProvisionIndexLimits = struct {
     max_provisions: usize = 4096,
     max_provision_key_bytes: usize = 1 << 20,
     max_parked_accepts: usize = 1024,
+    /// Per-peer admission ceiling. This is intentionally much smaller than
+    /// the vat-wide bound so one unauthenticated connection cannot consume
+    /// every rendezvous slot shared by its siblings.
+    max_parked_accepts_per_peer: usize = 64,
+    /// Vat-wide attributable bytes held by parked Accepts. Each Accept is
+    /// charged for its normalized recipient token plus its embargo bytes,
+    /// even when several Accepts share the same token/provision.
     max_parked_accept_bytes: usize = 256 << 10,
+    /// Per-peer counterpart of `max_parked_accept_bytes`.
+    max_parked_accept_bytes_per_peer: usize = 16 << 10,
     max_embargoes_per_provision: usize = 4096,
     max_embargo_key_bytes_per_provision: usize = 64 << 10,
     /// Aggregate bounds on QUEUED embargoed accepts across all provisions
@@ -44,15 +53,16 @@ pub const ProvisionIndexLimits = struct {
     /// Time bound on Accept-before-Provide PARKING. An inbound `Accept` whose
     /// recipient token matches nothing parks; the token is arbitrary bytes and
     /// needs no prior Provide, no bootstrap, and no authentication, so the
-    /// count/byte budgets above — which are vat-wide, and whose only release
-    /// point is `Peer.deinit`, not connection close — let one stranger
-    /// connection squat every park slot in the vat for the peer's whole
-    /// lifetime. With a TTL set, a parked accept older than this is evicted
-    /// (loudly, with an exception `Return`) at the next park attempt.
+    /// count/byte budgets above bound the reservation. Holder-side records are
+    /// reclaimed on terminal transport close (and again idempotently at peer
+    /// teardown). With a TTL set, an expired park is evicted loudly, with an
+    /// exception `Return`, by inbound traffic, Accept/Provide, deadline
+    /// maintenance, or an explicit sweep.
     ///
     /// Null (the default) keeps the pre-TTL behaviour bit-identical, and the
     /// bound is additionally inert without an INDEX-OWNED clock
-    /// (`ProvisionIndex.setClock`) — same opt-in contract as `PeerTimeouts`.
+    /// (`ProvisionIndex.setClock` or `setClockIo`) — same opt-in contract as
+    /// `PeerTimeouts`.
     /// The clock is never taken from a peer or a frame: the party whose
     /// accepts are being timed out must not be able to steer their expiry.
     park_ttl_ms: ?u64 = null,
@@ -106,6 +116,10 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
             embargo_key_bytes: usize = 0,
             /// Accept-before-Provide queue (landing L5; empty until then).
             parked: std.ArrayList(ParkedAccept) = .empty,
+            /// Close preparation has already detached every holder record and
+            /// refunded every index/peer gauge. The slot/list entries retain
+            /// only their final +1 refs for the later send-bearing drain.
+            entries_neutralized: bool = false,
 
             pub const State = enum(u8) { awaiting, active, closed };
 
@@ -166,6 +180,12 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
             accept_peer: *PeerType,
             answer_id: u32,
             embargo: ?[]u8,
+            /// Per-Accept admission charge: normalized recipient token bytes
+            /// plus embargo bytes. Stored explicitly so every detach path can
+            /// refund exactly the amount admitted, even after either owned
+            /// byte slice has been freed.
+            attributed_bytes: usize,
+            embargo_bytes: usize,
             /// Absolute monotonic deadline in INDEX-clock nanoseconds, stamped
             /// at park time (the `Question.deadline_ns` form). Null when the
             /// index had no clock or no `park_ttl_ms` when this entry parked —
@@ -184,16 +204,34 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
         limits: ProvisionIndexLimits,
         /// INDEX-OWNED monotonic clock backing `limits.park_ttl_ms`. Never
         /// sourced from a peer or a frame — expiry of a stranger's parked
-        /// accept must not be steerable by that same stranger. Null leaves the
-        /// TTL inert (the `PeerTimeouts`/`Peer.setClock` contract).
+        /// accept must not be steerable by that same stranger. With no custom
+        /// clock and no Io fallback, the raw index leaves TTL enforcement
+        /// inert; the high-level Vat rejects that finite-TTL configuration.
         clock: ?rpc_time.Clock = null,
+        /// Value-stored `std.Io` fallback for monotonic time. A custom Clock
+        /// takes precedence. Storing Io here (rather than a Clock pointing at
+        /// a movable Vat field) keeps the time source valid across moves.
+        clock_io: ?std.Io = null,
         /// Running counters — no O(n) walks.
         provision_count: usize = 0,
         provision_key_bytes: usize = 0,
         parked_accept_count: usize = 0,
+        /// Normalized recipient-token plus embargo bytes, charged per Accept.
         parked_accept_bytes: usize = 0,
+        /// Embargo-only subset of `parked_accept_bytes`.
+        parked_accept_embargo_bytes: usize = 0,
         queued_accept_count: usize = 0,
         queued_accept_bytes: usize = 0,
+        /// Earliest stamped parked-Accept deadline. Inbound-frame checks read
+        /// only this field before deciding whether a full sweep is due.
+        next_park_deadline_ns: ?i64 = null,
+        /// Suppresses recursive sweeps while an expiry Return re-enters peer
+        /// dispatch. The outer sweep refreshes the deadline cache afterward.
+        park_sweep_in_progress: bool = false,
+        /// Guards every host-supplied park-clock callback, including the
+        /// public due predicate and deadline stamping. A clock is arbitrary
+        /// host code and may synchronously re-enter either path.
+        park_clock_sample_in_progress: bool = false,
         /// Debug-only thread pin, recorded at first attach.
         thread_id: if (builtin.mode == .debug) ?std.Thread.Id else void =
             if (builtin.mode == .debug) null else {},
@@ -207,11 +245,154 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
             };
         }
 
-        /// Install (or clear) the index-owned monotonic clock. Required before
-        /// `ProvisionIndexLimits.park_ttl_ms` does anything; the clock's `ctx`
-        /// must outlive the index.
+        /// Install (or clear) the index-owned custom monotonic clock. It takes
+        /// precedence over the value-stored Io fallback; without either time
+        /// source, `ProvisionIndexLimits.park_ttl_ms` is inert. The clock's
+        /// `ctx` must outlive the index.
         pub fn setClock(self: *Self, clock: ?rpc_time.Clock) void {
             self.clock = clock;
+        }
+
+        /// Install (or clear) a value-stored `std.Io` monotonic fallback.
+        /// `setClock(non-null)` always takes precedence over this source.
+        pub fn setClockIo(self: *Self, io: ?std.Io) void {
+            self.clock_io = io;
+        }
+
+        pub fn clockNow(self: *const Self) ?i64 {
+            if (self.clock) |clock| return clock.now();
+            if (self.clock_io) |io| {
+                return @intCast(std.Io.Clock.awake.now(io).nanoseconds);
+            }
+            return null;
+        }
+
+        /// Point-in-time gauges for the Experimental vat-hosting surface.
+        pub const Stats = struct {
+            provisions: usize,
+            provision_key_bytes: usize,
+            parked_accepts: usize,
+            parked_accept_attributed_bytes: usize,
+            parked_accept_embargo_bytes: usize,
+            queued_accepts: usize,
+            queued_accept_bytes: usize,
+        };
+
+        pub fn stats(self: *const Self) Stats {
+            return .{
+                .provisions = self.provision_count,
+                .provision_key_bytes = self.provision_key_bytes,
+                .parked_accepts = self.parked_accept_count,
+                .parked_accept_attributed_bytes = self.parked_accept_bytes,
+                .parked_accept_embargo_bytes = self.parked_accept_embargo_bytes,
+                .queued_accepts = self.queued_accept_count,
+                .queued_accept_bytes = self.queued_accept_bytes,
+            };
+        }
+
+        pub const ParkCharge = struct {
+            attributed_bytes: usize,
+            embargo_bytes: usize,
+        };
+
+        /// Validate both peer-local and vat-wide park admission without
+        /// changing state. Single-threaded index affinity makes the later
+        /// infallible commit atomic with respect to other admissions.
+        pub fn checkParkAdmission(
+            self: *const Self,
+            peer: *const PeerType,
+            recipient_bytes: usize,
+            embargo_bytes: usize,
+        ) !ParkCharge {
+            const attributed = std.math.add(usize, recipient_bytes, embargo_bytes) catch
+                return error.ParkBudgetExceeded;
+            if (peer.parked_accept_count >= self.limits.max_parked_accepts_per_peer) {
+                return error.PeerParkBudgetExceeded;
+            }
+            const peer_bytes = std.math.add(usize, peer.parked_accept_bytes, attributed) catch
+                return error.PeerParkBudgetExceeded;
+            if (peer_bytes > self.limits.max_parked_accept_bytes_per_peer) {
+                return error.PeerParkBudgetExceeded;
+            }
+            if (self.parked_accept_count >= self.limits.max_parked_accepts) {
+                return error.ParkBudgetExceeded;
+            }
+            const vat_bytes = std.math.add(usize, self.parked_accept_bytes, attributed) catch
+                return error.ParkBudgetExceeded;
+            if (vat_bytes > self.limits.max_parked_accept_bytes) return error.ParkBudgetExceeded;
+            return .{ .attributed_bytes = attributed, .embargo_bytes = embargo_bytes };
+        }
+
+        /// Infallible tail after every allocation/map insertion succeeds.
+        pub fn commitParkAdmission(self: *Self, peer: *PeerType, charge: ParkCharge) void {
+            self.parked_accept_count += 1;
+            self.parked_accept_bytes += charge.attributed_bytes;
+            self.parked_accept_embargo_bytes += charge.embargo_bytes;
+            peer.parked_accept_count += 1;
+            peer.parked_accept_bytes += charge.attributed_bytes;
+        }
+
+        /// The sole parked-Accept refund primitive. Callers detach the live
+        /// entry first, then refund once, before sends or frees can re-enter.
+        pub fn refundParkAdmission(self: *Self, peer: *PeerType, parked: ParkedAccept) void {
+            std.debug.assert(self.parked_accept_count > 0);
+            std.debug.assert(self.parked_accept_bytes >= parked.attributed_bytes);
+            std.debug.assert(self.parked_accept_embargo_bytes >= parked.embargo_bytes);
+            std.debug.assert(peer.parked_accept_count > 0);
+            std.debug.assert(peer.parked_accept_bytes >= parked.attributed_bytes);
+            self.parked_accept_count -= 1;
+            self.parked_accept_bytes -= parked.attributed_bytes;
+            self.parked_accept_embargo_bytes -= parked.embargo_bytes;
+            peer.parked_accept_count -= 1;
+            peer.parked_accept_bytes -= parked.attributed_bytes;
+        }
+
+        pub fn noteParkDeadline(self: *Self, deadline_ns: ?i64) void {
+            const deadline = deadline_ns orelse return;
+            if (self.next_park_deadline_ns) |next| {
+                if (deadline >= next) return;
+            }
+            self.next_park_deadline_ns = deadline;
+        }
+
+        /// Rebuild the earliest-deadline cache after a bulk removal/adoption.
+        /// The hot inbound-frame due check remains O(1).
+        pub fn refreshNextParkDeadline(self: *Self) void {
+            var next: ?i64 = null;
+            var it = self.by_key.valueIterator();
+            while (it.next()) |prov_ptr| {
+                const prov = prov_ptr.*;
+                if (prov.state != .awaiting) continue;
+                for (prov.parked.items) |parked| {
+                    const deadline = parked.deadline_ns orelse continue;
+                    if (next) |earliest| {
+                        if (deadline >= earliest) continue;
+                    }
+                    next = deadline;
+                }
+            }
+            self.next_park_deadline_ns = next;
+        }
+
+        pub fn isParkSweepDue(self: *Self) bool {
+            if (self.park_sweep_in_progress or self.park_clock_sample_in_progress) return false;
+            const deadline = self.next_park_deadline_ns orelse return false;
+            self.park_clock_sample_in_progress = true;
+            const now_opt = self.clockNow();
+            // Clock.now may replace this Index at the same address. A cleared
+            // guard means the sample belongs to the old generation; leave the
+            // replacement untouched and report not-due.
+            if (!self.park_clock_sample_in_progress) return false;
+            self.park_clock_sample_in_progress = false;
+            const now = now_opt orelse return false;
+            return now >= deadline;
+        }
+
+        /// Best-effort public maintenance hook. The Peer implementation owns
+        /// the send/reentrancy choreography; the generic index exposes it to
+        /// Vat and transport deadline drivers without duplicating that logic.
+        pub fn sweepExpiredParkedAccepts(self: *Self) usize {
+            return PeerType.sweepExpiredParkedAcceptsForProvisionIndex(self);
         }
 
         pub fn disableThreadAffinity(self: *Self) void {
@@ -231,47 +412,57 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
             }
         }
 
-        /// Tear the index down. Active provisions are left to their owners
-        /// (release/Finish/teardown never consult the index, so matched
-        /// handoffs keep working — the F6 anti-wedge property); each attached
-        /// peer's back-pointer is nulled. Awaiting provisions cannot exist
-        /// before Accept-parking lands; when it does, their parked accepts are
-        /// failed through the shared peer-side fail helper before the index
-        /// ref is dropped.
+        /// Tear the index down. Active provisions are left to their owners, so
+        /// matched handoffs keep working (the F6 anti-wedge property). Awaiting
+        /// parks are globally detached and refunded before peer back-pointers
+        /// are nulled. Destruction is callback-free: it does not attempt wire
+        /// Returns through peers whose owner may deinitialize them on close.
         pub fn deinit(self: *Self) void {
-            // (1) Sever every attached peer's back-pointer. Safe against
-            // already-deinited peers: Peer.deinit removes ALL its occurrences.
-            for (self.attached_peers.items) |peer| {
-                peer.provision_index = null;
-            }
-            self.attached_peers.deinit(self.allocator);
-
-            // (2) Move by_key out; the live map is emptied before any release,
+            // (1) Move by_key out; the live map is emptied before any release,
             // so no map key can dangle into a freed recipient_key.
             var owned_by_key = self.by_key;
             self.by_key = std.StringHashMap(*Provision).init(self.allocator);
 
-            // (3) Per provision: unindex + drop the index ref. Active/closed
-            // provisions keep their owner refs and stay fully functional.
-            var it = owned_by_key.valueIterator();
-            while (it.next()) |prov_ptr| {
+            // (2) SEND-FREE neutralization across EVERY awaiting provision.
+            // Detach holder records and refund all park charges while every
+            // peer still has a live index pointer and all of its maps are
+            // reachable. Index destruction deliberately invokes no peer send,
+            // observer, or lifecycle callback: any of those can synchronously
+            // deinitialize a peer and invalidate later entries in this walk.
+            var neutralize_it = owned_by_key.valueIterator();
+            while (neutralize_it.next()) |prov_ptr| {
                 const prov = prov_ptr.*;
                 prov.indexed = false;
                 self.provision_count -= 1;
                 self.provision_key_bytes -= prov.recipient_key.len;
                 if (prov.state == .awaiting) {
-                    // Parked accepts can never be adopted now: fail each one
-                    // through the canonical ordering — holder record removed
-                    // and its key freed BEFORE the exception Return, exactly
-                    // one ref released after.
+                    for (prov.parked.items) |parked| {
+                        self.refundParkAdmission(parked.accept_peer, parked);
+                        if (parked.accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
+                            if (kv.value.embargo_key) |k| parked.accept_peer.allocator.free(k);
+                        }
+                    }
+                }
+            }
+
+            // (3) Only after all parked holder state is neutralized, sever the
+            // peer back-pointers. Safe against already-deinited peers:
+            // Peer.deinit removes all its occurrences from this list.
+            for (self.attached_peers.items) |peer| {
+                peer.provision_index = null;
+            }
+            self.attached_peers.deinit(self.allocator);
+
+            // (4) Freeing-only phase. Active provisions keep their owner refs
+            // and stay fully functional.
+            var drain_it = owned_by_key.valueIterator();
+            while (drain_it.next()) |prov_ptr| {
+                const prov = prov_ptr.*;
+                if (prov.state == .awaiting) {
                     var owned_parked = prov.parked;
                     prov.parked = .empty;
                     for (owned_parked.items) |parked| {
                         if (parked.embargo) |bytes| self.allocator.free(bytes);
-                        if (parked.accept_peer.cross_peer_pending_accepts.fetchRemove(parked.answer_id)) |kv| {
-                            if (kv.value.embargo_key) |k| parked.accept_peer.allocator.free(k);
-                        }
-                        parked.accept_peer.sendReturnException(parked.answer_id, "provision index destroyed") catch {};
                         prov.release(); // the parked entry's +1
                     }
                     owned_parked.deinit(self.allocator);
@@ -279,6 +470,19 @@ pub fn ProvisionIndex(comptime PeerType: type) type {
                 prov.release(); // the index's +1
             }
             owned_by_key.deinit();
+            self.next_park_deadline_ns = null;
+            // Active provisions (including an already-matched embargo queue)
+            // intentionally remain owned by their peers so the established
+            // index-death anti-wedge contract still holds. The peer back-links
+            // were severed above, so later queue release cannot touch this
+            // destroyed index; retire its aggregate gauges exactly once here.
+            self.queued_accept_count = 0;
+            self.queued_accept_bytes = 0;
+            std.debug.assert(self.provision_count == 0);
+            std.debug.assert(self.provision_key_bytes == 0);
+            std.debug.assert(self.parked_accept_count == 0);
+            std.debug.assert(self.parked_accept_bytes == 0);
+            std.debug.assert(self.parked_accept_embargo_bytes == 0);
         }
     };
 }
