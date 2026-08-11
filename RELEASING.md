@@ -58,6 +58,11 @@ git status --short          # must be empty
 - [ ] The bump is classified per the table above.
 - [ ] `just check-generated` is clean; no committed consumer binding was made
       stale by a generator change.
+- [ ] `just package-preflight` passes. This is the manifest-filtered package
+      gate, not a working-tree/path-dependency build: it archives and re-fetches
+      the `.paths` result, exercises default/core/QUIC consumers in Debug and
+      ReleaseSafe, runs the packaged plugin, checks lazy QUIC fetching, and
+      leaves the checkout unchanged.
 
 ## 2. The commit's CI must already be green
 
@@ -80,6 +85,12 @@ Run the heavy local gates too; they cover lanes hosted CI does not:
 ```bash
 just release-preflight
 ```
+
+`release-preflight` includes `package-preflight`. Do not use
+`--skip-quic` here; that switch exists only for constrained local diagnosis.
+The preflight confines its source snapshot, consumer projects, install trees,
+and Zig caches to its disposable workspace, so a globally cached dependency or
+an unfiltered checkout cannot make a broken package look healthy.
 
 ## 3. Version sweep
 
@@ -133,7 +144,9 @@ git push origin vX.Y.Z
 
 ## 6. Post-tag
 
-- [ ] **Validate the published archive with a real fetch.** `.paths` in
+- [ ] **Validate the published archive with a real fetch.** The hermetic
+      `package-preflight` has already proven a locally generated filtered
+      archive; this step separately proves the exact hosted artifact. `.paths` in
       `build.zig.zon` controls what ships, and its breakage is invisible from a
       working tree — a path dependency and a local checkout both hide it.
 

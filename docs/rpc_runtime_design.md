@@ -142,6 +142,50 @@ inbound restore params), emitting a `sturdy_ref_bytes` resource rejection on
 violation. `PeerStats` gains `persistent_exports`, `saves_served`, and
 `restores_served`.
 
+## Retained Outbound-Answer Lifetimes
+
+Ordinary outbound calls keep their historical automatic lifetime: after a
+terminal `Return` is dispatched, the peer sends `Finish`. The Experimental
+`rpc.peer.CallOptions` makes that policy explicit. Passing
+`.result_lifetime = .retained` to a `sendCall*WithOptions` method suppresses
+automatic Finish; generated interface `Client`, `PipelinedClient`, and
+`callXxxPipelined` methods expose matching `WithOptions` forms. Their existing
+methods delegate with `.automatic`, and streaming fire-and-forget calls remain
+automatic.
+
+Retained registration is an atomic pre-send step, including synchronous
+loopback/transport Returns. The terminal callback runs at most once and makes
+the answer caller-owned before callback dispatch. A post-visibility parse or
+callback error is reported through the peer's non-fatal error hook rather than
+hiding the question id behind a failed send result. The caller then invokes
+`finishRetainedQuestion(question_id, release_result_caps)`. A transport failure
+rolls the state back so the same Finish can be retried; an early, duplicate,
+reentrant, or post-transfer Finish is rejected without changing ownership. A
+Return carrying `noFinishNeeded` retires the record automatically. Cancellation,
+terminal transport close, and peer teardown also remove local records.
+
+Retained state is independently budgeted by
+`PeerLimits.max_retained_questions` (default 1024) before a Call is emitted.
+`PeerStats.retained_questions` counts caller-owned entries, including calls
+still awaiting Return, while `transferred_retained_questions` counts entries
+owned by another protocol lifecycle. The `retained_questions` event resource
+reports redacted pressure crossings and `PeerLimitExceeded` rejections.
+
+The first transfer owner is Level-3 Provide. Once the retained call has
+returned, `sendProvideFromRetainedAnswer` accepts its question id and a
+promised-answer op path; the combined
+`resolvePromiseExportToThirdPartyFromRetainedAnswer` performs the same transfer
+while resolving the recipient-facing promise. Setup is transactional until the
+Provide commit: earlier failure restores caller ownership. Once the Provide may
+have been delivered, a later combined Resolve failure conservatively consumes
+the source into protocol cleanup instead of returning it to the caller. Success
+couples the source answer to the vine and held-open Provide. Vine fallback calls target that promised-answer path,
+and direct pickup redeems the same provision. When the coupling ends, both the
+Provide and source questions are Finished exactly once. A failed
+protocol-owned Finish remains marked and is retried immediately and from
+`Peer.checkDeadlines()` maintenance; that retry does not change the method's
+documented count of expired outbound calls.
+
 ## L3 VatC Parked-Accept Lifecycle
 
 `ProvisionIndex` is the Experimental vat-wide rendezvous for a `Provide` and

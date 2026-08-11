@@ -269,6 +269,44 @@ const tags = try reader.getTags();
 const tag = try tags.get(0);  // []const u8
 ```
 
+### Nested lists
+
+For a field such as `matrix :List(List(UInt16))`, generated Readers and
+Builders keep the original raw pointer-list methods and add a typed recursive
+view:
+
+```zig
+// Typed construction.
+var rows = try builder.nestedLists().initMatrix(2);
+var first = try rows.init(0, 3);
+try first.set(0, 10);
+try first.set(1, 20);
+try first.set(2, 30);
+try rows.setNull(1);
+
+// Typed reading.
+const read_rows = try reader.nestedLists().getMatrix();
+const read_first = try read_rows.get(0);
+const value = try read_first.get(1); // 20
+
+// A null inner-list pointer reads as an empty list, but remains observable.
+std.debug.assert(try read_rows.isNull(1));
+std.debug.assert((try read_rows.get(1)).len() == 0);
+```
+
+The same shape recurses for deeper schemas: a
+`List(List(List(Text)))` reader uses repeated `get(index)`, and its builder uses
+repeated `init(index, count)`. `initXxxInSegment` and each nested
+`initInSegment` support explicit segment placement. Enum terminals retain
+typed `get` / `set` plus ordinal forwarding, and struct terminals return their
+generated Reader/Builder types.
+
+Compatibility is additive. Existing `getMatrix()` / `initMatrix()` still
+return `message.PointerListReader` / `message.PointerListBuilder`, and every
+typed recursive wrapper has `raw()`. If a referenced struct layout cannot be
+resolved during generation, that terminal falls back to the raw struct-list
+API; an unresolved enum ID becomes an ordinal `u16` list.
+
 ## 8. Nested Structs
 
 ```zig
@@ -428,6 +466,7 @@ raw logical `u16` discriminant and never turns an unknown arm into a known one.
 | `Text` | `[]const u8` | `setField([]const u8)` |
 | `Data` | `[]const u8` | `setField([]const u8)` |
 | `List(T)` | typed list reader | `initField(count)` |
+| `List(List(T))` | raw pointer-list accessor, or typed `nestedLists().getField()` | raw `initField(count)`, or typed `nestedLists().initField(count)` |
 | `struct` | `StructName.Reader` | `initField()` |
 | `enum` | `EnumName`, or forwarding `u16` via `enumOrdinals()` | `setField(.Variant)` or `enumOrdinals().setField(value)` |
 | `union` | check `which()`; inspect unknown arms with `whichOrdinal()` | `setVariant()`/`initVariant()` |

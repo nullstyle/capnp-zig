@@ -444,6 +444,7 @@ zig build test-codegen       # Codegen tests
 zig build docs-smoke         # Docs/examples public API smoke checks
 zig build test-docs-snippets # Compile documentation snippet fixtures
 zig build -Dquic=true test-docs-snippets-quic # Optional QUIC docs snippets
+zig build package-preflight # Filtered-package default/core/QUIC consumers
 just release-preflight      # Complete local release preflight
 just e2e                    # Cross-language interop harness
 ```

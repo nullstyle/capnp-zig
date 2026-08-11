@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pointer sections are empty. Generated `hasXxx()` therefore distinguishes an
   initialized empty struct from an absent field.
 
+- **Windows now runs the native `capnp`-driven serialization and codegen
+  suites instead of carrying a partial-coverage exception.** The upstream
+  prebuilt archive supplies `capnp.exe` but omits the standard schemas, so a
+  shared test helper injects `-Ivendor/ext/capnproto/c++/src` for `compile`,
+  `convert`, and `eval` on every platform. CI downloads the checksum-pinned
+  archive, verifies the tool before tests, and then runs the ordinary suite;
+  missing-tool skips can no longer make the Windows lane look green. The
+  platform matrix now records codegen as full on Linux, macOS, and Windows.
+
 - **`rpc.vat` was missing from the core RPC surface, and the guard that should
   have caught it was too coarse.** `src/rpc/mod_core.zig` — the surface behind
   `capnpc-zig-core` and the wasm build — never exported `vat`, so
@@ -32,6 +41,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only found by a consumer build against a published tag.
 
 ### Added
+
+- **Experimental caller-controlled RPC answer lifetimes and Level-3 transfer.**
+  `rpc.peer.CallOptions` adds `.result_lifetime = .automatic | .retained` to
+  additive `sendCall*WithOptions` methods. Generated `Client`,
+  `PipelinedClient`, and `callXxxPipelined` methods gain matching `WithOptions`
+  forms while existing calls remain automatic; streaming fire-and-forget calls
+  are unchanged. A retained terminal Return withholds Finish until
+  `finishRetainedQuestion(question_id, release_result_caps)` succeeds. Finish
+  send failure is retryable, callbacks stay at-most-once, and post-visibility
+  callback/OOM errors are reported non-fatally so synchronous callers still
+  receive the question id. Synchronous Return is registration-safe,
+  `noFinishNeeded` retires locally, and cancellation/close
+  drain ownership without double cleanup.
+
+  Retained questions have an independent default limit of 1024, caller-owned
+  and transferred `PeerStats` gauges, and redacted `retained_questions`
+  pressure/rejection events. `sendProvideFromRetainedAnswer` and
+  `resolvePromiseExportToThirdPartyFromRetainedAnswer` transfer a completed
+  answer plus promised-answer ops into the vine/Provide lifecycle, preserving
+  the exact target for fallback forwarding and direct pickup. Failure before
+  the Provide commit restores caller ownership; after that potentially-delivered
+  boundary, the coupling or its cleanup owns both Finishes and retries failed
+  protocol-owned sends through deadline maintenance. The new
+  retained-target handoff proof is Zig↔Zig; no additional C++ scenario is
+  claimed.
 
 - **Experimental L3 parked-Accept admission is now fair, time-bounded, and
   observable.** `ProvisionIndexLimits` adds per-peer defaults of 64 entries and
@@ -78,6 +112,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forwarding, enum defaults, new union arms, pointer presence, and old-layout
   reads as ordinary Zig tests on every OS. `just check-generated` now also
   covers those bindings plus addressbook, ping-pong, kvstore, and WASM output.
+
+- **Generated nested-list fields now have recursive typed views without
+  removing their raw API.** In full and compact profiles, structs and groups
+  containing `List(List(T))` expose `Reader.nestedLists()` and
+  `Builder.nestedLists()`. The views recurse through deeper lists, support
+  scalar, Text, Data, enum, struct, and interface/capability terminals, with
+  AnyPointer retaining the same raw pointer-list terminal as flat lists. They
+  carry pointer defaults and union guards, preserve enum ordinal
+  forwarding, distinguish null inner pointers from explicit empty lists, and
+  support segment-targeted initialization. Every recursive wrapper exposes
+  `raw()`, and existing `PointerListReader` / `PointerListBuilder` field
+  accessors are unchanged. Unknown struct layouts and unresolved enum IDs keep
+  explicit raw/ordinal fallbacks.
+
+- **A hermetic manifest-filtered package preflight now exercises real consumer
+  shape before any publishing workflow.** `zig build package-preflight` / `just
+  package-preflight` snapshots the checkout, applies `build.zig.zon` `.paths`,
+  asserts the five allowed roots, archives and re-fetches that filtered tree,
+  and builds/runs default, core, and opt-in QUIC consumers in Debug and
+  ReleaseSafe with isolated caches. It also proves lazy QUIC fetch behavior,
+  installs and runs the packaged compiler plugin against a checked schema,
+  compares normalized generated output, and asserts the checkout is unchanged.
+  The gate runs in the three-platform test matrix and in the local preflight.
 
 - **The QUIC-enabled API surface is now snapshotted.** `check-api` runs without
   `-Dquic=true`, so it saw `rpc.transport.quic` as the disabled stub and the

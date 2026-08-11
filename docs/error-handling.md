@@ -84,6 +84,26 @@ present and is rejected when the getter resolves it. Generated union accessors
 first check the arm; an inactive or unknown arm reports false regardless of the
 shared pointer word.
 
+### Recursive nested-list access
+
+Generated `nestedLists()` views preserve the same error distinctions as direct
+field access:
+
+- Accessing a nested-list field in another known union arm returns
+  `error.WrongUnionMember`; an unknown discriminant returns
+  `error.InvalidEnumValue`.
+- `get(index)`, `isNull(index)`, and terminal element access return
+  `error.IndexOutOfBounds` for an invalid index.
+- A null inner-list pointer is not malformed: `get(index)` returns an empty
+  typed list, while `isNull(index)` returns true so forwarding code can preserve
+  absence. A malformed nonzero pointer still returns the underlying validation
+  error when `get(index)` resolves it.
+- A typed enum terminal returns `error.InvalidEnumValue` for an unknown value;
+  use its `getOrdinal()` / `setOrdinal()` path to forward the `u16` ordinal.
+
+The legacy raw pointer-list field accessors and each typed view's `raw()` method
+remain available when an application needs type-erased handling.
+
 ## Builder Errors
 
 Returned by `MessageBuilder` and `StructBuilder` methods during message construction.
