@@ -45,6 +45,24 @@ for fallback forwarding and direct pickup. That path currently has focused
 Zig↔Zig coverage only; it is not an additional scenario in the C++ matrix
 described above.
 
+The same narrow evidence boundary applies to automatic redirected results.
+`ThirdPartyResultPolicy.vat_network` can resolve an inbound
+`sendResultsTo.thirdParty` contact through an attached Zig `VatNetwork`, create
+the recipient-side synthetic answer, remap capability-bearing results through
+pinned proxies, replay calls pipelined before the result, and commit its target
+Return before settling the source with `resultsSentElsewhere`; Finish follows
+the normal answer lifecycle and may arrive early/reentrantly. Focused cases
+also cover early recipient Finish and
+source/target deinit reentered from synchronous delivery. The default remains
+`.reject`, and `.application` retains the existing manual
+`resultsSentElsewhere` contract. This automatic path is covered only by
+Zig↔Zig regressions; the vendored C++ lane does not accept the inbound
+redirected call, and no Go/Rust/Python claim is added. Its focused evidence
+also covers ThirdPartyAnswer, pre-/post-delivery target-result, and
+post-delivery source-marker send failure; allocation-index cleanup; distinct
+network/source/target allocators; reentrant
+deinit; and transport close without deinit on either side.
+
 ## L3 VatC Hosting Result
 
 `just e2e-l3-vatc` reverses the roles: one vendored C++ process plays vats A

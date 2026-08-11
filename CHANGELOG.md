@@ -42,6 +42,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Schema parsing and generated code now preserve pointer-kind and brand
+  fidelity without changing erased APIs.** The frozen `schema.Type` union keeps
+  its existing tags and payloads. Additive `TypeMetadata` / `TypeExpression`,
+  node and method parameters, brand scopes/bindings, superclass/method and
+  annotation-use brands, and AnyPointer sub-kinds retain the full
+  `CodeGeneratorRequest` expression beside it. Generated annotation constants
+  remain the legacy id/value projection; inspect the parsed request when an
+  annotation's lexical brand matters.
+
+  Structs and groups with constrained `AnyStruct`, `AnyList`, or bare
+  `Capability` slots gain Reader/Builder `pointerKinds()` views in full and
+  compact profiles. Shape wrappers support non-destructive reads plus explicit
+  initialization/set operations; `AnyListReader` and all Builder wrappers
+  expose `raw()`. Fully concrete, resolvable branded generic data-struct fields
+  gain parallel `brands()` views:
+  they reopen or initialize the existing target and type supported direct
+  parameter slots for Text, Data, resolved non-generic structs, primitive
+  lists, and AnyPointer sub-kinds. All historical erased accessors remain.
+
+  This is intentionally not general generic specialization. Unbound,
+  inherited, recursive, unresolved, unsupported nested pointer-list bindings,
+  generic interfaces, and implicit generic RPC methods emit no typed brand
+  view. The retained schema metadata remains available to tooling even when
+  generated access stays erased. Group and union Reader views preserve pointer
+  defaults and `WrongUnionMember` behavior; Builder getters remain structural
+  and reopen existing near,
+  single-far AnyStruct, and double-far AnyList values; null lists keep empty-list
+  casts; wire-distinguishable non-null wrong-kind pointers fail; and generated
+  sidecar-name collisions are rejected. Cap'n Proto's layout-A double-far
+  encoding makes a zero-offset struct tag indistinguishable from an empty
+  inline-composite list, so that one representation cannot be categorized more
+  narrowly on the wire.
+
+  The focused full + compact runtime harness, exact frozen-`Type`
+  representation check, Method/superclass brand fixtures, parser
+  allocation-failure sweep, all 81 codegen tests, 150 message tests, 32
+  schema-validation tests, hardening scan, and API-closure gate all pass.
+
+- **Optional QUIC transport evidence now targets all three native CI operating
+  systems in Debug and ReleaseSafe.** A shared
+  `just test-rpc-quic-evidence` recipe rejects `SkipZigTest`, asserts that the
+  three QUIC test roots still contain at least 44 tests, runs the transport
+  suite, and verifies a non-vacuous build graph. The QUIC job now includes
+  Linux, macOS, and Windows; registration also makes the complete QUIC test
+  tree part of Windows cross-compilation. Linux remains the only lane that
+  runs the entire repository through the QUIC-enabled library root.
+
+  Local handoff evidence is deliberately narrower than the configured CI
+  claim: macOS passes 44/44 in both modes and Windows cross-compiles the full
+  tree. Native Windows execution remains provisional until the user's first
+  push produces a green `windows-latest` run.
+
+- **Experimental redirected RPC results can now be routed automatically
+  through an attached `VatNetwork`.** The additive
+  `ThirdPartyResultPolicy.vat_network` mode resolves an inbound
+  `sendResultsTo.thirdParty` contact, registers a synthetic callee-range answer
+  on the introduced peer, sends `ThirdPartyAnswer`, and lets the application
+  handler use its ordinary results/exception Return API. Capability-bearing
+  payloads are remapped through pinned cross-peer proxies; calls pipelined on
+  the synthetic answer wait for and replay from its result, and direct calls on
+  a returned proxy reach the source until Release. The runtime commits the
+  recipient Return before the original caller receives
+  `resultsSentElsewhere`; Finish then drains the synthetic answer, including
+  the early/reentrant case.
+
+  `.reject` remains the default, while `.application` keeps the manual
+  `sendReturnResultsSentElsewhere()` contract.
+  The network is borrowed and app-supplied; this does not add a production
+  dialer, authentication/identity policy, L4 Join integration, or a Stable API.
+  Coverage is Zig↔Zig only and proves one handler invocation, early recipient
+  Finish, missing-network refusal, source/target deinit reentered during
+  synchronous delivery, source/target transport close without deinit, and
+  route drain. ThirdPartyAnswer-send rollback, failed target-result fallback to
+  one exception, a proof-backed trailing target-send commit, and a
+  post-delivery source-marker error without a second Return cover the send
+  boundaries. Pipelined children also drain when the recipient Finishes first,
+  including legal question ID zero and retained parameter caps. An
+  allocation-index sweep drains every partial
+  route/synthetic-answer/proxy/pin state, and a separate case proves distinct
+  network/source/target allocator ownership. The focused binary passes 22/22
+  with 19 automatic cases; the full peer suite passes 475/475 and hardening is
+  green. The
+  reference lanes do not accept inbound redirected-result calls.
+
 - **Experimental caller-controlled RPC answer lifetimes and Level-3 transfer.**
   `rpc.peer.CallOptions` adds `.result_lifetime = .automatic | .retained` to
   additive `sendCall*WithOptions` methods. Generated `Client`,

@@ -20,6 +20,31 @@ pub const ElementSize = enum(u16) {
     inline_composite = 7,
 };
 
+/// A concrete application of the type parameters declared by a generic node
+/// (or one of its lexical parents).
+///
+/// `Brand` is recursive through `Binding.type`, so bound types are stored by
+/// pointer just like list element types. Parsed requests own every scope,
+/// binding, and pointed-to type.
+pub const Brand = struct {
+    scopes: []Scope = &.{},
+
+    pub const Scope = struct {
+        scope_id: Id,
+        binding: @This().Binding,
+
+        pub const Binding = union(enum) {
+            bind: []Brand.Binding,
+            inherit: void,
+        };
+    };
+
+    pub const Binding = union(enum) {
+        unbound: void,
+        type: *TypeExpression,
+    };
+};
+
 /// Cap'n Proto type descriptor covering all built-in and user-defined types.
 pub const Type = union(enum) {
     void: void,
@@ -49,6 +74,50 @@ pub const Type = union(enum) {
         type_id: Id,
     },
     any_pointer: void,
+};
+
+/// Lossless metadata that accompanies the frozen `Type` union without adding
+/// tags to it or changing any existing payload. This is recursive in parallel
+/// with `Type.list` and retains the schema-language details legacy consumers
+/// historically saw erased.
+pub const TypeMetadata = union(enum) {
+    none: void,
+    list: *TypeMetadata,
+    named: Brand,
+    any_pointer: AnyPointer,
+
+    pub const AnyPointer = union(enum) {
+        unconstrained: Unconstrained,
+        parameter: @This().Parameter,
+        implicit_method_parameter: @This().ImplicitMethodParameter,
+
+        /// A reference to a type parameter declared by a schema node in the
+        /// current lexical scope chain.
+        pub const Parameter = struct {
+            scope_id: Id,
+            parameter_index: u16,
+        };
+
+        /// A reference to a method-local implicit type parameter.
+        pub const ImplicitMethodParameter = struct {
+            parameter_index: u16,
+        };
+
+        pub const Unconstrained = enum {
+            any_kind,
+            @"struct",
+            list,
+            capability,
+        };
+    };
+};
+
+/// A complete type expression used by Brand bindings. Ordinary field/const
+/// declarations retain their existing `type: Type` member and carry only the
+/// parallel `type_metadata` tree.
+pub const TypeExpression = struct {
+    type: Type,
+    metadata: TypeMetadata = .none,
 };
 
 /// Value information (for defaults and constants)
@@ -84,6 +153,7 @@ pub const FieldSlot = struct {
     offset: u32,
     type: Type,
     default_value: ?Value,
+    type_metadata: TypeMetadata = .none,
 };
 
 /// Field group information
@@ -118,11 +188,20 @@ pub const Method = struct {
     param_struct_type: Id,
     result_struct_type: Id,
     annotations: []AnnotationUse,
+    implicit_parameters: []Parameter = &.{},
+    param_brand: Brand = .{},
+    result_brand: Brand = .{},
 
     /// Whether this method uses `-> stream` (result type is StreamResult).
     pub fn isStreaming(self: Method) bool {
         return self.result_struct_type == stream_result_type_id;
     }
+};
+
+/// A named generic parameter. Cap'n Proto parameters are pointer-typed; their
+/// concrete pointer shape is supplied by a Brand binding.
+pub const Parameter = struct {
+    name: []const u8,
 };
 
 /// Node types
@@ -155,17 +234,22 @@ pub const EnumNode = struct {
 pub const InterfaceNode = struct {
     methods: []Method,
     superclasses: []Id,
+    /// Parallel to `superclasses`; preserves each superclass application while
+    /// the existing ID slice keeps current generator call sites source-stable.
+    superclass_brands: []Brand = &.{},
 };
 
 /// Const node information
 pub const ConstNode = struct {
     type: Type,
     value: Value,
+    type_metadata: TypeMetadata = .none,
 };
 
 /// Annotation node information
 pub const AnnotationNode = struct {
     type: Type,
+    type_metadata: TypeMetadata = .none,
     targets_file: bool,
     targets_const: bool,
     targets_enum: bool,
@@ -195,6 +279,8 @@ pub const Node = struct {
     interface_node: ?InterfaceNode,
     const_node: ?ConstNode,
     annotation_node: ?AnnotationNode,
+    parameters: []Parameter = &.{},
+    is_generic: bool = false,
 
     pub const NestedNode = struct {
         name: []const u8,
@@ -206,6 +292,9 @@ pub const Node = struct {
 pub const AnnotationUse = struct {
     id: Id,
     value: Value,
+    /// Brand of the annotation's lexical scope. Annotation declarations cannot
+    /// themselves be generic, but an enclosing declaration may be.
+    brand: Brand = .{},
 };
 
 /// Import information

@@ -8,6 +8,17 @@ session; this document is the source of truth for progress.
 
 Progress notes:
 
+- QUIC follow-up (2026-08-11): the QUIC job now includes
+  `windows-latest` and runs the targeted transport evidence in both Debug and
+  ReleaseSafe. The evidence recipe rejects `SkipZigTest`, asserts the three
+  QUIC test roots still contain at least 44 declared tests, and checks that the
+  expected test binaries actually ran. The full QUIC test tree also
+  cross-compiles for `x86_64-windows`. This is a configured per-push CI gate,
+  not yet a completed native-Windows proof: the sprint was handed off without
+  pushing, so Windows runtime parity remains provisional until the user's
+  first push produces a green `windows-latest` run. The broader full-repository
+  QUIC-root gate remains Linux-only.
+
 - Codegen parity follow-up (2026-08-10): the Windows CI job installs the
   checksum-pinned upstream `capnp.exe` archive and now runs the same native
   `capnp`-driven serialization/codegen tests as Linux and macOS. Because that
@@ -248,9 +259,12 @@ skips, and soak passes on a Windows runner.
   upstream lands COFF support.
 - **Evented io backend**: fiber-gated upstream; `EventedBackendUnsupported`
   is the documented contract and `std.Io.Threaded` is the Windows backend.
-- **QUIC**: blocked on the quic-zig master migration globally; when
-  repinned, add Windows to the QUIC matrix and verify the TLS dependency
-  builds there.
+- **QUIC**: the dependency migration and Windows compilation blockers are
+  resolved. Targeted native Debug + ReleaseSafe transport evidence is now in
+  the three-OS CI matrix and rejects skips/vacuous execution; the full test
+  tree cross-compiles for Windows. Native Windows execution is provisional
+  until the first green user-pushed run, and the broader full-repository
+  QUIC-root gate remains Linux-only.
 - **aarch64-windows**: add to the cross-compile matrix after x86_64 parity
   lands (cheap insurance, no runtime lane).
 

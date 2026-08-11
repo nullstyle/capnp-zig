@@ -222,6 +222,20 @@ pub const StructGenerator = struct {
             "                    ",
             writer,
         );
+        try self.generateBrandsReaderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
+        try self.generatePointerKindsReaderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
         if (group_struct_info.discriminant_count > 0) {
             const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
             try writer.writeAll("            pub fn whichOrdinal(self: @This()) u16 {\n");
@@ -250,6 +264,20 @@ pub const StructGenerator = struct {
             writer,
         );
         try self.generateNestedListsBuilderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
+        try self.generateBrandsBuilderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
+        try self.generatePointerKindsBuilderView(
             group_struct_info,
             "            ",
             "                ",
@@ -446,6 +474,626 @@ pub const StructGenerator = struct {
             if (slot.type.list.element_type.* == .list) return true;
         }
         return false;
+    }
+
+    const ConcreteBrand = struct {
+        target: *const schema.Node,
+        target_info: schema.StructNode,
+        brand: schema.Brand,
+    };
+
+    const BrandListInfo = struct {
+        reader_type: []const u8,
+        builder_type: []const u8,
+        get_method: []const u8,
+        init_method: []const u8,
+    };
+
+    fn brandListInfo(element_type: schema.Type) ?BrandListInfo {
+        return switch (element_type) {
+            .void => .{ .reader_type = "message.VoidListReader", .builder_type = "message.VoidListBuilder", .get_method = "getVoidList", .init_method = "initVoidList" },
+            .bool => .{ .reader_type = "message.BoolListReader", .builder_type = "message.BoolListBuilder", .get_method = "getBoolList", .init_method = "initBoolList" },
+            .int8 => .{ .reader_type = "message.I8ListReader", .builder_type = "message.I8ListBuilder", .get_method = "getI8List", .init_method = "initI8List" },
+            .uint8 => .{ .reader_type = "message.U8ListReader", .builder_type = "message.U8ListBuilder", .get_method = "getU8List", .init_method = "initU8List" },
+            .int16 => .{ .reader_type = "message.I16ListReader", .builder_type = "message.I16ListBuilder", .get_method = "getI16List", .init_method = "initI16List" },
+            .uint16 => .{ .reader_type = "message.U16ListReader", .builder_type = "message.U16ListBuilder", .get_method = "getU16List", .init_method = "initU16List" },
+            .int32 => .{ .reader_type = "message.I32ListReader", .builder_type = "message.I32ListBuilder", .get_method = "getI32List", .init_method = "initI32List" },
+            .uint32 => .{ .reader_type = "message.U32ListReader", .builder_type = "message.U32ListBuilder", .get_method = "getU32List", .init_method = "initU32List" },
+            .float32 => .{ .reader_type = "message.F32ListReader", .builder_type = "message.F32ListBuilder", .get_method = "getF32List", .init_method = "initF32List" },
+            .int64 => .{ .reader_type = "message.I64ListReader", .builder_type = "message.I64ListBuilder", .get_method = "getI64List", .init_method = "initI64List" },
+            .uint64 => .{ .reader_type = "message.U64ListReader", .builder_type = "message.U64ListBuilder", .get_method = "getU64List", .init_method = "initU64List" },
+            .float64 => .{ .reader_type = "message.F64ListReader", .builder_type = "message.F64ListBuilder", .get_method = "getF64List", .init_method = "initF64List" },
+            else => null,
+        };
+    }
+
+    fn supportsBrandBinding(self: *StructGenerator, expression: schema.TypeExpression) bool {
+        return switch (expression.type) {
+            .text, .data => true,
+            .@"struct" => |info| blk: {
+                const node = self.getNode(info.type_id) orelse break :blk false;
+                break :blk node.kind == .@"struct" and !node.is_generic and self.structLayout(info.type_id) != null;
+            },
+            .list => |info| brandListInfo(info.element_type.*) != null,
+            .any_pointer => switch (expression.metadata) {
+                .any_pointer => |metadata| metadata == .unconstrained,
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    fn lexicalGenericScope(
+        self: *StructGenerator,
+        target: *const schema.Node,
+        scope_id: schema.Id,
+    ) ?*const schema.Node {
+        var cursor: ?*const schema.Node = target;
+        while (cursor) |node| {
+            if (node.id == scope_id and node.parameters.len > 0) return node;
+            if (node.scope_id == 0) break;
+            cursor = self.getNode(node.scope_id) orelse return null;
+        }
+        return null;
+    }
+
+    fn concreteBrandBindingsForScope(
+        brand: schema.Brand,
+        scope_id: schema.Id,
+    ) ?[]const schema.Brand.Binding {
+        var found: ?[]const schema.Brand.Binding = null;
+        for (brand.scopes) |scope| {
+            if (scope.scope_id != scope_id) continue;
+            if (found != null) return null;
+            found = switch (scope.binding) {
+                .bind => |bindings| bindings,
+                .inherit => return null,
+            };
+        }
+        return found;
+    }
+
+    fn isFullyConcreteBrand(
+        self: *StructGenerator,
+        target: *const schema.Node,
+        target_info: schema.StructNode,
+        brand: schema.Brand,
+    ) bool {
+        var expected_scope_count: usize = 0;
+        var cursor: ?*const schema.Node = target;
+        while (cursor) |node| {
+            if (node.parameters.len > 0) {
+                expected_scope_count += 1;
+                const bindings = concreteBrandBindingsForScope(brand, node.id) orelse return false;
+                if (bindings.len != node.parameters.len) return false;
+                for (bindings) |binding| {
+                    const expression = switch (binding) {
+                        .type => |value| value.*,
+                        .unbound => return false,
+                    };
+                    if (!self.supportsBrandBinding(expression)) return false;
+                }
+            }
+            if (node.scope_id == 0) break;
+            cursor = self.getNode(node.scope_id) orelse return false;
+        }
+        if (brand.scopes.len != expected_scope_count or expected_scope_count == 0) return false;
+
+        var has_direct_parameter = false;
+        for (target_info.fields) |target_field| {
+            const target_slot = target_field.slot orelse continue;
+            if (target_slot.type != .any_pointer) continue;
+            const parameter = switch (target_slot.type_metadata) {
+                .any_pointer => |metadata| switch (metadata) {
+                    .parameter => |value| value,
+                    else => continue,
+                },
+                else => continue,
+            };
+            const scope_node = self.lexicalGenericScope(target, parameter.scope_id) orelse return false;
+            if (parameter.parameter_index >= scope_node.parameters.len) return false;
+            const bindings = concreteBrandBindingsForScope(brand, parameter.scope_id) orelse return false;
+            if (parameter.parameter_index >= bindings.len) return false;
+            if (bindings[parameter.parameter_index] != .type) return false;
+            has_direct_parameter = true;
+        }
+        return has_direct_parameter;
+    }
+
+    fn concreteBrand(self: *StructGenerator, slot: schema.FieldSlot) ?ConcreteBrand {
+        if (slot.type != .@"struct") return null;
+        const brand = switch (slot.type_metadata) {
+            .named => |value| value,
+            else => return null,
+        };
+        const target_id = slot.type.@"struct".type_id;
+        const target = self.getNode(target_id) orelse return null;
+        if (target.kind != .@"struct") return null;
+        const target_info = target.struct_node orelse return null;
+        if (target_info.is_group) return null;
+        if (!target.is_generic) return null;
+        if (!self.isFullyConcreteBrand(target, target_info, brand)) return null;
+        return .{ .target = target, .target_info = target_info, .brand = brand };
+    }
+
+    fn brandBindingForField(brand: ConcreteBrand, field: schema.Field) ?*const schema.TypeExpression {
+        const slot = field.slot orelse return null;
+        if (slot.type != .any_pointer) return null;
+        const parameter = switch (slot.type_metadata) {
+            .any_pointer => |metadata| switch (metadata) {
+                .parameter => |value| value,
+                else => return null,
+            },
+            else => return null,
+        };
+        const bindings = concreteBrandBindingsForScope(brand.brand, parameter.scope_id) orelse return null;
+        if (parameter.parameter_index >= bindings.len) return null;
+        return switch (bindings[parameter.parameter_index]) {
+            .type => |expression| expression,
+            .unbound => null,
+        };
+    }
+
+    fn brandStructTypeName(self: *StructGenerator, id: schema.Id) !?[]const u8 {
+        const name = (try self.structTypeName(id)) orelse return null;
+        defer self.allocator.free(name);
+        return try std.fmt.allocPrint(self.allocator, "_capnp_file.{s}", .{name});
+    }
+
+    fn hasDirectConcreteBrandSlot(self: *StructGenerator, struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (self.concreteBrand(slot) != null) return true;
+        }
+        return false;
+    }
+
+    fn brandReaderTypeString(self: *StructGenerator, expression: schema.TypeExpression) ![]const u8 {
+        return switch (expression.type) {
+            .text, .data => self.allocator.dupe(u8, "[]const u8"),
+            .@"struct" => |info| blk: {
+                const name = (try self.brandStructTypeName(info.type_id)) orelse return error.InvalidStructNode;
+                defer self.allocator.free(name);
+                break :blk std.fmt.allocPrint(self.allocator, "{s}.Reader", .{name});
+            },
+            .list => |info| blk: {
+                const list = brandListInfo(info.element_type.*) orelse return error.InvalidStructNode;
+                break :blk self.allocator.dupe(u8, list.reader_type);
+            },
+            .any_pointer => blk: {
+                const metadata = switch (expression.metadata) {
+                    .any_pointer => |value| value,
+                    else => return error.InvalidStructNode,
+                };
+                const name: []const u8 = switch (metadata) {
+                    .unconstrained => |kind| switch (kind) {
+                        .any_kind => "message.AnyPointerReader",
+                        .@"struct" => "message.StructReader",
+                        .list => "message.AnyListReader",
+                        .capability => "message.Capability",
+                    },
+                    else => return error.InvalidStructNode,
+                };
+                break :blk self.allocator.dupe(u8, name);
+            },
+            else => error.InvalidStructNode,
+        };
+    }
+
+    fn generateBrandReaderParameterMethod(
+        self: *StructGenerator,
+        field: schema.Field,
+        expression: schema.TypeExpression,
+        decl_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const cap_name = try self.capitalizeFirst(zig_name);
+        defer self.allocator.free(cap_name);
+        const return_type = try self.brandReaderTypeString(expression);
+        defer self.allocator.free(return_type);
+
+        try writer.print("{s}pub fn get{s}(self: @This()) !{s} {{\n", .{ decl_indent, cap_name, return_type });
+        try writer.print("{s}const pointer = try self._reader.get{s}();\n", .{ body_indent, cap_name });
+        switch (expression.type) {
+            .text => try writer.print("{s}return try pointer.getText();\n", .{body_indent}),
+            .data => try writer.print("{s}return try pointer.getData();\n", .{body_indent}),
+            .@"struct" => |info| {
+                const name = (try self.brandStructTypeName(info.type_id)) orelse return error.InvalidStructNode;
+                defer self.allocator.free(name);
+                try writer.print("{s}return {s}.Reader.wrap(try pointer.getStruct());\n", .{ body_indent, name });
+            },
+            .list => |info| {
+                const list = brandListInfo(info.element_type.*) orelse return error.InvalidStructNode;
+                try writer.print("{s}return try (try message.AnyListReader.wrap(pointer)).{s}();\n", .{ body_indent, list.get_method });
+            },
+            .any_pointer => switch (expression.metadata.any_pointer) {
+                .unconstrained => |kind| switch (kind) {
+                    .any_kind => try writer.print("{s}return pointer;\n", .{body_indent}),
+                    .@"struct" => try writer.print("{s}return try pointer.getStruct();\n", .{body_indent}),
+                    .list => try writer.print("{s}return try message.AnyListReader.wrap(pointer);\n", .{body_indent}),
+                    .capability => try writer.print("{s}return try pointer.getCapability();\n", .{body_indent}),
+                },
+                else => return error.InvalidStructNode,
+            },
+            else => return error.InvalidStructNode,
+        }
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    fn writeBrandBuilderFieldGuard(
+        field: schema.Field,
+        target_info: schema.StructNode,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (field.discriminant_value == 0xFFFF or target_info.discriminant_count == 0) return;
+        const disc_byte_offset = try discriminantByteOffset(target_info.discriminant_offset);
+        try writer.print(
+            "{s}if (self._builder._builder.readUnionDiscriminant({}) != {}) return error.WrongUnionMember;\n",
+            .{ body_indent, disc_byte_offset, field.discriminant_value },
+        );
+    }
+
+    fn generateBrandBuilderParameterMethods(
+        self: *StructGenerator,
+        field: schema.Field,
+        target_info: schema.StructNode,
+        expression: schema.TypeExpression,
+        decl_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        const slot = field.slot orelse return;
+        const zig_name = try self.type_gen.toZigIdentifier(field.name);
+        defer self.allocator.free(zig_name);
+        const cap_name = try self.capitalizeFirst(zig_name);
+        defer self.allocator.free(cap_name);
+
+        switch (expression.type) {
+            .text, .data => {
+                try writer.print("{s}pub fn set{s}(self: *@This(), value: []const u8) !void {{\n", .{ decl_indent, cap_name });
+                try writer.print("{s}const pointer = try self._builder.init{s}();\n", .{ body_indent, cap_name });
+                try writer.print("{s}return pointer.set{s}(value);\n", .{ body_indent, if (expression.type == .text) "Text" else "Data" });
+                try writer.print("{s}}}\n\n", .{decl_indent});
+            },
+            .@"struct" => |info| {
+                const name = (try self.brandStructTypeName(info.type_id)) orelse return error.InvalidStructNode;
+                defer self.allocator.free(name);
+                const layout = self.structLayout(info.type_id) orelse return error.InvalidStructNode;
+
+                try writer.print("{s}pub fn get{s}(self: *@This()) !{s}.Builder {{\n", .{ decl_indent, cap_name, name });
+                try writeBrandBuilderFieldGuard(field, target_info, body_indent, writer);
+                try writer.print("{s}const pointer = try self._builder._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+                try writer.print("{s}return {s}.Builder.wrap(try pointer.getStruct());\n", .{ body_indent, name });
+                try writer.print("{s}}}\n\n", .{decl_indent});
+
+                try writer.print("{s}pub fn init{s}(self: *@This()) !{s}.Builder {{\n", .{ decl_indent, cap_name, name });
+                try writer.print("{s}const pointer = try self._builder.init{s}();\n", .{ body_indent, cap_name });
+                try writer.print("{s}return {s}.Builder.wrap(try pointer.initStruct({}, {}));\n", .{ body_indent, name, layout.data_words, layout.pointer_words });
+                try writer.print("{s}}}\n\n", .{decl_indent});
+            },
+            .list => |info| {
+                const list = brandListInfo(info.element_type.*) orelse return error.InvalidStructNode;
+                try writer.print("{s}pub fn get{s}(self: *@This()) !{s} {{\n", .{ decl_indent, cap_name, list.builder_type });
+                try writeBrandBuilderFieldGuard(field, target_info, body_indent, writer);
+                try writer.print("{s}const pointer = try self._builder._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+                try writer.print("{s}return try pointer.{s}();\n", .{ body_indent, list.get_method });
+                try writer.print("{s}}}\n\n", .{decl_indent});
+
+                try writer.print("{s}pub fn init{s}(self: *@This(), element_count: u32) !{s} {{\n", .{ decl_indent, cap_name, list.builder_type });
+                try writer.print("{s}const pointer = try self._builder.init{s}();\n", .{ body_indent, cap_name });
+                try writer.print("{s}return try pointer.{s}(element_count);\n", .{ body_indent, list.init_method });
+                try writer.print("{s}}}\n\n", .{decl_indent});
+            },
+            .any_pointer => switch (expression.metadata.any_pointer) {
+                .unconstrained => |kind| switch (kind) {
+                    .any_kind => {
+                        try writer.print("{s}pub fn get{s}(self: *@This()) !message.AnyPointerBuilder {{\n", .{ decl_indent, cap_name });
+                        try writeBrandBuilderFieldGuard(field, target_info, body_indent, writer);
+                        try writer.print("{s}return self._builder._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+                        try writer.print("{s}}}\n\n", .{decl_indent});
+                    },
+                    .@"struct", .list => {
+                        const wrapper = if (kind == .@"struct") "message.AnyStructBuilder" else "message.AnyListBuilder";
+                        try writer.print("{s}pub fn get{s}(self: *@This()) !{s} {{\n", .{ decl_indent, cap_name, wrapper });
+                        try writeBrandBuilderFieldGuard(field, target_info, body_indent, writer);
+                        try writer.print("{s}const pointer = try self._builder._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+                        try writer.print("{s}return try {s}.wrap(pointer);\n", .{ body_indent, wrapper });
+                        try writer.print("{s}}}\n\n", .{decl_indent});
+                    },
+                    .capability => {
+                        try writer.print("{s}pub fn get{s}(self: *@This()) !message.Capability {{\n", .{ decl_indent, cap_name });
+                        try writeBrandBuilderFieldGuard(field, target_info, body_indent, writer);
+                        try writer.print("{s}const pointer = try self._builder._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+                        try writer.print("{s}return try pointer.getCapability();\n", .{body_indent});
+                        try writer.print("{s}}}\n\n", .{decl_indent});
+                        try writer.print("{s}pub fn set{s}(self: *@This(), value: message.Capability) !void {{\n", .{ decl_indent, cap_name });
+                        try writer.print("{s}const pointer = try self._builder.init{s}();\n", .{ body_indent, cap_name });
+                        try writer.print("{s}return pointer.setCapability(value);\n", .{body_indent});
+                        try writer.print("{s}}}\n\n", .{decl_indent});
+                    },
+                },
+                else => return error.InvalidStructNode,
+            },
+            else => return error.InvalidStructNode,
+        }
+    }
+
+    fn generateBrandsReaderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!self.hasDirectConcreteBrandSlot(struct_info)) return;
+        const wrapper_body_indent = try std.fmt.allocPrint(self.allocator, "{s}    ", .{body_indent});
+        defer self.allocator.free(wrapper_body_indent);
+
+        try writer.print("{s}pub const Brands = struct {{\n", .{decl_indent});
+        try writer.print("{s}_reader: message.StructReader,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            const brand = self.concreteBrand(slot) orelse continue;
+            const target_info = brand.target_info;
+            const target_name = (try self.brandStructTypeName(brand.target.id)) orelse continue;
+            defer self.allocator.free(target_name);
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+
+            try writer.print("{s}pub const {s} = struct {{\n", .{ member_indent, cap_name });
+            try writer.print("{s}_reader: {s}.Reader,\n\n", .{ body_indent, target_name });
+            try writer.print("{s}pub fn raw(self: @This()) {s}.Reader {{\n", .{ body_indent, target_name });
+            try writer.print("{s}return self._reader;\n", .{wrapper_body_indent});
+            try writer.print("{s}}}\n\n", .{body_indent});
+            for (target_info.fields) |target_field| {
+                const expression = brandBindingForField(brand, target_field) orelse continue;
+                try self.generateBrandReaderParameterMethod(
+                    target_field,
+                    expression.*,
+                    body_indent,
+                    wrapper_body_indent,
+                    writer,
+                );
+            }
+            try writer.print("{s}}};\n\n", .{member_indent});
+
+            try writer.print("{s}pub fn get{s}(self: @This()) !@This().{s} {{\n", .{ member_indent, cap_name, cap_name });
+            try self.writeNestedListUnionGuard(field, struct_info, body_indent, writer);
+            if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                defer self.allocator.free(const_name);
+                try writer.print("{s}if (self._reader.isPointerNull({})) {{\n", .{ body_indent, slot.offset });
+                try writer.print("{s}    const raw = try {s}();\n", .{ body_indent, const_name });
+                try writer.print("{s}    return .{{ ._reader = {s}.Reader.wrap(raw) }};\n", .{ body_indent, target_name });
+                try writer.print("{s}}}\n", .{body_indent});
+            } else {
+                try writer.print("{s}if (self._reader.isPointerNull({})) return .{{ ._reader = {s}.Reader.wrap(self._reader.emptyStruct()) }};\n", .{ body_indent, slot.offset, target_name });
+            }
+            try writer.print("{s}return .{{ ._reader = {s}.Reader.wrap(try self._reader.readStruct({})) }};\n", .{ body_indent, target_name, slot.offset });
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn brands(self: @This()) Brands {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    fn generateBrandsBuilderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!self.hasDirectConcreteBrandSlot(struct_info)) return;
+        const wrapper_body_indent = try std.fmt.allocPrint(self.allocator, "{s}    ", .{body_indent});
+        defer self.allocator.free(wrapper_body_indent);
+
+        try writer.print("{s}pub const Brands = struct {{\n", .{decl_indent});
+        try writer.print("{s}_builder: message.StructBuilder,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            const brand = self.concreteBrand(slot) orelse continue;
+            const target_info = brand.target_info;
+            const target_name = (try self.brandStructTypeName(brand.target.id)) orelse continue;
+            defer self.allocator.free(target_name);
+            const target_layout = self.structLayout(brand.target.id) orelse continue;
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+
+            try writer.print("{s}pub const {s} = struct {{\n", .{ member_indent, cap_name });
+            try writer.print("{s}_builder: {s}.Builder,\n\n", .{ body_indent, target_name });
+            try writer.print("{s}pub fn raw(self: @This()) {s}.Builder {{\n", .{ body_indent, target_name });
+            try writer.print("{s}return self._builder;\n", .{wrapper_body_indent});
+            try writer.print("{s}}}\n\n", .{body_indent});
+            for (target_info.fields) |target_field| {
+                const expression = brandBindingForField(brand, target_field) orelse continue;
+                try self.generateBrandBuilderParameterMethods(
+                    target_field,
+                    target_info,
+                    expression.*,
+                    body_indent,
+                    wrapper_body_indent,
+                    writer,
+                );
+            }
+            try writer.print("{s}}};\n\n", .{member_indent});
+
+            try writer.print("{s}pub fn get{s}(self: @This()) !@This().{s} {{\n", .{ member_indent, cap_name, cap_name });
+            if (field.discriminant_value != 0xFFFF and struct_info.discriminant_count > 0) {
+                const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
+                try writer.print(
+                    "{s}if (self._builder.readUnionDiscriminant({}) != {}) return error.WrongUnionMember;\n",
+                    .{ body_indent, disc_byte_offset, field.discriminant_value },
+                );
+            }
+            try writer.print("{s}const raw = try self._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+            try writer.print("{s}return .{{ ._builder = {s}.Builder.wrap(try raw.getStruct()) }};\n", .{ body_indent, target_name });
+            try writer.print("{s}}}\n\n", .{member_indent});
+
+            try writer.print("{s}pub fn init{s}(self: @This()) !@This().{s} {{\n", .{ member_indent, cap_name, cap_name });
+            try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
+            try writer.print("{s}const raw = try self._builder.initStruct({}, {}, {});\n", .{ body_indent, slot.offset, target_layout.data_words, target_layout.pointer_words });
+            try writer.print("{s}return .{{ ._builder = {s}.Builder.wrap(raw) }};\n", .{ body_indent, target_name });
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn brands(self: @This()) Brands {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    const PointerKind = enum {
+        @"struct",
+        list,
+        capability,
+    };
+
+    fn pointerKind(slot: schema.FieldSlot) ?PointerKind {
+        if (slot.type != .any_pointer) return null;
+        return switch (slot.type_metadata) {
+            .any_pointer => |metadata| switch (metadata) {
+                .unconstrained => |kind| switch (kind) {
+                    .any_kind => null,
+                    .@"struct" => .@"struct",
+                    .list => .list,
+                    .capability => .capability,
+                },
+                else => null,
+            },
+            else => null,
+        };
+    }
+
+    fn hasDirectPointerKindSlot(struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (pointerKind(slot) != null) return true;
+        }
+        return false;
+    }
+
+    fn generatePointerKindsReaderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!hasDirectPointerKindSlot(struct_info)) return;
+
+        try writer.print("{s}pub const PointerKinds = struct {{\n", .{decl_indent});
+        try writer.print("{s}_reader: message.StructReader,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            const kind = pointerKind(slot) orelse continue;
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+            const return_type: []const u8 = switch (kind) {
+                .@"struct" => "message.StructReader",
+                .list => "message.AnyListReader",
+                .capability => "message.Capability",
+            };
+
+            try writer.print("{s}pub fn get{s}(self: @This()) !{s} {{\n", .{ member_indent, cap_name, return_type });
+            try self.writeNestedListUnionGuard(field, struct_info, body_indent, writer);
+            if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                defer self.allocator.free(const_name);
+                try writer.print("{s}if (self._reader.isPointerNull({})) {{\n", .{ body_indent, slot.offset });
+                try writer.print("{s}    const value = try {s}();\n", .{ body_indent, const_name });
+                switch (kind) {
+                    .@"struct" => try writer.print("{s}    return try value.getStruct();\n", .{body_indent}),
+                    .list => try writer.print("{s}    return try message.AnyListReader.wrap(value);\n", .{body_indent}),
+                    .capability => try writer.print("{s}    return try value.getCapability();\n", .{body_indent}),
+                }
+                try writer.print("{s}}}\n", .{body_indent});
+            } else if (kind == .@"struct") {
+                try writer.print("{s}if (self._reader.isPointerNull({})) return self._reader.emptyStruct();\n", .{ body_indent, slot.offset });
+            }
+
+            switch (kind) {
+                .@"struct" => try writer.print("{s}return try self._reader.readStruct({});\n", .{ body_indent, slot.offset }),
+                .list => {
+                    try writer.print("{s}const value = try self._reader.readAnyPointer({});\n", .{ body_indent, slot.offset });
+                    try writer.print("{s}return try message.AnyListReader.wrap(value);\n", .{body_indent});
+                },
+                .capability => try writer.print("{s}return try self._reader.readCapability({});\n", .{ body_indent, slot.offset }),
+            }
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn pointerKinds(self: @This()) PointerKinds {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    fn generatePointerKindsBuilderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!hasDirectPointerKindSlot(struct_info)) return;
+
+        try writer.print("{s}pub const PointerKinds = struct {{\n", .{decl_indent});
+        try writer.print("{s}_builder: message.StructBuilder,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            const kind = pointerKind(slot) orelse continue;
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+
+            const builder_type: []const u8 = switch (kind) {
+                .@"struct" => "message.AnyStructBuilder",
+                .list => "message.AnyListBuilder",
+                .capability => "message.CapabilityBuilder",
+            };
+            try writer.print("{s}pub fn get{s}(self: @This()) !{s} {{\n", .{ member_indent, cap_name, builder_type });
+            if (field.discriminant_value != 0xFFFF and struct_info.discriminant_count > 0) {
+                const disc_byte_offset = try discriminantByteOffset(struct_info.discriminant_offset);
+                try writer.print(
+                    "{s}if (self._builder.readUnionDiscriminant({}) != {}) return error.WrongUnionMember;\n",
+                    .{ body_indent, disc_byte_offset, field.discriminant_value },
+                );
+            }
+            try writer.print("{s}const slot_builder = try self._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+            try writer.print("{s}return try {s}.wrap(slot_builder);\n", .{ body_indent, builder_type });
+            try writer.print("{s}}}\n\n", .{member_indent});
+
+            switch (kind) {
+                .@"struct" => try writer.print("{s}pub fn init{s}(self: @This()) !message.AnyStructBuilder {{\n", .{ member_indent, cap_name }),
+                .list => try writer.print("{s}pub fn init{s}(self: @This()) !message.AnyListBuilder {{\n", .{ member_indent, cap_name }),
+                .capability => try writer.print("{s}pub fn set{s}(self: @This(), value: message.Capability) !void {{\n", .{ member_indent, cap_name }),
+            }
+            try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
+            try writer.print("{s}const slot_builder = try self._builder.getAnyPointer({});\n", .{ body_indent, slot.offset });
+            switch (kind) {
+                .@"struct" => try writer.print("{s}return .{{ ._builder = slot_builder }};\n", .{body_indent}),
+                .list => try writer.print("{s}return .{{ ._builder = slot_builder }};\n", .{body_indent}),
+                .capability => try writer.print("{s}return slot_builder.setCapability(value);\n", .{body_indent}),
+            }
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn pointerKinds(self: @This()) PointerKinds {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
     }
 
     fn isNestedListSlot(field: schema.Field) bool {
@@ -931,6 +1579,20 @@ pub const StructGenerator = struct {
             writer,
         );
         try self.generateNestedListsReaderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+        try self.generateBrandsReaderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+        try self.generatePointerKindsReaderView(
             struct_info,
             "        ",
             "            ",
@@ -1954,6 +2616,20 @@ pub const StructGenerator = struct {
             writer,
         );
         try self.generateNestedListsBuilderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+        try self.generateBrandsBuilderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+        try self.generatePointerKindsBuilderView(
             struct_info,
             "        ",
             "            ",

@@ -442,6 +442,7 @@ const CrossPeerCapMapContext = struct {
     outbound_peer: *Peer,
     inbound_caps: *cap_table.InboundCapTable,
     created_proxy_ids: *std.ArrayList(u32),
+    pin_source_caps: bool,
     remapped_by_index: std.AutoHashMap(u32, u32),
 
     fn init(
@@ -449,12 +450,14 @@ const CrossPeerCapMapContext = struct {
         outbound_peer: *Peer,
         inbound_caps: *cap_table.InboundCapTable,
         created_proxy_ids: *std.ArrayList(u32),
+        pin_source_caps: bool,
     ) CrossPeerCapMapContext {
         return .{
             .inbound_peer = inbound_peer,
             .outbound_peer = outbound_peer,
             .inbound_caps = inbound_caps,
             .created_proxy_ids = created_proxy_ids,
+            .pin_source_caps = pin_source_caps,
             .remapped_by_index = std.AutoHashMap(u32, u32).init(outbound_peer.allocator),
         };
     }
@@ -472,6 +475,11 @@ const CrossPeerReturnRelayContext = struct {
     release_param_caps: bool = true,
     created_result_proxy_ids: std.ArrayList(u32) = .empty,
     result_proxies_committed: bool = false,
+    /// Results authored by a local handler use the source peer's capability-id
+    /// space directly.  When they cross a connection boundary, proxy every
+    /// source capability under a handoff pin so it remains callable until the
+    /// recipient releases the proxy.
+    pin_source_caps: bool = false,
 
     fn rollbackResultProxies(ctx: *CrossPeerReturnRelayContext) void {
         if (ctx.result_proxies_committed) return;
@@ -484,6 +492,41 @@ const CrossPeerReturnRelayContext = struct {
         ctx.rollbackResultProxies();
         ctx.created_result_proxy_ids.deinit(allocator);
     }
+};
+
+/// Source-owned state for an automatic `sendResultsTo.thirdParty` redirect.
+///
+/// The source peer (the callee-facing introducer connection) owns the allocation
+/// and indexes it by the original answer id.  The result peer keeps only a
+/// borrowed backlink keyed by the synthetic callee-allocated answer id.  This
+/// makes either peer's teardown able to neutralize the other side without
+/// guessing whether a Return was already visible on either transport.
+const AutomaticThirdPartyRoute = struct {
+    const TargetOutcome = enum {
+        connected,
+        canceled,
+        disconnected,
+        settled,
+    };
+
+    source_peer: ?*Peer,
+    source_answer_id: u32,
+    target_peer: ?*Peer,
+    target_answer_id: u32,
+    target_outcome: TargetOutcome = .connected,
+    /// True while an outbound ThirdPartyAnswer / redirected Return can invoke a
+    /// synchronous transport callback.  Finish is allowed to clear routing in
+    /// that callback; destruction is deferred until the outer operation stops
+    /// borrowing this allocation.
+    operation_active: bool = false,
+    delivering_result: bool = false,
+    clear_requested: bool = false,
+    /// Target delivery committed, but the source resultsSentElsewhere write
+    /// reported failure. Keep the already-owned route allocation as a
+    /// no-allocation tombstone until handler dispatch tries to translate the
+    /// error into an exception; that translation must be refused to avoid a
+    /// possible second source terminal.
+    source_marker_failed: bool = false,
 };
 
 fn castCtx(comptime Ptr: type, ctx: *anyopaque) Ptr {
@@ -1446,6 +1489,9 @@ const third_party_results_unsupported =
 const results_sent_elsewhere_no_pipelining =
     "results sent elsewhere; pipelining is not supported on a redirected answer";
 
+const automatic_third_party_target_canceled =
+    "automatic third-party result recipient canceled before delivery";
+
 pub const Peer = struct {
     allocator: std.mem.Allocator,
     limits: PeerLimits,
@@ -1666,6 +1712,12 @@ pub const Peer = struct {
     send_results_to_yourself: std.AutoHashMap(u32, void),
     /// Inbound calls with sendResultsTo=thirdParty.
     send_results_to_third_party: std.AutoHashMap(u32, ?[]u8),
+    /// Automatic `.vat_network` redirects owned by this peer, keyed by the
+    /// original caller-facing answer id.
+    automatic_third_party_routes: std.AutoHashMap(u32, *AutomaticThirdPartyRoute),
+    /// Borrowed backlinks for automatic redirects whose synthetic result
+    /// answer lives on this peer, keyed by that synthetic answer id.
+    incoming_automatic_third_party_routes: std.AutoHashMap(u32, *AutomaticThirdPartyRoute),
     /// Results frames for answered `sendResultsTo=yourself` calls, awaiting the
     /// `takeFromOtherQuestion` redirect that names the local question they feed
     /// (the reflected-loopback / Level-1 tail-call optimization). Keyed by the
@@ -1737,6 +1789,23 @@ pub const Peer = struct {
     /// `detachTransport` deliberately does not set this bit: detaching a live
     /// transport is non-terminal and permits rebinding.
     transport_close_notified: bool = false,
+    /// Reentrant `deinit()` from a synchronous automatic third-party send or
+    /// automatic Call dispatch is deferred until the outer operation unwinds.
+    /// Both the source and result peers take this guard while their maps are
+    /// borrowed; dispatch depth covers the handler interval between route
+    /// publication and terminal result delivery.
+    automatic_third_party_operation_depth: u32 = 0,
+    automatic_third_party_deinit_deferred: bool = false,
+    /// A terminal close observed while an automatic route operation borrows
+    /// either peer is completed when the outermost operation unwinds. Unlike
+    /// `detachTransport`, this remains terminal and still notifies the user
+    /// exactly once.
+    automatic_third_party_close_deferred: bool = false,
+    /// Encloses only inbound `.vat_network` Call dispatch, so a source deinit
+    /// requested from a nested result send runs after the handler and dispatch
+    /// error path have stopped borrowing the peer. Ordinary RPC frames retain
+    /// their established deinit semantics.
+    automatic_third_party_dispatch_depth: u32 = 0,
     observer: ?events.Observer = null,
 
     // -- Time / deadlines -----------------------------------------------------
@@ -1919,6 +1988,8 @@ pub const Peer = struct {
             .loopback_questions = std.AutoHashMap(u32, void).init(allocator),
             .send_results_to_yourself = std.AutoHashMap(u32, void).init(allocator),
             .send_results_to_third_party = std.AutoHashMap(u32, ?[]u8).init(allocator),
+            .automatic_third_party_routes = std.AutoHashMap(u32, *AutomaticThirdPartyRoute).init(allocator),
+            .incoming_automatic_third_party_routes = std.AutoHashMap(u32, *AutomaticThirdPartyRoute).init(allocator),
             .loopback_result_stash = std.AutoHashMap(u32, []u8).init(allocator),
             .persistent_exports = std.AutoHashMap(u32, *PersistenceState).init(allocator),
         };
@@ -2085,10 +2156,6 @@ pub const Peer = struct {
         peer_transport_state.detachTransportForPeer(Peer, self);
     }
 
-    /// Attach the Level-3 three-party addressing seam. Required before
-    /// originating `Provide`/`Accept` handoffs (`sendProvide`/`sendAccept`); a
-    /// plain two-party peer never needs one. The network's `ctx` must outlive
-    /// the peer.
     /// Callee policy for an inbound `Call` carrying `sendResultsTo = thirdParty`.
     ///
     /// That field asks the callee to connect to a third vat, deliver the results
@@ -2106,16 +2173,27 @@ pub const Peer = struct {
         /// the third vat and then settling this answer with
         /// `sendReturnResultsSentElsewhere`.
         application,
+        /// Experimental automatic redirect. The peer resolves the call's
+        /// `ThirdPartyToContact` through its attached `VatNetwork`, registers a
+        /// synthetic answer on the introduced peer, and delivers the handler's
+        /// Return there before answering the immediate caller with
+        /// `resultsSentElsewhere`.
+        vat_network,
     };
 
     /// Select how inbound `sendResultsTo = thirdParty` calls are handled. Per
     /// `Peer`, not per call: in the canonical handoff topology only the callee's
-    /// peer facing the introducer needs `.application`.
+    /// peer facing the introducer needs `.application` or `.vat_network`.
     pub fn setThirdPartyResultPolicy(self: *Peer, policy: ThirdPartyResultPolicy) void {
         self.assertThreadAffinity();
         self.third_party_result_policy = policy;
     }
 
+    /// Attach the Level-3 three-party addressing seam. Required before
+    /// originating `Provide`/`Accept` handoffs (`sendProvide`/`sendAccept`) or
+    /// selecting automatic `.vat_network` redirected results; a plain
+    /// two-party peer never needs one. The network's `ctx` must outlive the
+    /// peer.
     pub fn attachVatNetwork(self: *Peer, network: VatNetwork) void {
         self.assertThreadAffinity();
         self.vat_network = network;
@@ -2216,8 +2294,21 @@ pub const Peer = struct {
     pub fn deinit(self: *Peer) void {
         self.assertThreadAffinity();
         if (self.in_deinit) return;
+        if (self.automatic_third_party_operation_depth != 0 or
+            self.automatic_third_party_dispatch_depth != 0)
+        {
+            self.automatic_third_party_deinit_deferred = true;
+            self.is_shutting_down = true;
+            return;
+        }
+        self.automatic_third_party_deinit_deferred = false;
         self.in_deinit = true;
         self.is_shutting_down = true;
+        // Automatic redirected results borrow peers in both directions. Sever
+        // target backlinks first, then retire routes this peer owns, before any
+        // callback-bearing question/export teardown can destroy a sibling.
+        self.neutralizeAutomaticThirdPartyRoutesOnTargetPeer();
+        self.neutralizeAutomaticThirdPartyRoutesOnSourcePeer();
         // LIVENESS (BUG #55): this peer may host held-open Provide questions that
         // recipient peers' `outbound_provides` entries borrow a `provide_peer`
         // pointer back to. `forceCancelAllQuestions` below removes and Finishes
@@ -2418,6 +2509,10 @@ pub const Peer = struct {
             self.allocator,
             &self.send_results_to_third_party,
         );
+        std.debug.assert(self.automatic_third_party_routes.count() == 0);
+        std.debug.assert(self.incoming_automatic_third_party_routes.count() == 0);
+        self.automatic_third_party_routes.deinit();
+        self.incoming_automatic_third_party_routes.deinit();
         peer_cleanup.clearOptionalOwnedBytes(self.allocator, &self.last_remote_abort_reason);
         self.releaseAllImports();
         self.caps.deinit();
@@ -3193,6 +3288,31 @@ pub const Peer = struct {
         return id;
     }
 
+    fn allocateUnusedThirdPartyAnswerId(self: *Peer) !u32 {
+        const first = self.next_third_party_answer_id;
+        while (true) {
+            const id = self.allocateThirdPartyAnswerId();
+            if (!(try self.inboundQuestionIdInUse(id)) and
+                !self.incoming_automatic_third_party_routes.contains(id))
+            {
+                return id;
+            }
+            if (self.next_third_party_answer_id == first) return error.AnswerIdExhausted;
+        }
+    }
+
+    fn sendThirdPartyAnswerWithId(
+        self: *Peer,
+        answer_id: u32,
+        completion: message.AnyPointerReader,
+    ) !void {
+        var builder = protocol.MessageBuilder.init(self.allocator);
+        defer builder.deinit();
+        try builder.buildThirdPartyAnswer(answer_id, completion);
+        try self.sendBuilder(&builder);
+        log.debug("sent thirdPartyAnswer answer_id={}", .{answer_id});
+    }
+
     /// Callee → third party: send a `ThirdPartyAnswer` on the connection to the
     /// vat that will receive this call's results (VatA). This is the
     /// redirected-return origination for a call that arrived with
@@ -3218,14 +3338,8 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
 
-        const answer_id = self.allocateThirdPartyAnswerId();
-
-        var builder = protocol.MessageBuilder.init(self.allocator);
-        defer builder.deinit();
-        try builder.buildThirdPartyAnswer(answer_id, completion);
-        try self.sendBuilder(&builder);
-
-        log.debug("sent thirdPartyAnswer answer_id={}", .{answer_id});
+        const answer_id = try self.allocateUnusedThirdPartyAnswerId();
+        try self.sendThirdPartyAnswerWithId(answer_id, completion);
         return answer_id;
     }
 
@@ -3482,6 +3596,7 @@ pub const Peer = struct {
             recipient,
             ctx.source_inbound_caps,
             &ctx.created_param_proxy_ids,
+            false,
         );
     }
 
@@ -5533,8 +5648,9 @@ pub const Peer = struct {
         inbound_peer: *Peer,
         inbound_caps: *cap_table.InboundCapTable,
         created_proxy_ids: *std.ArrayList(u32),
+        pin_source_caps: bool,
     ) !void {
-        var map_ctx = CrossPeerCapMapContext.init(inbound_peer, self, inbound_caps, created_proxy_ids);
+        var map_ctx = CrossPeerCapMapContext.init(inbound_peer, self, inbound_caps, created_proxy_ids, pin_source_caps);
         defer map_ctx.deinit();
         try payload_remap.clonePayloadWithRemappedCaps(
             CrossPeerCapMapContext,
@@ -5563,20 +5679,49 @@ pub const Peer = struct {
         const entry = try ctx.inbound_caps.get(cap_index);
         if (entry == .none) return null;
 
-        const release_source_import_id: ?u32 = switch (entry) {
-            .imported => |cap| blk: {
+        var release_source_import_id: ?u32 = null;
+        var release_source_export_pin_id: ?u32 = null;
+        var release_source_import_pin_id: ?u32 = null;
+        if (ctx.pin_source_caps) {
+            switch (entry) {
+                .exported => |cap| {
+                    try ctx.inbound_peer.noteHandoffExportRef(cap.id);
+                    release_source_export_pin_id = cap.id;
+                },
+                .imported => |cap| {
+                    try ctx.inbound_peer.noteHandoffImportPin(cap.id);
+                    release_source_import_pin_id = cap.id;
+                },
+                // A receiverAnswer's transform reader borrows the temporary
+                // source Return. Supporting it requires an owned transform in
+                // CrossPeerProxyContext; fail before publishing a proxy rather
+                // than retaining a dangling reader.
+                .promised => return error.RedirectedPromisedCapabilityUnsupported,
+                .none => return null,
+            }
+        } else switch (entry) {
+            .imported => |cap| {
                 try ctx.inbound_caps.retainIndex(cap_index);
-                break :blk cap.id;
+                release_source_import_id = cap.id;
             },
-            else => null,
+            else => {},
+        }
+
+        var pins_transferred = false;
+        errdefer if (!pins_transferred) {
+            if (release_source_export_pin_id) |id| ctx.inbound_peer.rollbackHandoffExportRef(id);
+            if (release_source_import_pin_id) |id| ctx.inbound_peer.rollbackHandoffImportPin(id);
         };
+        // addCrossPeerProxyExport owns every supplied lease on success AND
+        // failure; no caller-side rollback is legal past this point.
+        pins_transferred = true;
 
         const proxy_id = try ctx.outbound_peer.addCrossPeerProxyExport(
             ctx.inbound_peer,
             entry,
             release_source_import_id,
-            null,
-            null,
+            release_source_export_pin_id,
+            release_source_import_pin_id,
         );
         errdefer ctx.outbound_peer.destroyUnreferencedProxyExport(proxy_id);
         try ctx.created_proxy_ids.append(ctx.outbound_peer.allocator, proxy_id);
@@ -5674,6 +5819,7 @@ pub const Peer = struct {
             ctx.recipient_peer,
             ctx.source_inbound_caps,
             &ctx.created_param_proxy_ids,
+            false,
         );
     }
 
@@ -5745,12 +5891,253 @@ pub const Peer = struct {
             ctx.source_peer,
             ctx.source_inbound_caps,
             &ctx.created_result_proxy_ids,
+            ctx.pin_source_caps,
         );
+    }
+
+    /// Interpret a locally-authored outbound payload's encoded descriptor table
+    /// from the source peer's point of view. Unlike InboundCapTable.init, this
+    /// does not take wire import refs: senderHosted is one of our exports and
+    /// receiverHosted is one of our imports. The table exists only while the
+    /// payload is cloned into cross-peer proxy exports.
+    fn sourceResolvedCapsForPayload(self: *Peer, payload: protocol.Payload) !cap_table.InboundCapTable {
+        const count: u32 = if (payload.cap_table) |list| list.len() else 0;
+        var inbound = cap_table.InboundCapTable{
+            .allocator = self.allocator,
+            .entries = try self.allocator.alloc(cap_table.ResolvedCap, count),
+            .retained = undefined,
+        };
+        errdefer self.allocator.free(inbound.entries);
+        inbound.retained = try self.allocator.alloc(bool, count);
+        errdefer self.allocator.free(inbound.retained);
+        @memset(inbound.retained, false);
+
+        const list = payload.cap_table orelse return inbound;
+        var idx: u32 = 0;
+        while (idx < count) : (idx += 1) {
+            const descriptor = try protocol.CapDescriptor.fromReader(try list.get(idx));
+            inbound.entries[idx] = switch (descriptor.tag) {
+                .none => .none,
+                .senderHosted, .senderPromise => .{ .exported = .{
+                    .id = descriptor.id orelse return error.MissingCapDescriptorId,
+                } },
+                .receiverHosted => .{ .imported = .{
+                    .id = descriptor.id orelse return error.MissingCapDescriptorId,
+                } },
+                .receiverAnswer => .{ .promised = descriptor.promised_answer orelse
+                    return error.MissingPromisedAnswer },
+                .thirdPartyHosted => .{ .exported = .{
+                    .id = (descriptor.third_party orelse
+                        return error.MissingThirdPartyCapDescriptor).vine_id,
+                } },
+            };
+        }
+        return inbound;
+    }
+
+    fn detachSettledAutomaticThirdPartyTarget(route: *AutomaticThirdPartyRoute) void {
+        if (route.target_peer) |target| {
+            if (target.incoming_automatic_third_party_routes.get(route.target_answer_id) == route) {
+                _ = target.incoming_automatic_third_party_routes.remove(route.target_answer_id);
+            }
+        }
+        route.target_peer = null;
+        route.target_outcome = .settled;
+    }
+
+    fn completeAutomaticThirdPartySourceMarker(
+        self: *Peer,
+        route: *AutomaticThirdPartyRoute,
+    ) !void {
+        self.sendReturnResultsSentElsewhere(route.source_answer_id) catch |err| {
+            route.operation_active = false;
+            route.source_marker_failed = true;
+            // The target terminal is already visible. Preserve this owned
+            // allocation as a tombstone while the handler error unwinds; Call
+            // dispatch must not answer the ambiguous send with another Return.
+            log.debug("automatic third-party redirect: source settlement send failed after target commit: {}", .{err});
+            // The transport send may have delivered the marker before
+            // reporting failure. Propagate a classified terminal error so Call
+            // dispatch closes/fails the connection without attempting a second
+            // Return for this answer id.
+            return error.AutomaticThirdPartySourceSettlementFailed;
+        };
+        route.operation_active = false;
+        // A successful marker clears routing through the deferred-clear guard.
+        std.debug.assert(route.clear_requested);
+        self.finalizeAutomaticThirdPartyRoute(route, null);
+    }
+
+    fn sendAutomaticThirdPartyResults(
+        self: *Peer,
+        route: *AutomaticThirdPartyRoute,
+        ctx: *anyopaque,
+        build: ReturnBuildFn,
+    ) !void {
+        self.enterAutomaticThirdPartyOperation();
+        defer self.leaveAutomaticThirdPartyOperation();
+        if (route.operation_active) return error.ThirdPartyRedirectReentrant;
+        route.operation_active = true;
+        var route_borrowed = true;
+        errdefer if (route_borrowed) {
+            route.operation_active = false;
+        };
+
+        switch (route.target_outcome) {
+            .canceled => {
+                route_borrowed = false;
+                return self.completeAutomaticThirdPartySourceMarker(route);
+            },
+            .disconnected => {
+                route.operation_active = false;
+                const answer_id = route.source_answer_id;
+                route_borrowed = false;
+                self.finalizeAutomaticThirdPartyRoute(route, null);
+                try self.sendReturnExceptionTyped(
+                    answer_id,
+                    "automatic third-party result connection closed",
+                    .disconnected,
+                );
+                return;
+            },
+            .settled => {
+                route.operation_active = false;
+                route_borrowed = false;
+                return error.ThirdPartyResultsAlreadyDelivered;
+            },
+            .connected => {},
+        }
+        const target = route.target_peer orelse {
+            route.operation_active = false;
+            return error.ThirdPartyResultPeerUnavailable;
+        };
+        target.enterAutomaticThirdPartyOperation();
+        defer target.leaveAutomaticThirdPartyOperation();
+
+        // Build exactly once in the handler/source peer's capability id-space,
+        // then encode a temporary cap table whose descriptor variants preserve
+        // that space for the cross-peer remapper below.
+        var source_builder = protocol.MessageBuilder.init(self.allocator);
+        defer source_builder.deinit();
+        var source_ret = try source_builder.beginReturn(route.source_answer_id, .results);
+        source_ret.setReleaseParamCaps(self.returnReleasesParamCaps(route.source_answer_id));
+        try build(ctx, &source_ret);
+        var source_effects = cap_table.OutboundCapEffects.init(self.allocator, null, null);
+        defer source_effects.deinit();
+        _ = try cap_table.encodeReturnPayloadCapsWithEffects(&self.caps, &source_ret, null, &source_effects);
+
+        const source_frame = try source_builder.finish();
+        defer self.allocator.free(source_frame);
+        var decoded = try protocol.DecodedMessage.init(self.allocator, source_frame);
+        defer decoded.deinit();
+        const decoded_ret = try decoded.asReturn();
+        const source_payload = decoded_ret.results orelse return error.MissingReturnResults;
+        var source_caps = try self.sourceResolvedCapsForPayload(source_payload);
+        defer source_caps.deinit();
+
+        var relay = CrossPeerReturnRelayContext{
+            .source_peer = self,
+            .target_peer = target,
+            .source = source_payload,
+            .source_inbound_caps = &source_caps,
+            .release_param_caps = false,
+            .pin_source_caps = true,
+        };
+        defer relay.deinit(target.allocator);
+
+        route.delivering_result = true;
+        target.sendReturnResults(route.target_answer_id, &relay, buildCrossPeerReturnResults) catch |err| {
+            route.delivering_result = false;
+            route.operation_active = false;
+            if (route.clear_requested) {
+                route_borrowed = false;
+                self.finalizeAutomaticThirdPartyRoute(route, null);
+            }
+            return err;
+        };
+        route.delivering_result = false;
+        relay.result_proxies_committed = true;
+        detachSettledAutomaticThirdPartyTarget(route);
+
+        // Source Finish may have arrived synchronously while the target Return
+        // was in flight. The target result is committed, but the canceled source
+        // answer needs no resultsSentElsewhere marker.
+        if (route.clear_requested) {
+            route.operation_active = false;
+            route_borrowed = false;
+            self.finalizeAutomaticThirdPartyRoute(route, null);
+            return;
+        }
+        route_borrowed = false;
+        try self.completeAutomaticThirdPartySourceMarker(route);
+    }
+
+    fn sendAutomaticThirdPartyException(
+        self: *Peer,
+        route: *AutomaticThirdPartyRoute,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) !void {
+        self.enterAutomaticThirdPartyOperation();
+        defer self.leaveAutomaticThirdPartyOperation();
+        if (route.operation_active) return error.ThirdPartyRedirectReentrant;
+        route.operation_active = true;
+        var route_borrowed = true;
+        errdefer if (route_borrowed) {
+            route.operation_active = false;
+        };
+
+        switch (route.target_outcome) {
+            .connected => {
+                const target = route.target_peer orelse {
+                    route.operation_active = false;
+                    return error.ThirdPartyResultPeerUnavailable;
+                };
+                target.enterAutomaticThirdPartyOperation();
+                defer target.leaveAutomaticThirdPartyOperation();
+                route.delivering_result = true;
+                target.sendReturnExceptionNoDrain(route.target_answer_id, reason, ex_type) catch |err| {
+                    route.delivering_result = false;
+                    route.operation_active = false;
+                    if (route.clear_requested) {
+                        route_borrowed = false;
+                        self.finalizeAutomaticThirdPartyRoute(route, null);
+                    }
+                    return err;
+                };
+                target.failQueuedPromisedCalls(route.target_answer_id, reason, ex_type);
+                route.delivering_result = false;
+                detachSettledAutomaticThirdPartyTarget(route);
+            },
+            .canceled => {},
+            .disconnected => {
+                route.operation_active = false;
+                const answer_id = route.source_answer_id;
+                route_borrowed = false;
+                self.finalizeAutomaticThirdPartyRoute(route, null);
+                try self.sendReturnExceptionNoDrain(answer_id, reason, ex_type);
+                self.failQueuedPromisedCalls(answer_id, reason, ex_type);
+                return;
+            },
+            .settled => {},
+        }
+
+        if (route.clear_requested) {
+            route.operation_active = false;
+            route_borrowed = false;
+            self.finalizeAutomaticThirdPartyRoute(route, null);
+            return;
+        }
+        route_borrowed = false;
+        try self.completeAutomaticThirdPartySourceMarker(route);
     }
 
     /// Send a return with results for a previously received call.
     pub fn sendReturnResults(self: *Peer, answer_id: u32, ctx: *anyopaque, build: ReturnBuildFn) !void {
         self.assertThreadAffinity();
+        if (self.automatic_third_party_routes.get(answer_id)) |route| {
+            return self.sendAutomaticThirdPartyResults(route, ctx, build);
+        }
         // sendResultsTo routing is resolved in precedence order:
         // third-party handoff > local results-sent-elsewhere marker > normal results payload.
         if (self.send_results_to_third_party.contains(answer_id)) {
@@ -5823,7 +6210,27 @@ pub const Peer = struct {
             resolving_answer = true;
         }
 
-        try self.sendReturnFrameWithLoopback(answer_id, bytes);
+        const finished_before_send = self.finished_early_answers.contains(answer_id);
+        self.sendReturnFrameWithLoopback(answer_id, bytes) catch |err| {
+            // A synchronous transport can deliver the complete Return, receive
+            // the peer's Finish reentrantly, and only then report a trailing
+            // local send error. A newly-created Finish tombstone while this
+            // answer is in `resolving_answers` is definitive consumption proof:
+            // never roll back the visible terminal or send a second one.
+            const finish_proves_delivery = resolving_answer and
+                !finished_before_send and
+                self.resolving_answers.contains(answer_id) and
+                self.finished_early_answers.contains(answer_id);
+            if (!finish_proves_delivery) return err;
+
+            log.debug("Return {} consumed before trailing send error: {}", .{ answer_id, err });
+            cap_table.commitOutboundCapEffects(&self.caps, &effects);
+            effects_committed = true;
+            _ = self.resolving_answers.remove(answer_id);
+            resolving_answer = false;
+            self.commitOrRollbackResolvedAnswerAfterSend(answer_id, bytes, &reservation);
+            return;
+        };
         cap_table.commitOutboundCapEffects(&self.caps, &effects);
         effects_committed = true;
         if (resolving_answer) {
@@ -5988,6 +6395,13 @@ pub const Peer = struct {
         ex_type: protocol.ExceptionType,
     ) !void {
         self.assertThreadAffinity();
+        if (self.automatic_third_party_routes.get(answer_id)) |route| {
+            if (route.source_marker_failed) {
+                self.finalizeAutomaticThirdPartyRoute(route, null);
+                return error.AutomaticThirdPartySourceSettlementFailed;
+            }
+            return self.sendAutomaticThirdPartyException(route, reason, ex_type);
+        }
         try self.sendReturnExceptionNoDrain(answer_id, reason, ex_type);
         self.failQueuedPromisedCalls(answer_id, reason, ex_type);
     }
@@ -6088,10 +6502,10 @@ pub const Peer = struct {
                 defer pending_call.caps.deinit();
                 defer self.allocator.free(pending_call.frame);
 
-                // question_id was decoded once at enqueue; a value of 0 means the
-                // frame was not a decodable Call, so there is nothing to fail.
-                const child_qid = pending_call.question_id;
-                if (child_qid == 0) continue;
+                // question_id was decoded once at enqueue; null means the frame
+                // was not a decodable Call, so there is nothing to fail. Zero is
+                // a valid wire question id and must receive its terminal Return.
+                const child_qid = pending_call.question_id orelse continue;
 
                 // Non-draining send: descendants are handled by the worklist,
                 // not by re-entering this drain.
@@ -7883,9 +8297,235 @@ pub const Peer = struct {
         );
     }
 
-    fn clearSendResultsToThirdParty(self: *Peer, answer_id: u32) void {
+    fn clearSendResultsToThirdPartyPayload(self: *Peer, answer_id: u32) void {
         if (self.send_results_to_third_party.fetchRemove(answer_id)) |entry| {
             if (entry.value) |payload| self.allocator.free(payload);
+        }
+    }
+
+    fn enterAutomaticThirdPartyOperation(self: *Peer) void {
+        self.automatic_third_party_operation_depth += 1;
+    }
+
+    /// A Finish can own an automatic route, target one, or (when numeric
+    /// answer-id spaces collide) do both at once. Keep exactly the peers whose
+    /// route maps/backlinks are borrowed alive across callback-bearing cleanup,
+    /// without widening deferred lifecycle behavior to ordinary Finish paths.
+    const AutomaticThirdPartyFinishGuards = struct {
+        peers: [3]*Peer = undefined,
+        len: usize = 0,
+
+        fn add(self: *@This(), peer: *Peer) void {
+            for (self.peers[0..self.len]) |existing| {
+                if (existing == peer) return;
+            }
+            std.debug.assert(self.len < self.peers.len);
+            self.peers[self.len] = peer;
+            self.len += 1;
+        }
+
+        fn enter(self: *@This()) void {
+            for (self.peers[0..self.len]) |peer| peer.enterAutomaticThirdPartyOperation();
+        }
+
+        fn leave(self: *@This()) void {
+            var index = self.len;
+            while (index != 0) {
+                index -= 1;
+                self.peers[index].leaveAutomaticThirdPartyOperation();
+            }
+            self.len = 0;
+        }
+    };
+
+    fn completeDeferredAutomaticThirdPartyLifecycle(self: *Peer) void {
+        if (self.automatic_third_party_operation_depth != 0 or
+            self.automatic_third_party_dispatch_depth != 0)
+        {
+            return;
+        }
+        if (self.automatic_third_party_close_deferred) {
+            self.automatic_third_party_close_deferred = false;
+            self.finishTransportClosedNotification();
+        }
+        if (self.automatic_third_party_deinit_deferred) self.deinit();
+    }
+
+    fn leaveAutomaticThirdPartyOperation(self: *Peer) void {
+        std.debug.assert(self.automatic_third_party_operation_depth > 0);
+        self.automatic_third_party_operation_depth -= 1;
+        self.completeDeferredAutomaticThirdPartyLifecycle();
+    }
+
+    fn failAutomaticThirdPartyTargetBestEffort(
+        target: *Peer,
+        answer_id: u32,
+        reason: []const u8,
+        ex_type: protocol.ExceptionType,
+    ) void {
+        if (target.in_deinit) return;
+        if (!target.active_inbound_questions.contains(answer_id)) return;
+        if (target.is_shutting_down or target.transport_close_notified) {
+            _ = target.active_inbound_questions.remove(answer_id);
+            _ = target.finished_early_answers.remove(answer_id);
+            return;
+        }
+        target.enterAutomaticThirdPartyOperation();
+        defer target.leaveAutomaticThirdPartyOperation();
+        target.sendReturnExceptionNoDrain(answer_id, reason, ex_type) catch |err| {
+            log.debug("automatic third-party redirect: failed to settle target answer {}: {}", .{
+                answer_id,
+                err,
+            });
+        };
+        target.failQueuedPromisedCalls(answer_id, reason, ex_type);
+        // A failed best-effort wire send must not keep the synthetic answer
+        // locally active forever. The recipient transport will either have
+        // seen the terminal or fail independently; this route is retired.
+        _ = target.active_inbound_questions.remove(answer_id);
+        _ = target.finished_early_answers.remove(answer_id);
+    }
+
+    /// Destroy a source-owned automatic route. All backlinks and owned routing
+    /// bytes are detached before the optional target exception is emitted, so a
+    /// synchronous callback can deinitialize either peer without observing a
+    /// half-live route.
+    fn finalizeAutomaticThirdPartyRoute(
+        self: *Peer,
+        route: *AutomaticThirdPartyRoute,
+        fail_target_reason: ?[]const u8,
+    ) void {
+        std.debug.assert(!route.operation_active);
+        const source_answer_id = route.source_answer_id;
+        const target = route.target_peer;
+        const target_answer_id = route.target_answer_id;
+        const target_was_connected = route.target_outcome == .connected;
+
+        if (self.automatic_third_party_routes.get(source_answer_id) == route) {
+            _ = self.automatic_third_party_routes.remove(source_answer_id);
+        }
+        if (target) |target_peer| {
+            if (target_peer.incoming_automatic_third_party_routes.get(target_answer_id) == route) {
+                _ = target_peer.incoming_automatic_third_party_routes.remove(target_answer_id);
+            }
+        }
+        route.source_peer = null;
+        route.target_peer = null;
+        self.clearSendResultsToThirdPartyPayload(source_answer_id);
+        self.allocator.destroy(route);
+
+        if (target_was_connected) {
+            if (target) |target_peer| {
+                if (fail_target_reason) |reason| {
+                    failAutomaticThirdPartyTargetBestEffort(
+                        target_peer,
+                        target_answer_id,
+                        reason,
+                        .failed,
+                    );
+                }
+            }
+        }
+    }
+
+    fn clearSendResultsToThirdParty(self: *Peer, answer_id: u32) void {
+        if (self.automatic_third_party_routes.get(answer_id)) |route| {
+            if (route.operation_active) {
+                route.clear_requested = true;
+                self.clearSendResultsToThirdPartyPayload(answer_id);
+                return;
+            }
+            self.finalizeAutomaticThirdPartyRoute(
+                route,
+                "automatic third-party redirect canceled before delivering results",
+            );
+            return;
+        }
+        self.clearSendResultsToThirdPartyPayload(answer_id);
+    }
+
+    /// Target-side Finish hook. A Finish that arrives after ThirdPartyAnswer but
+    /// before the result Return cancels only the synthetic recipient answer; it
+    /// does not cancel the original call. A Finish reentrant from delivery is
+    /// left to normal resolved-answer cleanup.
+    fn noteAutomaticThirdPartyTargetFinish(self: *Peer, answer_id: u32) bool {
+        const route = self.incoming_automatic_third_party_routes.get(answer_id) orelse return false;
+        if (route.target_outcome != .connected) return false;
+        // During the ThirdPartyAnswer announcement, Finish means the adopted
+        // synthetic answer was canceled before results. During the result send
+        // itself it is the normal reentrant Finish-after-Return lifecycle and
+        // must leave the route intact until the sender commits its reservation.
+        if (route.operation_active and route.delivering_result) return false;
+        // Calls already pipelined on this synthetic answer are independent
+        // questions and still require their own terminal Returns. Once the
+        // parent is canceled no result can resolve their promised targets, so
+        // fail and release them before detaching the route.
+        self.failQueuedPromisedCalls(
+            answer_id,
+            automatic_third_party_target_canceled,
+            .failed,
+        );
+        _ = self.incoming_automatic_third_party_routes.remove(answer_id);
+        route.target_peer = null;
+        route.target_outcome = .canceled;
+        return true;
+    }
+
+    /// This peer is the target/result connection and is dying. Detach its
+    /// borrowed backlinks and mark each source-owned route disconnected. The
+    /// source handler's eventual completion turns that state into one caller-
+    /// facing exception; retaining source ownership until then also absorbs a
+    /// late async handler Return without emitting a second terminal frame.
+    fn neutralizeAutomaticThirdPartyRoutesOnTargetPeer(self: *Peer) void {
+        var routes = self.incoming_automatic_third_party_routes;
+        self.incoming_automatic_third_party_routes = std.AutoHashMap(u32, *AutomaticThirdPartyRoute).init(self.allocator);
+        defer routes.deinit();
+
+        var it = routes.valueIterator();
+        while (it.next()) |route_ptr| {
+            const route = route_ptr.*;
+            if (route.target_peer != self) continue;
+            _ = self.active_inbound_questions.remove(route.target_answer_id);
+            _ = self.finished_early_answers.remove(route.target_answer_id);
+            route.target_peer = null;
+            route.target_outcome = .disconnected;
+        }
+    }
+
+    /// This peer owns the source half and is dying. Remove every target
+    /// backlink before emitting best-effort terminal exceptions to synthetic
+    /// recipient answers.
+    fn neutralizeAutomaticThirdPartyRoutesOnSourcePeer(self: *Peer) void {
+        var routes = self.automatic_third_party_routes;
+        self.automatic_third_party_routes = std.AutoHashMap(u32, *AutomaticThirdPartyRoute).init(self.allocator);
+        defer routes.deinit();
+
+        var it = routes.valueIterator();
+        while (it.next()) |route_ptr| {
+            const route = route_ptr.*;
+            const target = route.target_peer;
+            const target_answer_id = route.target_answer_id;
+            const target_was_connected = route.target_outcome == .connected;
+            if (target) |target_peer| {
+                if (target_peer.incoming_automatic_third_party_routes.get(target_answer_id) == route) {
+                    _ = target_peer.incoming_automatic_third_party_routes.remove(target_answer_id);
+                }
+            }
+            self.clearSendResultsToThirdPartyPayload(route.source_answer_id);
+            route.source_peer = null;
+            route.target_peer = null;
+            self.allocator.destroy(route);
+
+            if (target_was_connected) {
+                if (target) |target_peer| {
+                    failAutomaticThirdPartyTargetBestEffort(
+                        target_peer,
+                        target_answer_id,
+                        "automatic third-party source connection closed",
+                        .disconnected,
+                    );
+                }
+            }
         }
     }
 
@@ -7941,6 +8581,134 @@ pub const Peer = struct {
         );
     }
 
+    fn beginAutomaticThirdPartyRoute(self: *Peer, answer_id: u32, contact_payload: []const u8) !void {
+        self.enterAutomaticThirdPartyOperation();
+        defer self.leaveAutomaticThirdPartyOperation();
+        if (self.transport_close_notified) return error.TransportClosed;
+        const network = self.vat_network orelse return error.NoVatNetwork;
+
+        var contact_msg = try message.Message.initUnvalidated(self.allocator, contact_payload);
+        defer contact_msg.deinit();
+        const contact = try contact_msg.getRootAnyPointer();
+
+        var introduced = try network.connectToIntroduced(contact);
+        defer introduced.deinit(self.allocator);
+        const target = introduced.peer;
+        target.assertThreadAffinity();
+        if (target.is_shutting_down) return error.PeerShuttingDown;
+        if (target.transport_close_notified) return error.TransportClosed;
+        target.enterAutomaticThirdPartyOperation();
+        defer target.leaveAutomaticThirdPartyOperation();
+
+        try ensureCountLimit(
+            false,
+            target.active_inbound_questions.count(),
+            target.limits.max_active_inbound_questions,
+        );
+        const target_answer_id = try target.allocateUnusedThirdPartyAnswerId();
+
+        // Parse the completion before publishing any cross-peer state. The
+        // network owns its encoding; all the peer needs is a reader that stays
+        // live through the synchronous ThirdPartyAnswer build.
+        var completion_msg = try message.Message.initUnvalidated(self.allocator, introduced.completion);
+        defer completion_msg.deinit();
+        const completion = try completion_msg.getRootAnyPointer();
+
+        const route = try self.allocator.create(AutomaticThirdPartyRoute);
+        var route_owned = true;
+        route.* = .{
+            .source_peer = self,
+            .source_answer_id = answer_id,
+            .target_peer = target,
+            .target_answer_id = target_answer_id,
+        };
+        var source_registered = false;
+        var target_registered = false;
+        var answer_registered = false;
+        errdefer {
+            if (answer_registered) _ = target.active_inbound_questions.remove(target_answer_id);
+            if (target_registered and
+                target.incoming_automatic_third_party_routes.get(target_answer_id) == route)
+            {
+                _ = target.incoming_automatic_third_party_routes.remove(target_answer_id);
+            }
+            if (source_registered and
+                self.automatic_third_party_routes.get(answer_id) == route)
+            {
+                _ = self.automatic_third_party_routes.remove(answer_id);
+            }
+            if (route_owned) self.allocator.destroy(route);
+        }
+
+        try self.automatic_third_party_routes.put(answer_id, route);
+        source_registered = true;
+        try target.incoming_automatic_third_party_routes.put(target_answer_id, route);
+        target_registered = true;
+        // No params crossed onto this connection, so the synthetic answer owes
+        // no explicit parameter-cap releases. It otherwise behaves exactly like
+        // an ordinary inbound Call answer for promise queueing and Finish.
+        try target.active_inbound_questions.put(target_answer_id, false);
+        answer_registered = true;
+
+        route.operation_active = true;
+        target.sendThirdPartyAnswerWithId(target_answer_id, completion) catch |err| {
+            // Unlike a results Return followed by a reentrant Finish, a
+            // ThirdPartyAnswer has no protocol acknowledgement that can prove
+            // whether an error happened before or after the frame became
+            // visible. Roll back our unpublished transaction on every reported
+            // send failure. This is load-bearing: the transport owner must
+            // treat such an ambiguous send error as terminal, so a recipient
+            // that did see the announcement drains its adopted await when that
+            // connection closes instead of waiting forever for a Return.
+            route.operation_active = false;
+            return err;
+        };
+        route.operation_active = false;
+
+        if (target.automatic_third_party_deinit_deferred) {
+            if (target.incoming_automatic_third_party_routes.get(target_answer_id) == route) {
+                _ = target.incoming_automatic_third_party_routes.remove(target_answer_id);
+            }
+            _ = target.active_inbound_questions.remove(target_answer_id);
+            route.target_peer = null;
+            route.target_outcome = .disconnected;
+            target_registered = false;
+            answer_registered = false;
+        }
+
+        if (self.automatic_third_party_deinit_deferred) {
+            source_registered = false;
+            target_registered = false;
+            answer_registered = false;
+            route_owned = false;
+            self.finalizeAutomaticThirdPartyRoute(
+                route,
+                "automatic third-party source connection closed",
+            );
+            return error.PeerShuttingDown;
+        }
+
+        // A synchronous Finish on the source connection may have cleared the
+        // redirect while ThirdPartyAnswer was being delivered. Retire the
+        // target answer now that the outer send no longer borrows `route`.
+        if (route.clear_requested) {
+            source_registered = false;
+            target_registered = false;
+            answer_registered = false;
+            route_owned = false;
+            self.finalizeAutomaticThirdPartyRoute(
+                route,
+                "automatic third-party redirect canceled during announcement",
+            );
+            return;
+        }
+
+        source_registered = false;
+        target_registered = false;
+        answer_registered = false;
+        route_owned = false;
+    }
+
     fn noteSendResultsToThirdParty(
         self: *Peer,
         answer_id: u32,
@@ -7949,7 +8717,10 @@ pub const Peer = struct {
         _ = self.send_results_to_yourself.remove(answer_id);
 
         const payload = try captureAnyPointerPayload(self.allocator, ptr);
-        errdefer if (payload) |bytes| self.allocator.free(bytes);
+        var payload_owned = true;
+        errdefer if (payload_owned) {
+            if (payload) |bytes| self.allocator.free(bytes);
+        };
 
         try ensureCountLimit(
             self.send_results_to_third_party.contains(answer_id),
@@ -7967,6 +8738,13 @@ pub const Peer = struct {
             if (entry.value_ptr.*) |existing| self.allocator.free(existing);
         }
         entry.value_ptr.* = payload;
+        payload_owned = false;
+
+        if (self.third_party_result_policy == .vat_network) {
+            errdefer self.clearSendResultsToThirdPartyPayload(answer_id);
+            const contact_payload = payload orelse return error.MissingThirdPartyContact;
+            try self.beginAutomaticThirdPartyRoute(answer_id, contact_payload);
+        }
     }
 
     /// Release references to an imported capability, sending a Release message
@@ -8882,8 +9660,24 @@ pub const Peer = struct {
         self.assertThreadAffinity();
         if (self.transport_close_notified) return;
         self.transport_close_notified = true;
+        if (self.automatic_third_party_operation_depth != 0 or
+            self.automatic_third_party_dispatch_depth != 0)
+        {
+            self.automatic_third_party_close_deferred = true;
+            return;
+        }
+        self.finishTransportClosedNotification();
+    }
+
+    fn finishTransportClosedNotification(self: *Peer) void {
+        const guards_automatic_routes = self.automatic_third_party_routes.count() != 0 or
+            self.incoming_automatic_third_party_routes.count() != 0;
+        if (guards_automatic_routes) self.enterAutomaticThirdPartyOperation();
+        defer if (guards_automatic_routes) self.leaveAutomaticThirdPartyOperation();
 
         log.debug("connection closed", .{});
+        self.neutralizeAutomaticThirdPartyRoutesOnTargetPeer();
+        self.neutralizeAutomaticThirdPartyRoutesOnSourcePeer();
         self.detachCrossPeerAcceptsOnHolderPeer();
         self.drainOutboundProvidesOnRecipientPeer();
         self.neutralizeForwardVineRelaysOnRecipientPeer();
@@ -8961,7 +9755,6 @@ pub const Peer = struct {
     }
 
     fn handleFrameImpl(self: *Peer, frame: []const u8) !void {
-
         // Drive vat-wide expiry before decoding or validation. A connection
         // that stays busy — including one sending malformed traffic — must not
         // suppress reclamation merely by avoiding Accept frames or idle ticks.
@@ -9017,6 +9810,19 @@ pub const Peer = struct {
 
         self.last_inbound_tag = decoded.tag;
         log.debug("dispatching inbound {s}", .{@tagName(decoded.tag)});
+
+        const automatic_third_party_dispatch = if (decoded.tag == .call and
+            self.third_party_result_policy == .vat_network)
+        blk: {
+            const call = decoded.asCall() catch break :blk false;
+            break :blk call.send_results_to.tag == .thirdParty;
+        } else false;
+        if (automatic_third_party_dispatch) self.automatic_third_party_dispatch_depth += 1;
+        defer if (automatic_third_party_dispatch) {
+            std.debug.assert(self.automatic_third_party_dispatch_depth > 0);
+            self.automatic_third_party_dispatch_depth -= 1;
+            self.completeDeferredAutomaticThirdPartyLifecycle();
+        };
 
         peer_dispatch.dispatchDecodedForPeer(
             Peer,
@@ -9193,6 +9999,25 @@ pub const Peer = struct {
 
     fn handleFinish(self: *Peer, finish_msg: protocol.Finish) !void {
         const qid = finish_msg.question_id;
+        // Automatic route retirement can synchronously settle the opposite
+        // peer and invoke arbitrary callbacks. Snapshot every borrowed peer
+        // before either map is mutated, deduplicating same-peer and answer-id
+        // collision cases, and guard only this automatic-route Finish path.
+        const owned_automatic_route = self.automatic_third_party_routes.get(qid);
+        const incoming_automatic_route = self.incoming_automatic_third_party_routes.get(qid);
+        var automatic_guards = AutomaticThirdPartyFinishGuards{};
+        if (owned_automatic_route != null or incoming_automatic_route != null) {
+            automatic_guards.add(self);
+            if (owned_automatic_route) |route| {
+                if (route.target_peer) |target| automatic_guards.add(target);
+            }
+            if (incoming_automatic_route) |route| {
+                if (route.source_peer) |source| automatic_guards.add(source);
+            }
+            automatic_guards.enter();
+        }
+        defer automatic_guards.leave();
+        const canceled_automatic_target = self.noteAutomaticThirdPartyTargetFinish(qid);
         // Vat-wide provision close (Finish of a Provide question) — UNGATED:
         // the map lookup inside is the gate. Runs in this fallible context so
         // an OOM in the fan-out propagates out of dispatch instead of being
@@ -9261,6 +10086,12 @@ pub const Peer = struct {
             finish_msg.release_result_caps,
             ops,
         );
+        // No Return will follow for a synthetic answer canceled before result
+        // delivery, so its ordinary finished-early tombstone must not reserve
+        // the high-range id forever.
+        if (canceled_automatic_target) {
+            _ = self.finished_early_answers.remove(qid);
+        }
     }
 
     fn cancelQueuedPendingQuestionInMap(
@@ -11187,8 +12018,19 @@ pub const Peer = struct {
             ),
         ) catch |err| {
             log.debug("call routing error for question {}: {}", .{ call.question_id, err });
+            // The redirected result is already committed on the target
+            // connection and the resultsSentElsewhere write may itself have
+            // reached the source caller. Never risk a second terminal Return
+            // on that answer id; let the transport-level error close the peer.
+            if (err == error.AutomaticThirdPartySourceSettlementFailed) return err;
             try self.sendReturnException(call.question_id, @errorName(err));
         };
+        if (self.automatic_third_party_routes.get(call.question_id)) |route| {
+            if (route.source_marker_failed) {
+                self.finalizeAutomaticThirdPartyRoute(route, null);
+                return error.AutomaticThirdPartySourceSettlementFailed;
+            }
+        }
     }
 
     fn handleResolvedCall(
@@ -11611,6 +12453,14 @@ pub const Peer = struct {
 
         pub fn sendFrame(self: *Peer, frame: []const u8) !void {
             return Peer.sendFrame(self, frame);
+        }
+
+        pub fn noteSendResultsToThirdParty(
+            self: *Peer,
+            answer_id: u32,
+            recipient: ?message.AnyPointerReader,
+        ) !void {
+            return Peer.noteSendResultsToThirdParty(self, answer_id, recipient);
         }
 
         pub fn removeQuestion(self: *Peer, question_id: u32) void {

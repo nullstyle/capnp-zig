@@ -221,6 +221,60 @@ embargo, and queued gauges; `PeerStats` exposes only that peer's park count and
 bytes; resource events use `parked_accepts` / `parked_accept_bytes`; and a
 `parked_accept` timeout carries only the inbound answer ID.
 
+## Automatic L3 Redirected Results
+
+Inbound `Call.sendResultsTo = thirdParty` keeps the conservative
+`ThirdPartyResultPolicy.reject` default. Two Experimental opt-ins sit above it:
+
+- `.application` preserves the existing manual contract. The handler delivers
+  the result out of band and calls `sendReturnResultsSentElsewhere()` itself.
+- `.vat_network` uses the `VatNetwork` previously supplied through
+  `attachVatNetwork()`. The runtime resolves `ThirdPartyToContact`, registers a
+  synthetic callee-range answer on the introduced peer, and sends that peer a
+  `ThirdPartyAnswer` before dispatching the application handler.
+
+Under `.vat_network`, the handler still answers through ordinary
+`sendReturnResults()` / `sendReturnException()` calls. A results payload is
+built once in the source peer's capability-id space, then cloned onto the
+result peer through pinned cross-peer proxies. The synthetic answer uses the
+introduced peer's normal unresolved/resolved, terminal-Return, pipelining, and
+Finish lifecycle. Once that terminal is committed, the source caller receives
+the protocol-required `resultsSentElsewhere` marker.
+
+Route ownership is source-side with a borrowed target backlink. Setup is
+transactional: a failed ThirdPartyAnswer announcement rolls the route back; a
+failed target result send retires it with one target exception; and a source
+marker failure after target delivery cannot emit a second terminal Return.
+An error reported after a ThirdPartyAnswer write is inherently ambiguous
+because that frame has no acknowledgement; the transport must treat it as
+terminal so an adopted recipient drains on connection close. A target result
+write is considered committed after a trailing error only when a newly-created
+reentrant Finish proves consumption. Early target Finish detaches the synthetic
+answer from the source route without replaying the handler and fails any
+already-pipelined children. Source/target deinit reentered from ThirdPartyAnswer,
+result delivery, or the application handler is deferred until current route
+borrows unwind. Transport close without deinit detaches the closing side before
+its close callback. `detachVatNetwork()` affects future contact resolution
+only; a route already established retains its target peer. All peers and the
+network implementation remain single-thread-affine, and the network is
+borrowed rather than owned by `Peer`.
+
+Focused evidence covers scalar results, capability-bearing result remap and
+source pins, pipelining before the terminal result, direct calls through the
+returned proxy followed by Release, one handler dispatch, early target Finish,
+missing-network refusal, reentrant source/target deinit, and complete route
+drain. The allocation-index sweep checks every partial route/synthetic-answer/
+proxy/pin state, and a separate case uses distinct network, source, and target
+allocators. The focused redirected-return binary also covers pre-/post-delivery
+frame-send failure boundaries and transport close on either peer without
+deinit.
+
+This is an automatic routing policy over an already attached application
+network, not a production dialer, identity policy, authentication layer, or L4
+Join implementation. Its runtime evidence is Zig-to-Zig only: the reference
+implementations in this repository do not accept an inbound redirected-result
+call, so no new cross-implementation claim follows from the feature.
+
 ## L4 Join Readiness
 
 Level 4 `Join` remains Experimental. The runtime has receive-side Join state

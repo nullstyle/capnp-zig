@@ -274,6 +274,19 @@ pub const JoinResult = struct {
             return .{ ._reader = reader };
         }
 
+        pub const PointerKinds = struct {
+            _reader: message.StructReader,
+
+            pub fn getCap(self: @This()) !message.Capability {
+                return try self._reader.readCapability(0);
+            }
+
+        };
+
+        pub fn pointerKinds(self: @This()) PointerKinds {
+            return .{ ._reader = self._reader };
+        }
+
         pub fn getJoinId(self: Reader) !u32 {
             return self._reader.readU32(0);
         }
@@ -302,6 +315,25 @@ pub const JoinResult = struct {
 
         pub fn wrap(builder: message.StructBuilder) Builder {
             return .{ ._builder = builder };
+        }
+
+        pub const PointerKinds = struct {
+            _builder: message.StructBuilder,
+
+            pub fn getCap(self: @This()) !message.CapabilityBuilder {
+                const slot_builder = try self._builder.getAnyPointer(0);
+                return try message.CapabilityBuilder.wrap(slot_builder);
+            }
+
+            pub fn setCap(self: @This(), value: message.Capability) !void {
+                const slot_builder = try self._builder.getAnyPointer(0);
+                return slot_builder.setCapability(value);
+            }
+
+        };
+
+        pub fn pointerKinds(self: @This()) PointerKinds {
+            return .{ ._builder = self._builder };
         }
 
         pub fn setJoinId(self: *Builder, value: u32) !void {

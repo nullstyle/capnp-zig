@@ -38,6 +38,29 @@ const TypeWhich = enum(u16) {
     any_pointer = 18,
 };
 
+const AnyPointerWhich = enum(u16) {
+    unconstrained = 0,
+    parameter = 1,
+    implicit_method_parameter = 2,
+};
+
+const UnconstrainedAnyPointerWhich = enum(u16) {
+    any_kind = 0,
+    @"struct" = 1,
+    list = 2,
+    capability = 3,
+};
+
+const BrandScopeWhich = enum(u16) {
+    bind = 0,
+    inherit = 1,
+};
+
+const BrandBindingWhich = enum(u16) {
+    unbound = 0,
+    type = 1,
+};
+
 const ValueWhich = enum(u16) {
     void = 0,
     bool = 1,
@@ -106,17 +129,20 @@ fn parseNodeList(allocator: std.mem.Allocator, root: message.StructReader) ![]sc
             allocator.free(node.display_name);
             freeNestedNodes(allocator, node.nested_nodes);
             freeAnnotations(allocator, node.annotations);
+            freeParameters(allocator, node.parameters);
             if (node.struct_node) |sn| freeFields(allocator, sn.fields);
             if (node.enum_node) |en| freeEnumerants(allocator, en.enumerants);
             if (node.interface_node) |in_| {
                 freeMethods(allocator, in_.methods);
                 allocator.free(in_.superclasses);
+                freeBrands(allocator, in_.superclass_brands);
+                allocator.free(in_.superclass_brands);
             }
             if (node.const_node) |cn| {
-                freeType(allocator, cn.type);
+                freeTypeExpression(allocator, .{ .type = cn.type, .metadata = cn.type_metadata });
                 freeValue(allocator, cn.value);
             }
-            if (node.annotation_node) |an| freeType(allocator, an.type);
+            if (node.annotation_node) |an| freeTypeExpression(allocator, .{ .type = an.type, .metadata = an.type_metadata });
         }
         allocator.free(nodes);
     }
@@ -138,6 +164,8 @@ fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema
     errdefer freeNestedNodes(allocator, nested_nodes);
     const annotations = try parseAnnotations(allocator, reader, 2);
     errdefer freeAnnotations(allocator, annotations);
+    const parameters = try parseParameters(allocator, reader, 5);
+    errdefer freeParameters(allocator, parameters);
 
     const kind_raw = reader.readU16(12);
     const kind_tag = std.enums.fromInt(NodeWhich, kind_raw) orelse return error.InvalidNodeKind;
@@ -156,18 +184,16 @@ fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema
         allocator.free(en.enumerants);
     };
     errdefer if (interface_node) |in| {
-        for (in.methods) |m| {
-            allocator.free(m.name);
-            freeAnnotations(allocator, m.annotations);
-        }
-        allocator.free(in.methods);
+        freeMethods(allocator, in.methods);
         allocator.free(in.superclasses);
+        freeBrands(allocator, in.superclass_brands);
+        allocator.free(in.superclass_brands);
     };
     errdefer if (const_node) |cn| {
-        freeType(allocator, cn.type);
+        freeTypeExpression(allocator, .{ .type = cn.type, .metadata = cn.type_metadata });
         freeValue(allocator, cn.value);
     };
-    errdefer if (annotation_node) |an| freeType(allocator, an.type);
+    errdefer if (annotation_node) |an| freeTypeExpression(allocator, .{ .type = an.type, .metadata = an.type_metadata });
 
     switch (kind_tag) {
         .file => {},
@@ -198,7 +224,27 @@ fn parseNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema
         .interface_node = interface_node,
         .const_node = const_node,
         .annotation_node = annotation_node,
+        .parameters = parameters,
+        .is_generic = reader.readBool(36, 0),
     };
+}
+
+fn parseParameters(allocator: std.mem.Allocator, reader: message.StructReader, pointer_index: usize) ![]schema.Parameter {
+    const list = (try readOptionalStructList(reader, pointer_index)) orelse return allocator.alloc(schema.Parameter, 0);
+    try rejectZeroWidthStructList(list);
+
+    const count = list.len();
+    var parameters = try allocator.alloc(schema.Parameter, count);
+    var initialized: u32 = 0;
+    errdefer {
+        for (parameters[0..initialized]) |parameter| allocator.free(parameter.name);
+        allocator.free(parameters);
+    }
+
+    while (initialized < count) : (initialized += 1) {
+        parameters[initialized] = .{ .name = try dupText(allocator, try list.get(initialized), 0) };
+    }
+    return parameters;
 }
 
 fn parseNestedNodes(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Node.NestedNode {
@@ -281,9 +327,12 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
         const methods = try allocator.alloc(schema.Method, 0);
         errdefer allocator.free(methods);
         const superclasses = try allocator.alloc(schema.Id, 0);
+        errdefer allocator.free(superclasses);
+        const superclass_brands = try allocator.alloc(schema.Brand, 0);
         return .{
             .methods = methods,
             .superclasses = superclasses,
+            .superclass_brands = superclass_brands,
         };
     };
     try rejectZeroWidthStructList(list);
@@ -295,6 +344,9 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
         for (methods[0..initialized]) |m| {
             allocator.free(m.name);
             freeAnnotations(allocator, m.annotations);
+            freeParameters(allocator, m.implicit_parameters);
+            freeBrand(allocator, m.param_brand);
+            freeBrand(allocator, m.result_brand);
         }
         allocator.free(methods);
     }
@@ -304,40 +356,65 @@ fn parseInterfaceNode(allocator: std.mem.Allocator, reader: message.StructReader
         const name = try dupText(allocator, item, 0);
         errdefer allocator.free(name);
         const ann = try parseAnnotations(allocator, item, 1);
+        errdefer freeAnnotations(allocator, ann);
+        const implicit_parameters = try parseParameters(allocator, item, 4);
+        errdefer freeParameters(allocator, implicit_parameters);
+        const param_brand = try parseOptionalBrand(allocator, item, 2, 0);
+        errdefer freeBrand(allocator, param_brand);
+        const result_brand = try parseOptionalBrand(allocator, item, 3, 0);
         methods[initialized] = .{
             .name = name,
             .code_order = item.readU16(0),
             .param_struct_type = item.readU64(8),
             .result_struct_type = item.readU64(16),
             .annotations = ann,
+            .implicit_parameters = implicit_parameters,
+            .param_brand = param_brand,
+            .result_brand = result_brand,
         };
     }
 
-    const superclasses = try parseSuperclasses(allocator, reader);
+    const superclass_info = try parseSuperclasses(allocator, reader);
 
-    return .{ .methods = methods, .superclasses = superclasses };
+    return .{
+        .methods = methods,
+        .superclasses = superclass_info.ids,
+        .superclass_brands = superclass_info.brands,
+    };
 }
 
-fn parseSuperclasses(allocator: std.mem.Allocator, reader: message.StructReader) ![]schema.Id {
-    const list = (try readOptionalStructList(reader, 4)) orelse return allocator.alloc(schema.Id, 0);
+fn parseSuperclasses(allocator: std.mem.Allocator, reader: message.StructReader) !struct { ids: []schema.Id, brands: []schema.Brand } {
+    const list = (try readOptionalStructList(reader, 4)) orelse {
+        const ids = try allocator.alloc(schema.Id, 0);
+        errdefer allocator.free(ids);
+        return .{ .ids = ids, .brands = try allocator.alloc(schema.Brand, 0) };
+    };
     try rejectZeroWidthStructList(list);
 
     const count = list.len();
     var superclasses = try allocator.alloc(schema.Id, count);
     errdefer allocator.free(superclasses);
-
-    for (0..count) |i| {
-        const item = try list.get(@intCast(i));
-        superclasses[i] = item.readU64(0);
+    var brands = try allocator.alloc(schema.Brand, count);
+    var initialized: usize = 0;
+    errdefer {
+        freeBrands(allocator, brands[0..initialized]);
+        allocator.free(brands);
     }
 
-    return superclasses;
+    while (initialized < count) : (initialized += 1) {
+        const i = initialized;
+        const item = try list.get(@intCast(i));
+        superclasses[i] = item.readU64(0);
+        brands[i] = try parseOptionalBrand(allocator, item, 0, 0);
+    }
+
+    return .{ .ids = superclasses, .brands = brands };
 }
 
 fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !schema.ConstNode {
     const type_reader = try reader.readStruct(3);
     const typ = try parseType(allocator, type_reader, 0);
-    errdefer freeType(allocator, typ);
+    errdefer freeTypeExpression(allocator, typ);
 
     const value_reader = try readOptionalStruct(reader, 4);
     const value = if (value_reader) |value|
@@ -346,8 +423,9 @@ fn parseConstNode(allocator: std.mem.Allocator, reader: message.StructReader) !s
         return error.InvalidConstValue;
 
     return .{
-        .type = typ,
+        .type = typ.type,
         .value = value,
+        .type_metadata = typ.metadata,
     };
 }
 
@@ -356,7 +434,8 @@ fn parseAnnotationNode(allocator: std.mem.Allocator, reader: message.StructReade
     const typ = try parseType(allocator, type_reader, 0);
 
     return .{
-        .type = typ,
+        .type = typ.type,
+        .type_metadata = typ.metadata,
         .targets_file = reader.readBool(14, 0),
         .targets_const = reader.readBool(14, 1),
         .targets_enum = reader.readBool(14, 2),
@@ -384,7 +463,7 @@ fn parseFields(allocator: std.mem.Allocator, reader: message.StructReader) ![]sc
             allocator.free(field.name);
             freeAnnotations(allocator, field.annotations);
             if (field.slot) |slot| {
-                freeType(allocator, slot.type);
+                freeTypeExpression(allocator, .{ .type = slot.type, .metadata = slot.type_metadata });
                 if (slot.default_value) |value| freeValue(allocator, value);
             }
         }
@@ -419,7 +498,7 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
             const offset = reader.readU32(4);
             const type_reader = try reader.readStruct(2);
             const field_type = try parseType(allocator, type_reader, 0);
-            errdefer freeType(allocator, field_type);
+            errdefer freeTypeExpression(allocator, field_type);
 
             const default_value_reader = try readOptionalStruct(reader, 3);
 
@@ -430,8 +509,9 @@ fn parseField(allocator: std.mem.Allocator, reader: message.StructReader) !schem
 
             slot = .{
                 .offset = offset,
-                .type = field_type,
+                .type = field_type.type,
                 .default_value = default_value,
+                .type_metadata = field_type.metadata,
             };
         },
         .group => {
@@ -458,7 +538,10 @@ fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, 
     var annotations = try allocator.alloc(schema.AnnotationUse, count);
     var initialized: u32 = 0;
     errdefer {
-        for (annotations[0..initialized]) |ann| freeValue(allocator, ann.value);
+        for (annotations[0..initialized]) |ann| {
+            freeValue(allocator, ann.value);
+            freeBrand(allocator, ann.brand);
+        }
         allocator.free(annotations);
     }
 
@@ -470,10 +553,15 @@ fn parseAnnotations(allocator: std.mem.Allocator, reader: message.StructReader, 
             (try parseValue(allocator, value)) orelse .void
         else
             .void;
+        errdefer freeValue(allocator, value);
+        // Annotation.value is pointer 0 and Annotation.brand is pointer 1 in
+        // schema.capnp. Preserve the latter for generic lexical scopes.
+        const brand = try parseOptionalBrand(allocator, item, 1, 0);
 
         annotations[initialized] = .{
             .id = id,
             .value = value,
+            .brand = brand,
         };
     }
 
@@ -539,40 +627,146 @@ fn parseImports(allocator: std.mem.Allocator, reader: message.StructReader) ![]s
     return imports;
 }
 
-fn parseType(allocator: std.mem.Allocator, reader: message.StructReader, depth: u8) !schema.Type {
+fn parseType(allocator: std.mem.Allocator, reader: message.StructReader, depth: u8) anyerror!schema.TypeExpression {
     if (depth > 64) return error.TypeNestingTooDeep;
 
     const which_raw = reader.readU16(0);
     const which_tag = std.enums.fromInt(TypeWhich, which_raw) orelse return error.InvalidTypeKind;
 
     return switch (which_tag) {
-        .void => .void,
-        .bool => .bool,
-        .int8 => .int8,
-        .int16 => .int16,
-        .int32 => .int32,
-        .int64 => .int64,
-        .uint8 => .uint8,
-        .uint16 => .uint16,
-        .uint32 => .uint32,
-        .uint64 => .uint64,
-        .float32 => .float32,
-        .float64 => .float64,
-        .text => .text,
-        .data => .data,
+        .void => .{ .type = .void },
+        .bool => .{ .type = .bool },
+        .int8 => .{ .type = .int8 },
+        .int16 => .{ .type = .int16 },
+        .int32 => .{ .type = .int32 },
+        .int64 => .{ .type = .int64 },
+        .uint8 => .{ .type = .uint8 },
+        .uint16 => .{ .type = .uint16 },
+        .uint32 => .{ .type = .uint32 },
+        .uint64 => .{ .type = .uint64 },
+        .float32 => .{ .type = .float32 },
+        .float64 => .{ .type = .float64 },
+        .text => .{ .type = .text },
+        .data => .{ .type = .data },
         .list => blk: {
             const element_reader = try reader.readStruct(0);
-            const element_type = try parseType(allocator, element_reader, depth + 1);
-            errdefer freeType(allocator, element_type);
+            const element = try parseType(allocator, element_reader, depth + 1);
+            errdefer freeTypeExpression(allocator, element);
             const element_ptr = try allocator.create(schema.Type);
-            element_ptr.* = element_type;
-            break :blk .{ .list = .{ .element_type = element_ptr } };
+            errdefer allocator.destroy(element_ptr);
+            const metadata_ptr = try allocator.create(schema.TypeMetadata);
+            element_ptr.* = element.type;
+            metadata_ptr.* = element.metadata;
+            break :blk .{
+                .type = .{ .list = .{ .element_type = element_ptr } },
+                .metadata = .{ .list = metadata_ptr },
+            };
         },
-        .@"enum" => .{ .@"enum" = .{ .type_id = reader.readU64(8) } },
-        .@"struct" => .{ .@"struct" = .{ .type_id = reader.readU64(8) } },
-        .interface => .{ .interface = .{ .type_id = reader.readU64(8) } },
-        .any_pointer => .any_pointer,
+        .@"enum" => .{
+            .type = .{ .@"enum" = .{ .type_id = reader.readU64(8) } },
+            .metadata = .{ .named = try parseOptionalBrand(allocator, reader, 0, depth + 1) },
+        },
+        .@"struct" => .{
+            .type = .{ .@"struct" = .{ .type_id = reader.readU64(8) } },
+            .metadata = .{ .named = try parseOptionalBrand(allocator, reader, 0, depth + 1) },
+        },
+        .interface => .{
+            .type = .{ .interface = .{ .type_id = reader.readU64(8) } },
+            .metadata = .{ .named = try parseOptionalBrand(allocator, reader, 0, depth + 1) },
+        },
+        .any_pointer => .{
+            .type = .any_pointer,
+            .metadata = .{ .any_pointer = try parseAnyPointerType(reader) },
+        },
     };
+}
+
+fn parseAnyPointerType(reader: message.StructReader) !schema.TypeMetadata.AnyPointer {
+    const outer = std.enums.fromInt(AnyPointerWhich, reader.readU16(8)) orelse return error.InvalidAnyPointerKind;
+    return switch (outer) {
+        .unconstrained => switch (std.enums.fromInt(UnconstrainedAnyPointerWhich, reader.readU16(10)) orelse return error.InvalidAnyPointerKind) {
+            .any_kind => .{ .unconstrained = .any_kind },
+            .@"struct" => .{ .unconstrained = .@"struct" },
+            .list => .{ .unconstrained = .list },
+            .capability => .{ .unconstrained = .capability },
+        },
+        .parameter => .{ .parameter = .{
+            .scope_id = reader.readU64(16),
+            .parameter_index = reader.readU16(10),
+        } },
+        .implicit_method_parameter => .{ .implicit_method_parameter = .{
+            .parameter_index = reader.readU16(10),
+        } },
+    };
+}
+
+fn parseOptionalBrand(
+    allocator: std.mem.Allocator,
+    reader: message.StructReader,
+    pointer_index: usize,
+    depth: u8,
+) !schema.Brand {
+    const brand_reader = try readOptionalStruct(reader, pointer_index);
+    if (brand_reader) |brand| return parseBrand(allocator, brand, depth);
+    return .{ .scopes = try allocator.alloc(schema.Brand.Scope, 0) };
+}
+
+fn parseBrand(allocator: std.mem.Allocator, reader: message.StructReader, depth: u8) !schema.Brand {
+    if (depth > 64) return error.TypeNestingTooDeep;
+    const list = (try readOptionalStructList(reader, 0)) orelse
+        return .{ .scopes = try allocator.alloc(schema.Brand.Scope, 0) };
+    try rejectZeroWidthStructList(list);
+
+    const count = list.len();
+    var scopes = try allocator.alloc(schema.Brand.Scope, count);
+    var initialized: u32 = 0;
+    errdefer {
+        for (scopes[0..initialized]) |scope| freeBrandScope(allocator, scope);
+        allocator.free(scopes);
+    }
+
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
+        const which = std.enums.fromInt(BrandScopeWhich, item.readU16(8)) orelse return error.InvalidBrandScopeKind;
+        scopes[initialized] = .{
+            .scope_id = item.readU64(0),
+            .binding = switch (which) {
+                .inherit => .inherit,
+                .bind => .{ .bind = try parseBrandBindings(allocator, item, depth + 1) },
+            },
+        };
+    }
+    return .{ .scopes = scopes };
+}
+
+fn parseBrandBindings(allocator: std.mem.Allocator, reader: message.StructReader, depth: u8) ![]schema.Brand.Binding {
+    const list = (try readOptionalStructList(reader, 0)) orelse return allocator.alloc(schema.Brand.Binding, 0);
+    try rejectZeroWidthStructList(list);
+
+    const count = list.len();
+    var bindings = try allocator.alloc(schema.Brand.Binding, count);
+    var initialized: u32 = 0;
+    errdefer {
+        for (bindings[0..initialized]) |binding| freeBrandBinding(allocator, binding);
+        allocator.free(bindings);
+    }
+
+    while (initialized < count) : (initialized += 1) {
+        const item = try list.get(initialized);
+        const which = std.enums.fromInt(BrandBindingWhich, item.readU16(0)) orelse return error.InvalidBrandBindingKind;
+        bindings[initialized] = switch (which) {
+            .unbound => .unbound,
+            .type => blk: {
+                const type_reader = (try readOptionalStruct(item, 0)) orelse return error.InvalidBrandBindingType;
+                const value = try parseType(allocator, type_reader, depth);
+                errdefer freeTypeExpression(allocator, value);
+                const value_ptr = try allocator.create(schema.TypeExpression);
+                value_ptr.* = value;
+                break :blk .{ .type = value_ptr };
+            },
+        };
+    }
+    return bindings;
 }
 
 fn parseValue(allocator: std.mem.Allocator, reader: message.StructReader) !?schema.Value {
@@ -684,6 +878,7 @@ fn freeNodes(allocator: std.mem.Allocator, nodes: []schema.Node) void {
         allocator.free(node.display_name);
         freeNestedNodes(allocator, node.nested_nodes);
         freeAnnotations(allocator, node.annotations);
+        freeParameters(allocator, node.parameters);
 
         if (node.struct_node) |struct_node| {
             freeFields(allocator, struct_node.fields);
@@ -694,13 +889,15 @@ fn freeNodes(allocator: std.mem.Allocator, nodes: []schema.Node) void {
         if (node.interface_node) |interface_node| {
             freeMethods(allocator, interface_node.methods);
             allocator.free(interface_node.superclasses);
+            freeBrands(allocator, interface_node.superclass_brands);
+            allocator.free(interface_node.superclass_brands);
         }
         if (node.const_node) |const_node| {
-            freeType(allocator, const_node.type);
+            freeTypeExpression(allocator, .{ .type = const_node.type, .metadata = const_node.type_metadata });
             freeValue(allocator, const_node.value);
         }
         if (node.annotation_node) |annotation_node| {
-            freeType(allocator, annotation_node.type);
+            freeTypeExpression(allocator, .{ .type = annotation_node.type, .metadata = annotation_node.type_metadata });
         }
     }
 
@@ -719,7 +916,7 @@ fn freeFields(allocator: std.mem.Allocator, fields: []schema.Field) void {
         allocator.free(field.name);
         freeAnnotations(allocator, field.annotations);
         if (field.slot) |slot| {
-            freeType(allocator, slot.type);
+            freeTypeExpression(allocator, .{ .type = slot.type, .metadata = slot.type_metadata });
             if (slot.default_value) |value| freeValue(allocator, value);
         }
     }
@@ -738,8 +935,16 @@ fn freeMethods(allocator: std.mem.Allocator, methods: []schema.Method) void {
     for (methods) |method| {
         allocator.free(method.name);
         freeAnnotations(allocator, method.annotations);
+        freeParameters(allocator, method.implicit_parameters);
+        freeBrand(allocator, method.param_brand);
+        freeBrand(allocator, method.result_brand);
     }
     allocator.free(methods);
+}
+
+fn freeParameters(allocator: std.mem.Allocator, parameters: []schema.Parameter) void {
+    for (parameters) |parameter| allocator.free(parameter.name);
+    allocator.free(parameters);
 }
 
 fn freeType(allocator: std.mem.Allocator, typ: schema.Type) void {
@@ -750,6 +955,51 @@ fn freeType(allocator: std.mem.Allocator, typ: schema.Type) void {
             allocator.destroy(element);
         },
         else => {},
+    }
+}
+
+fn freeTypeExpression(allocator: std.mem.Allocator, expression: schema.TypeExpression) void {
+    freeType(allocator, expression.type);
+    freeTypeMetadata(allocator, expression.metadata);
+}
+
+fn freeTypeMetadata(allocator: std.mem.Allocator, metadata: schema.TypeMetadata) void {
+    switch (metadata) {
+        .none, .any_pointer => {},
+        .named => |brand| freeBrand(allocator, brand),
+        .list => |element| {
+            freeTypeMetadata(allocator, element.*);
+            allocator.destroy(element);
+        },
+    }
+}
+
+fn freeBrands(allocator: std.mem.Allocator, brands: []schema.Brand) void {
+    for (brands) |brand| freeBrand(allocator, brand);
+}
+
+fn freeBrand(allocator: std.mem.Allocator, brand: schema.Brand) void {
+    for (brand.scopes) |scope| freeBrandScope(allocator, scope);
+    allocator.free(brand.scopes);
+}
+
+fn freeBrandScope(allocator: std.mem.Allocator, scope: schema.Brand.Scope) void {
+    switch (scope.binding) {
+        .inherit => {},
+        .bind => |bindings| {
+            for (bindings) |binding| freeBrandBinding(allocator, binding);
+            allocator.free(bindings);
+        },
+    }
+}
+
+fn freeBrandBinding(allocator: std.mem.Allocator, binding: schema.Brand.Binding) void {
+    switch (binding) {
+        .unbound => {},
+        .type => |typ| {
+            freeTypeExpression(allocator, typ.*);
+            allocator.destroy(typ);
+        },
     }
 }
 
@@ -767,6 +1017,7 @@ fn freeValue(allocator: std.mem.Allocator, value: schema.Value) void {
 fn freeAnnotations(allocator: std.mem.Allocator, annotations: []schema.AnnotationUse) void {
     for (annotations) |annotation| {
         freeValue(allocator, annotation.value);
+        freeBrand(allocator, annotation.brand);
     }
     allocator.free(annotations);
 }

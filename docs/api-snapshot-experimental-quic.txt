@@ -969,10 +969,12 @@ capnpc-zig.rpc.peer.EntropySource.fromCsprng: fn (*Random.ChaCha) rpc.peer.mod.E
 capnpc-zig.rpc.peer.EntropySource: struct
 capnpc-zig.rpc.peer.HandoffPickupCallback: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, u32, *rpc.peer.mod.Peer, rpc.wire.protocol.Return, *const rpc.caps.inbound.InboundCapTable) anyerror!void
 capnpc-zig.rpc.peer.Introduced.completion: field []u8
+capnpc-zig.rpc.peer.Introduced.owner_allocator: field ?mem.Allocator = null
 capnpc-zig.rpc.peer.Introduced.peer: field *rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.Introduced: struct
 capnpc-zig.rpc.peer.Introduction.deinit: fn (*rpc.vat.network.Introduction, mem.Allocator) void
 capnpc-zig.rpc.peer.Introduction.nonce: field []u8
+capnpc-zig.rpc.peer.Introduction.owner_allocator: field ?mem.Allocator = null
 capnpc-zig.rpc.peer.Introduction.to_await: field []u8
 capnpc-zig.rpc.peer.Introduction.to_contact: field []u8
 capnpc-zig.rpc.peer.Introduction: struct
@@ -1066,6 +1068,7 @@ capnpc-zig.rpc.peer.Peer.ProvideTargetType.promised: variant rpc.promises.promis
 capnpc-zig.rpc.peer.Peer.ProvideTargetType: union
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.application: enumerant = 1
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.reject: enumerant = 0
+capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy.vat_network: enumerant = 2
 capnpc-zig.rpc.peer.Peer.ThirdPartyResultPolicy: enum
 capnpc-zig.rpc.peer.Peer.active_inbound_questions: field hash_map.HashMap(u32,bool,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.adopted_third_party_answers: field hash_map.HashMap(u32,u32,hash_map.AutoContext(u32),80)
@@ -1076,6 +1079,11 @@ capnpc-zig.rpc.peer.Peer.attachProvisionIndex: fn (*rpc.peer.mod.Peer, *rpc.vat.
 capnpc-zig.rpc.peer.Peer.attachTransport: fn (*rpc.peer.mod.Peer, *anyopaque, ?*const fn (*anyopaque, *rpc.peer.mod.Peer) void, ?*const fn (*anyopaque, []const u8) anyerror!void, ?*const fn (*anyopaque) void, ?*const fn (*anyopaque) bool) void
 capnpc-zig.rpc.peer.Peer.attachTransportBinding: fn (*rpc.peer.mod.Peer, rpc.transport.binding.Binding(rpc.peer.mod.Peer)) void
 capnpc-zig.rpc.peer.Peer.attachVatNetwork: fn (*rpc.peer.mod.Peer, rpc.vat.network.VatNetwork(rpc.peer.mod.Peer)) void
+capnpc-zig.rpc.peer.Peer.automatic_third_party_close_deferred: field bool = false
+capnpc-zig.rpc.peer.Peer.automatic_third_party_deinit_deferred: field bool = false
+capnpc-zig.rpc.peer.Peer.automatic_third_party_dispatch_depth: field u32 = 0
+capnpc-zig.rpc.peer.Peer.automatic_third_party_operation_depth: field u32 = 0
+capnpc-zig.rpc.peer.Peer.automatic_third_party_routes: field hash_map.HashMap(u32,*rpc.peer.mod.AutomaticThirdPartyRoute,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.bootstrap_export_id: field ?u32 = null
 capnpc-zig.rpc.peer.Peer.callback_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Peer.cancelQuestion: fn (*rpc.peer.mod.Peer, u32, []const u8) error{CannotUpgradeBitList,CapTableFull,EmptyMessage,FarPointerOffsetTooLarge,IndexOutOfBounds,InvalidDiscriminant,InvalidEnumValue,InvalidFarPointer,InvalidInlineCompositePointer,InvalidMessageSize,InvalidMessageTag,InvalidPointer,InvalidReturnTag,InvalidRootPointer,InvalidSegmentCount,InvalidSegmentId,InvalidTextPointer,ListTooLarge,MessageTooLarge,MissingCapDescriptorId,MissingPromisedAnswer,MissingThirdPartyCapDescriptor,NestingLimitExceeded,OffsetOutOfRange,OutOfBounds,OutOfMemory,PointerDepthLimit,PointerIndexOutOfBounds,RefCountOverflow,SegmentCountLimitExceeded,TextTooLong,TooManySegments,TransformTooLong,TraversalLimitExceeded,TruncatedMessage,UnexpectedMessage,UnknownExport,UnknownQuestion,WrongUnionMember}!void
@@ -1120,6 +1128,7 @@ capnpc-zig.rpc.peer.Peer.handoff_pickup_ctx: field ?*anyopaque = null
 capnpc-zig.rpc.peer.Peer.handoff_pickup_links: field array_list.Aligned(*rpc.peer.mod.Peer.HandoffPickupContext,null)
 capnpc-zig.rpc.peer.Peer.hasAttachedTransport: fn (*const rpc.peer.mod.Peer) bool
 capnpc-zig.rpc.peer.Peer.in_deinit: field bool = false
+capnpc-zig.rpc.peer.Peer.incoming_automatic_third_party_routes: field hash_map.HashMap(u32,*rpc.peer.mod.AutomaticThirdPartyRoute,hash_map.AutoContext(u32),80)
 capnpc-zig.rpc.peer.Peer.initDetached: fn (mem.Allocator) rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.Peer.initDetachedWithLimits: fn (mem.Allocator, rpc.peer.state.PeerLimits) rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.Peer.isAttachedTransportClosing: fn (*const rpc.peer.mod.Peer) bool
@@ -1410,6 +1419,7 @@ capnpc-zig.rpc.peer.Vat: struct
 capnpc-zig.rpc.peer.VatNetwork.ConnectToIntroducedFn: type = *const fn (*anyopaque, serialization.message.any_pointer_reader.define(serialization.message.Message,serialization.message.StructReader,serialization.message.list_readers.define(serialization.message.Message,serialization.message.StructReader,serialization.message.Capability,serialization.message.InlineCompositeList,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).PointerListReader,serialization.message.InlineCompositeList,serialization.message.Capability,@as(*const fn (u3, u32) anyerror!usize, @ptrCast(&serialization.message.listContentBytes)),@as(*const fn (u64) anyerror!u32, @ptrCast(&serialization.message.decodeCapabilityPointer))).AnyPointerReader) anyerror!rpc.vat.network.Introduced(rpc.peer.mod.Peer)
 capnpc-zig.rpc.peer.VatNetwork.IntroducedType.completion: field []u8
 capnpc-zig.rpc.peer.VatNetwork.IntroducedType.deinit: fn (*rpc.vat.network.Introduced(rpc.peer.mod.Peer), mem.Allocator) void
+capnpc-zig.rpc.peer.VatNetwork.IntroducedType.owner_allocator: field ?mem.Allocator = null
 capnpc-zig.rpc.peer.VatNetwork.IntroducedType.peer: field *rpc.peer.mod.Peer
 capnpc-zig.rpc.peer.VatNetwork.IntroducedType: struct
 capnpc-zig.rpc.peer.VatNetwork.MintIntroductionFn: type = *const fn (*anyopaque, *rpc.peer.mod.Peer, []const u8) anyerror!rpc.vat.network.Introduction
@@ -1662,7 +1672,7 @@ capnpc-zig.rpc.peer.state.PeerTimeouts.shutdown_drain_timeout_ms: field ?u64 = n
 capnpc-zig.rpc.peer.state.PeerTimeouts: struct
 capnpc-zig.rpc.peer.state.PendingCall.caps: field rpc.caps.inbound.InboundCapTable
 capnpc-zig.rpc.peer.state.PendingCall.frame: field []u8
-capnpc-zig.rpc.peer.state.PendingCall.question_id: field u32
+capnpc-zig.rpc.peer.state.PendingCall.question_id: field ?u32
 capnpc-zig.rpc.peer.state.PendingCall: struct
 capnpc-zig.rpc.peer.state.PendingEmbargoedAccept.answer_id: field u32
 capnpc-zig.rpc.peer.state.PendingEmbargoedAccept.provided_question_id: field u32
@@ -2642,6 +2652,7 @@ capnpc-zig.rpc.vat.join.encodeJoinResult: fn (mem.Allocator, u32, bool, []const 
 capnpc-zig.rpc.vat.join: struct
 capnpc-zig.rpc.vat.network.Introduced: fn (comptime type) type
 capnpc-zig.rpc.vat.network.Introduction.nonce: field []u8
+capnpc-zig.rpc.vat.network.Introduction.owner_allocator: field ?mem.Allocator = null
 capnpc-zig.rpc.vat.network.Introduction.to_await: field []u8
 capnpc-zig.rpc.vat.network.Introduction.to_contact: field []u8
 capnpc-zig.rpc.vat.network.Introduction: struct

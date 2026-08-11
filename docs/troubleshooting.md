@@ -156,6 +156,27 @@ that arm is active, even if another arm left nonzero data in shared storage.
 
 ---
 
+## Why a Generic Field Has No `brands()` View
+
+Brand-aware generation is additive and deliberately conservative. The parser
+always preserves the request's type parameters and bindings beside the frozen
+`schema.Type` union, but generated typed `brands()` access appears only for a
+fully concrete, resolvable generic data-struct field whose direct parameter
+slots have supported pointer shapes.
+
+No view is emitted for an unbound, inherited, recursive, or unresolved brand;
+an unsupported nested pointer-list binding; or generic interface/implicit RPC
+method specialization. That absence prevents generated code from promising a
+type it cannot prove. Use the field's unchanged erased Reader/Builder accessor,
+and inspect `schema.TypeMetadata` / `TypeExpression` when schema tooling needs
+the original binding.
+
+The related `pointerKinds()` view follows the same rule for constrained
+`AnyStruct`, `AnyList`, and bare `Capability` slots. A plain unconstrained
+`AnyPointer` has no narrower shape, so its legacy accessor is the intended API.
+
+---
+
 ## Builder Lifecycle
 
 `StructBuilder` holds a pointer back to the `MessageBuilder` that owns the segment data. Deiniting the `MessageBuilder` frees all segments, invalidating any outstanding `StructBuilder` references.
@@ -312,3 +333,50 @@ For diagnosis, inspect `vat.stats()` and `peer.stats().parked_accepts` /
 `.parked_accept_bytes`. Resource and timeout events are redacted: they identify
 only the park resource or inbound answer ID, never recipient tokens, embargo
 bytes, addresses, or frame contents.
+
+---
+
+## Automatic Third-Party Results Need an Attached VatNetwork
+
+The default for an inbound `Call.sendResultsTo = thirdParty` remains
+`.reject`. To let the peer route the result automatically, attach the
+Experimental network first and then select the policy:
+
+```zig
+peer.attachVatNetwork(vat_network);
+peer.setThirdPartyResultPolicy(.vat_network);
+```
+
+The network and every peer it returns are borrowed and must outlive the route.
+They must also share the same owner thread; this option does not turn a
+single-thread-affine `Peer` into a cross-thread router. A missing network makes
+the automatic setup fail instead of silently dispatching a call whose results
+cannot be delivered.
+
+With `.vat_network`, application handlers use their normal
+`sendReturnResults()` or `sendReturnException()` path. Do not also call
+`sendReturnResultsSentElsewhere()`; the runtime emits that source-side marker
+after committing the result on the introduced peer. Capability-bearing results
+are remapped through pinned cross-peer proxies, and calls pipelined on the
+synthetic answer wait for and replay from its terminal result.
+
+Treat any error reported while sending `ThirdPartyAnswer` as terminal for the
+introduced connection. The frame has no acknowledgement, so a transport cannot
+distinguish "not delivered" from "delivered, then the local write reported an
+error". The automatic route rolls its local setup back; closing the connection
+is what guarantees that a recipient which already adopted the answer drains
+its pending await. Result Returns have a stronger proof: a newly-created
+reentrant Finish proves consumption even when the send callback reports a
+trailing error.
+
+If the application already owns its routing, keep `.application` and its
+existing manual `sendReturnResultsSentElsewhere()` contract. The manual mode
+cannot infer or reconstruct the delivered result for pipelining. `.reject`,
+`.application`, and `.vat_network` are Experimental L3 policies; only the first
+is the default, and current automatic-route evidence is Zig-to-Zig rather than
+reference-implementation interoperability. Current focused evidence covers
+capability remap, pipeline-before-result, direct proxy use/release, early
+Finish (including queued-child and parameter-cap drain), reentrant
+source/target deinit, source/target transport close without deinit, pre- and
+post-delivery send-failure boundaries, every allocation-failure index, and
+distinct network/source/target allocators.

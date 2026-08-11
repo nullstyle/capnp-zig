@@ -1,6 +1,6 @@
 # API Contracts And Error Taxonomy
 
-Updated: 2026-05-09
+Updated: 2026-08-11
 
 ## Scope
 This document defines stability and failure-mode expectations for the public `capnp-zig` library surface:
@@ -86,7 +86,7 @@ For use cases where an out-of-bounds access indicates a real bug (e.g. protocol-
 
 Generated code and normal application code should use the non-strict (default-returning) variants. Strict variants are intended for internal protocol parsing and debugging.
 
-## Generated Schema-Evolution Views
+## Generated Schema-Evolution and Type-Fidelity Views
 
 - Generated enum types remain exhaustive `enum(u16)` values. Typed field/list
   getters return `error.InvalidEnumValue` for an ordinal unknown to their schema.
@@ -112,6 +112,31 @@ nonzero pointer.
 returns zero when the discriminant lies beyond the allocated data section.
 Explicitly initialized zero-sized structs use the reference-compatible non-null
 offset -1 struct pointer; an absent struct remains a zero pointer.
+
+Pointer-kind and brand fidelity are additive compatibility views:
+
+- The frozen `schema.Type` union retains exactly its existing tags and
+  payloads. `schema.TypeMetadata` / `TypeExpression` and parallel parameter /
+  brand fields carry the details that the legacy model erased.
+- Constrained `AnyStruct`, `AnyList`, and bare `Capability` slots may expose a
+  generated `pointerKinds()` view. Existing `AnyPointerReader` /
+  `AnyPointerBuilder` accessors remain present. `AnyListReader` and the Builder
+  shape wrappers can return their erased `raw()` view; AnyStruct and Capability
+  Reader access is already concrete. Null lists retain empty-list semantics;
+  wire-distinguishable non-null wrong-kind pointers fail, union guards still
+  apply, and Builder getters reopen existing near or far pointers without
+  replacing them. A layout-A double-far zero-offset struct tag is wire-identical
+  to an empty inline-composite list and therefore cannot be distinguished.
+- Fully concrete, resolvable branded generic data-struct fields may expose a
+  generated `brands()` view for supported direct parameter slots. The legacy
+  erased target accessor remains the compatibility API.
+- No typed view is promised for unconstrained AnyPointer, unbound/inherited/
+  recursive/unresolved brands, unsupported nested pointer-list bindings, or
+  generic interface/RPC specialization. Preserved schema metadata does not by
+  itself imply generated specialization.
+- The generated names `Brands`, `brands`, `PointerKinds`, and `pointerKinds`
+  participate in normal generated-name validation; a schema collision is an
+  error rather than a shadowed declaration.
 
 ## Compatibility Policy
 - New error variants may be added.

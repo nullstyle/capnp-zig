@@ -78,6 +78,12 @@ fn addQuicLibTest(
             },
         }),
     });
+    // QUIC tests used to be the only add*Test family omitted from the
+    // cross-target compile inventory. That made
+    // `-Dquic=true check-test-compile -Dtarget=x86_64-windows` look green
+    // without compiling any of the QUIC test sources. Keep the optional
+    // dependency boundary, but register every test once it is enabled.
+    registered_test_compile_steps.append(b.allocator, &t.step) catch @panic("OOM");
     return &b.addRunArtifact(t).step;
 }
 
@@ -1211,6 +1217,10 @@ pub fn build(b: *std.Build) !void {
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_transport_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
     else
         null;
+    const run_release_safe_rpc_quic_public_api_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
+        addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_public_api_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
+    else
+        null;
     const run_release_safe_rpc_quic_connection_internal_tests: ?*std.Build.Step = if (release_safe_quic_zig_module) |qm|
         addQuicLibTest(b, "tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig", target, release_safe_optimize, release_safe_lib_module, qm)
     else
@@ -1231,6 +1241,7 @@ pub fn build(b: *std.Build) !void {
     test_release_safe_step.dependOn(run_release_safe_rpc_connection_failure_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_vatc_tests);
     if (run_release_safe_rpc_quic_transport_tests) |step| test_release_safe_step.dependOn(step);
+    if (run_release_safe_rpc_quic_public_api_tests) |step| test_release_safe_step.dependOn(step);
     if (run_release_safe_rpc_quic_connection_internal_tests) |step| test_release_safe_step.dependOn(step);
     test_release_safe_step.dependOn(run_release_safe_rpc_raw_frame_security_tests);
 
