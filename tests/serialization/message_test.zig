@@ -1835,6 +1835,119 @@ test "Message: double-far pointer Layout A inline-composite list (raw bytes)" {
     try testing.expectEqual(@as(u32, 20), (try list_reader.get(1)).readU32(0));
 }
 
+test "AnyListBuilder reopens and mutates direct, single-far, and double-far struct lists" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    const root = try builder.allocateStruct(0, 3);
+    const direct = try root.writeStructList(0, 1, 1, 0);
+    (try direct.get(0)).writeU32(0, 1);
+
+    const single_target = try builder.createSegment();
+    const single = try root.writeStructListInSegment(1, 1, 1, 0, single_target);
+    (try single.get(0)).writeU32(0, 2);
+
+    const double_landing = try builder.createSegment();
+    const double_content = try builder.createSegment();
+    const double = try root.writeStructListInSegments(2, 1, 1, 0, double_landing, double_content);
+    (try double.get(0)).writeU32(0, 3);
+
+    const expected = [_]u32{ 11, 22, 33 };
+    for (expected, 0..) |value, index| {
+        const pointer = try root.getAnyPointer(index);
+        const list = try (try message.AnyListBuilder.wrap(pointer)).getStructList();
+        (try list.get(0)).writeU32(0, value);
+    }
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
+    defer msg.deinit();
+    const reader = try msg.getRootStruct();
+    for (expected, 0..) |value, index| {
+        const list = try reader.readStructList(index);
+        try testing.expectEqual(value, (try list.get(0)).readU32(0));
+    }
+}
+
+test "AnyList Reader and Builder reject a malformed direct C=7 tag" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+    const root = try builder.allocateStruct(0, 1);
+    const list = try root.writeStructList(0, 1, 1, 0);
+
+    // Turn the inline-composite struct tag into a list pointer while leaving
+    // the enclosing C = 7 list pointer and its bounds intact.
+    const tag_pos = list.elements_offset - 8;
+    const segment = &builder.segments.items[list.segment_id];
+    const tag = std.mem.readInt(u64, segment.items[tag_pos..][0..8], .little);
+    std.mem.writeInt(u64, segment.items[tag_pos..][0..8], tag | 1, .little);
+
+    try testing.expectError(
+        error.InvalidInlineCompositePointer,
+        message.AnyListBuilder.wrap(try root.getAnyPointer(0)),
+    );
+
+    const bytes = try builder.toBytes();
+    defer testing.allocator.free(bytes);
+    var msg = try message.Message.initUnvalidated(testing.allocator, bytes);
+    defer msg.deinit();
+    const any = try (try msg.getRootStruct()).readAnyPointer(0);
+    try testing.expectError(error.InvalidInlineCompositePointer, message.AnyListReader.wrap(any));
+}
+
+test "AnyList documents the unavoidable layout-A double-far empty-list ambiguity" {
+    // A layout-A double-far struct pointer and an empty inline-composite list
+    // both carry a content far pointer followed by a type-0 struct tag. The
+    // wire format provides no category bit with which AnyList could distinguish
+    // them, so this valid one-word struct is necessarily observed as an empty
+    // list while remaining readable as a struct.
+    const allocator = testing.allocator;
+    var segment0: [2 * 8]u8 = @splat(0);
+    var segment1: [2 * 8]u8 = @splat(0);
+    var segment2: [1 * 8]u8 = @splat(0);
+    std.mem.writeInt(u64, segment0[0..8], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, segment0[8..16], makeFarPointer(true, 0, 1), .little);
+    std.mem.writeInt(u64, segment1[0..8], makeFarPointer(false, 0, 2), .little);
+    std.mem.writeInt(u64, segment1[8..16], makeStructPointer(0, 1, 0), .little);
+    std.mem.writeInt(u32, segment2[0..4], 0xfeed_beef, .little);
+
+    var framed = std.ArrayList(u8).empty;
+    defer framed.deinit(allocator);
+    var header: [16]u8 = undefined;
+    std.mem.writeInt(u32, header[0..4], 2, .little);
+    std.mem.writeInt(u32, header[4..8], 2, .little);
+    std.mem.writeInt(u32, header[8..12], 2, .little);
+    std.mem.writeInt(u32, header[12..16], 1, .little);
+    try framed.appendSlice(allocator, &header);
+    try framed.appendSlice(allocator, &segment0);
+    try framed.appendSlice(allocator, &segment1);
+    try framed.appendSlice(allocator, &segment2);
+    const bytes = try framed.toOwnedSlice(allocator);
+    defer allocator.free(bytes);
+
+    var msg = try message.Message.initUnvalidated(allocator, bytes);
+    defer msg.deinit();
+    const any = try (try msg.getRootStruct()).readAnyPointer(0);
+    try testing.expectEqual(@as(u32, 0xfeed_beef), (try any.getStruct()).readU32(0));
+    const as_list = try message.AnyListReader.wrap(any);
+    try testing.expectEqual(@as(u32, 0), try as_list.len());
+
+    var builder = message.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    const root = try builder.allocateStruct(0, 1);
+    const landing = try builder.createSegment();
+    const content = try builder.createSegment();
+    const allocated = try root.writeStructListInSegments(0, 1, 1, 0, landing, content);
+    (try allocated.get(0)).writeU32(0, 0xfeed_beef);
+    // Reinterpret the layout-A tag exactly as a double-far struct tag. The
+    // content word remains allocated and nonzero, but no wire bit says whether
+    // it is one struct or unused storage following an empty list.
+    std.mem.writeInt(u64, builder.segments.items[landing].items[8..16], makeStructPointer(0, 1, 0), .little);
+    const builder_list = try message.AnyListBuilder.wrap(try root.getAnyPointer(0));
+    try testing.expectEqual(@as(u32, 0), (try builder_list.getStructList()).len());
+}
+
 test "Message: double-far pointer Layout B inline-composite list (raw bytes)" {
     // Layout B: the landing pad's second word is a list pointer (type 1).
     // This is the layout used by the C++ reference implementation.

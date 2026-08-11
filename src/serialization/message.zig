@@ -2092,6 +2092,134 @@ const any_pointer_reader_defs = any_pointer_reader_module.define(
 /// Can be inspected or cast to struct, list, text, data, or capability readers.
 pub const AnyPointerReader = any_pointer_reader_defs.AnyPointerReader;
 
+/// A shape-constrained view of an `AnyPointerReader` known by the schema to be
+/// `AnyList`. The wrapper preserves the distinction that older generated code
+/// erased while retaining explicit casts for concrete list element types.
+pub const AnyListReader = struct {
+    _reader: AnyPointerReader,
+
+    pub fn wrap(reader: AnyPointerReader) !AnyListReader {
+        if (!reader.isNull()) {
+            if (reader.getList()) |list| {
+                // `resolveListPointer` bounds-checks C = 7 storage but does not
+                // interpret its tag. AnyList is a shape assertion, so validate
+                // that tag eagerly instead of accepting a malformed composite.
+                if (list.element_size == 7) _ = try reader.getInlineCompositeList();
+            } else |_| {
+                // Layout-A double-far composite lists resolve through their
+                // struct tag rather than an ordinary list pointer.
+                _ = try reader.getInlineCompositeList();
+            }
+        }
+        return .{ ._reader = reader };
+    }
+
+    fn pointerStruct(self: AnyListReader) StructReader {
+        return .{
+            .message = self._reader.message,
+            .segment_id = self._reader.segment_id,
+            .offset = self._reader.pointer_pos,
+            .data_size = 0,
+            .pointer_count = 1,
+        };
+    }
+
+    fn concreteList(self: AnyListReader, comptime ListReader: type, comptime method: []const u8) !ListReader {
+        const owner = self.pointerStruct();
+        if (self.isNull()) return owner.emptyList(ListReader);
+        return @call(.auto, @field(StructReader, method), .{ owner, 0 });
+    }
+
+    pub fn raw(self: AnyListReader) AnyPointerReader {
+        return self._reader;
+    }
+
+    pub fn isNull(self: AnyListReader) bool {
+        return self._reader.isNull();
+    }
+
+    pub fn elementSize(self: AnyListReader) !u3 {
+        if (self._reader.getList()) |list| return list.element_size else |_| {
+            _ = try self._reader.getInlineCompositeList();
+            return 7;
+        }
+    }
+
+    pub fn len(self: AnyListReader) !u32 {
+        if (self._reader.getList()) |list| {
+            if (list.element_size == 7) return (try self._reader.getInlineCompositeList()).element_count;
+            return list.element_count;
+        } else |_| {
+            return (try self._reader.getInlineCompositeList()).element_count;
+        }
+    }
+
+    pub fn getVoidList(self: AnyListReader) !VoidListReader {
+        return self.concreteList(VoidListReader, "readVoidList");
+    }
+
+    pub fn getBoolList(self: AnyListReader) !BoolListReader {
+        return self.concreteList(BoolListReader, "readBoolList");
+    }
+
+    pub fn getU8List(self: AnyListReader) !U8ListReader {
+        return self.concreteList(U8ListReader, "readU8List");
+    }
+
+    pub fn getI8List(self: AnyListReader) !I8ListReader {
+        return self.concreteList(I8ListReader, "readI8List");
+    }
+
+    pub fn getU16List(self: AnyListReader) !U16ListReader {
+        return self.concreteList(U16ListReader, "readU16List");
+    }
+
+    pub fn getI16List(self: AnyListReader) !I16ListReader {
+        return self.concreteList(I16ListReader, "readI16List");
+    }
+
+    pub fn getU32List(self: AnyListReader) !U32ListReader {
+        return self.concreteList(U32ListReader, "readU32List");
+    }
+
+    pub fn getI32List(self: AnyListReader) !I32ListReader {
+        return self.concreteList(I32ListReader, "readI32List");
+    }
+
+    pub fn getF32List(self: AnyListReader) !F32ListReader {
+        return self.concreteList(F32ListReader, "readF32List");
+    }
+
+    pub fn getU64List(self: AnyListReader) !U64ListReader {
+        return self.concreteList(U64ListReader, "readU64List");
+    }
+
+    pub fn getI64List(self: AnyListReader) !I64ListReader {
+        return self.concreteList(I64ListReader, "readI64List");
+    }
+
+    pub fn getF64List(self: AnyListReader) !F64ListReader {
+        return self.concreteList(F64ListReader, "readF64List");
+    }
+
+    pub fn getTextList(self: AnyListReader) !TextListReader {
+        return self.concreteList(TextListReader, "readTextList");
+    }
+
+    pub fn getPointerList(self: AnyListReader) !PointerListReader {
+        return self.concreteList(PointerListReader, "readPointerList");
+    }
+
+    pub fn getStructList(self: AnyListReader) !StructListReader {
+        if (self.isNull()) return self.pointerStruct().emptyStructList();
+        return self.pointerStruct().readStructList(0);
+    }
+
+    pub fn getInlineCompositeList(self: AnyListReader) !InlineCompositeList {
+        return self._reader.getInlineCompositeList();
+    }
+};
+
 /// Builder for a type-erased pointer slot within a `MessageBuilder`.
 ///
 /// Can be used to write a struct, list, text, data, or capability into
@@ -2104,6 +2232,142 @@ pub const AnyPointerBuilder = struct {
     /// Set this pointer to null (zero).
     pub fn setNull(self: AnyPointerBuilder) !void {
         return any_pointer_builder_module.setNull(self.builder, self.segment_id, self.pointer_pos);
+    }
+
+    fn pointerWord(self: AnyPointerBuilder) !u64 {
+        if (self.segment_id >= self.builder.segments.items.len) return error.InvalidSegmentId;
+        const segment = self.builder.segments.items[self.segment_id].items;
+        try bounds.checkBounds(segment, self.pointer_pos, 8);
+        return std.mem.readInt(u64, segment[self.pointer_pos..][0..8], .little);
+    }
+
+    /// Reopen an existing struct pointer without changing its wire contents.
+    pub fn getStruct(self: AnyPointerBuilder) !StructBuilder {
+        return self.builder.resolveStructBuilderPointer(
+            self.segment_id,
+            self.pointer_pos,
+            try self.pointerWord(),
+        );
+    }
+
+    fn getTypedList(self: AnyPointerBuilder, comptime ListBuilder: type, expected_size: u3) !ListBuilder {
+        const pointer_word = try self.pointerWord();
+        if (pointer_word == 0) {
+            if (ListBuilder == VoidListBuilder) return .{ .element_count = 0 };
+            return .{
+                .builder = self.builder,
+                .segment_id = self.segment_id,
+                .elements_offset = self.pointer_pos,
+                .element_count = 0,
+            };
+        }
+        const list = try self.builder.resolveListBuilderPointer(
+            self.segment_id,
+            self.pointer_pos,
+            pointer_word,
+        );
+        if (list.element_size != expected_size) return error.InvalidPointer;
+        if (ListBuilder == VoidListBuilder) return .{ .element_count = list.element_count };
+        return .{
+            .builder = self.builder,
+            .segment_id = list.segment_id,
+            .elements_offset = list.content_offset,
+            .element_count = list.element_count,
+        };
+    }
+
+    pub fn getVoidList(self: AnyPointerBuilder) !VoidListBuilder {
+        return self.getTypedList(VoidListBuilder, 0);
+    }
+
+    pub fn getBoolList(self: AnyPointerBuilder) !BoolListBuilder {
+        return self.getTypedList(BoolListBuilder, 1);
+    }
+
+    pub fn getU8List(self: AnyPointerBuilder) !U8ListBuilder {
+        return self.getTypedList(U8ListBuilder, 2);
+    }
+
+    pub fn getI8List(self: AnyPointerBuilder) !I8ListBuilder {
+        return self.getTypedList(I8ListBuilder, 2);
+    }
+
+    pub fn getU16List(self: AnyPointerBuilder) !U16ListBuilder {
+        return self.getTypedList(U16ListBuilder, 3);
+    }
+
+    pub fn getI16List(self: AnyPointerBuilder) !I16ListBuilder {
+        return self.getTypedList(I16ListBuilder, 3);
+    }
+
+    pub fn getU32List(self: AnyPointerBuilder) !U32ListBuilder {
+        return self.getTypedList(U32ListBuilder, 4);
+    }
+
+    pub fn getI32List(self: AnyPointerBuilder) !I32ListBuilder {
+        return self.getTypedList(I32ListBuilder, 4);
+    }
+
+    pub fn getF32List(self: AnyPointerBuilder) !F32ListBuilder {
+        return self.getTypedList(F32ListBuilder, 4);
+    }
+
+    pub fn getU64List(self: AnyPointerBuilder) !U64ListBuilder {
+        return self.getTypedList(U64ListBuilder, 5);
+    }
+
+    pub fn getI64List(self: AnyPointerBuilder) !I64ListBuilder {
+        return self.getTypedList(I64ListBuilder, 5);
+    }
+
+    pub fn getF64List(self: AnyPointerBuilder) !F64ListBuilder {
+        return self.getTypedList(F64ListBuilder, 5);
+    }
+
+    pub fn getTextList(self: AnyPointerBuilder) !TextListBuilder {
+        return self.getTypedList(TextListBuilder, 6);
+    }
+
+    pub fn getPointerList(self: AnyPointerBuilder) !PointerListBuilder {
+        return self.getTypedList(PointerListBuilder, 6);
+    }
+
+    /// Reopen an existing inline-composite struct list without changing its
+    /// wire contents. A null pointer is the canonical empty list.
+    pub fn getStructList(self: AnyPointerBuilder) !StructListBuilder {
+        const pointer_word = try self.pointerWord();
+        if (pointer_word == 0) return .{
+            .builder = self.builder,
+            .segment_id = self.segment_id,
+            .elements_offset = self.pointer_pos,
+            .element_count = 0,
+            .data_words = 0,
+            .pointer_words = 0,
+        };
+        const list = try self.builder.resolveStructListBuilderPointer(
+            self.segment_id,
+            self.pointer_pos,
+            pointer_word,
+        );
+        return .{
+            .builder = self.builder,
+            .segment_id = list.segment_id,
+            .elements_offset = list.elements_offset,
+            .element_count = list.element_count,
+            .data_words = list.data_words,
+            .pointer_words = list.pointer_words,
+        };
+    }
+
+    pub fn getCapability(self: AnyPointerBuilder) !Capability {
+        const resolved = try self.builder.resolvePointer(
+            self.segment_id,
+            self.pointer_pos,
+            try self.pointerWord(),
+            3,
+        );
+        if (resolved.pointer_word == 0) return error.InvalidPointer;
+        return .{ .id = try decodeCapabilityPointer(resolved.pointer_word) };
     }
 
     /// Write a text (string) value at this pointer position.
@@ -2194,9 +2458,17 @@ pub const AnyPointerBuilder = struct {
         return self.initTypedList(U8ListBuilder, 2, element_count);
     }
 
+    pub fn initI8List(self: AnyPointerBuilder, element_count: u32) !I8ListBuilder {
+        return self.initTypedList(I8ListBuilder, 2, element_count);
+    }
+
     /// Initialize a `List(UInt16)` at this pointer position.
     pub fn initU16List(self: AnyPointerBuilder, element_count: u32) !U16ListBuilder {
         return self.initTypedList(U16ListBuilder, 3, element_count);
+    }
+
+    pub fn initI16List(self: AnyPointerBuilder, element_count: u32) !I16ListBuilder {
+        return self.initTypedList(I16ListBuilder, 3, element_count);
     }
 
     /// Initialize a `List(UInt32)` at this pointer position.
@@ -2204,9 +2476,17 @@ pub const AnyPointerBuilder = struct {
         return self.initTypedList(U32ListBuilder, 4, element_count);
     }
 
+    pub fn initI32List(self: AnyPointerBuilder, element_count: u32) !I32ListBuilder {
+        return self.initTypedList(I32ListBuilder, 4, element_count);
+    }
+
     /// Initialize a `List(UInt64)` at this pointer position.
     pub fn initU64List(self: AnyPointerBuilder, element_count: u32) !U64ListBuilder {
         return self.initTypedList(U64ListBuilder, 5, element_count);
+    }
+
+    pub fn initI64List(self: AnyPointerBuilder, element_count: u32) !I64ListBuilder {
+        return self.initTypedList(I64ListBuilder, 5, element_count);
     }
 
     /// Initialize a `List(Bool)` at this pointer position.
@@ -2225,6 +2505,215 @@ pub const AnyPointerBuilder = struct {
     }
 };
 
+/// Builder restricted to the `AnyStruct` pointer shape. It deliberately
+/// exposes explicit layout initialization because an unconcretized AnyStruct
+/// carries no schema layout of its own.
+pub const AnyStructBuilder = struct {
+    _builder: AnyPointerBuilder,
+
+    pub fn wrap(builder: AnyPointerBuilder) !AnyStructBuilder {
+        _ = try builder.getStruct();
+        return .{ ._builder = builder };
+    }
+
+    pub fn raw(self: AnyStructBuilder) AnyPointerBuilder {
+        return self._builder;
+    }
+
+    pub fn setNull(self: AnyStructBuilder) !void {
+        return self._builder.setNull();
+    }
+
+    pub fn get(self: AnyStructBuilder) !StructBuilder {
+        return self._builder.getStruct();
+    }
+
+    pub fn init(self: AnyStructBuilder, data_words: u16, pointer_words: u16) !StructBuilder {
+        return self._builder.initStruct(data_words, pointer_words);
+    }
+};
+
+/// Builder restricted to the `AnyList` pointer shape. Concrete list kinds are
+/// selected explicitly at initialization time.
+pub const AnyListBuilder = struct {
+    _builder: AnyPointerBuilder,
+
+    pub fn wrap(builder: AnyPointerBuilder) !AnyListBuilder {
+        const pointer_word = try builder.pointerWord();
+        if (pointer_word == 0) return .{ ._builder = builder };
+        const list = try builder.builder.resolveListBuilderPointer(
+            builder.segment_id,
+            builder.pointer_pos,
+            pointer_word,
+        );
+        if (list.element_size == 7) {
+            _ = try builder.builder.resolveStructListBuilderPointer(
+                builder.segment_id,
+                builder.pointer_pos,
+                pointer_word,
+            );
+        }
+        return .{ ._builder = builder };
+    }
+
+    pub fn raw(self: AnyListBuilder) AnyPointerBuilder {
+        return self._builder;
+    }
+
+    /// Whether the underlying pointer word is null. Null remains readable as
+    /// an empty concrete list, matching `AnyListReader`.
+    pub fn isNull(self: AnyListBuilder) bool {
+        const pointer_word = self._builder.pointerWord() catch return false;
+        return pointer_word == 0;
+    }
+
+    pub fn setNull(self: AnyListBuilder) !void {
+        return self._builder.setNull();
+    }
+
+    pub fn getVoidList(self: AnyListBuilder) !VoidListBuilder {
+        return self._builder.getVoidList();
+    }
+
+    pub fn getBoolList(self: AnyListBuilder) !BoolListBuilder {
+        return self._builder.getBoolList();
+    }
+
+    pub fn getU8List(self: AnyListBuilder) !U8ListBuilder {
+        return self._builder.getU8List();
+    }
+
+    pub fn getI8List(self: AnyListBuilder) !I8ListBuilder {
+        return self._builder.getI8List();
+    }
+
+    pub fn getU16List(self: AnyListBuilder) !U16ListBuilder {
+        return self._builder.getU16List();
+    }
+
+    pub fn getI16List(self: AnyListBuilder) !I16ListBuilder {
+        return self._builder.getI16List();
+    }
+
+    pub fn getU32List(self: AnyListBuilder) !U32ListBuilder {
+        return self._builder.getU32List();
+    }
+
+    pub fn getI32List(self: AnyListBuilder) !I32ListBuilder {
+        return self._builder.getI32List();
+    }
+
+    pub fn getF32List(self: AnyListBuilder) !F32ListBuilder {
+        return self._builder.getF32List();
+    }
+
+    pub fn getU64List(self: AnyListBuilder) !U64ListBuilder {
+        return self._builder.getU64List();
+    }
+
+    pub fn getI64List(self: AnyListBuilder) !I64ListBuilder {
+        return self._builder.getI64List();
+    }
+
+    pub fn getF64List(self: AnyListBuilder) !F64ListBuilder {
+        return self._builder.getF64List();
+    }
+
+    pub fn getTextList(self: AnyListBuilder) !TextListBuilder {
+        return self._builder.getTextList();
+    }
+
+    pub fn getPointerList(self: AnyListBuilder) !PointerListBuilder {
+        return self._builder.getPointerList();
+    }
+
+    pub fn getStructList(self: AnyListBuilder) !StructListBuilder {
+        return self._builder.getStructList();
+    }
+
+    pub fn initStructList(self: AnyListBuilder, element_count: u32, data_words: u16, pointer_words: u16) !StructListBuilder {
+        return self._builder.initStructList(element_count, data_words, pointer_words);
+    }
+
+    pub fn initPointerList(self: AnyListBuilder, element_count: u32) !PointerListBuilder {
+        return self._builder.initPointerList(element_count);
+    }
+
+    pub fn initVoidList(self: AnyListBuilder, element_count: u32) !VoidListBuilder {
+        return self._builder.initVoidList(element_count);
+    }
+
+    pub fn initU8List(self: AnyListBuilder, element_count: u32) !U8ListBuilder {
+        return self._builder.initU8List(element_count);
+    }
+
+    pub fn initI8List(self: AnyListBuilder, element_count: u32) !I8ListBuilder {
+        return self._builder.initI8List(element_count);
+    }
+
+    pub fn initU16List(self: AnyListBuilder, element_count: u32) !U16ListBuilder {
+        return self._builder.initU16List(element_count);
+    }
+
+    pub fn initI16List(self: AnyListBuilder, element_count: u32) !I16ListBuilder {
+        return self._builder.initI16List(element_count);
+    }
+
+    pub fn initU32List(self: AnyListBuilder, element_count: u32) !U32ListBuilder {
+        return self._builder.initU32List(element_count);
+    }
+
+    pub fn initI32List(self: AnyListBuilder, element_count: u32) !I32ListBuilder {
+        return self._builder.initI32List(element_count);
+    }
+
+    pub fn initU64List(self: AnyListBuilder, element_count: u32) !U64ListBuilder {
+        return self._builder.initU64List(element_count);
+    }
+
+    pub fn initI64List(self: AnyListBuilder, element_count: u32) !I64ListBuilder {
+        return self._builder.initI64List(element_count);
+    }
+
+    pub fn initBoolList(self: AnyListBuilder, element_count: u32) !BoolListBuilder {
+        return self._builder.initBoolList(element_count);
+    }
+
+    pub fn initF32List(self: AnyListBuilder, element_count: u32) !F32ListBuilder {
+        return self._builder.initF32List(element_count);
+    }
+
+    pub fn initF64List(self: AnyListBuilder, element_count: u32) !F64ListBuilder {
+        return self._builder.initF64List(element_count);
+    }
+};
+
+/// Builder restricted to a bare `Capability` pointer slot.
+pub const CapabilityBuilder = struct {
+    _builder: AnyPointerBuilder,
+
+    pub fn wrap(builder: AnyPointerBuilder) !CapabilityBuilder {
+        _ = try builder.getCapability();
+        return .{ ._builder = builder };
+    }
+
+    pub fn raw(self: CapabilityBuilder) AnyPointerBuilder {
+        return self._builder;
+    }
+
+    pub fn setNull(self: CapabilityBuilder) !void {
+        return self._builder.setNull();
+    }
+
+    pub fn get(self: CapabilityBuilder) !Capability {
+        return self._builder.getCapability();
+    }
+
+    pub fn set(self: CapabilityBuilder, capability: Capability) !void {
+        return self._builder.setCapability(capability);
+    }
+};
+
 /// Builder for constructing Cap'n Proto messages in memory.
 ///
 /// Typical lifecycle: `init` -> `allocateStruct` (root) -> write fields via
@@ -2235,6 +2724,28 @@ pub const MessageBuilder = struct {
     allocator: std.mem.Allocator,
     segments: std.ArrayList(std.ArrayList(u8)),
     const initial_segment_capacity_bytes: usize = 1024;
+
+    const ResolvedPointer = struct {
+        segment_id: u32,
+        pointer_pos: usize,
+        pointer_word: u64,
+        content_override: ?usize,
+    };
+
+    const ResolvedListPointer = struct {
+        segment_id: u32,
+        content_offset: usize,
+        element_size: u3,
+        element_count: u32,
+    };
+
+    const ResolvedStructListPointer = struct {
+        segment_id: u32,
+        elements_offset: usize,
+        element_count: u32,
+        data_words: u16,
+        pointer_words: u16,
+    };
 
     /// Create a new, empty message builder.
     pub fn init(allocator: std.mem.Allocator) MessageBuilder {
@@ -2250,6 +2761,234 @@ pub const MessageBuilder = struct {
             segment.deinit(self.allocator);
         }
         self.segments.deinit(self.allocator);
+    }
+
+    fn readWord(self: *const MessageBuilder, segment_id: u32, byte_offset: usize) !u64 {
+        if (segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+        const segment = self.segments.items[segment_id].items;
+        try bounds.checkBounds(segment, byte_offset, 8);
+        return std.mem.readInt(u64, segment[byte_offset..][0..8], .little);
+    }
+
+    fn resolvePointer(self: *const MessageBuilder, segment_id: u32, pointer_pos: usize, pointer_word: u64, depth: u8) !ResolvedPointer {
+        if (depth == 0) return error.PointerDepthLimit;
+        if (@as(u2, @truncate(pointer_word & 0x3)) != 2) {
+            return .{
+                .segment_id = segment_id,
+                .pointer_pos = pointer_pos,
+                .pointer_word = pointer_word,
+                .content_override = null,
+            };
+        }
+
+        const far = decodeFarPointer(pointer_word);
+        if (far.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+        const landing_pos = try wordsToBytes(@as(usize, far.landing_pad_offset_words));
+        const landing_segment = self.segments.items[far.segment_id].items;
+        try bounds.checkBounds(landing_segment, landing_pos, if (far.landing_pad_is_double) 16 else 8);
+
+        if (!far.landing_pad_is_double) {
+            const landing_word = try self.readWord(far.segment_id, landing_pos);
+            return self.resolvePointer(far.segment_id, landing_pos, landing_word, depth - 1);
+        }
+
+        const landing_word = try self.readWord(far.segment_id, landing_pos);
+        const tag_word = try self.readWord(far.segment_id, landing_pos + 8);
+        if (@as(u2, @truncate(landing_word & 0x3)) != 2) return error.InvalidFarPointer;
+        const landing_far = decodeFarPointer(landing_word);
+        if (landing_far.landing_pad_is_double) return error.InvalidFarPointer;
+        if (landing_far.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+        return .{
+            .segment_id = landing_far.segment_id,
+            .pointer_pos = 0,
+            .pointer_word = tag_word,
+            .content_override = try wordsToBytes(@as(usize, landing_far.landing_pad_offset_words)),
+        };
+    }
+
+    fn resolveStructBuilderPointer(self: *MessageBuilder, segment_id: u32, pointer_pos: usize, pointer_word: u64) !StructBuilder {
+        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
+        if (resolved.pointer_word == 0) return error.InvalidPointer;
+        if (@as(u2, @truncate(resolved.pointer_word & 0x3)) != 0) return error.InvalidPointer;
+
+        const data_size = @as(u16, @truncate((resolved.pointer_word >> 32) & 0xFFFF));
+        const pointer_count = @as(u16, @truncate((resolved.pointer_word >> 48) & 0xFFFF));
+        const struct_offset = resolved.content_override orelse try Message.computeContentOffset(
+            resolved.pointer_pos,
+            decodeOffsetWords(resolved.pointer_word),
+            null,
+        );
+        if (resolved.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+        const total_bytes = (@as(usize, data_size) + @as(usize, pointer_count)) * 8;
+        try bounds.checkBounds(self.segments.items[resolved.segment_id].items, struct_offset, total_bytes);
+        return .{
+            .builder = self,
+            .segment_id = resolved.segment_id,
+            .offset = struct_offset,
+            .data_size = data_size,
+            .pointer_count = pointer_count,
+        };
+    }
+
+    fn resolveListBuilderPointer(self: *MessageBuilder, segment_id: u32, pointer_pos: usize, pointer_word: u64) !ResolvedListPointer {
+        if (@as(u2, @truncate(pointer_word & 0x3)) == 2) {
+            const outer_far = decodeFarPointer(pointer_word);
+            if (outer_far.landing_pad_is_double) {
+                if (outer_far.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+                const landing_pos = try wordsToBytes(@as(usize, outer_far.landing_pad_offset_words));
+                const landing_segment = self.segments.items[outer_far.segment_id].items;
+                try bounds.checkBounds(landing_segment, landing_pos, 16);
+                const content_far_word = std.mem.readInt(u64, landing_segment[landing_pos..][0..8], .little);
+                const tag_word = std.mem.readInt(u64, landing_segment[landing_pos + 8 ..][0..8], .little);
+                if (@as(u2, @truncate(content_far_word & 0x3)) == 2 and @as(u2, @truncate(tag_word & 0x3)) == 0) {
+                    const content_far = decodeFarPointer(content_far_word);
+                    if (content_far.landing_pad_is_double) return error.InvalidFarPointer;
+                    if (content_far.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+                    const element_count_signed = decodeOffsetWords(tag_word);
+                    if (element_count_signed < 0) return error.InvalidInlineCompositePointer;
+                    const element_count: u32 = @intCast(element_count_signed);
+                    const data_words = @as(u16, @truncate((tag_word >> 32) & 0xFFFF));
+                    const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
+                    const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
+                    const total_words = std.math.mul(u64, @as(u64, element_count), @as(u64, words_per_element)) catch return error.OutOfBounds;
+                    if (total_words > std.math.maxInt(usize) / 8) return error.OutOfBounds;
+                    const content_offset = try wordsToBytes(@as(usize, content_far.landing_pad_offset_words));
+                    try bounds.checkBounds(
+                        self.segments.items[content_far.segment_id].items,
+                        content_offset,
+                        @as(usize, @intCast(total_words)) * 8,
+                    );
+                    return .{
+                        .segment_id = content_far.segment_id,
+                        .content_offset = content_offset,
+                        .element_size = 7,
+                        .element_count = element_count,
+                    };
+                }
+            }
+        }
+
+        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
+        if (resolved.pointer_word == 0) return error.InvalidPointer;
+        if (@as(u2, @truncate(resolved.pointer_word & 0x3)) != 1) return error.InvalidPointer;
+
+        const element_size = @as(u3, @truncate((resolved.pointer_word >> 32) & 0x7));
+        const element_count = @as(u32, @truncate(resolved.pointer_word >> 35));
+        const content_offset = try Message.computeContentOffset(
+            resolved.pointer_pos,
+            decodeOffsetWords(resolved.pointer_word),
+            resolved.content_override,
+        );
+        const content_bytes = switch (element_size) {
+            0 => @as(usize, 0),
+            1 => (std.math.add(usize, @as(usize, element_count), 7) catch return error.OutOfBounds) / 8,
+            2 => @as(usize, element_count),
+            3 => std.math.mul(usize, @as(usize, element_count), 2) catch return error.OutOfBounds,
+            4 => std.math.mul(usize, @as(usize, element_count), 4) catch return error.OutOfBounds,
+            5, 6 => std.math.mul(usize, @as(usize, element_count), 8) catch return error.OutOfBounds,
+            7 => blk: {
+                const words = std.math.add(u64, @as(u64, element_count), 1) catch return error.OutOfBounds;
+                if (words > std.math.maxInt(usize) / 8) return error.OutOfBounds;
+                break :blk @as(usize, @intCast(words)) * 8;
+            },
+        };
+        if (resolved.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+        try bounds.checkBounds(self.segments.items[resolved.segment_id].items, content_offset, content_bytes);
+        return .{
+            .segment_id = resolved.segment_id,
+            .content_offset = content_offset,
+            .element_size = element_size,
+            .element_count = element_count,
+        };
+    }
+
+    /// Strictly reopen an inline-composite list while retaining its element
+    /// layout for mutable access. Unlike `resolveListBuilderPointer`, this
+    /// validates the C = 7 struct tag rather than only its enclosing bounds.
+    fn resolveStructListBuilderPointer(
+        self: *MessageBuilder,
+        segment_id: u32,
+        pointer_pos: usize,
+        pointer_word: u64,
+    ) !ResolvedStructListPointer {
+        if (@as(u2, @truncate(pointer_word & 0x3)) == 2) {
+            const outer_far = decodeFarPointer(pointer_word);
+            if (outer_far.landing_pad_is_double) {
+                if (outer_far.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+                const landing_pos = try wordsToBytes(@as(usize, outer_far.landing_pad_offset_words));
+                const landing_segment = self.segments.items[outer_far.segment_id].items;
+                try bounds.checkBounds(landing_segment, landing_pos, 16);
+                const content_far_word = std.mem.readInt(u64, landing_segment[landing_pos..][0..8], .little);
+                const tag_word = std.mem.readInt(u64, landing_segment[landing_pos + 8 ..][0..8], .little);
+                if (@as(u2, @truncate(content_far_word & 0x3)) != 2) return error.InvalidFarPointer;
+                if (@as(u2, @truncate(tag_word & 0x3)) == 0) {
+                    // Layout A carries only a content far pointer and a struct
+                    // tag. A double-far struct pointer has the same category;
+                    // its zero offset is therefore unavoidably observable as
+                    // an empty list. Do not invent an out-of-band distinction.
+                    const content_far = decodeFarPointer(content_far_word);
+                    if (content_far.landing_pad_is_double) return error.InvalidFarPointer;
+                    if (content_far.segment_id >= self.segments.items.len) return error.InvalidSegmentId;
+                    const element_count_signed = decodeOffsetWords(tag_word);
+                    if (element_count_signed < 0) return error.InvalidInlineCompositePointer;
+                    const element_count: u32 = @intCast(element_count_signed);
+                    const data_words = @as(u16, @truncate((tag_word >> 32) & 0xFFFF));
+                    const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
+                    const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
+                    const total_words = std.math.mul(u64, @as(u64, element_count), @as(u64, words_per_element)) catch return error.OutOfBounds;
+                    if (total_words > std.math.maxInt(usize) / 8) return error.OutOfBounds;
+                    const elements_offset = try wordsToBytes(@as(usize, content_far.landing_pad_offset_words));
+                    try bounds.checkBounds(
+                        self.segments.items[content_far.segment_id].items,
+                        elements_offset,
+                        @as(usize, @intCast(total_words)) * 8,
+                    );
+                    return .{
+                        .segment_id = content_far.segment_id,
+                        .elements_offset = elements_offset,
+                        .element_count = element_count,
+                        .data_words = data_words,
+                        .pointer_words = pointer_words,
+                    };
+                }
+            }
+        }
+
+        const resolved = try self.resolvePointer(segment_id, pointer_pos, pointer_word, 3);
+        if (resolved.pointer_word == 0) return error.InvalidPointer;
+        if (@as(u2, @truncate(resolved.pointer_word & 0x3)) != 1) return error.InvalidPointer;
+        if (@as(u3, @truncate((resolved.pointer_word >> 32) & 0x7)) != 7) return error.InvalidInlineCompositePointer;
+
+        const word_count = @as(u32, @truncate(resolved.pointer_word >> 35));
+        const tag_pos = try Message.computeContentOffset(
+            resolved.pointer_pos,
+            decodeOffsetWords(resolved.pointer_word),
+            resolved.content_override,
+        );
+        const tag_word = try self.readWord(resolved.segment_id, tag_pos);
+        if (@as(u2, @truncate(tag_word & 0x3)) != 0) return error.InvalidInlineCompositePointer;
+        const element_count_signed = decodeOffsetWords(tag_word);
+        if (element_count_signed < 0) return error.InvalidInlineCompositePointer;
+        const element_count: u32 = @intCast(element_count_signed);
+        const data_words = @as(u16, @truncate((tag_word >> 32) & 0xFFFF));
+        const pointer_words = @as(u16, @truncate((tag_word >> 48) & 0xFFFF));
+        const words_per_element = @as(u32, data_words) + @as(u32, pointer_words);
+        const expected_words = std.math.mul(u64, @as(u64, element_count), @as(u64, words_per_element)) catch return error.OutOfBounds;
+        if (expected_words > word_count) return error.InvalidInlineCompositePointer;
+        if (@as(u64, word_count) > std.math.maxInt(usize) / 8) return error.OutOfBounds;
+        const elements_offset = std.math.add(usize, tag_pos, 8) catch return error.OutOfBounds;
+        try bounds.checkBounds(
+            self.segments.items[resolved.segment_id].items,
+            elements_offset,
+            @as(usize, word_count) * 8,
+        );
+        return .{
+            .segment_id = resolved.segment_id,
+            .elements_offset = elements_offset,
+            .element_count = element_count,
+            .data_words = data_words,
+            .pointer_words = pointer_words,
+        };
     }
 
     fn createSegmentWithCapacity(self: *MessageBuilder, min_capacity: usize) !u32 {

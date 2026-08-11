@@ -10,6 +10,387 @@ fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
     try file.writeStreamingAll(io, data);
 }
 
+const FrozenSchemaType = union(enum) {
+    void: void,
+    bool: void,
+    int8: void,
+    int16: void,
+    int32: void,
+    int64: void,
+    uint8: void,
+    uint16: void,
+    uint32: void,
+    uint64: void,
+    float32: void,
+    float64: void,
+    text: void,
+    data: void,
+    list: struct { element_type: *FrozenSchemaType },
+    @"enum": struct { type_id: capnpc.schema.Id },
+    @"struct": struct { type_id: capnpc.schema.Id },
+    interface: struct { type_id: capnpc.schema.Id },
+    any_pointer: void,
+};
+
+test "schema.Type keeps its frozen tag and payload representation" {
+    const actual = @typeInfo(capnpc.schema.Type).@"union";
+    const frozen = @typeInfo(FrozenSchemaType).@"union";
+    try std.testing.expectEqual(@sizeOf(FrozenSchemaType), @sizeOf(capnpc.schema.Type));
+    try std.testing.expectEqual(@alignOf(FrozenSchemaType), @alignOf(capnpc.schema.Type));
+    try std.testing.expectEqual(frozen.field_names.len, actual.field_names.len);
+    inline for (frozen.field_names, actual.field_names, frozen.field_types, actual.field_types) |expected_name, got_name, expected_type, got_type| {
+        try std.testing.expectEqualStrings(expected_name, got_name);
+        try std.testing.expectEqual(@sizeOf(expected_type), @sizeOf(got_type));
+        try std.testing.expectEqual(@alignOf(expected_type), @alignOf(got_type));
+    }
+    const list_payload = @typeInfo(actual.field_types[14]).@"struct";
+    try std.testing.expectEqual(@as(usize, 1), list_payload.field_names.len);
+    try std.testing.expectEqualStrings("element_type", list_payload.field_names[0]);
+    try std.testing.expect(@typeInfo(list_payload.field_types[0]).pointer.child == capnpc.schema.Type);
+    inline for (actual.field_types[15..18]) |named_payload_type| {
+        const named_payload = @typeInfo(named_payload_type).@"struct";
+        try std.testing.expectEqual(@as(usize, 1), named_payload.field_names.len);
+        try std.testing.expectEqualStrings("type_id", named_payload.field_names[0]);
+        try std.testing.expect(named_payload.field_types[0] == capnpc.schema.Id);
+    }
+
+    const any_pointer_metadata = capnpc.schema.TypeMetadata.AnyPointer;
+    try std.testing.expect(@FieldType(any_pointer_metadata, "parameter") == any_pointer_metadata.Parameter);
+    try std.testing.expect(@FieldType(any_pointer_metadata, "implicit_method_parameter") == any_pointer_metadata.ImplicitMethodParameter);
+    try std.testing.expect(@hasField(any_pointer_metadata.Parameter, "scope_id"));
+    try std.testing.expect(@hasField(any_pointer_metadata.Parameter, "parameter_index"));
+    try std.testing.expect(@hasField(any_pointer_metadata.ImplicitMethodParameter, "parameter_index"));
+}
+
+test "CodeGeneratorRequest retains brands and AnyPointer sub-kinds beside frozen Type" {
+    const allocator = std.testing.allocator;
+    const result = try capnp_cli.run(allocator, std.testing.io, &.{
+        "compile",
+        "-o-",
+        "tests/test_schemas/brand_pointer_fidelity.capnp",
+    }, .{});
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, result.stdout);
+    defer request_reader.freeCodeGeneratorRequest(allocator, request);
+
+    var box: ?*const capnpc.schema.Node = null;
+    var fidelity: ?*const capnpc.schema.Node = null;
+    var generic_methods: ?*const capnpc.schema.Node = null;
+    var branded_derived: ?*const capnpc.schema.Node = null;
+    var outer_generic: ?*const capnpc.schema.Node = null;
+    var annotated: ?*const capnpc.schema.Node = null;
+    for (request.nodes) |*node| {
+        if (std.mem.endsWith(u8, node.display_name, ":Box")) box = node;
+        if (std.mem.endsWith(u8, node.display_name, ":Fidelity")) fidelity = node;
+        if (std.mem.endsWith(u8, node.display_name, ":GenericMethods")) generic_methods = node;
+        if (std.mem.endsWith(u8, node.display_name, ":BrandedDerived")) branded_derived = node;
+        if (std.mem.endsWith(u8, node.display_name, ":OuterGeneric")) outer_generic = node;
+        if (std.mem.endsWith(u8, node.display_name, ":Annotated")) annotated = node;
+    }
+
+    const box_node = box orelse return error.MissingBoxNode;
+    try std.testing.expect(box_node.is_generic);
+    try std.testing.expectEqual(@as(usize, 1), box_node.parameters.len);
+    try std.testing.expectEqualStrings("T", box_node.parameters[0].name);
+    const box_value = box_node.struct_node.?.fields[0].slot.?;
+    try std.testing.expect(box_value.type == .any_pointer);
+    switch (box_value.type_metadata) {
+        .any_pointer => |kind| switch (kind) {
+            .parameter => |parameter| {
+                try std.testing.expectEqual(box_node.id, parameter.scope_id);
+                try std.testing.expectEqual(@as(u16, 0), parameter.parameter_index);
+            },
+            else => return error.ExpectedTypeParameter,
+        },
+        else => return error.ExpectedAnyPointerMetadata,
+    }
+
+    const fields = fidelity.?.struct_node.?.fields;
+    const expected = [_]capnpc.schema.TypeMetadata.AnyPointer.Unconstrained{
+        .any_kind,
+        .@"struct",
+        .list,
+        .capability,
+    };
+    for (fields[0..4], expected) |field, want| {
+        try std.testing.expect(field.slot.?.type == .any_pointer);
+        switch (field.slot.?.type_metadata) {
+            .any_pointer => |kind| switch (kind) {
+                .unconstrained => |got| try std.testing.expectEqual(want, got),
+                else => return error.ExpectedUnconstrainedAnyPointer,
+            },
+            else => return error.ExpectedAnyPointerMetadata,
+        }
+    }
+
+    for (fields[4..7]) |field| {
+        const slot = field.slot.?;
+        try std.testing.expect(slot.type == .@"struct");
+        switch (slot.type_metadata) {
+            .named => |brand| try std.testing.expectEqual(@as(usize, 1), brand.scopes.len),
+            else => return error.ExpectedNamedBrand,
+        }
+    }
+    switch (fields[7].slot.?.type_metadata) {
+        .named => |brand| try std.testing.expectEqual(@as(usize, 0), brand.scopes.len),
+        else => return error.ExpectedNamedBrand,
+    }
+
+    const method = generic_methods.?.interface_node.?.methods[0];
+    try std.testing.expectEqual(@as(usize, 1), method.implicit_parameters.len);
+    try std.testing.expectEqualStrings("T", method.implicit_parameters[0].name);
+    try std.testing.expectEqual(@as(usize, 0), method.param_brand.scopes.len);
+    try std.testing.expectEqual(@as(usize, 0), method.result_brand.scopes.len);
+
+    var implicit_field_count: usize = 0;
+    for (request.nodes) |node| {
+        if (node.id != method.param_struct_type and node.id != method.result_struct_type) continue;
+        const slot = node.struct_node.?.fields[0].slot.?;
+        switch (slot.type_metadata) {
+            .any_pointer => |metadata| switch (metadata) {
+                .parameter => |parameter| {
+                    try std.testing.expectEqual(node.id, parameter.scope_id);
+                    try std.testing.expectEqual(@as(u16, 0), parameter.parameter_index);
+                    implicit_field_count += 1;
+                },
+                else => return error.ExpectedMethodParameter,
+            },
+            else => return error.ExpectedAnyPointerMetadata,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), implicit_field_count);
+
+    const outer_method = outer_generic.?.interface_node.?.methods[0];
+    try std.testing.expectEqual(@as(usize, 1), outer_method.param_brand.scopes.len);
+    try std.testing.expectEqual(outer_generic.?.id, outer_method.param_brand.scopes[0].scope_id);
+    try std.testing.expect(outer_method.param_brand.scopes[0].binding == .inherit);
+    try std.testing.expectEqual(@as(usize, 1), outer_method.result_brand.scopes.len);
+    try std.testing.expectEqual(outer_generic.?.id, outer_method.result_brand.scopes[0].scope_id);
+    try std.testing.expect(outer_method.result_brand.scopes[0].binding == .inherit);
+
+    const derived_interface = branded_derived.?.interface_node.?;
+    try std.testing.expectEqual(@as(usize, 1), derived_interface.superclasses.len);
+    try std.testing.expectEqual(@as(usize, 1), derived_interface.superclass_brands.len);
+    const superclass_brand = derived_interface.superclass_brands[0];
+    try std.testing.expectEqual(@as(usize, 1), superclass_brand.scopes.len);
+    const superclass_bindings = superclass_brand.scopes[0].binding.bind;
+    try std.testing.expectEqual(@as(usize, 1), superclass_bindings.len);
+    try std.testing.expect(superclass_bindings[0].type.type == .text);
+
+    const annotation = annotated.?.annotations[0];
+    try std.testing.expectEqual(@as(usize, 1), annotation.brand.scopes.len);
+    try std.testing.expectEqual(box_node.id, annotation.brand.scopes[0].scope_id);
+    const annotation_bindings = annotation.brand.scopes[0].binding.bind;
+    try std.testing.expectEqual(@as(usize, 1), annotation_bindings.len);
+    try std.testing.expect(annotation_bindings[0].type.type == .text);
+}
+
+fn parseBrandPointerFixtureOom(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    const request = try request_reader.parseCodeGeneratorRequest(allocator, bytes);
+    request_reader.freeCodeGeneratorRequest(allocator, request);
+}
+
+test "brand and pointer metadata parsing frees every partial allocation" {
+    const allocator = std.testing.allocator;
+    const result = try capnp_cli.run(allocator, std.testing.io, &.{
+        "compile",
+        "-o-",
+        "tests/test_schemas/brand_pointer_fidelity.capnp",
+    }, .{});
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    try std.testing.checkAllAllocationFailures(
+        allocator,
+        parseBrandPointerFixtureOom,
+        .{@as([]const u8, result.stdout)},
+    );
+}
+
+const brand_pointer_harness =
+    \\const std = @import("std");
+    \\const capnpc = @import("capnpc-zig");
+    \\const message = capnpc.message;
+    \\const generated = @import("generated.zig");
+    \\
+    \\test "brand and pointer-kind sidecars preserve erased APIs" {
+    \\    // Generated annotation exports intentionally remain the legacy
+    \\    // id/value projection; lossless brands live on the parsed request.
+    \\    try std.testing.expectEqual(@as(usize, 0), generated.Annotated_annotations[0].brand.scopes.len);
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    const raw_root = try builder.allocateStruct(1, 13);
+    \\    var root = generated.Fidelity.Builder.wrap(raw_root);
+    \\
+    \\    const shaped_struct = try root.pointerKinds().initAnyStruct();
+    \\    const raw_struct = try shaped_struct.init(1, 0);
+    \\    raw_struct.writeU32(0, 17);
+    \\    var shaped_list = try root.pointerKinds().initAnyList();
+    \\    var numbers = try shaped_list.initU32List(2);
+    \\    try numbers.set(0, 3);
+    \\    try numbers.set(1, 5);
+    \\    try root.pointerKinds().setCapability(.{ .id = 91 });
+    \\
+    \\    var text_box = try root.brands().initBox();
+    \\    try text_box.setValue("branded");
+    \\    var child_box = try root.brands().initChildBox();
+    \\    var child = try child_box.initValue();
+    \\    try child.setValue(41);
+    \\    var list_box = try root.brands().initListBox();
+    \\    var branded_numbers = try list_box.initValue(2);
+    \\    try branded_numbers.set(0, 8);
+    \\    try branded_numbers.set(1, 13);
+    \\    var lexical_box = try root.brands().initLexicalBox();
+    \\    try lexical_box.setOuter("outer");
+    \\    try lexical_box.setInner(&[_]u8{ 1, 2, 3 });
+    \\    var union_list = try root.pointerKinds().initUnionList();
+    \\    var union_numbers = try union_list.initU16List(1);
+    \\    try union_numbers.set(0, 21);
+    \\    try std.testing.expectError(error.WrongUnionMember, root.pointerKinds().getUnionStruct());
+    \\    var grouped = root.getGrouped();
+    \\    var group_list = try grouped.pointerKinds().initGroupList();
+    \\    var group_numbers = try group_list.initU8List(1);
+    \\    try group_numbers.set(0, 34);
+    \\    var group_box = try grouped.brands().initGroupBox();
+    \\    try group_box.setValue("grouped");
+    \\
+    \\    _ = try (try root.pointerKinds().getAnyStruct()).get();
+    \\    numbers = try (try root.pointerKinds().getAnyList()).getU32List();
+    \\    try numbers.set(1, 7);
+    \\    try std.testing.expectEqual(@as(u32, 91), (try (try root.pointerKinds().getCapability()).get()).id);
+    \\    child_box = try root.brands().getChildBox();
+    \\    child = try child_box.getValue();
+    \\    try child.setValue(42);
+    \\    list_box = try root.brands().getListBox();
+    \\    branded_numbers = try list_box.getValue();
+    \\    try branded_numbers.set(0, 11);
+    \\
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Fidelity.Reader.wrap(try msg.getRootStruct());
+    \\    const erased_list: message.AnyPointerReader = try reader.getAnyList();
+    \\    _ = erased_list;
+    \\    const erased_box: generated.Box.Reader = try reader.getBox();
+    \\    _ = erased_box;
+    \\    try std.testing.expectEqual(@as(u32, 17), (try reader.pointerKinds().getAnyStruct()).readU32(0));
+    \\    const read_numbers = try (try reader.pointerKinds().getAnyList()).getU32List();
+    \\    try std.testing.expectEqual(@as(u32, 7), try read_numbers.get(1));
+    \\    try std.testing.expectEqual(@as(u32, 91), (try reader.pointerKinds().getCapability()).id);
+    \\    try std.testing.expectEqualStrings("branded", try (try reader.brands().getBox()).getValue());
+    \\    try std.testing.expectEqual(@as(u32, 42), try (try (try reader.brands().getChildBox()).getValue()).getValue());
+    \\    try std.testing.expectEqual(@as(u32, 11), try (try (try reader.brands().getListBox()).getValue()).get(0));
+    \\    const read_lexical = try reader.brands().getLexicalBox();
+    \\    try std.testing.expectEqualStrings("outer", try read_lexical.getOuter());
+    \\    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, try read_lexical.getInner());
+    \\    try std.testing.expectEqual(@as(u16, 21), try (try (try reader.pointerKinds().getUnionList()).getU16List()).get(0));
+    \\    try std.testing.expectError(error.WrongUnionMember, reader.pointerKinds().getUnionStruct());
+    \\    const read_group = reader.getGrouped();
+    \\    try std.testing.expectEqual(@as(u8, 34), try (try (try read_group.pointerKinds().getGroupList()).getU8List()).get(0));
+    \\    try std.testing.expectEqualStrings("grouped", try (try read_group.brands().getGroupBox()).getValue());
+    \\}
+    \\
+    \\test "null AnyList is an empty compatible list" {
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 13));
+    \\    const null_builder_list = try root.pointerKinds().getAnyList();
+    \\    try std.testing.expect(null_builder_list.isNull());
+    \\    try std.testing.expectEqual(@as(u32, 0), (try null_builder_list.getU32List()).len());
+    \\    try std.testing.expectEqual(@as(u32, 0), (try null_builder_list.getStructList()).len());
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Fidelity.Reader.wrap(try msg.getRootStruct());
+    \\    const any_list = try reader.pointerKinds().getAnyList();
+    \\    try std.testing.expect(any_list.isNull());
+    \\    try std.testing.expectEqual(@as(u32, 0), try any_list.len());
+    \\    try std.testing.expectEqual(@as(u32, 0), (try any_list.getU32List()).len());
+    \\    try std.testing.expectEqual(@as(u32, 0), (try any_list.getPointerList()).len());
+    \\}
+    \\
+    \\test "constrained views reject a non-null wrong pointer kind" {
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 13));
+    \\    const erased = try root.initAnyList();
+    \\    const wrong_struct = try erased.initStruct(1, 0);
+    \\    wrong_struct.writeU32(0, 123);
+    \\    try std.testing.expectError(error.InvalidPointer, root.pointerKinds().getAnyList());
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Fidelity.Reader.wrap(try msg.getRootStruct());
+    \\    try std.testing.expectError(error.InvalidPointer, reader.pointerKinds().getAnyList());
+    \\}
+    \\
+    \\test "builder constrained views reopen single- and double-far pointers" {
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    const raw_root = try builder.allocateStruct(1, 13);
+    \\    var root = generated.Fidelity.Builder.wrap(raw_root);
+    \\    const struct_segment = try builder.createSegment();
+    \\    var far_struct = try raw_root.initStructInSegment(1, 1, 0, struct_segment);
+    \\    far_struct.writeU32(0, 55);
+    \\    const landing_segment = try builder.createSegment();
+    \\    const content_segment = try builder.createSegment();
+    \\    var far_list = try raw_root.writeStructListInSegments(2, 1, 1, 0, landing_segment, content_segment);
+    \\    var far_item = try far_list.get(0);
+    \\    far_item.writeU32(0, 89);
+    \\    var reopened = try (try root.pointerKinds().getAnyStruct()).get();
+    \\    reopened.writeU32(0, 56);
+    \\    var reopened_far_list = try (try root.pointerKinds().getAnyList()).getStructList();
+    \\    far_item = try reopened_far_list.get(0);
+    \\    far_item.writeU32(0, 90);
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Fidelity.Reader.wrap(try msg.getRootStruct());
+    \\    try std.testing.expectEqual(@as(u32, 56), (try reader.pointerKinds().getAnyStruct()).readU32(0));
+    \\    const read_far_list = try (try reader.pointerKinds().getAnyList()).getStructList();
+    \\    try std.testing.expectEqual(@as(u32, 90), (try read_far_list.get(0)).readU32(0));
+    \\}
+    \\
+    \\test "branded struct defaults are Reader values while Builder get stays structural" {
+    \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+    \\    defer builder.deinit();
+    \\    var root = generated.Fidelity.Builder.wrap(try builder.allocateStruct(1, 13));
+    \\    try std.testing.expectError(error.InvalidPointer, root.brands().getDefaultBox());
+    \\    const bytes = try builder.toBytes();
+    \\    defer std.testing.allocator.free(bytes);
+    \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+    \\    defer msg.deinit();
+    \\    const reader = generated.Fidelity.Reader.wrap(try msg.getRootStruct());
+    \\    const default_box = try reader.brands().getDefaultBox();
+    \\    const default_child = try default_box.getValue();
+    \\    try std.testing.expectEqual(@as(u32, 77), default_child.getValue());
+    \\}
+    \\
+;
+
+test "generated brand and pointer-kind sidecars compile and run in full and compact profiles" {
+    const allocator = std.testing.allocator;
+    try runGeneratedHarnessProfile(
+        allocator,
+        "tests/test_schemas/brand_pointer_fidelity.capnp",
+        brand_pointer_harness,
+        .full,
+    );
+    try runGeneratedHarnessProfile(
+        allocator,
+        "tests/test_schemas/brand_pointer_fidelity.capnp",
+        brand_pointer_harness,
+        .compact,
+    );
+}
+
 fn runGeneratedHarness(
     allocator: std.mem.Allocator,
     schema_path: []const u8,

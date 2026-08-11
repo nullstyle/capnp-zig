@@ -263,6 +263,13 @@ pub const Generator = struct {
         try writer.writeAll("const capnpc = @import(\"capnpc-zig\");\n");
         try writer.writeAll("const message = capnpc.message;\n");
         try writer.writeAll("const schema = capnpc.schema;\n");
+        // Brand views contain field-named wrapper types. Anchor schema type
+        // references at the generated file namespace so those wrappers cannot
+        // shadow their target declarations. Omit the alias from files that do
+        // not emit such views to avoid unrelated generated-artifact churn.
+        if (std.mem.indexOf(u8, body.items, "_capnp_file.") != null) {
+            try writer.writeAll("const _capnp_file = @This();\n");
+        }
         if (needs_rpc) {
             try writer.writeAll("const rpc = capnpc.rpc;\n");
         }
@@ -702,6 +709,7 @@ pub const Generator = struct {
         try file_scope.addCopy("capnpc");
         try file_scope.addCopy("message");
         try file_scope.addCopy("schema");
+        try file_scope.addCopy("_capnp_file");
         if (needs_rpc) try file_scope.addCopy("rpc");
         if (self.emit_schema_manifest) {
             try file_scope.addCopy("CAPNP_SCHEMA_MANIFEST_JSON");
@@ -901,6 +909,14 @@ pub const Generator = struct {
             try scope.addCopy("NestedLists");
             try scope.addCopy("nestedLists");
         }
+        if (self.structHasDirectConcreteBrandSlot(struct_info)) {
+            try scope.addCopy("Brands");
+            try scope.addCopy("brands");
+        }
+        if (structHasDirectPointerKindSlot(struct_info)) {
+            try scope.addCopy("PointerKinds");
+            try scope.addCopy("pointerKinds");
+        }
 
         for (struct_info.fields) |field| {
             if (field.group == null and field.slot == null) continue;
@@ -946,6 +962,14 @@ pub const Generator = struct {
         if (structHasDirectNestedListSlot(struct_info)) {
             try scope.addCopy("NestedLists");
             try scope.addCopy("nestedLists");
+        }
+        if (self.structHasDirectConcreteBrandSlot(struct_info)) {
+            try scope.addCopy("Brands");
+            try scope.addCopy("brands");
+        }
+        if (structHasDirectPointerKindSlot(struct_info)) {
+            try scope.addCopy("PointerKinds");
+            try scope.addCopy("pointerKinds");
         }
 
         for (struct_info.fields) |field| {
@@ -1019,6 +1043,147 @@ pub const Generator = struct {
             const slot = field.slot orelse continue;
             if (slot.type != .list) continue;
             if (slot.type.list.element_type.* == .list) return true;
+        }
+        return false;
+    }
+
+    fn pointerKind(slot: schema.FieldSlot) ?schema.TypeMetadata.AnyPointer.Unconstrained {
+        if (slot.type != .any_pointer) return null;
+        return switch (slot.type_metadata) {
+            .any_pointer => |metadata| switch (metadata) {
+                .unconstrained => |kind| if (kind == .any_kind) null else kind,
+                else => null,
+            },
+            else => null,
+        };
+    }
+
+    fn structHasDirectPointerKindSlot(struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (pointerKind(slot) != null) return true;
+        }
+        return false;
+    }
+
+    fn supportsConcreteBrandBinding(self: *Generator, expression: schema.TypeExpression) bool {
+        return switch (expression.type) {
+            .text, .data => true,
+            .@"struct" => |info| blk: {
+                const node = self.getNode(info.type_id) orelse break :blk false;
+                break :blk node.kind == .@"struct" and node.struct_node != null and !node.is_generic;
+            },
+            .list => |info| switch (info.element_type.*) {
+                .void, .bool, .int8, .uint8, .int16, .uint16, .int32, .uint32, .float32, .int64, .uint64, .float64 => true,
+                else => false,
+            },
+            .any_pointer => switch (expression.metadata) {
+                .any_pointer => |metadata| switch (metadata) {
+                    .unconstrained => true,
+                    else => false,
+                },
+                else => false,
+            },
+            else => false,
+        };
+    }
+
+    fn lexicalGenericScope(
+        self: *Generator,
+        target: *const schema.Node,
+        scope_id: schema.Id,
+    ) ?*const schema.Node {
+        var cursor: ?*const schema.Node = target;
+        while (cursor) |node| {
+            if (node.id == scope_id and node.parameters.len > 0) return node;
+            if (node.scope_id == 0) break;
+            cursor = self.getNode(node.scope_id) orelse return null;
+        }
+        return null;
+    }
+
+    fn concreteBrandBindingsForScope(
+        brand: schema.Brand,
+        scope_id: schema.Id,
+    ) ?[]const schema.Brand.Binding {
+        var found: ?[]const schema.Brand.Binding = null;
+        for (brand.scopes) |scope| {
+            if (scope.scope_id != scope_id) continue;
+            if (found != null) return null;
+            found = switch (scope.binding) {
+                .bind => |bindings| bindings,
+                .inherit => return null,
+            };
+        }
+        return found;
+    }
+
+    /// Accept a typed brand sidecar only when every generic scope in the
+    /// target's lexical chain is bound exactly once and at the declared arity.
+    /// This prevents a valid-looking inner binding from hiding an inherited or
+    /// malformed outer binding.
+    fn isFullyConcreteBrand(
+        self: *Generator,
+        target: *const schema.Node,
+        target_info: schema.StructNode,
+        brand: schema.Brand,
+    ) bool {
+        var expected_scope_count: usize = 0;
+        var cursor: ?*const schema.Node = target;
+        while (cursor) |node| {
+            if (node.parameters.len > 0) {
+                expected_scope_count += 1;
+                const bindings = concreteBrandBindingsForScope(brand, node.id) orelse return false;
+                if (bindings.len != node.parameters.len) return false;
+                for (bindings) |binding| {
+                    const expression = switch (binding) {
+                        .type => |value| value.*,
+                        .unbound => return false,
+                    };
+                    if (!self.supportsConcreteBrandBinding(expression)) return false;
+                }
+            }
+            if (node.scope_id == 0) break;
+            cursor = self.getNode(node.scope_id) orelse return false;
+        }
+        if (brand.scopes.len != expected_scope_count or expected_scope_count == 0) return false;
+
+        var has_direct_parameter = false;
+        for (target_info.fields) |target_field| {
+            const target_slot = target_field.slot orelse continue;
+            if (target_slot.type != .any_pointer) continue;
+            const parameter = switch (target_slot.type_metadata) {
+                .any_pointer => |metadata| switch (metadata) {
+                    .parameter => |value| value,
+                    else => continue,
+                },
+                else => continue,
+            };
+            const scope_node = self.lexicalGenericScope(target, parameter.scope_id) orelse return false;
+            if (parameter.parameter_index >= scope_node.parameters.len) return false;
+            const bindings = concreteBrandBindingsForScope(brand, parameter.scope_id) orelse return false;
+            if (parameter.parameter_index >= bindings.len) return false;
+            if (bindings[parameter.parameter_index] != .type) return false;
+            has_direct_parameter = true;
+        }
+        return has_direct_parameter;
+    }
+
+    fn structHasDirectConcreteBrandSlot(self: *Generator, struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .@"struct") continue;
+            const brand = switch (slot.type_metadata) {
+                .named => |value| value,
+                else => continue,
+            };
+            const target_id = slot.type.@"struct".type_id;
+            const target = self.getNode(target_id) orelse continue;
+            if (target.kind != .@"struct") continue;
+            const target_info = target.struct_node orelse continue;
+            if (target_info.is_group) continue;
+            if (!target.is_generic) continue;
+            if (self.isFullyConcreteBrand(target, target_info, brand)) return true;
         }
         return false;
     }
@@ -3157,6 +3322,105 @@ fn testUint32Field(name: []const u8, offset: u32) schema.Field {
     };
 }
 
+fn testPointerKindField(name: []const u8, offset: u32) schema.Field {
+    return .{
+        .name = name,
+        .code_order = @intCast(offset),
+        .annotations = &.{},
+        .discriminant_value = 0xFFFF,
+        .slot = .{
+            .offset = offset,
+            .type = .any_pointer,
+            .default_value = null,
+            .type_metadata = .{ .any_pointer = .{ .unconstrained = .list } },
+        },
+        .group = null,
+    };
+}
+
+fn testBrandParameterField(name: []const u8, offset: u32, scope_id: schema.Id, parameter_index: u16) schema.Field {
+    return .{
+        .name = name,
+        .code_order = @intCast(offset),
+        .annotations = &.{},
+        .discriminant_value = 0xFFFF,
+        .slot = .{
+            .offset = offset,
+            .type = .any_pointer,
+            .default_value = null,
+            .type_metadata = .{ .any_pointer = .{ .parameter = .{
+                .scope_id = scope_id,
+                .parameter_index = parameter_index,
+            } } },
+        },
+        .group = null,
+    };
+}
+
+test "typed brand eligibility requires exact bindings for every lexical generic scope" {
+    var outer_fields = [_]schema.Field{};
+    var outer = testStructNode(2, 1, "Outer", outer_fields[0..], &.{});
+    var outer_parameters = [_]schema.Parameter{.{ .name = "T" }};
+    outer.parameters = outer_parameters[0..];
+    outer.is_generic = true;
+
+    var inner_fields = [_]schema.Field{
+        testBrandParameterField("outerValue", 0, 2, 0),
+        testBrandParameterField("innerValue", 1, 3, 0),
+    };
+    var inner = testStructNode(3, 2, "Inner", inner_fields[0..], &.{});
+    var inner_parameters = [_]schema.Parameter{.{ .name = "U" }};
+    inner.parameters = inner_parameters[0..];
+    inner.is_generic = true;
+
+    var bad_index_fields = [_]schema.Field{
+        testBrandParameterField("bad", 0, 4, 1),
+    };
+    var bad_index = testStructNode(4, 2, "BadIndex", bad_index_fields[0..], &.{});
+    var bad_index_parameters = [_]schema.Parameter{.{ .name = "V" }};
+    bad_index.parameters = bad_index_parameters[0..];
+    bad_index.is_generic = true;
+
+    const file = testFileNode(1, "root.capnp", &.{});
+    const nodes = [_]schema.Node{ file, outer, inner, bad_index };
+    var gen = try Generator.init(std.testing.allocator, &nodes);
+    defer gen.deinit();
+
+    var text_expression = schema.TypeExpression{ .type = .text };
+    var data_expression = schema.TypeExpression{ .type = .data };
+    var outer_bindings = [_]schema.Brand.Binding{.{ .type = &text_expression }};
+    var inner_bindings = [_]schema.Brand.Binding{.{ .type = &data_expression }};
+    var valid_scopes = [_]schema.Brand.Scope{
+        .{ .scope_id = 3, .binding = .{ .bind = inner_bindings[0..] } },
+        .{ .scope_id = 2, .binding = .{ .bind = outer_bindings[0..] } },
+    };
+    const inner_node = gen.getNode(3).?;
+    try std.testing.expect(gen.isFullyConcreteBrand(inner_node, inner_node.struct_node.?, .{ .scopes = valid_scopes[0..] }));
+
+    var missing_outer_scopes = [_]schema.Brand.Scope{
+        .{ .scope_id = 3, .binding = .{ .bind = inner_bindings[0..] } },
+    };
+    try std.testing.expect(!gen.isFullyConcreteBrand(inner_node, inner_node.struct_node.?, .{ .scopes = missing_outer_scopes[0..] }));
+
+    var extra_inner_bindings = [_]schema.Brand.Binding{
+        .{ .type = &data_expression },
+        .{ .type = &text_expression },
+    };
+    var wrong_arity_scopes = [_]schema.Brand.Scope{
+        .{ .scope_id = 3, .binding = .{ .bind = extra_inner_bindings[0..] } },
+        .{ .scope_id = 2, .binding = .{ .bind = outer_bindings[0..] } },
+    };
+    try std.testing.expect(!gen.isFullyConcreteBrand(inner_node, inner_node.struct_node.?, .{ .scopes = wrong_arity_scopes[0..] }));
+
+    var bad_index_bindings = [_]schema.Brand.Binding{.{ .type = &data_expression }};
+    var bad_index_scopes = [_]schema.Brand.Scope{
+        .{ .scope_id = 4, .binding = .{ .bind = bad_index_bindings[0..] } },
+        .{ .scope_id = 2, .binding = .{ .bind = outer_bindings[0..] } },
+    };
+    const bad_index_node = gen.getNode(4).?;
+    try std.testing.expect(!gen.isFullyConcreteBrand(bad_index_node, bad_index_node.struct_node.?, .{ .scopes = bad_index_scopes[0..] }));
+}
+
 test "Generator.toSnakeCaseLower converts camelCase" {
     const alloc = std.testing.allocator;
     var gen = Generator.init(alloc, &.{}) catch unreachable;
@@ -3415,6 +3679,31 @@ test "Generator.generateFile rejects duplicate struct field generated names" {
         .id = 1,
         .filename = "root.capnp",
         .imports = &[_]schema.Import{},
+    };
+
+    try std.testing.expectError(error.DuplicateGeneratedName, gen.generateFile(requested));
+}
+
+test "Generator rejects normalized collisions in PointerKinds sidecars" {
+    const alloc = std.testing.allocator;
+
+    var fields = [_]schema.Field{
+        testPointerKindField("shape_name", 0),
+        testPointerKindField("shape$name", 1),
+    };
+    var root_nested = [_]schema.Node.NestedNode{
+        .{ .name = "Root", .id = 2 },
+    };
+    const root_file = testFileNode(1, "root.capnp", root_nested[0..]);
+    const root_struct = testStructNode(2, 1, "Root", fields[0..], &.{});
+    const nodes = [_]schema.Node{ root_file, root_struct };
+
+    var gen = try Generator.init(alloc, &nodes);
+    defer gen.deinit();
+    const requested = schema.RequestedFile{
+        .id = 1,
+        .filename = "root.capnp",
+        .imports = &.{},
     };
 
     try std.testing.expectError(error.DuplicateGeneratedName, gen.generateFile(requested));
