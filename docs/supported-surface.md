@@ -81,9 +81,9 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 | Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. Generated pointer-field `hasXxx()` methods report structural presence separately from the logical default. |
 | Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. Enum lists also provide `getOrdinal()` / `setOrdinal()` and retain their `raw()` accessors. |
 | Nested lists `List(List(T))` (including deeper nesting) | supported (additive typed view) | Existing raw `getXxx()` / `initXxx()` accessors remain `message.PointerListReader` / `PointerListBuilder`. In parallel, Readers and Builders expose `nestedLists()`: typed recursive `getXxx()` and `initXxx()` / `initXxxInSegment()` views cover scalars, Text, Data, enum, struct, interface/capability, and deeper lists in full and compact profiles; AnyPointer keeps the same raw pointer-list terminal as flat lists. Null inner pointers read as empty lists while `isNull()` preserves the absent/present distinction; every wrapper retains `raw()`. Unknown struct layouts fall back to raw struct-list access, and unresolved enum IDs use ordinal (`u16`) elements. |
-| `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | partial | All collapse to one untyped `AnyPointerReader` / `AnyPointerBuilder` accessor (the sub-variant is erased during parsing). A *named interface* type does get a typed capability accessor. |
-| Generics / parameterized types / brands | unsupported | Type parameters and brand bindings are silently erased to `AnyPointer` — no error, no specialization. e.g. `Persistent(SturdyRef, Owner)` exposes its parameter fields as `AnyPointer`. |
-| Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. |
+| `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | supported (additive shape view) | Existing fields still expose their erased `AnyPointerReader` / `AnyPointerBuilder` API. The request model retains the schema sub-kind in parallel metadata, and structs/groups with constrained `AnyStruct`, `AnyList`, or bare `Capability` slots also expose union-guarded `pointerKinds()` in full and compact profiles. Reader getters return `StructReader`, `AnyListReader`, or `Capability`; Builder getters reopen existing near/single-far/double-far values without replacing them, while init/set methods deliberately replace them. Null lists cast as empty with `isNull()` preserved, and wire-distinguishable wrong-kind pointers fail. A layout-A double-far zero-offset struct tag is indistinguishable from an empty inline-composite list. `AnyListReader` and all Builder shape wrappers retain `raw()`. Unconstrained `AnyPointer` intentionally stays erased. |
+| Generics / parameterized types / brands | partial (metadata + concrete data-struct views) | The frozen `schema.Type` union is unchanged. Additive `TypeMetadata` / `TypeExpression`, node/method parameters, named-type, annotation-use, and interface superclass/method brands retain the full parsed request shape. Generated annotation constants remain the legacy id/value projection. For a fully concrete, resolvable branded generic data-struct field, generated Reader/Builder `brands()` views reopen the existing target and expose supported direct parameter slots (Text, Data, resolved non-generic struct, primitive list, and AnyPointer sub-kinds). Existing erased field accessors remain. Unbound, inherited, recursive, unresolved, and unsupported nested-list bindings emit no typed view; generic interfaces and implicit generic RPC specialization remain unsupported. |
+| Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. Parsed annotation-use brands are retained in `CodeGeneratorRequest`; generated annotation constants remain the legacy id/value projection. |
 | Constants (incl. struct/list/enum consts) | supported | Emitted as `pub const`; pointer-typed consts expose a `get()` reader. |
 | JSON / serde | descriptor only | `CAPNP_SCHEMA_MANIFEST_JSON` names the `capnp_<module>_<type>_to_json` / `_from_json` C-ABI symbols an *external* serde tool must supply; no `to_json` / `from_json` bodies are generated. |
 | Canonicalization | supported (spec form + schema-aware form) | Two implementations for two jobs. **`canonical.canonicalize` / `canonicalizeFlat` / `isCanonical` (Experimental)** is the spec's actual canonical form: a **schema-free** walk of the raw pointer graph mirroring the reference implementation's `canonicalize()`/`isCanonical()` (rules cited to `layout.c++` in-source, differentially tested byte-for-byte against `capnp convert binary:canonical`). It preserves data for fields no local schema knows about and keeps upgraded lists as written, so it is the one **appropriate as a signing input**. Capabilities cannot be canonicalized (same as the C++ reference). **`schema_validation.canonicalizeMessage` / `canonicalizeMessageFlat` / `validateMessage` (Stable)** stays for **schema-aware equality**: it re-encodes through builders using a loaded schema, so data written by a newer peer for unknown fields is **dropped** and upgraded lists are re-encoded — fine for canonicalize-and-compare between peers on the same schema, and the home of the opt-in `omit_default_pointers` extension (which diverges from every other implementation precisely on default-valued fields); do not use it for signing — use `canonical.canonicalize` for that. |
@@ -102,9 +102,25 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
   returns false for a null or old-layout-missing slot (even when the field has a
   non-null schema default), and for an inactive/unknown union arm. A malformed
   nonzero pointer is present, so its getter may still fail validation.
-- **Generics are erased silently.** If your schema leans on parameterized types
-  for type safety, the generated Zig gives you `AnyPointer` and manual casts,
-  with no diagnostic.
+- **Brand fidelity is additive, not whole-program generic specialization.**
+  Existing field accessors keep the historically erased representation. Use
+  `brands()` only when it is emitted for a fully concrete, resolvable branded
+  data-struct field; the absence of that view means the binding is unbound,
+  inherited, recursive, unresolved, or otherwise outside the supported direct
+  parameter shapes. Generic interfaces, implicit generic RPC methods, and
+  unsupported nested pointer-list bindings still require erased/manual access.
+  Inspect `schema.TypeMetadata` when tooling needs the original schema
+  expression even though generated typed specialization is unavailable.
+- **Fidelity sidecars keep ordinary field safety rules.** `brands()` and
+  `pointerKinds()` are generated for main structs and groups in full and compact
+  profiles and return `error.WrongUnionMember` for an inactive union arm.
+  Reader sidecars apply pointer defaults; Builder getters are structural and
+  reopen only a stored near/far pointer, while init/set methods replace the
+  slot. A null constrained list is the usual empty Cap'n Proto list, and a
+  wire-distinguishable non-null wrong kind is rejected. Layout-A double-far
+  empty struct/list tags are inherently ambiguous. Generated-name collisions
+  with `Brands` / `PointerKinds` are rejected rather than producing ambiguous
+  Zig.
 
 ## Error contract
 
@@ -278,6 +294,28 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   `checkDeadlines()` maintenance. This retained-target path currently has Zig↔Zig regression
   coverage; it is not an additional C++ interop claim. Do not depend on the L3
   surface for production interop without exact pins.
+
+  Inbound redirected results now have a second opt-in policy alongside that
+  origination surface. `ThirdPartyResultPolicy.vat_network` uses the
+  `VatNetwork` already attached to the callee-facing peer to resolve
+  `ThirdPartyToContact`, announce a synthetic callee-range answer with
+  `ThirdPartyAnswer`, and deliver the handler's ordinary results/exception
+  Return on the introduced peer. Capability-bearing results are remapped
+  through pinned cross-peer proxies, and that answer participates in the normal
+  unresolved/resolved, pipelining, terminal Return, and Finish lifecycle. The
+  target Return commits before the original caller receives
+  `resultsSentElsewhere`; Finish follows normally or may arrive early. The policy is
+  borrowed-network, single-thread-affine, Experimental, and Zig↔Zig-only.
+  `.reject` remains the default and `.application` retains the existing manual
+  routing contract. No production dialer, authentication/identity policy, or
+  L4 integration is implied. Current focused evidence covers capability
+  remap/proxy Release, pipeline-before-result, early Finish and queued-child
+  drain, missing-network refusal, pre-/post-delivery send boundaries,
+  allocation-index cleanup, distinct network/source/target allocators,
+  reentrant source/target deinit, transport close without deinit, and route
+  drain. An ambiguous ThirdPartyAnswer write error is transport-terminal because
+  that frame has no acknowledgement.
+
 - **Level 3 — HOSTING across multiple connections (VatC role):** as of this
   change a vat whose `Provide` and `Accept` arrive on **different peers** can
   serve the handoff (Experimental). The pieces: a vat-wide
@@ -525,20 +563,26 @@ cooperating peer.
   its lifecycle without freezing the struct wholesale.
 
 
-- **Inbound `Call.sendResultsTo = thirdParty` is refused by default.** Answering
-  it requires connecting to a third vat and delivering the results there;
-  capnp-zig does not do that for you, so it answers with a single exception
-  `Return` before dispatching rather than accepting a call whose results it
-  cannot deliver. Both reference implementations refuse too (go-capnp echoes
-  `Unimplemented`; the C++ stack aborts the connection), so this is not an
-  interop regression. Applications that perform the redirect themselves opt in
-  with `Peer.setThirdPartyResultPolicy(.application)` and settle the answer with
-  `Peer.sendReturnResultsSentElsewhere`, which emits the spec-mandated
-  `resultsSentElsewhere`. Consequence for proxy topologies: an introducer no
-  longer propagates third-party result routing unless every capnp-zig hop opts
-  in. Pipelining on a redirected answer is not supported — such calls are failed
-  with their own exception `Return`, because this vat never observes the results
-  it would need in order to resolve them.
+- **Inbound `Call.sendResultsTo = thirdParty` is refused by default.** The
+  default `.reject` policy answers with one exception `Return` before dispatch
+  instead of accepting a call whose results might be dropped. Both reference
+  implementations refuse too (go-capnp echoes `Unimplemented`; the C++ stack
+  aborts the connection), so this remains the conservative interop behavior.
+
+  Two Experimental opt-ins exist. `.application` preserves the original manual
+  contract: the application delivers the result itself and calls
+  `Peer.sendReturnResultsSentElsewhere`; because the peer never sees that
+  result, pipelined calls on the redirected answer receive their own exception.
+  `.vat_network` instead resolves the contact through an attached
+  `VatNetwork`, creates a normal synthetic answer on the introduced peer, and
+  automatically forwards results/exceptions and remaps capability descriptors
+  there. The synthetic answer supports pipelining and Finish. Its evidence is
+  Zig↔Zig only, the supplied network and peers are borrowed and
+  single-thread-affine, and the runtime still supplies no production dialer or
+  identity/authentication policy. A proxy topology must opt each relevant
+  callee-facing capnp-zig hop into the intended policy. The focused automatic
+  suite covers send/OOM rollback, reentrant teardown, and transport close on
+  both route endpoints.
 
 The forwarded-return intermediary case that shipped as the one remaining active
 v0.3.0 limitation is resolved as of v0.6.0. Every limitation listed above is

@@ -10,6 +10,26 @@ but default builds do not fetch, resolve, or instantiate that dependency.
 zig build -Dquic=true test-rpc-quic --summary all
 ```
 
+For the same non-vacuity checks used by CI, run both targeted evidence modes:
+
+```bash
+just test-rpc-quic-evidence Debug
+just test-rpc-quic-evidence ReleaseSafe
+```
+
+The evidence recipe rejects `SkipZigTest`, requires the three QUIC test roots
+to retain at least 44 declared tests, runs the transport suite, and checks that
+the build graph actually executed the expected test binaries. CI is configured
+to run this Debug + ReleaseSafe pair natively on Linux, macOS, and Windows.
+Linux also runs the full repository build/check/test/API/docs surface against
+the QUIC-enabled root; that broader root-wide gate is not duplicated on macOS
+or Windows.
+
+Current evidence is intentionally stated narrowly: macOS is locally proven at
+44/44 in both modes, while the full QUIC test tree cross-compiles for Windows.
+The native Windows lane is configured as a no-skip CI gate but remains
+provisional until the first user-pushed three-platform run is green.
+
 The transport uses ALPN `capnp-rpc/1`. One QUIC connection represents one
 Cap'n Proto RPC vat session. The payload above the QUIC transport is still the
 standard `rpc.capnp` message stream; QUIC changes how complete RPC frames move
