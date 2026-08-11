@@ -20,9 +20,10 @@ version (`zig fetch --save …#v0.9.0`) and read the CHANGELOG before bumping.
   contract — and `zig build check-api` fails on any unreviewed drift. Breaking
   changes are avoided within 0.3.x and called out in the CHANGELOG when
   unavoidable.
-- **Experimental** (L3 three-party origination, reflected-cap resolve, QUIC,
-  persistence vat-restore, events, `io_backend`, the demoted transport/ctor
-  variants): may break at any 0.x minor bump. Functional and tested, but the API
+- **Experimental** (retained outbound-answer lifetimes, L3 three-party
+  origination, reflected-cap resolve, QUIC, persistence vat-restore, events,
+  `io_backend`, the demoted transport/ctor variants): may break at any 0.x
+  minor bump. Functional and tested, but the API
   is not frozen; its surface evolves in
   [`docs/api-snapshot-experimental.txt`](api-snapshot-experimental.txt) (ungated).
   The QUIC-enabled surface is recorded separately in
@@ -59,7 +60,7 @@ earlier docs that mention only one name are being reconciled to point here.
 | Code generation (`codegen`, the `capnpc-zig` plugin) | **Stable** |
 | Reader convenience (`reader`) | **Stable** |
 | RPC two-party core — frozen entry points (`rpc.wire.protocol` / `.framing`, `rpc.caps.table`, narrowed `Connection`, `ClientSession`, `ServerSession.accept`, the canonical two-party `Peer` surface + `CallError` / callback typedefs / `PeerLimits`, generated interface code) | **Stable** (frozen, CI-gated) |
-| RPC L3 three-party origination, L4 Join runtime pilot/readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, `JoinNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
+| RPC retained outbound-answer lifetimes (`CallOptions` / generated `*WithOptions` / explicit Finish), L3 three-party origination, L4 Join runtime pilot/readiness, reflected-cap resolve (`resolvePromiseExportToImport`), `ServerSession`-as-a-type, `VatNetwork`, `JoinNetwork`, QUIC, persistence vat-restore, events, `io_backend`, demoted ctor/transport variants | **Experimental** |
 | WASM host ABI (`src/wasm`) | **Experimental** |
 
 The frozen Stable RPC surface is exactly the categorized set in
@@ -79,7 +80,7 @@ feature today. "Supported" means idiomatic typed Zig accessors; "partial" and
 | Enums | supported (exhaustive + forwarding) | Generated as exhaustive `enum(u16)`; typed getters reject an unknown ordinal with `error.InvalidEnumValue`, while the generated `enumOrdinals()` view reads/writes its logical `u16` value for forwarding. |
 | Scalar (XOR) defaults, pointer defaults | supported | Applied on read for numeric/bool/enum and for text/data/struct/list pointer fields. Generated pointer-field `hasXxx()` methods report structural presence separately from the logical default. |
 | Flat lists (all element sizes incl. inline-composite struct lists); lists of enum/text/data/interface | supported | Typed `*ListReader` / `*ListBuilder`; `initXxx(count)` on the builder. Enum lists also provide `getOrdinal()` / `setOrdinal()` and retain their `raw()` accessors. |
-| Nested lists `List(List(T))` | partial | Read via the untyped `message.PointerListReader`; no typed wrapper. Its inner-list accessors honour both directions of the list-upgrade rule, so an inner list reads back at the element size the schema declares regardless of which one the peer wrote. Writable only when the inner element is a primitive — `List(List(Text))`, `List(List(Struct))`, and deeper nesting are readable but **not** writable. |
+| Nested lists `List(List(T))` (including deeper nesting) | supported (additive typed view) | Existing raw `getXxx()` / `initXxx()` accessors remain `message.PointerListReader` / `PointerListBuilder`. In parallel, Readers and Builders expose `nestedLists()`: typed recursive `getXxx()` and `initXxx()` / `initXxxInSegment()` views cover scalars, Text, Data, enum, struct, interface/capability, and deeper lists in full and compact profiles; AnyPointer keeps the same raw pointer-list terminal as flat lists. Null inner pointers read as empty lists while `isNull()` preserves the absent/present distinction; every wrapper retains `raw()`. Unknown struct layouts fall back to raw struct-list access, and unresolved enum IDs use ordinal (`u16`) elements. |
 | `AnyPointer`, `AnyStruct`, `AnyList`, bare `Capability` | partial | All collapse to one untyped `AnyPointerReader` / `AnyPointerBuilder` accessor (the sub-variant is erased during parsing). A *named interface* type does get a typed capability accessor. |
 | Generics / parameterized types / brands | unsupported | Type parameters and brand bindings are silently erased to `AnyPointer` — no error, no specialization. e.g. `Persistent(SturdyRef, Owner)` exposes its parameter fields as `AnyPointer`. |
 | Annotations | supported (see caveat) | Parsed and emitted as `<Name>_annotations` / `_field_annotations` / … arrays plus `pub const` definition descriptors. File-level annotation *uses* are dropped. |
@@ -197,6 +198,26 @@ hosted runners there cannot run Linux containers.
 
 Beyond Level 1 (all **Experimental**, outside the frozen contract):
 
+- **Retained outbound-answer lifetimes:** the default `sendCall*` and generated
+  `callXxx` methods still use automatic result lifetime and send `Finish` after
+  dispatching the terminal `Return`. Their additive `*WithOptions` forms accept
+  `rpc.peer.CallOptions`; `.result_lifetime = .retained` keeps the remote answer
+  open after the callback until `Peer.finishRetainedQuestion(question_id,
+  release_result_caps)` succeeds or ownership is transferred to a Level-3
+  handoff. Generated `Client`, `PipelinedClient`, and
+  `callXxxPipelinedWithOptions` entry points expose the policy; streaming
+  fire-and-forget calls remain automatic. A retained callback is delivered at
+  most once. If parsing or the callback reports an error after the Return is
+  visible, the peer reports it through `on_error` and still returns the question
+  id so the caller can Finish the retained answer. Finishing before Return,
+  finishing twice, or manually finishing a
+  transferred answer returns a state-specific error, and a failed Finish send
+  leaves the lifetime retryable. `PeerLimits.max_retained_questions` defaults
+  to 1024 and applies before a Call is emitted; `PeerStats` separates
+  caller-owned and transferred retained answers, while the redacted
+  `retained_questions` resource reports pressure and rejection. This API is
+  Experimental even though the existing automatic call surface remains
+  unchanged.
 - **Level 2 (persistence):** Save/Restore SturdyRef hooks are present
   (`rpc.peer` persistence surface) and documented in
   [`rpc-persistence.md`](rpc-persistence.md). Current mainline evidence covers
@@ -245,8 +266,18 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   disconnect after `Provide` still permits direct pickup, duplicate/late `Accept`
   is rejected without a second cap, hosted-cap exceptions report over the direct
   A↔C++ path, and every case asserts local Provide/Accept/vine/embargo state
-  drains. Do not depend on the L3 surface for production interop without exact
-  pins.
+  drains. A completed retained answer can now be the provided target:
+  `sendProvideFromRetainedAnswer` and
+  `resolvePromiseExportToThirdPartyFromRetainedAnswer` take a promised-answer
+  op path, transfer the source lifetime into the vine/Provide coupling, preserve
+  that exact target for vine fallback and direct pickup, and Finish the Provide
+  and source answer when the coupling ends. Failure before the Provide commit
+  rolls caller ownership back. After that commit the protocol must conservatively
+  treat the Provide as delivered: a later combined Resolve failure consumes the
+  source into cleanup, and failed protocol-owned Finish remains queued for
+  `checkDeadlines()` maintenance. This retained-target path currently has Zig↔Zig regression
+  coverage; it is not an additional C++ interop claim. Do not depend on the L3
+  surface for production interop without exact pins.
 - **Level 3 — HOSTING across multiple connections (VatC role):** as of this
   change a vat whose `Provide` and `Accept` arrive on **different peers** can
   serve the handoff (Experimental). The pieces: a vat-wide
@@ -328,14 +359,18 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      First contact found and fixed one genuine host defect —
      reflected-loopback question ids collided with the remote's inbound answer
      ids — which no Zig↔Zig test had exposed.
-  4. A promisedAnswer **provided target** whose answer cap is settled resolves
-     to a concrete stored target at Provide time (serves cross-peer); the
+  4. **LIFTED (was: no public open-answer origination).** A promisedAnswer
+     **provided target** whose answer cap is settled still resolves to a
+     concrete stored target at Provide time (serves cross-peer); the
      stored-`.promised` form (promise-valued answer caps) serves via owner-side
      ops re-resolution to a fixed chain depth of 4, and fails closed beyond it
-     or when the answer vanished. There is no public way today to originate a
-     handoff over a promisedAnswer target whose answer is still open
-     (`sendCall` auto-Finishes; a suppress-auto-finish call variant is future
-     DX work).
+     or when the answer vanished. For an answer that must remain open, originate
+     the call with `.result_lifetime = .retained`, wait for its terminal Return,
+     then pass the question id plus promised-answer ops to
+     `sendProvideFromRetainedAnswer` or the combined
+     `resolvePromiseExportToThirdPartyFromRetainedAnswer`. A successful setup
+     transfers Finish ownership to the coupling; the application can no longer
+     Finish that question directly.
   5. Parked accepts (Accept-before-Provide) remain **unauthenticated**: the
      recipient token is arbitrary bytes and needs no prior `Provide`, bootstrap,
      or handshake. Admission is therefore containment, not identity. In
@@ -512,6 +547,16 @@ two-party RPC surface has no active limitation. Historical resolved items are li
 below so release-to-release behavior changes stay auditable.
 
 ### Resolved since v0.9.0
+
+- **Recursive nested lists now have additive typed Reader/Builder views.** A
+  struct or group containing `List(List(T))` exposes `nestedLists()` in both
+  codegen profiles. The view recurses to arbitrary list depth, supports the
+  same terminal element families as direct generated lists, preserves enum
+  ordinal forwarding, pointer defaults, union guards, explicit null inner
+  elements, and segment-targeted initialization, and retains `raw()` at every
+  recursive level. The pre-existing raw field getters and initializers are
+  unchanged, so code using `PointerListReader` / `PointerListBuilder` continues
+  to compile.
 
 - **The list-upgrade rule is complete in both directions, `List(Void)`
   included.** On a struct's own fields *and* one level down: a list of any

@@ -307,6 +307,8 @@ const Link = struct {
     fail_finish_question_id: ?u32 = null,
     finish_failures_remaining: u32 = 0,
     finish_failures: u32 = 0,
+    hold_a_returns: bool = false,
+    held_a_returns: std.ArrayList([]u8) = .empty,
 
     fn init(allocator: std.mem.Allocator) Link {
         return .{
@@ -329,7 +331,18 @@ const Link = struct {
     }
 
     fn deinit(self: *Link) void {
+        for (self.held_a_returns.items) |frame| self.allocator.free(frame);
+        self.held_a_returns.deinit(self.allocator);
         self.c_question_origin.deinit();
+    }
+
+    fn flushHeldAReturns(self: *Link) !void {
+        const peer = self.a_to_c orelse return error.MissingAToCPeer;
+        while (self.held_a_returns.items.len != 0) {
+            const frame = self.held_a_returns.orderedRemove(0);
+            defer self.allocator.free(frame);
+            try peer.handleFrame(frame);
+        }
     }
 
     fn recordCQuestion(self: *Link, frame: []const u8, origin: Vat) !void {
@@ -382,6 +395,10 @@ const Link = struct {
             else => null,
         };
         const dest = target orelse return; // unrouted control frame: drop safely
+        if (dest == .a and decoded.tag == .@"return" and self.hold_a_returns) {
+            try self.held_a_returns.append(self.allocator, try self.allocator.dupe(u8, frame));
+            return;
+        }
         switch (dest) {
             .a => if (self.a_to_c) |peer| try peer.handleFrame(frame),
             .b => if (self.b_to_c) |peer| try peer.handleFrame(frame),
@@ -526,6 +543,17 @@ test "three-party handoff origination: automatic resolve->pickup hands C's cap t
     try harness.expectImport(&a_to_c, accepted_carol_id);
     try std.testing.expectEqual(@as(u32, 1), link.finish_failures);
     try std.testing.expect(!c.resolved_answers.contains(1000));
+
+    // With no pipelined call, the synchronous Accept can release the vine before
+    // `resolvePromiseExportToThirdParty` returns from emitting Resolve. B must
+    // never publish that already-destroyed vine as the promise's local target.
+    const promise_resolution = (b_to_a.exports.getEntry(promise_export_id) orelse
+        return error.PromiseExportDisappeared).value_ptr.resolved orelse
+        return error.PromiseExportUnresolved;
+    switch (promise_resolution) {
+        .exported => |resolved_export| try std.testing.expect(b_to_a.exports.contains(resolved_export.id)),
+        else => {},
+    }
 
     // The vine was minted, handed to A, released by the runtime after pickup, and
     // its release Finished B's held-open Provide — so the vine export is gone and
@@ -696,6 +724,159 @@ test "three-party handoff auto-pickup callback failure releases vine and accepte
     try harness.expectNoImport(&b_to_c, carol_import_id);
     try harness.expectNoImport(&a_to_b, introducer_import_id);
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(c.caps.imports.count())));
+}
+
+test "async auto-pickup context survives either promise-peer or accept-peer teardown" {
+    const allocator = std.testing.allocator;
+    const FirstTeardown = enum { promise_peer, accept_peer };
+    const TeardownPickup = struct {
+        results: usize = 0,
+
+        fn onPickup(
+            ctx_ptr: *anyopaque,
+            _: *Peer,
+            _: u32,
+            _: *Peer,
+            ret: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            if (ret.tag == .results) self.results += 1;
+        }
+    };
+
+    inline for ([_]FirstTeardown{ .promise_peer, .accept_peer }) |first_teardown| {
+        var link = Link.init(allocator);
+        defer link.deinit();
+        link.hold_a_returns = true;
+
+        var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+        defer net.deinit();
+
+        var c = Peer.initDetached(allocator);
+        c.disableThreadAffinity();
+        defer c.deinit();
+        var b_to_c = Peer.initDetached(allocator);
+        b_to_c.disableThreadAffinity();
+        defer b_to_c.deinit();
+        var b_to_a = Peer.initDetached(allocator);
+        b_to_a.disableThreadAffinity();
+        defer b_to_a.deinit();
+
+        var a_to_b = Peer.initDetached(allocator);
+        a_to_b.disableThreadAffinity();
+        var a_to_b_alive = true;
+        defer if (a_to_b_alive) a_to_b.deinit();
+        var a_to_c = Peer.initDetached(allocator);
+        a_to_c.disableThreadAffinity();
+        var a_to_c_alive = true;
+        defer if (a_to_c_alive) a_to_c.deinit();
+
+        b_to_c.next_question_id = 0;
+        a_to_c.next_question_id = 1000;
+        a_to_b.next_question_id = 2000;
+        link.a_to_b = &a_to_b;
+        link.b_to_a = &b_to_a;
+        link.b_to_c = &b_to_c;
+        link.c = &c;
+        link.a_to_c = &a_to_c;
+        a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+        b_to_a.setSendFrameOverride(&link, Link.bToASend);
+        b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+        a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+        c.setSendFrameOverride(&link, Link.cSend);
+
+        const recipient_nonce = switch (first_teardown) {
+            .promise_peer => "handoff-pickup-promise-peer-first",
+            .accept_peer => "handoff-pickup-accept-peer-first",
+        };
+        try net.register(recipient_nonce, &a_to_c);
+        b_to_a.attachVatNetwork(net.network());
+        a_to_b.attachVatNetwork(net.network());
+
+        var carol = Carol{};
+        _ = try c.setBootstrap(.{ .ctx = &carol, .on_call = Carol.onCall });
+        var carol_probe = CarolImportProbe{};
+        _ = try b_to_c.sendBootstrap(&carol_probe, CarolImportProbe.onReturn);
+        const carol_import_id = carol_probe.carol_import_id orelse return error.CarolBootstrapFailed;
+
+        var introducer = Introducer{};
+        _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = Introducer.onCall });
+        var introducer_probe = IntroducerProbe{};
+        _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+        const introducer_import_id = introducer_probe.introducer_import_id orelse
+            return error.IntroducerBootstrapFailed;
+        var promise_call = PromiseCall{};
+        _ = try a_to_b.sendCall(
+            introducer_import_id,
+            0x1234_5678_9abc_def0,
+            0,
+            &promise_call,
+            null,
+            PromiseCall.onReturn,
+        );
+        const promise_import_id = promise_call.promise_import_id orelse
+            return error.PromiseNotImportedByA;
+
+        var pickup = TeardownPickup{};
+        a_to_b.setHandoffPickupHandler(&pickup, TeardownPickup.onPickup);
+        const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+        var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+        defer introduction.deinit(allocator);
+        var await_message = try message.Message.initUnvalidated(allocator, introduction.to_await);
+        defer await_message.deinit();
+        const recipient = try await_message.getRootAnyPointer();
+        const handle = try b_to_a.resolvePromiseExportToThirdParty(
+            promise_import_id,
+            &b_to_c,
+            .{
+                .tag = .importedCap,
+                .imported_cap = carol_import_id,
+                .promised_answer = null,
+            },
+            recipient,
+            introduction.to_contact,
+        );
+
+        try std.testing.expectEqual(@as(usize, 1), link.held_a_returns.items.len);
+        try std.testing.expect(a_to_c.questions.contains(1000));
+        try std.testing.expectEqual(@as(usize, 1), a_to_b.handoff_pickup_links.items.len);
+
+        switch (first_teardown) {
+            .promise_peer => {
+                a_to_b.deinit();
+                a_to_b_alive = false;
+                link.a_to_b = null;
+
+                link.hold_a_returns = false;
+                try link.flushHeldAReturns();
+                try std.testing.expectEqual(@as(usize, 0), pickup.results);
+                try std.testing.expect(!a_to_c.questions.contains(1000));
+
+                // The dead promise connection cannot send the vine Release; the
+                // introducer's own terminal drain must still retire the Provide.
+                b_to_a.notifyTransportClosed();
+            },
+            .accept_peer => {
+                a_to_c.deinit();
+                a_to_c_alive = false;
+                link.a_to_c = null;
+                try std.testing.expectEqual(@as(usize, 0), a_to_b.handoff_pickup_links.items.len);
+                try std.testing.expect(!a_to_b.caps.hasImport(handle.vine_id));
+            },
+        }
+
+        try std.testing.expectEqual(@as(usize, 0), b_to_a.outbound_provides.count());
+        try std.testing.expect(!b_to_c.questions.contains(handle.question_id));
+        try std.testing.expectEqual(@as(usize, 0), c.provides_by_question.count());
+
+        if (a_to_b_alive) {
+            try a_to_b.releaseImport(promise_import_id, 1);
+            try a_to_b.releaseImport(introducer_import_id, 1);
+        }
+        try b_to_c.releaseImport(carol_import_id, 1);
+        link.forwarding = false;
+    }
 }
 
 // -- Fallback proof: a recipient WITHOUT the auto-pickup seams keeps the ------

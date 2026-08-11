@@ -31,6 +31,11 @@ example:
 hardening:
     zig build hardening
 
+# Validate the manifest-filtered package through clean-room default, core, and
+# QUIC consumers without publishing anything.
+package-preflight:
+    zig build package-preflight --summary all
+
 # Run serialization-focused tests (message/codegen/schema/interop)
 test-serialization:
     zig build test-serialization --summary all
@@ -241,6 +246,7 @@ ci:
     just ci-quic
     just src/rpc/check-rpc
     just check-generated
+    just package-preflight
     zig build test --summary all
     just e2e-self
     just e2e-zig
@@ -264,9 +270,14 @@ check-generated:
     # These revisions share a file ID, so capnp must compile them in separate
     # requests even though their generated modules are checked together.
     capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/enum_evolution_v1.capnp
+    zig fmt zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v1.zig tests/serialization/generated/schema_evolution_v1.zig
     capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/enum_evolution_v2.capnp
+    zig fmt zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig
     cp zig-out/check-generated/tests/test_schemas/enum_evolution_v2.zig tests/serialization/generated/schema_evolution_v2.zig
+    capnp compile -o{{justfile_directory()}}/zig-out/bin/capnpc-zig:{{justfile_directory()}}/zig-out/check-generated tests/test_schemas/nested_lists_runtime.capnp
+    zig fmt zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig
+    cp zig-out/check-generated/tests/test_schemas/nested_lists_runtime.zig tests/serialization/generated/nested_lists_runtime.zig
     CAPNPC_ZIG_UPDATE_GOLDENS=1 zig build test-codegen
     zig build api-snapshot
     just fmt

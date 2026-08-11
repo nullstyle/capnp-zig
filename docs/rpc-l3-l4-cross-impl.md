@@ -37,6 +37,14 @@ The same gate now also covers the major C++-interop failure contours:
 - every scenario checks local question/provide/vine/embargo state drains after
   releases.
 
+The Zig runtime also supports using a completed, explicitly retained outbound
+answer as the provided target. `sendProvideFromRetainedAnswer` and
+`resolvePromiseExportToThirdPartyFromRetainedAnswer` transfer its Finish
+lifetime into the vine/Provide coupling and preserve the promised-answer op path
+for fallback forwarding and direct pickup. That path currently has focused
+Zig↔Zig coverage only; it is not an additional scenario in the C++ matrix
+described above.
+
 ## L3 VatC Hosting Result
 
 `just e2e-l3-vatc` reverses the roles: one vendored C++ process plays vats A

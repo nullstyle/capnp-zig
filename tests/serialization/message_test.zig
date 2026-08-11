@@ -2118,6 +2118,18 @@ test "MessageBuilder: u8 list rejects an oversized count before allocating conte
     try testing.expectError(error.ListTooLarge, struct_builder.writeU8List(0, over_limit));
 }
 
+test "MessageBuilder: pointer list rejects an oversized count before allocating content" {
+    var builder = message.MessageBuilder.init(testing.allocator);
+    defer builder.deinit();
+
+    var struct_builder = try builder.allocateStruct(0, 1);
+    // A pointer list with this count would reserve 4 GiB before discovering
+    // that the wire's 29-bit count field cannot represent it. The shared list
+    // pointer path must reject the count before any content allocation.
+    const over_limit = message.MAX_LIST_ELEMENT_COUNT + 1;
+    try testing.expectError(error.ListTooLarge, struct_builder.writePointerList(0, over_limit));
+}
+
 test "MessageBuilder: writeData rejects a blob at the 29-bit list-count boundary" {
     // Sanity-check the shared guard rejects exactly at 2^29 without needing a
     // real 512 MiB slice: the constant defines the wire limit and the guard in
@@ -3001,6 +3013,69 @@ test "struct-list downgrade: a struct list reads as List(Void) with the tag's el
     try testing.expectEqual(@as(u32, 3), void_list.len());
     try void_list.get(2);
     try testing.expectError(error.IndexOutOfBounds, void_list.get(3));
+}
+
+test "nested List(Void) rejects a malformed direct inline-composite tag" {
+    // One segment:
+    //   root struct -> outer pointer list -> inline-composite list
+    // The inline-composite tag has a negative element count. Its list pointer
+    // still has enough bytes for the ordinary C=7 bounds check, so falling back
+    // after the tag error would silently return the D-field word count (1).
+    var framed: [48]u8 = @splat(0);
+    std.mem.writeInt(u32, framed[0..4], 0, .little);
+    std.mem.writeInt(u32, framed[4..8], 5, .little);
+    std.mem.writeInt(u64, framed[8..16], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, framed[16..24], makeListPointer(0, 6, 1), .little);
+    std.mem.writeInt(u64, framed[24..32], makeListPointer(0, 7, 1), .little);
+    std.mem.writeInt(u64, framed[32..40], makeStructPointer(-1, 1, 0), .little);
+
+    var msg = try message.Message.initUnvalidated(testing.allocator, &framed);
+    defer msg.deinit();
+    const outer = try (try msg.getRootStruct()).readPointerList(0);
+    try testing.expectError(error.InvalidInlineCompositePointer, outer.getVoidList(0));
+}
+
+test "nested List(Void) rejects a malformed single-far inline-composite tag" {
+    // Segment 0 holds the root and outer list. Its element is a single-far
+    // pointer to a C=7 list in segment 1, whose tag has a negative count.
+    var framed: [64]u8 = @splat(0);
+    std.mem.writeInt(u32, framed[0..4], 1, .little);
+    std.mem.writeInt(u32, framed[4..8], 3, .little);
+    std.mem.writeInt(u32, framed[8..12], 3, .little);
+
+    std.mem.writeInt(u64, framed[16..24], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, framed[24..32], makeListPointer(0, 6, 1), .little);
+    std.mem.writeInt(u64, framed[32..40], makeFarPointer(false, 0, 1), .little);
+    std.mem.writeInt(u64, framed[40..48], makeListPointer(0, 7, 1), .little);
+    std.mem.writeInt(u64, framed[48..56], makeStructPointer(-1, 1, 0), .little);
+
+    var msg = try message.Message.initUnvalidated(testing.allocator, &framed);
+    defer msg.deinit();
+    const outer = try (try msg.getRootStruct()).readPointerList(0);
+    try testing.expectError(error.InvalidInlineCompositePointer, outer.getVoidList(0));
+}
+
+test "nested List(Void) rejects a malformed double-far inline-composite tag" {
+    // Layout B double-far: segment 1 is the two-word landing pad and segment 2
+    // starts with the inline-composite tag. The malformed tag must remain the
+    // final diagnosis rather than being reinterpreted as ordinary C=7 content.
+    var framed: [72]u8 = @splat(0);
+    std.mem.writeInt(u32, framed[0..4], 2, .little);
+    std.mem.writeInt(u32, framed[4..8], 3, .little);
+    std.mem.writeInt(u32, framed[8..12], 2, .little);
+    std.mem.writeInt(u32, framed[12..16], 2, .little);
+
+    std.mem.writeInt(u64, framed[16..24], makeStructPointer(0, 0, 1), .little);
+    std.mem.writeInt(u64, framed[24..32], makeListPointer(0, 6, 1), .little);
+    std.mem.writeInt(u64, framed[32..40], makeFarPointer(true, 0, 1), .little);
+    std.mem.writeInt(u64, framed[40..48], makeFarPointer(false, 0, 2), .little);
+    std.mem.writeInt(u64, framed[48..56], makeListPointer(0, 7, 1), .little);
+    std.mem.writeInt(u64, framed[56..64], makeStructPointer(-1, 1, 0), .little);
+
+    var msg = try message.Message.initUnvalidated(testing.allocator, &framed);
+    defer msg.deinit();
+    const outer = try (try msg.getRootStruct()).readPointerList(0);
+    try testing.expectError(error.InvalidInlineCompositePointer, outer.getVoidList(0));
 }
 
 test "list upgrade: any element size reads as List(Void)" {

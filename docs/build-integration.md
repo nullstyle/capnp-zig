@@ -10,6 +10,13 @@ This is a canonical `build.zig` wiring pattern for:
 - `capnp` installed.
 - `capnpc-zig` installed on `PATH` (for example: `just install-path` in this repo).
 
+On Windows, the upstream prebuilt compiler archive contains `capnp.exe` but not
+the standard schema tree. If your schema imports `/capnp/*.capnp`, install or
+check out that tree too and pass it to `capnp` with `-I<path-to-capnproto>/c++/src`.
+The capnpc-zig repository's own tests use the vendored upstream tree at
+`vendor/ext/capnproto/c++/src`; that development dependency is intentionally
+not part of the filtered consumer package.
+
 ## Add `capnpc-zig` as a dependency
 
 Fetch a tagged release into your `build.zig.zon` (`zig fetch --save` computes
@@ -96,6 +103,30 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 }
 ```
+
+## Package integrity preflight (maintainers)
+
+`zig build package-preflight --summary all` (or `just package-preflight`)
+tests what the manifest actually exposes, without publishing anything. It:
+
+- snapshots tracked and non-ignored untracked source into an isolated workspace;
+- lets Zig apply `build.zig.zon`'s `.paths` filter, rejects material content
+  outside the five allowed roots (`build.zig`, `build.zig.zon`, `src`,
+  `README.md`, and `LICENSE`), removes only the empty excluded parent
+  directories Zig's local fetch leaves behind, then archives and re-fetches
+  that exact surface instead of using a path dependency;
+- builds and runs clean-room default, core, and opt-in QUIC consumers in Debug
+  and ReleaseSafe with isolated local/global caches;
+- proves default/core consumers do not fetch the lazy QUIC dependency and the
+  QUIC consumer does;
+- builds the packaged compiler plugin, runs it on a checked schema, and compares
+  normalized output with the checked-in generated artifact; and
+- verifies the checkout status is byte-for-byte unchanged before returning.
+
+The gate requires `git`, `tar`, Zig, and `capnp`. For a local environment that
+cannot fetch/build QUIC, pass `-- --skip-quic`; the full CI gate does not skip
+it. `-- --keep-temp` retains the otherwise deleted isolated workspace for
+diagnosis.
 
 ## Notes
 

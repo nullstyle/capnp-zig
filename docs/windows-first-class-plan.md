@@ -8,6 +8,16 @@ session; this document is the source of truth for progress.
 
 Progress notes:
 
+- Codegen parity follow-up (2026-08-10): the Windows CI job installs the
+  checksum-pinned upstream `capnp.exe` archive and now runs the same native
+  `capnp`-driven serialization/codegen tests as Linux and macOS. Because that
+  archive omits the standard schema tree, every test invocation goes through
+  `tests/serialization/support/capnp_cli.zig`, which injects the vendored
+  `-Ivendor/ext/capnproto/c++/src` for `compile`, `convert`, and `eval`.
+  CI verifies `capnp --version` before tests, preventing missing-tool skips from
+  masquerading as coverage. The live matrix in `docs/stability.md` therefore
+  records Windows codegen as full, not partial.
+
 - Phase 3 (2026-06-12): the Justfile pins `windows-shell` to `sh` (Git
   Bash) so every recipe works unchanged on Windows; the benchmarks use
   the Io-backed monotonic clock (no libc dependency) and cross-compile

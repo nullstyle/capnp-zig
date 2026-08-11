@@ -12,6 +12,11 @@ const protocol = @import("../wire/protocol.zig");
 /// the full RPC dispatch implementation.
 pub const PeerLimits = struct {
     max_outbound_questions: usize = 4096,
+    /// Completed retained answers keep remote question state open until an
+    /// explicit Finish or ownership transfer. Bound them independently from
+    /// in-flight outbound questions so a caller cannot accumulate them after
+    /// their callbacks have run.
+    max_retained_questions: usize = 1024,
     max_active_inbound_questions: usize = 4096,
     max_resolved_answers: usize = 4096,
     max_pending_promises: usize = 4096,
@@ -170,6 +175,11 @@ pub fn Question(comptime QuestionCallbackType: type) type {
         /// an exception and a Finish has been sent; the entry stays in the
         /// table only to absorb the remote's guaranteed Return silently.
         cancelled: bool = false,
+        /// A protocol lifecycle has ended locally and requested a wire Finish,
+        /// but the transport rejected the last send. Maintenance retries the
+        /// Finish before removing this question, so ownership is never lost.
+        finish_on_maintenance: bool = false,
+        finish_release_result_caps: bool = false,
         /// When this outbound Call targeted an UNRESOLVED promise import, this
         /// records that promise import id. Used by the Level-3 recipient
         /// auto-pickup (`tryAutoPickupThirdParty`) to detect whether a

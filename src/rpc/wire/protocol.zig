@@ -1172,6 +1172,33 @@ pub const MessageBuilder = struct {
         }
     }
 
+    /// Build a Provide whose target is an outbound question owned by the
+    /// sender. Unlike `buildProvide`, this accepts transform operations as an
+    /// owned slice instead of requiring a frame-backed `PromisedAnswer`
+    /// reader, which lets callers retain an answer and later originate the
+    /// handoff without manufacturing an intermediate wire message.
+    pub fn buildProvidePromisedAnswerWithOps(
+        self: *MessageBuilder,
+        question_id: u32,
+        target_question_id: u32,
+        ops: []const PromisedAnswerOp,
+        recipient: ?message.AnyPointerReader,
+    ) !void {
+        var root_builder = try rpc_capnp.Message.Builder.init(&self.builder);
+        var provide_builder = try root_builder.initProvide();
+        try provide_builder.setQuestionId(question_id);
+        var target_builder = try provide_builder.initTarget();
+        var promised_builder = try target_builder.initPromisedAnswer();
+        try writePromisedAnswerOpsGenerated(&promised_builder, target_question_id, ops);
+
+        if (recipient) |recipient_ptr| {
+            const recipient_any = try provide_builder.initRecipient();
+            try message.cloneAnyPointer(recipient_ptr, recipient_any);
+        } else {
+            try provide_builder.setRecipientNull();
+        }
+    }
+
     pub fn buildAccept(
         self: *MessageBuilder,
         question_id: u32,

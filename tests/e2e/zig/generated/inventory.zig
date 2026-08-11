@@ -295,6 +295,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -338,6 +344,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -445,6 +452,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -488,6 +501,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -595,6 +609,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -638,6 +658,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -745,6 +766,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -788,6 +815,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -895,6 +923,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -938,6 +972,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -1045,6 +1080,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -1088,6 +1129,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -1195,6 +1237,12 @@ pub const TradeSession = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -1238,6 +1286,7 @@ pub const TradeSession = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -1310,64 +1359,127 @@ pub const TradeSession = struct {
         }
 
         pub fn callOfferItems(self: Client, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback) !u32 {
+            return self.callOfferItemsWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callOfferItemsWithOptions(self: Client, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, OfferItems.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callRemoveItems(self: Client, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback) !u32 {
+            return self.callRemoveItemsWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callRemoveItemsWithOptions(self: Client, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, RemoveItems.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callAccept(self: Client, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback) !u32 {
+            return self.callAcceptWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callAcceptWithOptions(self: Client, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(Accept.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, Accept.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callConfirm(self: Client, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback) !u32 {
+            return self.callConfirmWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callConfirmWithOptions(self: Client, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, Confirm.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callCancel(self: Client, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback) !u32 {
+            return self.callCancelWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callCancelWithOptions(self: Client, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, Cancel.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callViewOtherOffer(self: Client, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback) !u32 {
+            return self.callViewOtherOfferWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callViewOtherOfferWithOptions(self: Client, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, ViewOtherOffer.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callGetState(self: Client, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback) !u32 {
+            return self.callGetStateWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callGetStateWithOptions(self: Client, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(GetState.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, GetState.CallContext.deinitCtx);
             return question_id;
         }
@@ -1384,64 +1496,127 @@ pub const TradeSession = struct {
         pointer_index: u16,
 
         pub fn callOfferItems(self: PipelinedClient, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback) !u32 {
+            return self.callOfferItemsWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callOfferItemsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?OfferItems.BuildFn, on_return: OfferItems.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(OfferItems.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, OfferItems.ordinal, ctx, OfferItems.callBuild, OfferItems.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, OfferItems.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callRemoveItems(self: PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback) !u32 {
+            return self.callRemoveItemsWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callRemoveItemsWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItems.BuildFn, on_return: RemoveItems.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItems.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItems.ordinal, ctx, RemoveItems.callBuild, RemoveItems.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, RemoveItems.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callAccept(self: PipelinedClient, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback) !u32 {
+            return self.callAcceptWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callAcceptWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Accept.BuildFn, on_return: Accept.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(Accept.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Accept.ordinal, ctx, Accept.callBuild, Accept.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, Accept.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callConfirm(self: PipelinedClient, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback) !u32 {
+            return self.callConfirmWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callConfirmWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Confirm.BuildFn, on_return: Confirm.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(Confirm.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Confirm.ordinal, ctx, Confirm.callBuild, Confirm.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, Confirm.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callCancel(self: PipelinedClient, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback) !u32 {
+            return self.callCancelWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callCancelWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?Cancel.BuildFn, on_return: Cancel.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(Cancel.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, Cancel.ordinal, ctx, Cancel.callBuild, Cancel.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, Cancel.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callViewOtherOffer(self: PipelinedClient, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback) !u32 {
+            return self.callViewOtherOfferWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callViewOtherOfferWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?ViewOtherOffer.BuildFn, on_return: ViewOtherOffer.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(ViewOtherOffer.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, ViewOtherOffer.ordinal, ctx, ViewOtherOffer.callBuild, ViewOtherOffer.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, ViewOtherOffer.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callGetState(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback) !u32 {
+            return self.callGetStateWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callGetStateWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetState.BuildFn, on_return: GetState.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(GetState.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetState.ordinal, ctx, GetState.callBuild, GetState.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, GetState.CallContext.deinitCtx);
             return question_id;
         }
@@ -2397,6 +2572,12 @@ pub const InventoryService = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -2440,6 +2621,7 @@ pub const InventoryService = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -2547,6 +2729,12 @@ pub const InventoryService = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -2590,6 +2778,7 @@ pub const InventoryService = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -2697,6 +2886,12 @@ pub const InventoryService = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -2740,6 +2935,7 @@ pub const InventoryService = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -2847,6 +3043,12 @@ pub const InventoryService = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -2890,6 +3092,7 @@ pub const InventoryService = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -2997,6 +3200,12 @@ pub const InventoryService = struct {
             build: ?BuildFn,
             callback: Callback,
 
+            // While a generated send is still on the caller's stack, this
+            // points at its ownership flag. A synchronous Return marks the
+            // context settled before freeing it; an asynchronous send clears
+            // the pointer before returning to the user.
+            settled_flag: ?*bool = null,
+
             // Frees the heap ctx if the question is still outstanding at
             // Peer.deinit (the normal return path frees it in callReturn).
             fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
@@ -3040,6 +3249,7 @@ pub const InventoryService = struct {
 
         fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {
             const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));
+            if (ctx.settled_flag) |flag| flag.* = true;
             defer peer.allocator.destroy(ctx);
             var response: Response = undefined;
             switch (ret.tag) {
@@ -3112,52 +3322,101 @@ pub const InventoryService = struct {
         }
 
         pub fn callGetInventory(self: Client, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback) !u32 {
+            return self.callGetInventoryWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callGetInventoryWithOptions(self: Client, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, GetInventory.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callAddItem(self: Client, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback) !u32 {
+            return self.callAddItemWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callAddItemWithOptions(self: Client, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, AddItem.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callRemoveItem(self: Client, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback) !u32 {
+            return self.callRemoveItemWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callRemoveItemWithOptions(self: Client, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, RemoveItem.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callStartTrade(self: Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !u32 {
+            return self.callStartTradeWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callStartTradeWithOptions(self: Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, StartTrade.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callFilterByRarity(self: Client, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback) !u32 {
+            return self.callFilterByRarityWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callFilterByRarityWithOptions(self: Client, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCall(self.cap_id, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, FilterByRarity.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callStartTradePipelined(self: Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !StartTradePipeline {
-            const qid = try self.callStartTrade(user_ctx, build, on_return);
+            return self.callStartTradePipelinedWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callStartTradePipelinedWithOptions(self: Client, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback, options: rpc.peer.CallOptions) !StartTradePipeline {
+            const qid = try self.callStartTradeWithOptions(user_ctx, build, on_return, options);
             return .{ .peer = self.peer, .question_id = qid };
         }
 
@@ -3183,46 +3442,91 @@ pub const InventoryService = struct {
         pointer_index: u16,
 
         pub fn callGetInventory(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback) !u32 {
+            return self.callGetInventoryWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callGetInventoryWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?GetInventory.BuildFn, on_return: GetInventory.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(GetInventory.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, GetInventory.ordinal, ctx, GetInventory.callBuild, GetInventory.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, GetInventory.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callAddItem(self: PipelinedClient, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback) !u32 {
+            return self.callAddItemWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callAddItemWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?AddItem.BuildFn, on_return: AddItem.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(AddItem.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, AddItem.ordinal, ctx, AddItem.callBuild, AddItem.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, AddItem.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callRemoveItem(self: PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback) !u32 {
+            return self.callRemoveItemWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callRemoveItemWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?RemoveItem.BuildFn, on_return: RemoveItem.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(RemoveItem.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, RemoveItem.ordinal, ctx, RemoveItem.callBuild, RemoveItem.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, RemoveItem.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callStartTrade(self: PipelinedClient, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback) !u32 {
+            return self.callStartTradeWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callStartTradeWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?StartTrade.BuildFn, on_return: StartTrade.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(StartTrade.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, StartTrade.ordinal, ctx, StartTrade.callBuild, StartTrade.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, StartTrade.CallContext.deinitCtx);
             return question_id;
         }
 
         pub fn callFilterByRarity(self: PipelinedClient, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback) !u32 {
+            return self.callFilterByRarityWithOptions(user_ctx, build, on_return, .{});
+        }
+
+        pub fn callFilterByRarityWithOptions(self: PipelinedClient, user_ctx: *anyopaque, build: ?FilterByRarity.BuildFn, on_return: FilterByRarity.Callback, options: rpc.peer.CallOptions) !u32 {
             const ctx = try self.peer.allocator.create(FilterByRarity.CallContext);
-            errdefer self.peer.allocator.destroy(ctx);
-            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };
-            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn);
+            var settled = false;
+            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };
+            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{.{ .tag = .getPointerField, .pointer_index = self.pointer_index }}, interface_id, FilterByRarity.ordinal, ctx, FilterByRarity.callBuild, FilterByRarity.callReturn, options) catch |err| {
+                if (!settled) self.peer.allocator.destroy(ctx);
+                return err;
+            };
+            if (settled) return question_id;
+            ctx.settled_flag = null;
             self.peer.setQuestionDeinitCtx(question_id, FilterByRarity.CallContext.deinitCtx);
             return question_id;
         }

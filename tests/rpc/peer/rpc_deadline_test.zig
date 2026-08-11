@@ -135,6 +135,278 @@ fn buildRemoteExceptionReturn(allocator: std.mem.Allocator, answer_id: u32) ![]c
     return builder.finish();
 }
 
+fn buildRemoteExceptionReturnNoFinish(allocator: std.mem.Allocator, answer_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var ret = try builder.beginReturn(answer_id, .exception);
+    try ret.setException("remote says no");
+    ret.setNoFinishNeeded(true);
+    return builder.finish();
+}
+
+test "retained call withholds Finish until explicit retry-safe completion" {
+    const allocator = std.testing.allocator;
+
+    var fake = FakeTransport{};
+    var recorder = ReturnRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    fake.attach(&peer);
+
+    const question_id = try peer.sendCallWithOptions(
+        77,
+        0x1234,
+        5,
+        &recorder,
+        null,
+        ReturnRecorder.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 1), fake.send_count);
+    try std.testing.expectError(
+        error.RetainedQuestionPending,
+        peer.finishRetainedQuestion(question_id, false),
+    );
+
+    const ret_frame = try buildRemoteExceptionReturn(allocator, question_id);
+    defer allocator.free(ret_frame);
+    try peer.handleFrame(ret_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.return_count);
+    try std.testing.expectEqual(@as(u32, 0), peer.questions.count());
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+    // The Return itself did not trigger automatic Finish.
+    try std.testing.expectEqual(@as(usize, 1), fake.send_count);
+
+    // A failed control send leaves the retained answer retryable.
+    fake.fail_sends_with = error.TestFinishSendFailed;
+    try std.testing.expectError(
+        error.TestFinishSendFailed,
+        peer.finishRetainedQuestion(question_id, false),
+    );
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+
+    fake.fail_sends_with = null;
+    try peer.finishRetainedQuestion(question_id, false);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 2), fake.send_count);
+    try std.testing.expectError(
+        error.UnknownRetainedQuestion,
+        peer.finishRetainedQuestion(question_id, false),
+    );
+}
+
+test "retained noFinishNeeded result retires without a Finish" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var recorder = ReturnRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    const question_id = try peer.sendCallWithOptions(
+        88,
+        0x5678,
+        3,
+        &recorder,
+        null,
+        ReturnRecorder.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    const ret_frame = try buildRemoteExceptionReturnNoFinish(allocator, question_id);
+    defer allocator.free(ret_frame);
+    try peer.handleFrame(ret_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), recorder.return_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+    try std.testing.expectError(
+        error.UnknownRetainedQuestion,
+        peer.finishRetainedQuestion(question_id, false),
+    );
+}
+
+test "retained Finish forwards releaseResultCaps" {
+    const allocator = std.testing.allocator;
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var recorder = ReturnRecorder{};
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    const question_id = try peer.sendCallWithOptions(
+        91,
+        0xABCD,
+        4,
+        &recorder,
+        null,
+        ReturnRecorder.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    const ret_frame = try buildRemoteExceptionReturn(allocator, question_id);
+    defer allocator.free(ret_frame);
+    try peer.handleFrame(ret_frame);
+    try peer.finishRetainedQuestion(question_id, true);
+
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    const finish = try capture.decodeFinish(1);
+    try std.testing.expectEqual(question_id, finish.question_id);
+    try std.testing.expect(finish.release_result_caps);
+}
+
+test "retained question limit, pressure, cancel, and close refund gauges" {
+    const allocator = std.testing.allocator;
+
+    const RetainedEvents = struct {
+        pressure: usize = 0,
+        rejection: usize = 0,
+
+        fn onEvent(ctx_ptr: *anyopaque, event: events.Event) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            switch (event) {
+                .pressure => |pressure| {
+                    if (pressure.resource == .retained_questions) self.pressure += 1;
+                },
+                .resource_rejection => |rejection| {
+                    if (rejection.resource == .retained_questions) self.rejection += 1;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var capture = Capture{ .allocator = allocator, .frames = .empty };
+    defer capture.deinit();
+    var recorder = ReturnRecorder{};
+    var retained_events = RetainedEvents{};
+
+    var peer = Peer.initDetachedWithLimits(allocator, .{ .max_retained_questions = 1 });
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+    peer.setObserver(events.Observer.init(&retained_events, RetainedEvents.onEvent));
+
+    const question_id = try peer.sendCallWithOptions(
+        1,
+        2,
+        3,
+        &recorder,
+        null,
+        ReturnRecorder.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    try std.testing.expectEqual(@as(usize, 1), retained_events.pressure);
+    try std.testing.expectError(
+        error.PeerLimitExceeded,
+        peer.sendCallWithOptions(
+            2,
+            2,
+            3,
+            &recorder,
+            null,
+            ReturnRecorder.onReturn,
+            .{ .result_lifetime = .retained },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), retained_events.rejection);
+
+    try peer.cancelQuestion(question_id, "cancel retained");
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+
+    _ = try peer.sendCallWithOptions(
+        3,
+        2,
+        3,
+        &recorder,
+        null,
+        ReturnRecorder.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    peer.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    peer.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+}
+
+test "retained registration precedes synchronous Return and survives trailing send error" {
+    const allocator = std.testing.allocator;
+
+    const SyncTransport = struct {
+        allocator: std.mem.Allocator,
+        peer: *Peer = undefined,
+        callback_count: usize = 0,
+        finish_count: usize = 0,
+        callback_question_id: ?u32 = null,
+        fail_after_return: bool = true,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            switch (decoded.tag) {
+                .call => {
+                    const call = try decoded.asCall();
+                    const ret_frame = try buildRemoteExceptionReturn(self.allocator, call.question_id);
+                    defer self.allocator.free(ret_frame);
+                    try self.peer.handleFrame(ret_frame);
+                    if (self.fail_after_return) return error.TestTrailingSendError;
+                },
+                .finish => self.finish_count += 1,
+                else => {},
+            }
+        }
+
+        fn onReturn(
+            ctx_ptr: *anyopaque,
+            peer: *Peer,
+            ret: protocol.Return,
+            inbound_caps: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            _ = peer;
+            _ = inbound_caps;
+            const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+            self.callback_count += 1;
+            self.callback_question_id = ret.answer_id;
+            // The retained entry must already be callback-visible.
+            try std.testing.expectEqual(@as(usize, 1), self.peer.stats().retained_questions);
+        }
+    };
+
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    var sync = SyncTransport{ .allocator = allocator };
+    sync.peer = &peer;
+    peer.setSendFrameOverride(&sync, SyncTransport.onFrame);
+
+    try std.testing.expectError(
+        error.TestTrailingSendError,
+        peer.sendCallWithOptions(
+            55,
+            0x9999,
+            1,
+            &sync,
+            null,
+            SyncTransport.onReturn,
+            .{ .result_lifetime = .retained },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), sync.callback_count);
+    const question_id = sync.callback_question_id orelse return error.MissingQuestionId;
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+
+    sync.fail_after_return = false;
+    try peer.finishRetainedQuestion(question_id, false);
+    try std.testing.expectEqual(@as(usize, 1), sync.finish_count);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+}
+
 test "deadline expiry cancels question, sends Finish, delivers exception" {
     const allocator = std.testing.allocator;
 

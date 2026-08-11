@@ -125,22 +125,6 @@ pub fn build(b: *std.Build) !void {
     ) orelse false;
     const lib_root = if (enable_quic) "src/lib_quic.zig" else "src/lib.zig";
 
-    // Keep the normal module graph free of quic-zig/BoringSSL. The dependency
-    // is declared lazy in build.zig.zon so non-QUIC builds neither fetch it
-    // nor compile its build.zig; it is only resolved when callers explicitly
-    // request the QUIC transport surface.
-    // `dependencyLazy` (not the deprecated `lazyDependency`): when the package
-    // is not yet fetched this returns `error.LazyDependencyNeeded`, which MUST
-    // propagate out of `build` so the toolchain fetches and re-runs. Swallowing
-    // it is what made every QUIC gate a silent no-op.
-    const quic_zig_module: ?*std.Build.Module = if (enable_quic)
-        (try b.dependencyLazy("quic_zig", .{
-            .target = target,
-            .optimize = optimize,
-        })).module("quic_zig")
-    else
-        null;
-
     // Selects which std.Io backend RPC entry points should construct. See
     // src/io_backend.zig for the full list of accepted spellings; the
     // default `process_init` reuses the std.Io that std.process.Init
@@ -164,7 +148,6 @@ pub fn build(b: *std.Build) !void {
         .imports = &.{},
     });
     lib_module.addImport("capnpc-zig", lib_module);
-    addQuicImport(lib_module, quic_zig_module);
 
     const core_module = b.addModule("capnpc-zig-core", .{
         .root_source_file = b.path("src/lib_core.zig"),
@@ -172,6 +155,25 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     core_module.addImport("capnpc-zig", core_module);
+
+    // Register the package's public modules before resolving the optional lazy
+    // dependency. When this project is itself a child dependency, Zig catches
+    // `LazyDependencyNeeded` and exposes the partial child builder to the
+    // consumer during its fetch/reconfigure pass. If dependency resolution
+    // happens first, that partial builder contains no `capnpc-zig` module and a
+    // clean opt-in QUIC consumer panics before Zig can fetch and retry.
+    //
+    // Keep the normal module graph free of quic-zig/BoringSSL. The dependency
+    // is declared lazy in build.zig.zon so non-QUIC builds neither fetch it nor
+    // compile its build.zig; it is resolved only for `.quic = true` consumers.
+    const quic_zig_module: ?*std.Build.Module = if (enable_quic)
+        (try b.dependencyLazy("quic_zig", .{
+            .target = target,
+            .optimize = optimize,
+        })).module("quic_zig")
+    else
+        null;
+    addQuicImport(lib_module, quic_zig_module);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -380,6 +382,20 @@ pub fn build(b: *std.Build) !void {
     const run_hardening_gate = b.addRunArtifact(hardening_gate);
     const hardening_step = b.step("hardening", "Run static hardening gates");
     hardening_step.dependOn(&run_hardening_gate.step);
+
+    const package_preflight = b.addExecutable(.{
+        .name = "package-preflight",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/package_preflight.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_package_preflight = b.addRunArtifact(package_preflight);
+    run_package_preflight.setCwd(b.path("."));
+    run_package_preflight.addPassthruArgs();
+    const package_preflight_step = b.step("package-preflight", "Validate the filtered package with clean-room consumers");
+    package_preflight_step.dependOn(&run_package_preflight.step);
 
     const docs_examples_smoke = b.addExecutable(.{
         .name = "docs-examples-smoke",
@@ -719,6 +735,7 @@ pub fn build(b: *std.Build) !void {
     const run_codegen_rpc_nested_tests = addLibTest(b, "tests/serialization/codegen_rpc_nested_test.zig", target, optimize, lib_module);
     const run_codegen_streaming_tests = addLibTest(b, "tests/serialization/codegen_streaming_test.zig", target, optimize, lib_module);
     const run_codegen_generated_runtime_tests = addLibTest(b, "tests/serialization/codegen_generated_runtime_test.zig", target, optimize, lib_module);
+    const run_nested_lists_runtime_tests = addLibTest(b, "tests/serialization/nested_lists_runtime_test.zig", target, optimize, lib_module);
     // These bindings are checked in so schema-evolution behavior runs as an
     // ordinary test on every platform, including Windows workers without the
     // `capnp` executable. The V1 and V2 modules use identical schema/type IDs
@@ -980,6 +997,7 @@ pub fn build(b: *std.Build) !void {
     test_codegen_step.dependOn(run_codegen_rpc_nested_tests);
     test_codegen_step.dependOn(run_codegen_streaming_tests);
     test_codegen_step.dependOn(run_codegen_generated_runtime_tests);
+    test_codegen_step.dependOn(run_nested_lists_runtime_tests);
     test_codegen_step.dependOn(run_schema_evolution_api_tests);
     test_codegen_step.dependOn(run_codegen_union_group_tests);
     test_codegen_step.dependOn(run_codegen_golden_tests);
@@ -1024,6 +1042,7 @@ pub fn build(b: *std.Build) !void {
     test_serialization_step.dependOn(run_codegen_rpc_nested_tests);
     test_serialization_step.dependOn(run_codegen_streaming_tests);
     test_serialization_step.dependOn(run_codegen_generated_runtime_tests);
+    test_serialization_step.dependOn(run_nested_lists_runtime_tests);
     test_serialization_step.dependOn(run_schema_evolution_api_tests);
     test_serialization_step.dependOn(run_integration_tests);
     test_serialization_step.dependOn(run_interop_tests);
@@ -1182,6 +1201,7 @@ pub fn build(b: *std.Build) !void {
     const run_release_safe_fuzz_smoke_tests = addLibTest(b, "tests/hardening/fuzz_smoke_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_codegen_tests = addLibTest(b, "tests/serialization/codegen_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_codegen_defaults_tests = addLibTest(b, "tests/serialization/codegen_defaults_test.zig", target, release_safe_optimize, release_safe_lib_module);
+    const run_release_safe_nested_lists_runtime_tests = addLibTest(b, "tests/serialization/nested_lists_runtime_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_schema_validation_tests = addLibTest(b, "tests/serialization/schema_validation_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_canonical_tests = addLibTest(b, "tests/serialization/canonical_test.zig", target, release_safe_optimize, release_safe_lib_module);
     const run_release_safe_rpc_framing_tests = addLibTest(b, "tests/rpc/wire/rpc_framing_test.zig", target, release_safe_optimize, release_safe_lib_module);
@@ -1204,6 +1224,7 @@ pub fn build(b: *std.Build) !void {
     test_release_safe_step.dependOn(run_release_safe_fuzz_smoke_tests);
     test_release_safe_step.dependOn(run_release_safe_codegen_tests);
     test_release_safe_step.dependOn(run_release_safe_codegen_defaults_tests);
+    test_release_safe_step.dependOn(run_release_safe_nested_lists_runtime_tests);
     test_release_safe_step.dependOn(run_release_safe_schema_validation_tests);
     test_release_safe_step.dependOn(run_release_safe_canonical_tests);
     test_release_safe_step.dependOn(run_release_safe_rpc_framing_tests);

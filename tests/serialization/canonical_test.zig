@@ -18,6 +18,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const compare = @import("support/capnp_compare.zig");
+const capnp_cli = @import("support/capnp_cli.zig");
 
 const message = capnpc.message;
 const canonical = capnpc.canonical;
@@ -39,7 +40,6 @@ fn capnpConvert(
     const io = std.testing.io;
     var argv_buf: [16][]const u8 = undefined;
     const base = [_][]const u8{
-        "capnp",
         "convert",
         conversion,
         "--no-standard-import",
@@ -59,17 +59,11 @@ fn capnpConvert(
     argv_buf[argc] = type_name;
     argc += 1;
 
-    var child = std.process.spawn(io, .{
-        .argv = argv_buf[0..argc],
+    var child = try capnp_cli.spawn(allocator, io, argv_buf[0..argc], .{
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .pipe,
-    }) catch |err| {
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
+    });
 
     try child.stdin.?.writeStreamingAll(io, input);
     child.stdin.?.close(io);

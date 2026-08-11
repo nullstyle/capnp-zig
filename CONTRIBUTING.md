@@ -48,9 +48,15 @@ Windows is a first-class development OS (see the
 - **Shell**: install Git for Windows. `just` recipes assume a POSIX
   `sh`, which Git Bash provides (the Justfile pins `windows-shell` to
   it). Run `just` from Git Bash or any shell with `sh` on `PATH`.
+- **Cap'n Proto compiler**: put `capnp.exe` on `PATH` to run the complete
+  serialization/codegen suite. The verified upstream archive contains the
+  executable but omits the standard schemas; repository tests automatically
+  add `-Ivendor/ext/capnproto/c++/src`, so initialize submodules and do not copy
+  a separate schema tree into the install directory.
 - **Line endings**: nothing to configure — `.gitattributes` forces LF
   for text and protects binary fixtures regardless of `core.autocrlf`.
-- **Everything except the docker e2e runs natively**: `just test`,
+- **Everything except the docker e2e runs natively**: `just test` (including
+  the `capnp`-driven codegen/interop suites),
   `just e2e-self`, `just hardening`, `zig build check-api`,
   `zig build soak -- --seconds 5`.
 - **Cross-language e2e**: needs Linux reference containers — install

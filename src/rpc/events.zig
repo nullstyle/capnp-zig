@@ -69,6 +69,8 @@ pub const Resource = enum {
     host_call_bytes,
     peer_state,
     outbound_questions,
+    /// Caller-owned outbound answers deliberately kept open after Return.
+    retained_questions,
     active_inbound_questions,
     queued_calls,
     queued_call_bytes,

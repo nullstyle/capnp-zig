@@ -134,6 +134,19 @@ fn shouldRestoreQuestionOnReturnError(comptime QuestionType: type, question: Que
     return true;
 }
 
+fn keepsRetainedAnswerOnReturnError(comptime QuestionType: type, question: QuestionType) bool {
+    if (@hasField(QuestionType, "suppress_auto_finish") and
+        @hasField(QuestionType, "restore_on_return_error"))
+    {
+        // Retained calls are the only outbound questions that combine an open
+        // remote answer with at-most-once callback delivery. Reporting their
+        // callback/cleanup error non-fatally lets the originating send still
+        // return the question id required for explicit Finish.
+        return question.suppress_auto_finish and !question.restore_on_return_error;
+    }
+    return false;
+}
+
 pub fn handleMissingReturnQuestionForPeer(
     comptime PeerType: type,
     peer: *PeerType,
@@ -180,18 +193,26 @@ pub fn handleReturnRegular(
     if (take_adopted_answer_original(peer, ret.answer_id)) |original_answer_id| {
         callback_ret.answer_id = original_answer_id;
         adopted_original_answer_id = original_answer_id;
-        restore_adopted_answer = true;
+        // Keep the adopted-answer alias in lockstep with the Question itself.
+        // Generated/retained calls deliberately disable Return-error restore;
+        // restoring only this alias would leak the adopted id after the
+        // Question has been retired and block its reuse indefinitely.
+        restore_adopted_answer = shouldRestoreQuestionOnReturnError(QuestionType, question);
     }
     errdefer if (restore_adopted_answer) {
         restore_adopted_answer_original(peer, ret.answer_id, adopted_original_answer_id);
     };
 
-    try dispatch_question_return(peer, question, callback_ret, inbound_caps);
+    const keep_retained_answer = keepsRetainedAnswerOnReturnError(QuestionType, question);
+    dispatch_question_return(peer, question, callback_ret, inbound_caps) catch |err| {
+        if (!keep_retained_answer) return err;
+        report_nonfatal_error(peer, err);
+    };
     restore_adopted_answer = false;
 
     if (ret.tag == .results and ret.results != null) {
         release_inbound_caps(peer, inbound_caps) catch |err| {
-            if (err == error.OutOfMemory) return error.OutOfMemory;
+            if (err == error.OutOfMemory and !keep_retained_answer) return error.OutOfMemory;
             report_nonfatal_error(peer, err);
         };
     }
@@ -304,7 +325,15 @@ pub fn handleReturn(
         );
         restore_question = false;
         defer complete_question_removal(peer);
-        try maybe_send_auto_finish(peer, question, ret.answer_id, ret.no_finish_needed);
+        // awaitFromThirdParty closes the caller-chosen intermediate answer even
+        // when the eventual adopted answer uses an explicitly retained result
+        // lifetime. Retention applies to the callee-chosen adopted answer, not
+        // to this forwarding-only wire identity.
+        var await_question = question;
+        if (comptime @hasField(QuestionType, "suppress_auto_finish")) {
+            await_question.suppress_auto_finish = false;
+        }
+        try maybe_send_auto_finish(peer, await_question, ret.answer_id, ret.no_finish_needed);
         return;
     }
 

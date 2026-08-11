@@ -215,6 +215,13 @@ pub const StructGenerator = struct {
             "                    ",
             writer,
         );
+        try self.generateNestedListsReaderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
         if (group_struct_info.discriminant_count > 0) {
             const disc_byte_offset = try discriminantByteOffset(group_struct_info.discriminant_offset);
             try writer.writeAll("            pub fn whichOrdinal(self: @This()) u16 {\n");
@@ -236,6 +243,13 @@ pub const StructGenerator = struct {
         // Generate group Builder
         try self.writeGroupWrapStruct(writer, "Builder", "_builder", "message.StructBuilder", "builder");
         try self.generateEnumOrdinalsBuilderView(
+            group_struct_info,
+            "            ",
+            "                ",
+            "                    ",
+            writer,
+        );
+        try self.generateNestedListsBuilderView(
             group_struct_info,
             "            ",
             "                ",
@@ -423,6 +437,273 @@ pub const StructGenerator = struct {
             if (slot.type == .@"enum") return true;
         }
         return false;
+    }
+
+    fn hasDirectNestedListSlot(struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .list) continue;
+            if (slot.type.list.element_type.* == .list) return true;
+        }
+        return false;
+    }
+
+    fn isNestedListSlot(field: schema.Field) bool {
+        const slot = field.slot orelse return false;
+        return slot.type == .list and slot.type.list.element_type.* == .list;
+    }
+
+    fn isUnknownStructTerminalList(self: *StructGenerator, list_type: schema.Type) bool {
+        if (list_type != .list) return false;
+        const element_type = list_type.list.element_type.*;
+        if (element_type != .@"struct") return false;
+        const info = element_type.@"struct";
+        const node = self.getNode(info.type_id) orelse return true;
+        return node.kind != .@"struct" or self.structLayout(info.type_id) == null;
+    }
+
+    fn writeScalarListCodec(kind: schema.Type, writer: anytype) !void {
+        const name: []const u8 = switch (kind) {
+            .void => "void",
+            .bool => "bool",
+            .int8 => "int8",
+            .uint8 => "uint8",
+            .int16 => "int16",
+            .uint16 => "uint16",
+            .int32 => "int32",
+            .uint32 => "uint32",
+            .float32 => "float32",
+            .int64 => "int64",
+            .uint64 => "uint64",
+            .float64 => "float64",
+            .text => "text",
+            else => return error.InvalidStructNode,
+        };
+        try writer.print("message.typed_list_helpers.ScalarListCodec(.{s})", .{name});
+    }
+
+    fn writeNestedBaseCodec(self: *StructGenerator, element_type: schema.Type, writer: anytype) !void {
+        switch (element_type) {
+            .void,
+            .bool,
+            .int8,
+            .uint8,
+            .int16,
+            .uint16,
+            .int32,
+            .uint32,
+            .float32,
+            .int64,
+            .uint64,
+            .float64,
+            .text,
+            => try writeScalarListCodec(element_type, writer),
+            .data => try writer.writeAll("message.typed_list_helpers.DataListCodec"),
+            .interface => try writer.writeAll("message.typed_list_helpers.CapabilityListCodec"),
+            .any_pointer => try writer.writeAll("message.typed_list_helpers.RawPointerListCodec"),
+            .@"enum" => |enum_info| {
+                if (try self.enumTypeName(enum_info.type_id)) |name| {
+                    defer self.allocator.free(name);
+                    try writer.print("message.typed_list_helpers.EnumListCodec({s})", .{name});
+                } else {
+                    try writer.writeAll("message.typed_list_helpers.ScalarListCodec(.uint16)");
+                }
+            },
+            .@"struct" => |struct_info| {
+                const struct_name = try self.structTypeName(struct_info.type_id);
+                defer if (struct_name) |name| self.allocator.free(name);
+                if (struct_name) |name| {
+                    if (self.structLayout(struct_info.type_id)) |layout| {
+                        try writer.print(
+                            "message.typed_list_helpers.StructListCodec({s}, {}, {})",
+                            .{ name, layout.data_words, layout.pointer_words },
+                        );
+                        return;
+                    }
+                }
+                try writer.writeAll("message.typed_list_helpers.RawStructListReaderCodec");
+            },
+            else => try writer.writeAll("message.typed_list_helpers.RawPointerListCodec"),
+        }
+    }
+
+    /// Write the codec for a list value nested inside another list. `list_type`
+    /// is always the schema type of that inner list.
+    fn writeNestedReaderCodec(self: *StructGenerator, list_type: schema.Type, writer: anytype) !void {
+        if (list_type != .list) return error.InvalidStructNode;
+        const element_type = list_type.list.element_type.*;
+        if (element_type != .list) return self.writeNestedBaseCodec(element_type, writer);
+
+        try writer.writeAll("message.typed_list_helpers.NestedReaderCodec(");
+        try self.writeNestedReaderCodec(element_type, writer);
+        try writer.writeAll(")");
+    }
+
+    fn writeNestedBuilderCodec(self: *StructGenerator, list_type: schema.Type, writer: anytype) !void {
+        if (list_type != .list) return error.InvalidStructNode;
+        const element_type = list_type.list.element_type.*;
+        if (element_type != .list) return self.writeNestedBaseCodec(element_type, writer);
+
+        if (self.isUnknownStructTerminalList(element_type)) {
+            try writer.writeAll("message.typed_list_helpers.RawStructNestedBuilderCodec");
+            return;
+        }
+
+        try writer.writeAll("message.typed_list_helpers.NestedBuilderCodec(");
+        try self.writeNestedBuilderCodec(element_type, writer);
+        try writer.writeAll(")");
+    }
+
+    fn nestedListReaderTypeString(self: *StructGenerator, inner_list_type: schema.Type) ![]const u8 {
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(self.allocator);
+        const out_writer = ArrayListWriter{ .list = &out, .allocator = self.allocator };
+        try out_writer.writeAll("message.typed_list_helpers.NestedListReader(");
+        try self.writeNestedReaderCodec(inner_list_type, out_writer);
+        try out_writer.writeAll(")");
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn nestedListBuilderTypeString(self: *StructGenerator, inner_list_type: schema.Type) ![]const u8 {
+        if (self.isUnknownStructTerminalList(inner_list_type)) {
+            return self.allocator.dupe(u8, "message.typed_list_helpers.RawStructNestedListBuilder");
+        }
+
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(self.allocator);
+        const out_writer = ArrayListWriter{ .list = &out, .allocator = self.allocator };
+        try out_writer.writeAll("message.typed_list_helpers.NestedListBuilder(");
+        try self.writeNestedBuilderCodec(inner_list_type, out_writer);
+        try out_writer.writeAll(")");
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn generateNestedListsReaderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!hasDirectNestedListSlot(struct_info)) return;
+
+        try writer.print("{s}pub const NestedLists = struct {{\n", .{decl_indent});
+        try writer.print("{s}_reader: message.StructReader,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            if (!isNestedListSlot(field)) continue;
+            const slot = field.slot orelse continue;
+
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+            const return_type = try self.nestedListReaderTypeString(slot.type.list.element_type.*);
+            defer self.allocator.free(return_type);
+
+            try writer.print("{s}pub fn get{s}(self: @This()) !{s} {{\n", .{ member_indent, cap_name, return_type });
+            try self.writeNestedListUnionGuard(field, struct_info, body_indent, writer);
+            if (try self.pointerDefaultConstName(field, slot)) |const_name| {
+                defer self.allocator.free(const_name);
+                try writer.print("{s}if (self._reader.isPointerNull({})) {{\n", .{ body_indent, slot.offset });
+                try writer.print("{s}    const raw = try {s}();\n", .{ body_indent, const_name });
+                try writer.print("{s}    return .{{ ._list = raw }};\n", .{body_indent});
+                try writer.print("{s}}}\n", .{body_indent});
+            } else {
+                try writer.print(
+                    "{s}if (self._reader.isPointerNull({})) return .{{ ._list = self._reader.emptyList(message.PointerListReader) }};\n",
+                    .{ body_indent, slot.offset },
+                );
+            }
+            try writer.print("{s}const raw = try self._reader.readPointerList({});\n", .{ body_indent, slot.offset });
+            try writer.print("{s}return .{{ ._list = raw }};\n", .{body_indent});
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn nestedLists(self: @This()) NestedLists {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._reader = self._reader }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
+    }
+
+    /// Preserve the legacy typed getter's union error distinction inside the
+    /// nested-list view, which stores only the raw StructReader and therefore
+    /// cannot call the enclosing Reader's `which()` method directly.
+    fn writeNestedListUnionGuard(
+        self: *StructGenerator,
+        field: schema.Field,
+        parent_struct_info: schema.StructNode,
+        indent: []const u8,
+        writer: anytype,
+    ) !void {
+        _ = self;
+        if (field.discriminant_value == 0xFFFF or parent_struct_info.discriminant_count == 0) return;
+        const disc_byte_offset = try discriminantByteOffset(parent_struct_info.discriminant_offset);
+        try writer.print(
+            "{s}const union_ordinal = self._reader.readUnionDiscriminant({});\n",
+            .{ indent, disc_byte_offset },
+        );
+        try writer.print("{s}if (union_ordinal != {}) {{\n", .{ indent, field.discriminant_value });
+        try writer.print("{s}    switch (union_ordinal) {{\n", .{indent});
+        for (parent_struct_info.fields) |union_field| {
+            if (union_field.discriminant_value == 0xFFFF) continue;
+            try writer.print(
+                "{s}        {} => return error.WrongUnionMember,\n",
+                .{ indent, union_field.discriminant_value },
+            );
+        }
+        try writer.print("{s}        else => return error.InvalidEnumValue,\n", .{indent});
+        try writer.print("{s}    }}\n", .{indent});
+        try writer.print("{s}}}\n", .{indent});
+    }
+
+    fn generateNestedListsBuilderView(
+        self: *StructGenerator,
+        struct_info: schema.StructNode,
+        decl_indent: []const u8,
+        member_indent: []const u8,
+        body_indent: []const u8,
+        writer: anytype,
+    ) !void {
+        if (!hasDirectNestedListSlot(struct_info)) return;
+
+        try writer.print("{s}pub const NestedLists = struct {{\n", .{decl_indent});
+        try writer.print("{s}_builder: message.StructBuilder,\n\n", .{member_indent});
+        for (struct_info.fields) |field| {
+            if (!isNestedListSlot(field)) continue;
+            const slot = field.slot orelse continue;
+
+            const zig_name = try self.type_gen.toZigIdentifier(field.name);
+            defer self.allocator.free(zig_name);
+            const cap_name = try self.capitalizeFirst(zig_name);
+            defer self.allocator.free(cap_name);
+            const return_type = try self.nestedListBuilderTypeString(slot.type.list.element_type.*);
+            defer self.allocator.free(return_type);
+
+            try writer.print(
+                "{s}pub fn init{s}(self: @This(), element_count: u32) !{s} {{\n",
+                .{ member_indent, cap_name, return_type },
+            );
+            try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
+            try writer.print("{s}const raw = try self._builder.writePointerList({}, element_count);\n", .{ body_indent, slot.offset });
+            try writer.print("{s}return .{{ ._list = raw }};\n", .{body_indent});
+            try writer.print("{s}}}\n\n", .{member_indent});
+
+            try writer.print(
+                "{s}pub fn init{s}InSegment(self: @This(), element_count: u32, target_segment_id: u32) !{s} {{\n",
+                .{ member_indent, cap_name, return_type },
+            );
+            try self.writeOrdinalUnionDiscriminant(field, struct_info, body_indent, writer);
+            try writer.print(
+                "{s}const raw = try self._builder.writePointerListInSegment({}, element_count, target_segment_id);\n",
+                .{ body_indent, slot.offset },
+            );
+            try writer.print("{s}return .{{ ._list = raw }};\n", .{body_indent});
+            try writer.print("{s}}}\n\n", .{member_indent});
+        }
+        try writer.print("{s}}};\n\n", .{decl_indent});
+        try writer.print("{s}pub fn nestedLists(self: @This()) NestedLists {{\n", .{decl_indent});
+        try writer.print("{s}return .{{ ._builder = self._builder }};\n", .{member_indent});
+        try writer.print("{s}}}\n\n", .{decl_indent});
     }
 
     fn isPointerSlotType(typ: schema.Type) bool {
@@ -643,6 +924,13 @@ pub const StructGenerator = struct {
         try writer.writeAll("        }\n\n");
 
         try self.generateEnumOrdinalsReaderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+        try self.generateNestedListsReaderView(
             struct_info,
             "        ",
             "            ",
@@ -1659,6 +1947,13 @@ pub const StructGenerator = struct {
         try writer.writeAll("        }\n\n");
 
         try self.generateEnumOrdinalsBuilderView(
+            struct_info,
+            "        ",
+            "            ",
+            "                ",
+            writer,
+        );
+        try self.generateNestedListsBuilderView(
             struct_info,
             "        ",
             "            ",

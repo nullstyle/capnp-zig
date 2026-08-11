@@ -897,6 +897,10 @@ pub const Generator = struct {
             try scope.addCopy("EnumOrdinals");
             try scope.addCopy("enumOrdinals");
         }
+        if (structHasDirectNestedListSlot(struct_info)) {
+            try scope.addCopy("NestedLists");
+            try scope.addCopy("nestedLists");
+        }
 
         for (struct_info.fields) |field| {
             if (field.group == null and field.slot == null) continue;
@@ -939,6 +943,10 @@ pub const Generator = struct {
             try scope.addCopy("EnumOrdinals");
             try scope.addCopy("enumOrdinals");
         }
+        if (structHasDirectNestedListSlot(struct_info)) {
+            try scope.addCopy("NestedLists");
+            try scope.addCopy("nestedLists");
+        }
 
         for (struct_info.fields) |field| {
             const cap_name = try self.allocFieldCapName(field.name);
@@ -976,12 +984,41 @@ pub const Generator = struct {
                 else => try scope.addPrint("set{s}", .{cap_name}),
             }
         }
+
+        try self.validateNestedListBuilderViewNames(struct_info);
+    }
+
+    fn validateNestedListBuilderViewNames(self: *Generator, struct_info: schema.StructNode) !void {
+        if (!structHasDirectNestedListSlot(struct_info)) return;
+
+        var scope = GeneratedNameScope.init(self.allocator);
+        defer scope.deinit();
+        try scope.addCopy("_builder");
+
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .list or slot.type.list.element_type.* != .list) continue;
+
+            const cap_name = try self.allocFieldCapName(field.name);
+            defer self.allocator.free(cap_name);
+            try scope.addPrint("init{s}", .{cap_name});
+            try scope.addPrint("init{s}InSegment", .{cap_name});
+        }
     }
 
     fn structHasDirectEnumSlot(struct_info: schema.StructNode) bool {
         for (struct_info.fields) |field| {
             const slot = field.slot orelse continue;
             if (slot.type == .@"enum") return true;
+        }
+        return false;
+    }
+
+    fn structHasDirectNestedListSlot(struct_info: schema.StructNode) bool {
+        for (struct_info.fields) |field| {
+            const slot = field.slot orelse continue;
+            if (slot.type != .list) continue;
+            if (slot.type.list.element_type.* == .list) return true;
         }
         return false;
     }
@@ -1136,7 +1173,9 @@ pub const Generator = struct {
         const call_name = try self.allocMethodCallName(method.name);
         defer self.allocator.free(call_name);
         try scopes.client_scope.addCopy(call_name);
+        try scopes.client_scope.addPrint("{s}WithOptions", .{call_name});
         try scopes.pipelined_scope.addCopy(call_name);
+        try scopes.pipelined_scope.addPrint("{s}WithOptions", .{call_name});
         if (scopes.has_streaming) {
             try scopes.stream_scope.addCopy(call_name);
         }
@@ -1148,6 +1187,7 @@ pub const Generator = struct {
                 try self.validatePipelineGeneratedNames(method);
             }
             try scopes.client_scope.addPrint("{s}Pipelined", .{call_name});
+            try scopes.client_scope.addPrint("{s}PipelinedWithOptions", .{call_name});
         }
 
         const field_name = try self.allocMethodVTableFieldName(method.name);
@@ -1838,6 +1878,11 @@ pub const Generator = struct {
         try writer.writeAll("            user_ctx: *anyopaque,\n");
         try writer.writeAll("            build: ?BuildFn,\n");
         try writer.writeAll("            callback: Callback,\n\n");
+        try writer.writeAll("            // While a generated send is still on the caller's stack, this\n");
+        try writer.writeAll("            // points at its ownership flag. A synchronous Return marks the\n");
+        try writer.writeAll("            // context settled before freeing it; an asynchronous send clears\n");
+        try writer.writeAll("            // the pointer before returning to the user.\n");
+        try writer.writeAll("            settled_flag: ?*bool = null,\n\n");
         try writer.writeAll("            // Frees the heap ctx if the question is still outstanding at\n");
         try writer.writeAll("            // Peer.deinit (the normal return path frees it in callReturn).\n");
         try writer.writeAll("            fn deinitCtx(ctx_allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {\n");
@@ -1884,6 +1929,7 @@ pub const Generator = struct {
 
         try writer.writeAll("        fn callReturn(ctx_ptr: *anyopaque, peer: *rpc.peer.Peer, ret: rpc.wire.protocol.Return, caps: *const rpc.caps.table.InboundCapTable) anyerror!void {\n");
         try writer.writeAll("            const ctx: *CallContext = @ptrCast(@alignCast(ctx_ptr));\n");
+        try writer.writeAll("            if (ctx.settled_flag) |flag| flag.* = true;\n");
         try writer.writeAll("            defer peer.allocator.destroy(ctx);\n");
         try writer.writeAll("            var response: Response = undefined;\n");
         try writer.writeAll("            switch (ret.tag) {\n");
@@ -2089,12 +2135,22 @@ pub const Generator = struct {
         try writer.print("        pub fn {s}(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
             p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
+        try writer.print("            return self.{s}WithOptions(user_ctx, build, on_return, .{{}});\n", .{p.call_name});
+        try writer.writeAll("        }\n\n");
+        try writer.print("        pub fn {s}WithOptions(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback, options: rpc.peer.CallOptions) !u32 {{\n", .{
+            p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
+        });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
-        try writer.writeAll("            errdefer self.peer.allocator.destroy(ctx);\n");
-        try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
-        try writer.print("            const question_id = try self.peer.sendCall(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
+        try writer.writeAll("            var settled = false;\n");
+        try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };\n");
+        try writer.print("            const question_id = self.peer.sendCallGeneratedWithOptions(self.cap_id, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options) catch |err| {{\n", .{
             p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
+        try writer.writeAll("                if (!settled) self.peer.allocator.destroy(ctx);\n");
+        try writer.writeAll("                return err;\n");
+        try writer.writeAll("            };\n");
+        try writer.writeAll("            if (settled) return question_id;\n");
+        try writer.writeAll("            ctx.settled_flag = null;\n");
         try writer.print("            self.peer.setQuestionDeinitCtx(question_id, {s}{s}{s}.CallContext.deinitCtx);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            return question_id;\n");
         try writer.writeAll("        }\n\n");
@@ -2203,7 +2259,12 @@ pub const Generator = struct {
         try writer.print("        pub fn call{s}Pipelined(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !{s}{s}{s} {{\n", .{
             zig_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
         });
-        try writer.print("            const qid = try self.call{s}(user_ctx, build, on_return);\n", .{zig_name});
+        try writer.print("            return self.call{s}PipelinedWithOptions(user_ctx, build, on_return, .{{}});\n", .{zig_name});
+        try writer.writeAll("        }\n\n");
+        try writer.print("        pub fn call{s}PipelinedWithOptions(self: {s}Client, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback, options: rpc.peer.CallOptions) !{s}{s}{s} {{\n", .{
+            zig_name, qual, method_prefix, dot, zig_name, method_prefix, dot, zig_name, method_prefix, dot, pipeline_name,
+        });
+        try writer.print("            const qid = try self.call{s}WithOptions(user_ctx, build, on_return, options);\n", .{zig_name});
         try writer.writeAll("            return .{ .peer = self.peer, .question_id = qid };\n");
         try writer.writeAll("        }\n\n");
     }
@@ -2245,12 +2306,22 @@ pub const Generator = struct {
         try writer.print("        pub fn {s}(self: {s}PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback) !u32 {{\n", .{
             p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
+        try writer.print("            return self.{s}WithOptions(user_ctx, build, on_return, .{{}});\n", .{p.call_name});
+        try writer.writeAll("        }\n\n");
+        try writer.print("        pub fn {s}WithOptions(self: {s}PipelinedClient, user_ctx: *anyopaque, build: ?{s}{s}{s}.BuildFn, on_return: {s}{s}{s}.Callback, options: rpc.peer.CallOptions) !u32 {{\n", .{
+            p.call_name, qual, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
+        });
         try writer.print("            const ctx = try self.peer.allocator.create({s}{s}{s}.CallContext);\n", .{ p.method_prefix, p.dot, p.zig_name });
-        try writer.writeAll("            errdefer self.peer.allocator.destroy(ctx);\n");
-        try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return };\n");
-        try writer.print("            const question_id = try self.peer.sendCallPromisedWithOps(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn);\n", .{
+        try writer.writeAll("            var settled = false;\n");
+        try writer.writeAll("            ctx.* = .{ .user_ctx = user_ctx, .build = build, .callback = on_return, .settled_flag = &settled };\n");
+        try writer.print("            const question_id = self.peer.sendCallPromisedWithOpsGeneratedWithOptions(self.question_id, &[_]rpc.wire.protocol.PromisedAnswerOp{{.{{ .tag = .getPointerField, .pointer_index = self.pointer_index }}}}, {s}, {s}{s}{s}.ordinal, ctx, {s}{s}{s}.callBuild, {s}{s}{s}.callReturn, options) catch |err| {{\n", .{
             p.iface_id, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name, p.method_prefix, p.dot, p.zig_name,
         });
+        try writer.writeAll("                if (!settled) self.peer.allocator.destroy(ctx);\n");
+        try writer.writeAll("                return err;\n");
+        try writer.writeAll("            };\n");
+        try writer.writeAll("            if (settled) return question_id;\n");
+        try writer.writeAll("            ctx.settled_flag = null;\n");
         try writer.print("            self.peer.setQuestionDeinitCtx(question_id, {s}{s}{s}.CallContext.deinitCtx);\n", .{ p.method_prefix, p.dot, p.zig_name });
         try writer.writeAll("            return question_id;\n");
         try writer.writeAll("        }\n\n");

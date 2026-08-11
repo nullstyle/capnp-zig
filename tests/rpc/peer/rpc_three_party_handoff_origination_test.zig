@@ -41,6 +41,7 @@ const protocol = capnpc.rpc.wire.protocol;
 const peer_impl = capnpc.rpc.peer;
 const cap_table = capnpc.rpc.caps.table;
 const vat_network = capnpc.rpc.vat.network;
+const rpc_time = capnpc.rpc.time;
 const message = capnpc.message;
 const Peer = peer_impl.Peer;
 const harness = @import("three_party_handoff_harness.zig");
@@ -335,11 +336,17 @@ const Link = struct {
     // question — the exact interleaving where the return callback already
     // answered VatA before `sendCall`'s trailing work fails.
     fail_next_bToC_finish: bool = false,
+    // Targeted one-shot Finish failures used by the retained-answer lifecycle
+    // test. Each matching question id is cleared when rejected, allowing the
+    // subsequent maintenance retry to reach C normally.
+    fail_bToC_finish_question_ids: [2]?u32 = .{ null, null },
     // When set, count every `.return` frame B sends to A. Used to prove VatA
     // receives EXACTLY ONE Return for a forwarded parked call — never a second
     // (exception) Return from a mishandled post-callback failure.
     count_bToA_returns: bool = false,
     bToA_return_count: u32 = 0,
+    hold_b_returns: bool = false,
+    held_b_returns: std.ArrayList([]u8) = .empty,
 
     // Which vat originated each question C is answering (answer_id -> origin).
     c_question_origin: std.AutoHashMap(u32, Vat),
@@ -352,7 +359,18 @@ const Link = struct {
     }
 
     fn deinit(self: *Link) void {
+        for (self.held_b_returns.items) |frame| self.allocator.free(frame);
+        self.held_b_returns.deinit(self.allocator);
         self.c_question_origin.deinit();
+    }
+
+    fn flushHeldBReturns(self: *Link) !void {
+        const peer = self.b_to_c orelse return error.MissingBToCPeer;
+        while (self.held_b_returns.items.len != 0) {
+            const frame = self.held_b_returns.orderedRemove(0);
+            defer self.allocator.free(frame);
+            try peer.handleFrame(frame);
+        }
     }
 
     fn recordCQuestion(self: *Link, frame: []const u8, origin: Vat) !void {
@@ -406,6 +424,21 @@ const Link = struct {
                 return error.OutOfMemory;
             }
         }
+        if (self.fail_bToC_finish_question_ids[0] != null or
+            self.fail_bToC_finish_question_ids[1] != null)
+        {
+            var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+            defer decoded.deinit();
+            if (decoded.tag == .finish) {
+                const finish = try decoded.asFinish();
+                for (&self.fail_bToC_finish_question_ids) |*target_id| {
+                    if (target_id.* == finish.question_id) {
+                        target_id.* = null;
+                        return error.OutOfMemory;
+                    }
+                }
+            }
+        }
         if (!self.forwarding) return;
         if (self.c) |peer| try peer.handleFrame(frame);
     }
@@ -433,6 +466,10 @@ const Link = struct {
             else => null,
         };
         const dest = target orelse return; // unrouted control frame: drop safely
+        if (dest == .b and decoded.tag == .@"return" and self.hold_b_returns) {
+            try self.held_b_returns.append(self.allocator, try self.allocator.dupe(u8, frame));
+            return;
+        }
         switch (dest) {
             .a => if (self.a_to_c) |peer| try peer.handleFrame(frame),
             .b => if (self.b_to_c) |peer| try peer.handleFrame(frame),
@@ -1202,10 +1239,10 @@ test "three-party handoff: introducer FORWARDS parked pipelined P-calls to C (is
     try std.testing.expect(!b_to_a.pending_export_promises.contains(promise_import_id));
     const vine_id = handle.vine_id;
     try std.testing.expect(b_to_a.outbound_provides.contains(vine_id));
-    try std.testing.expectEqual(
-        @as(?u32, counter_import_id),
-        b_to_a.outbound_provides.get(vine_id).?.provided_import_id,
-    );
+    switch (b_to_a.outbound_provides.get(vine_id).?.forward_target) {
+        .imported => |import_id| try std.testing.expectEqual(counter_import_id, import_id),
+        .promised => return error.UnexpectedPromisedAnswerTarget,
+    }
 
     // -- Teardown: A releases the vine (drives B's Provide Finish), then every
     //    remaining import so all tables drain. --------------------------------
@@ -1898,10 +1935,10 @@ test "issue #56: forwarded parked call survives a post-callback send failure wit
     // The vine coupling recorded the forwarding target and the parked table drained.
     const vine_id = handle.vine_id;
     try std.testing.expect(!b_to_a.pending_export_promises.contains(promise_import_id));
-    try std.testing.expectEqual(
-        @as(?u32, counter_import_id),
-        b_to_a.outbound_provides.get(vine_id).?.provided_import_id,
-    );
+    switch (b_to_a.outbound_provides.get(vine_id).?.forward_target) {
+        .imported => |import_id| try std.testing.expectEqual(counter_import_id, import_id),
+        .promised => return error.UnexpectedPromisedAnswerTarget,
+    }
 
     // Teardown: release the vine (drives B's Provide Finish) then every import,
     // so all tables drain and std.testing.allocator sees no leak.
@@ -1914,4 +1951,655 @@ test "issue #56: forwarded parked call survives a post-callback send failure wit
     try std.testing.expect(!b_to_c.caps.hasImport(counter_import_id));
     try std.testing.expect(!a_to_b.caps.hasImport(introducer_import_id));
     try std.testing.expectEqual(@as(usize, 0), b_to_c.coupled_vines.items.len);
+}
+
+test "async forwarded-vine relay survives either peer teardown with distinct allocators" {
+    const allocator = std.testing.allocator;
+    const FirstTeardown = enum { provider, recipient };
+
+    for ([_]FirstTeardown{ .provider, .recipient }) |first_teardown| {
+        var provider_gpa: std.heap.DebugAllocator(.{}) = .init;
+        defer std.debug.assert(provider_gpa.deinit() == .ok);
+        var recipient_gpa: std.heap.DebugAllocator(.{}) = .init;
+        defer std.debug.assert(recipient_gpa.deinit() == .ok);
+
+        var link = Link.init(allocator);
+        defer link.deinit();
+        var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+        defer net.deinit();
+
+        var c = Peer.initDetached(allocator);
+        c.disableThreadAffinity();
+        defer c.deinit();
+        var b_to_c = Peer.initDetached(provider_gpa.allocator());
+        b_to_c.disableThreadAffinity();
+        var b_to_c_alive = true;
+        defer if (b_to_c_alive) b_to_c.deinit();
+        var b_to_a = Peer.initDetached(recipient_gpa.allocator());
+        b_to_a.disableThreadAffinity();
+        var b_to_a_alive = true;
+        defer if (b_to_a_alive) b_to_a.deinit();
+        var a_to_b = Peer.initDetached(allocator);
+        a_to_b.disableThreadAffinity();
+        defer a_to_b.deinit();
+        var a_to_c = Peer.initDetached(allocator);
+        a_to_c.disableThreadAffinity();
+        defer a_to_c.deinit();
+
+        b_to_c.next_question_id = 0;
+        a_to_c.next_question_id = 1000;
+        a_to_b.next_question_id = 2000;
+        link.a_to_b = &a_to_b;
+        link.b_to_a = &b_to_a;
+        link.b_to_c = &b_to_c;
+        link.c = &c;
+        link.a_to_c = &a_to_c;
+        a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+        b_to_a.setSendFrameOverride(&link, Link.bToASend);
+        b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+        a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+        c.setSendFrameOverride(&link, Link.cSend);
+
+        const nonce = switch (first_teardown) {
+            .provider => "forward-relay-provider-first",
+            .recipient => "forward-relay-recipient-first",
+        };
+        try net.register(nonce, &a_to_c);
+        b_to_a.attachVatNetwork(net.network());
+        a_to_c.attachVatNetwork(net.network());
+
+        var counter = BumpCounter{};
+        _ = try c.setBootstrap(.{ .ctx = &counter, .on_call = BumpCounter.onCall });
+        var counter_probe = CarolImportProbe{};
+        _ = try b_to_c.sendBootstrap(&counter_probe, CarolImportProbe.onReturn);
+        const counter_import_id = counter_probe.carol_import_id orelse
+            return error.CounterBootstrapFailed;
+
+        var introducer = PromiseIntroducer{};
+        _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = PromiseIntroducer.onCall });
+        var introducer_probe = IntroducerProbe{};
+        _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+        const introducer_import_id = introducer_probe.introducer_import_id orelse
+            return error.IntroducerBootstrapFailed;
+        var promise_probe = PromiseImportProbe{};
+        _ = try a_to_b.sendCall(
+            introducer_import_id,
+            0x1234_5678_9abc_def0,
+            0,
+            &promise_probe,
+            null,
+            PromiseImportProbe.onReturn,
+        );
+        const promise_import_id = promise_probe.promise_import_id orelse
+            return error.PromiseNotImportedByA;
+
+        var bump = BumpCall{ .n = 1 };
+        _ = try a_to_b.sendCall(
+            promise_import_id,
+            NUMBER_INTERFACE_ID,
+            GET_NUMBER_METHOD_ID,
+            &bump,
+            BumpCall.build,
+            BumpCall.onReturn,
+        );
+        try std.testing.expect(!bump.returned);
+
+        const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+        var introduction = try b_network.mintIntroduction(&b_to_a, nonce);
+        defer introduction.deinit(allocator);
+        var await_message = try message.Message.initUnvalidated(
+            recipient_gpa.allocator(),
+            introduction.to_await,
+        );
+        defer await_message.deinit();
+        const recipient = try await_message.getRootAnyPointer();
+
+        link.hold_b_returns = true;
+        const handle = try b_to_a.resolvePromiseExportToThirdParty(
+            promise_import_id,
+            &b_to_c,
+            .{
+                .tag = .importedCap,
+                .imported_cap = counter_import_id,
+                .promised_answer = null,
+            },
+            recipient,
+            introduction.to_contact,
+        );
+        try std.testing.expectEqual(@as(usize, 1), link.held_b_returns.items.len);
+        try std.testing.expect(!bump.returned);
+        try std.testing.expectEqual(@as(usize, 1), b_to_a.forward_vine_relay_links.items.len);
+
+        switch (first_teardown) {
+            .provider => {
+                b_to_c.deinit();
+                b_to_c_alive = false;
+                link.b_to_c = null;
+
+                // Provider teardown owns the relay context and must settle A's
+                // original question exactly once through the still-live recipient.
+                try std.testing.expect(bump.returned);
+                try std.testing.expect(bump.exception);
+                try std.testing.expectEqual(@as(usize, 0), b_to_a.forward_vine_relay_links.items.len);
+            },
+            .recipient => {
+                b_to_a.deinit();
+                b_to_a_alive = false;
+                link.b_to_a = null;
+
+                // The provider still owns the async question. Its delayed Return
+                // must only free that context; the recipient borrow is neutralized.
+                link.hold_b_returns = false;
+                try link.flushHeldBReturns();
+                a_to_b.notifyTransportClosed();
+                try std.testing.expect(bump.returned);
+                try std.testing.expect(bump.exception);
+            },
+        }
+
+        if (a_to_b.caps.hasImport(handle.vine_id)) {
+            try a_to_b.releaseImport(handle.vine_id, 1);
+        }
+        if (a_to_b.caps.hasImport(introducer_import_id)) {
+            try a_to_b.releaseImport(introducer_import_id, 1);
+        }
+        if (b_to_c_alive and b_to_c.caps.hasImport(counter_import_id)) {
+            try b_to_c.releaseImport(counter_import_id, 1);
+        }
+        link.forwarding = false;
+    }
+}
+
+// ============================================================================
+// Retained-answer handoff: the capability provided to VatA is selected from a
+// completed answer on B<->C, rather than from B's import table. This is the
+// public-API composition needed by relays which learn the eventual capability
+// as a result field and then transfer that open answer into an L3 Provide.
+// ============================================================================
+
+const RetainedCapabilityFactory = struct {
+    helper_export_id: u32,
+    calls: u32 = 0,
+
+    fn onCall(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        call: protocol.Call,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *RetainedCapabilityFactory = castCtx(*RetainedCapabilityFactory, ctx_ptr);
+        self.calls += 1;
+
+        const RetCtx = struct {
+            helper_export_id: u32,
+
+            fn build(build_ctx: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
+                const result: *const @This() = castCtx(*const @This(), build_ctx);
+                var payload = try ret.payloadTyped();
+                var content = try payload.initContent();
+                const result_struct = try content.initStruct(0, 1);
+                var cap_field = try result_struct.getAnyPointer(0);
+                try cap_field.setCapability(.{ .id = result.helper_export_id });
+            }
+        };
+
+        var ret_ctx = RetCtx{ .helper_export_id = self.helper_export_id };
+        try peer.sendReturnResults(call.question_id, &ret_ctx, RetCtx.build);
+    }
+};
+
+const RetainedFactoryCall = struct {
+    returned: bool = false,
+    helper_import_id: ?u32 = null,
+
+    fn onReturn(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        ret: protocol.Return,
+        caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *RetainedFactoryCall = castCtx(*RetainedFactoryCall, ctx_ptr);
+        if (ret.tag != .results) return error.UnexpectedFactoryReturn;
+        const payload = ret.results orelse return error.MissingFactoryPayload;
+        const result_struct = try payload.content.getStruct();
+        const cap = try result_struct.readCapability(0);
+        var mutable_caps: *cap_table.InboundCapTable = @constCast(caps);
+        const resolved = try mutable_caps.resolveCapability(cap);
+        try mutable_caps.retainCapability(cap);
+        self.helper_import_id = switch (resolved) {
+            .imported => |imported| imported.id,
+            else => return error.FactoryCapabilityNotImported,
+        };
+        self.returned = true;
+    }
+};
+
+const ManualFinishOutcome = enum {
+    not_attempted,
+    rejected_transferred,
+    unexpected_error,
+    unexpected_success,
+};
+
+/// Helper selected by `getPointerField(0)` from the retained factory answer.
+/// Its first invocation happens through B's vine fallback. At that exact point
+/// ownership has committed to the handoff but has not yet drained, giving the
+/// test a deterministic window in which to prove caller-owned Finish rejects.
+const RetainedAnswerHelper = struct {
+    transfer_peer: *Peer,
+    retained_question_id: ?u32 = null,
+    get_number_calls: u32 = 0,
+    manual_finish: ManualFinishOutcome = .not_attempted,
+
+    fn onCall(
+        ctx_ptr: *anyopaque,
+        peer: *Peer,
+        call: protocol.Call,
+        _: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *RetainedAnswerHelper = castCtx(*RetainedAnswerHelper, ctx_ptr);
+        if (call.interface_id != NUMBER_INTERFACE_ID or call.method_id != GET_NUMBER_METHOD_ID) {
+            return error.UnexpectedMethod;
+        }
+
+        if (self.manual_finish == .not_attempted) {
+            const retained_question_id = self.retained_question_id orelse
+                return error.MissingRetainedQuestionId;
+            self.manual_finish = .unexpected_success;
+            self.transfer_peer.finishRetainedQuestion(retained_question_id, false) catch |err| {
+                self.manual_finish = if (err == error.RetainedQuestionAlreadyTransferred)
+                    .rejected_transferred
+                else
+                    .unexpected_error;
+            };
+        }
+
+        self.get_number_calls += 1;
+        var ret_ctx = NumberReturnCtx{ .n = 42 };
+        try peer.sendReturnResults(call.question_id, &ret_ctx, NumberReturnCtx.build);
+    }
+};
+
+const RetainedAnswerPickup = struct {
+    expected_promise_id: u32,
+    helper_import_id: ?u32 = null,
+    fired: bool = false,
+
+    fn onPickup(
+        ctx_ptr: *anyopaque,
+        _: *Peer,
+        promise_id: u32,
+        accept_peer: *Peer,
+        ret: protocol.Return,
+        accept_caps: *const cap_table.InboundCapTable,
+    ) anyerror!void {
+        const self: *RetainedAnswerPickup = castCtx(*RetainedAnswerPickup, ctx_ptr);
+        if (promise_id != self.expected_promise_id) return error.UnexpectedPromiseId;
+        if (ret.tag != .results) return error.UnexpectedAcceptReturn;
+        const payload = ret.results orelse return error.MissingAcceptPayload;
+        const cap = try payload.content.getCapability();
+        var mutable_caps: *cap_table.InboundCapTable = @constCast(accept_caps);
+        const resolved = try mutable_caps.resolveCapability(cap);
+        try mutable_caps.retainCapability(cap);
+        self.helper_import_id = switch (resolved) {
+            .imported => |imported| imported.id,
+            else => return error.AcceptedHelperNotImported,
+        };
+        try std.testing.expect(accept_peer.caps.hasImport(self.helper_import_id.?));
+        self.fired = true;
+    }
+};
+
+test "three-party handoff transfers a retained result-field answer through vine fallback and direct pickup" {
+    const allocator = std.testing.allocator;
+
+    var link = Link.init(allocator);
+    defer link.deinit();
+    defer link.forwarding = false;
+
+    var net = vat_network.LoopbackVatNetwork(Peer).init(allocator);
+    defer net.deinit();
+
+    var c = Peer.initDetached(allocator);
+    c.disableThreadAffinity();
+    defer c.deinit();
+
+    var b_to_c = Peer.initDetached(allocator);
+    b_to_c.disableThreadAffinity();
+    defer b_to_c.deinit();
+    var b_to_a = Peer.initDetached(allocator);
+    b_to_a.disableThreadAffinity();
+    defer b_to_a.deinit();
+
+    var a_to_b = Peer.initDetached(allocator);
+    a_to_b.disableThreadAffinity();
+    defer a_to_b.deinit();
+    var a_to_c = Peer.initDetached(allocator);
+    a_to_c.disableThreadAffinity();
+    defer a_to_c.deinit();
+
+    b_to_c.next_question_id = 0;
+    a_to_c.next_question_id = 1000;
+    a_to_b.next_question_id = 2000;
+
+    link.a_to_b = &a_to_b;
+    link.b_to_a = &b_to_a;
+    link.b_to_c = &b_to_c;
+    link.c = &c;
+    link.a_to_c = &a_to_c;
+
+    a_to_b.setSendFrameOverride(&link, Link.aToBSend);
+    b_to_a.setSendFrameOverride(&link, Link.bToASend);
+    b_to_c.setSendFrameOverride(&link, Link.bToCSend);
+    a_to_c.setSendFrameOverride(&link, Link.aToCSend);
+    c.setSendFrameOverride(&link, Link.cSend);
+
+    const recipient_nonce = "handoff-retained-answer-field";
+    try net.register(recipient_nonce, &a_to_c);
+    b_to_a.attachVatNetwork(net.network());
+    a_to_b.attachVatNetwork(net.network());
+
+    // C's bootstrap is a factory whose result struct contains the actual
+    // provided helper in pointer field zero.
+    var helper = RetainedAnswerHelper{ .transfer_peer = &b_to_c };
+    const helper_export_id = try c.addExport(.{ .ctx = &helper, .on_call = RetainedAnswerHelper.onCall });
+    var factory = RetainedCapabilityFactory{ .helper_export_id = helper_export_id };
+    _ = try c.setBootstrap(.{ .ctx = &factory, .on_call = RetainedCapabilityFactory.onCall });
+
+    var factory_probe = CarolImportProbe{};
+    _ = try b_to_c.sendBootstrap(&factory_probe, CarolImportProbe.onReturn);
+    const factory_import_id = factory_probe.carol_import_id orelse return error.FactoryBootstrapFailed;
+
+    // B deliberately retains C's completed answer. The answer remains cached
+    // at C and caller-owned at B until the transfer below commits.
+    var factory_call = RetainedFactoryCall{};
+    const retained_question_id = try b_to_c.sendCallWithOptions(
+        factory_import_id,
+        NUMBER_INTERFACE_ID,
+        1,
+        &factory_call,
+        null,
+        RetainedFactoryCall.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    helper.retained_question_id = retained_question_id;
+    try std.testing.expect(factory_call.returned);
+    const source_helper_import_id = factory_call.helper_import_id orelse
+        return error.FactoryCapabilityNotImported;
+    try std.testing.expectEqual(@as(usize, 1), b_to_c.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.stats().transferred_retained_questions);
+    try std.testing.expect(c.resolved_answers.contains(retained_question_id));
+
+    // A obtains an unresolved promise from B and issues a call before B knows
+    // its resolution. That call parks on B and forces the eventual pickup to
+    // preserve ordering with an embargo while the vine fallback is replayed.
+    var introducer = PromiseIntroducer{};
+    _ = try b_to_a.setBootstrap(.{ .ctx = &introducer, .on_call = PromiseIntroducer.onCall });
+    var introducer_probe = IntroducerProbe{};
+    _ = try a_to_b.sendBootstrap(&introducer_probe, IntroducerProbe.onReturn);
+    const introducer_import_id = introducer_probe.introducer_import_id orelse
+        return error.IntroducerBootstrapFailed;
+
+    var promise_probe = PromiseImportProbe{};
+    _ = try a_to_b.sendCall(
+        introducer_import_id,
+        0x1234_5678_9abc_def0,
+        0,
+        &promise_probe,
+        null,
+        PromiseImportProbe.onReturn,
+    );
+    const promise_import_id = promise_probe.promise_import_id orelse
+        return error.PromiseNotImportedByA;
+
+    var pickup = RetainedAnswerPickup{ .expected_promise_id = promise_import_id };
+    a_to_b.setHandoffPickupHandler(&pickup, RetainedAnswerPickup.onPickup);
+
+    var pipelined = GetNumberCall{};
+    _ = try a_to_b.sendCall(
+        promise_import_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &pipelined,
+        null,
+        GetNumberCall.onReturn,
+    );
+    try std.testing.expect(pipelined.result == null);
+    try std.testing.expect(b_to_a.pending_export_promises.contains(promise_import_id));
+
+    const b_network = b_to_a.vat_network orelse return error.NoVatNetworkOnB;
+    var introduction = try b_network.mintIntroduction(&b_to_a, recipient_nonce);
+    defer introduction.deinit(allocator);
+    var await_msg = try message.Message.initUnvalidated(allocator, introduction.to_await);
+    defer await_msg.deinit();
+    const recipient = try await_msg.getRootAnyPointer();
+    const ops = [_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 0 },
+    };
+
+    // The Provide question is allocated next on b_to_c. Reject both protocol
+    // owner Finishes exactly once: the Provide and its transferred source
+    // answer. Their ownership records must survive until maintenance retries.
+    const expected_provide_question_id = b_to_c.next_question_id;
+    link.fail_bToC_finish_question_ids = .{ expected_provide_question_id, retained_question_id };
+
+    const handle = try b_to_a.resolvePromiseExportToThirdPartyFromRetainedAnswer(
+        promise_import_id,
+        &b_to_c,
+        retained_question_id,
+        &ops,
+        recipient,
+        introduction.to_contact,
+    );
+    try std.testing.expectEqual(expected_provide_question_id, handle.question_id);
+    try std.testing.expectEqual([2]?u32{ null, null }, link.fail_bToC_finish_question_ids);
+
+    // The pre-resolution call ran through the promised-answer vine target. It
+    // also observed the transfer-owned state before the handoff drained, so an
+    // application Finish was rejected instead of racing the lifecycle owner.
+    try std.testing.expectEqual(@as(?u32, 42), pipelined.result);
+    try std.testing.expectEqual(@as(u32, 1), helper.get_number_calls);
+    try std.testing.expectEqual(ManualFinishOutcome.rejected_transferred, helper.manual_finish);
+    try std.testing.expect(!b_to_a.pending_export_promises.contains(promise_import_id));
+
+    // Automatic pickup redeemed the same promised-answer provision directly
+    // from C. A can call that direct import after the fallback call completes.
+    try std.testing.expect(pickup.fired);
+    const accepted_helper_id = pickup.helper_import_id orelse return error.AutoPickupDidNotResolve;
+    try harness.expectImport(&a_to_c, accepted_helper_id);
+    var direct = GetNumberCall{};
+    _ = try a_to_c.sendCall(
+        accepted_helper_id,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &direct,
+        null,
+        GetNumberCall.onReturn,
+    );
+    try std.testing.expectEqual(@as(?u32, 42), direct.result);
+    try std.testing.expectEqual(@as(u32, 2), helper.get_number_calls);
+
+    // The disembargo ended both lifetimes, but the injected transport failures
+    // left their ownership records retryable. `checkDeadlines` doubles as the
+    // clock-independent maintenance hook and does not count these cleanups as
+    // outbound deadline cancellations.
+    try std.testing.expectEqual(@as(usize, 1), b_to_c.stats().transferred_retained_questions);
+    try std.testing.expect(c.resolved_answers.contains(retained_question_id));
+    try std.testing.expect(c.provides_by_question.contains(handle.question_id));
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.checkDeadlines());
+
+    // Both retry sends succeeded. Every transient gauge and answer/provision
+    // table is now empty exactly once.
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.stats().transferred_retained_questions);
+    try std.testing.expect(!c.resolved_answers.contains(retained_question_id));
+    try std.testing.expect(!b_to_a.exports.contains(handle.vine_id));
+    try harness.expectNoOutboundProvide(&b_to_a, handle.vine_id);
+    try harness.expectNoProvideState(&c);
+    try harness.expectNoEmbargoedAcceptState(&a_to_b);
+    try harness.expectNoEmbargoedAcceptState(&a_to_c);
+    try harness.expectNoEmbargoedAcceptState(&b_to_a);
+    try harness.expectNoEmbargoedAcceptState(&b_to_c);
+    try harness.expectNoEmbargoedAcceptState(&c);
+    try std.testing.expectEqual(@as(usize, 0), b_to_c.coupled_vines.items.len);
+    try harness.expectNoImport(&a_to_b, handle.vine_id);
+
+    // Release the durable imports retained by the callbacks. Factory bootstrap
+    // remains C's configured bootstrap, but every transient capability ref and
+    // promise import must disappear.
+    try a_to_c.releaseImport(accepted_helper_id, 1);
+    try b_to_c.releaseImport(source_helper_import_id, 1);
+    try b_to_c.releaseImport(factory_import_id, 1);
+    try a_to_b.releaseImport(promise_import_id, 1);
+    try a_to_b.releaseImport(introducer_import_id, 1);
+
+    try harness.expectNoImport(&a_to_c, accepted_helper_id);
+    try harness.expectNoImport(&b_to_c, source_helper_import_id);
+    try harness.expectNoImport(&b_to_c, factory_import_id);
+    try harness.expectNoImport(&a_to_b, promise_import_id);
+    try harness.expectNoImport(&a_to_b, introducer_import_id);
+}
+
+test "retained Provide rejects oversized transforms and terminal recipient teardown drains both answers" {
+    const allocator = std.testing.allocator;
+    const Terminal = enum { close, deinit };
+
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8) = .empty,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            try self.frames.append(self.allocator, try self.allocator.dupe(u8, frame));
+        }
+
+        fn deinit(self: *@This()) void {
+            for (self.frames.items) |frame| self.allocator.free(frame);
+            self.frames.deinit(self.allocator);
+        }
+    };
+    const RetainedResult = struct {
+        returned: bool = false,
+
+        fn onReturn(
+            ctx_ptr: *anyopaque,
+            _: *Peer,
+            ret: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            self.returned = true;
+        }
+    };
+
+    inline for ([_]Terminal{ .close, .deinit }) |terminal| {
+        var capture = Capture{ .allocator = allocator };
+        defer capture.deinit();
+        var clock = rpc_time.TestClock{};
+
+        var provide_peer = Peer.initDetached(allocator);
+        defer provide_peer.deinit();
+        provide_peer.setSendFrameOverride(&capture, Capture.onFrame);
+        provide_peer.setClock(clock.clock());
+        provide_peer.setTimeouts(.{ .default_call_timeout_ms = 1 });
+
+        var recipient_peer = Peer.initDetached(allocator);
+        var recipient_alive = true;
+        defer if (recipient_alive) recipient_peer.deinit();
+
+        var result = RetainedResult{};
+        const retained_question_id = try provide_peer.sendCallWithOptions(
+            19,
+            NUMBER_INTERFACE_ID,
+            GET_NUMBER_METHOD_ID,
+            &result,
+            null,
+            RetainedResult.onReturn,
+            .{ .result_lifetime = .retained },
+        );
+
+        var return_builder = protocol.MessageBuilder.init(allocator);
+        defer return_builder.deinit();
+        var returned = try return_builder.beginReturn(retained_question_id, .exception);
+        try returned.setException("retained target ready");
+        const return_frame = try return_builder.finish();
+        defer allocator.free(return_frame);
+        try provide_peer.handleFrame(return_frame);
+        try std.testing.expect(result.returned);
+        try std.testing.expectEqual(@as(usize, 1), provide_peer.stats().retained_questions);
+
+        var token_builder = message.MessageBuilder.init(allocator);
+        defer token_builder.deinit();
+        const token_root = try token_builder.initRootAnyPointer();
+        try token_root.setText("retained-terminal-recipient");
+        const token_bytes = try token_builder.toBytes();
+        defer allocator.free(token_bytes);
+        var token_message = try message.Message.init(allocator, token_bytes, .{});
+        defer token_message.deinit();
+        const recipient = try token_message.getRootAnyPointer();
+
+        var excessive_ops: [protocol.max_promised_answer_transform_ops + 1]protocol.PromisedAnswerOp = undefined;
+        for (&excessive_ops) |*op| {
+            op.* = .{ .tag = .getPointerField, .pointer_index = 0 };
+        }
+        try std.testing.expectError(
+            error.TransformTooLong,
+            provide_peer.sendProvideFromRetainedAnswer(
+                retained_question_id,
+                &excessive_ops,
+                recipient,
+                &recipient_peer,
+                token_bytes,
+            ),
+        );
+        try std.testing.expectEqual(@as(usize, 1), provide_peer.stats().retained_questions);
+        try std.testing.expectEqual(@as(usize, 0), provide_peer.stats().transferred_retained_questions);
+        try std.testing.expectEqual(@as(usize, 1), capture.frames.items.len);
+
+        const handle = try provide_peer.sendProvideFromRetainedAnswer(
+            retained_question_id,
+            &[_]protocol.PromisedAnswerOp{},
+            recipient,
+            &recipient_peer,
+            token_bytes,
+        );
+        try std.testing.expectEqual(@as(usize, 1), provide_peer.stats().transferred_retained_questions);
+        try std.testing.expect(provide_peer.questions.contains(handle.question_id));
+        try std.testing.expect(recipient_peer.outbound_provides.contains(handle.vine_id));
+
+        // Provide never receives a Return and therefore must ignore the ordinary
+        // outbound-call timeout while its vine coupling is live.
+        clock.advanceMs(2);
+        try std.testing.expectEqual(@as(usize, 0), provide_peer.checkDeadlines());
+        try std.testing.expect(provide_peer.questions.contains(handle.question_id));
+
+        switch (terminal) {
+            .close => {
+                recipient_peer.notifyTransportClosed();
+                recipient_peer.notifyTransportClosed();
+                try std.testing.expectEqual(@as(usize, 0), recipient_peer.outbound_provides.count());
+                try std.testing.expect(!recipient_peer.exports.contains(handle.vine_id));
+            },
+            .deinit => {
+                recipient_peer.deinit();
+                recipient_alive = false;
+            },
+        }
+
+        try std.testing.expectEqual(@as(usize, 0), provide_peer.stats().retained_questions);
+        try std.testing.expectEqual(@as(usize, 0), provide_peer.stats().transferred_retained_questions);
+        try std.testing.expect(!provide_peer.questions.contains(handle.question_id));
+        try std.testing.expectEqual(@as(usize, 4), capture.frames.items.len);
+
+        var provide_finish = try protocol.DecodedMessage.init(allocator, capture.frames.items[2]);
+        defer provide_finish.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.finish, provide_finish.tag);
+        try std.testing.expectEqual(handle.question_id, (try provide_finish.asFinish()).question_id);
+
+        var source_finish = try protocol.DecodedMessage.init(allocator, capture.frames.items[3]);
+        defer source_finish.deinit();
+        try std.testing.expectEqual(protocol.MessageTag.finish, source_finish.tag);
+        try std.testing.expectEqual(retained_question_id, (try source_finish.asFinish()).question_id);
+    }
 }

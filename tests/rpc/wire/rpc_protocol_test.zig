@@ -781,6 +781,32 @@ test "RPC provide encodes and decodes" {
     try std.testing.expectEqualStrings("recipient", try recipient.getText());
 }
 
+test "RPC provide encodes retained promised-answer operations" {
+    const allocator = std.testing.allocator;
+    const ops = [_]protocol.PromisedAnswerOp{
+        .{ .tag = .getPointerField, .pointer_index = 3 },
+    };
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildProvidePromisedAnswerWithOps(61, 17, &ops, null);
+    const bytes = try builder.finish();
+    defer allocator.free(bytes);
+
+    var decoded = try protocol.DecodedMessage.init(allocator, bytes);
+    defer decoded.deinit();
+    const provide = try decoded.asProvide();
+    try std.testing.expectEqual(@as(u32, 61), provide.question_id);
+    try std.testing.expectEqual(protocol.MessageTargetTag.promisedAnswer, provide.target.tag);
+    const promised = provide.target.promised_answer orelse return error.MissingPromisedAnswer;
+    try std.testing.expectEqual(@as(u32, 17), promised.question_id);
+    try std.testing.expectEqual(@as(u32, 1), promised.transform.len());
+    try std.testing.expectEqual(ops[0], try promised.transform.get(0));
+    if (provide.recipient) |recipient| {
+        try std.testing.expect(recipient.isNull());
+    }
+}
+
 test "RPC accept encodes and decodes" {
     const allocator = std.testing.allocator;
 

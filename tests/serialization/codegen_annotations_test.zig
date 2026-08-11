@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
+const capnp_cli = @import("support/capnp_cli.zig");
 
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
@@ -54,18 +55,12 @@ test "Codegen annotation uses" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/annotations.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 

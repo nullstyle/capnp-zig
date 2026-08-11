@@ -47,10 +47,8 @@ jobs:
       - uses: ./.github/actions/setup-zig
 
       # capnp gates ten serialization/codegen suites, which skip when it is
-      # missing. Installing it on Linux only meant 26 tests silently skipped on
-      # macOS and 29 on Windows while docs/stability.md advertised codegen as
-      # "full" on all three tiers. Linux and macOS now both have it; see the
-      # Windows note below for why that tier does not.
+      # missing. Install it on every native test tier and fail the job if the
+      # executable is unavailable, so codegen parity cannot regress into skips.
       - name: Install Cap'n Proto compiler (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -66,23 +64,27 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install capnp
 
-      # NOT installed on Windows, deliberately. Installing it there (upstream's
-      # prebuilt tools from the C++ release archive) makes the suites run and
-      # then FAIL: two of them compile schemas that use an absolute standard
-      # import (`import "/capnp/stream.capnp"`), which capnp resolves from its
-      # standard include tree. The Linux apt package ships that tree; the
-      # Windows archive ships only the .exe files, so those imports cannot
-      # resolve. Fixing it needs an `-I` include path threaded through ~10 test
-      # files that currently hardcode their argv — real work, tracked as a known
-      # gap in docs/stability.md rather than papered over. Windows codegen
-      # coverage is therefore genuinely absent, not merely unmeasured.
+      - name: Install Cap'n Proto compiler (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = 'https://capnproto.org/capnproto-c++-win32-1.0.2.zip'
+          $expected = '48a69e9c10350e2c90041e7b8d7a610a43889c178b6431145da62610c9b5435a'
+          $archive = Join-Path $env:RUNNER_TEMP 'capnproto-c++-win32-1.0.2.zip'
+          $install = Join-Path $env:RUNNER_TEMP 'capnproto-win32'
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Cap'n Proto archive checksum mismatch: $actual" }
+          Expand-Archive -Path $archive -DestinationPath $install -Force
+          $capnp = Get-ChildItem -Path $install -Filter capnp.exe -Recurse | Select-Object -First 1
+          if ($null -eq $capnp) { throw 'capnp.exe not found in the verified archive' }
+          $capnp.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # Turn a missing tool into a hard job failure instead of ~10 test files
       # quietly returning SkipZigTest and the suite reporting green. This step
       # is the assertion; tests/hardening/toolchain_gate_test.zig covers
       # committed fixtures but cannot read the environment to check the tool.
       - name: Verify the toolchain the tests depend on is present
-        if: runner.os != 'Windows'
         shell: bash
         run: capnp --version
 
@@ -113,6 +115,12 @@ jobs:
         # class of bug that turned this workflow red mid-sprint more than once.
         if: runner.os == 'Linux'
         run: just check-generated
+
+      - name: Clean-room filtered-package consumers
+        # Runs default, core, and opt-in QUIC consumers from a manifest-filtered
+        # archive in both Debug and ReleaseSafe. The tool confines all writes to
+        # temporary caches and asserts the checkout stays unchanged.
+        run: zig build package-preflight --summary all
 
       - name: Soak smoke (2s, loopback TCP)
         run: zig build soak -- --seconds 2

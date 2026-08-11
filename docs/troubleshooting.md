@@ -229,6 +229,43 @@ Similarly, `sendCall` takes a context pointer and a `QuestionCallback`. The cont
 
 ---
 
+## Retained RPC Results Do Not Finish Automatically
+
+The Experimental `.result_lifetime = .retained` option deliberately leaves the
+remote answer open after its terminal Return. Use a raw
+`sendCall*WithOptions`, a generated `callXxxWithOptions`, or
+`callXxxPipelinedWithOptions`, retain the returned question ID, and finish it
+after the callback has run:
+
+```zig
+const question_id = try client.callLookupWithOptions(
+    ctx,
+    buildLookup,
+    onLookupReturn,
+    .{ .result_lifetime = .retained },
+);
+
+// After the terminal Return is callback-visible:
+try peer.finishRetainedQuestion(question_id, false);
+```
+
+`error.RetainedQuestionPending` means the terminal Return has not arrived yet.
+A failed Finish send leaves the record live, so retry the same call. If
+`sendProvideFromRetainedAnswer` or
+`resolvePromiseExportToThirdPartyFromRetainedAnswer` succeeded,
+`error.RetainedQuestionAlreadyTransferred` is expected: the Level-3 coupling
+now owns Finish, and manual cleanup would race it. `Peer.stats()` separates
+caller-owned `retained_questions` from
+`transferred_retained_questions`; a nonzero transferred gauge after the
+coupling has ended usually means its control-frame send failed. Keep driving
+`Peer.checkDeadlines()` so maintenance can retry it even when no outbound call
+clock is configured.
+
+Streaming fire-and-forget methods do not expose retained lifetime. Their
+StreamClient calls stay automatic.
+
+---
+
 ## L3 Vat Clock and Manual Transport Close
 
 The high-level Experimental `rpc.peer.Vat` enables a 30-second parked-Accept

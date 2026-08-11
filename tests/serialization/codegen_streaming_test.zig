@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
+const capnp_cli = @import("support/capnp_cli.zig");
 
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
@@ -27,18 +28,12 @@ test "Codegen emits streaming method types and handlers" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/streaming.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -179,20 +174,13 @@ test "Codegen omits unused annotation-only imports from rpc.capnp" {
     defer allocator.free(src_prefix_arg);
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
-        "-Ivendor/ext/capnproto/c++/src",
         src_prefix_arg,
         "-o-",
         schema_path,
     };
 
-    const result = std.process.run(allocator, io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 

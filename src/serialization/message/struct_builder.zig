@@ -130,6 +130,104 @@ pub fn define(
                 return .{ .segment_id = target_segment_id, .offset = offset };
             }
 
+            /// Initialize a nested `List(Void)` at `index`.
+            pub fn initVoidList(self: PointerListBuilder, index: u32, element_count: u32) !VoidListBuilderType {
+                return self.initVoidListInSegment(index, element_count, self.segment_id);
+            }
+
+            /// Initialize a nested `List(Void)` in `target_segment_id`.
+            pub fn initVoidListInSegment(
+                self: PointerListBuilder,
+                index: u32,
+                element_count: u32,
+                target_segment_id: u32,
+            ) !VoidListBuilderType {
+                _ = try self.initListInSegment(index, 0, element_count, target_segment_id);
+                return .{ .element_count = element_count };
+            }
+
+            /// Initialize a nested `List(Text)` at `index`.
+            pub fn initTextList(self: PointerListBuilder, index: u32, element_count: u32) !TextListBuilderType {
+                return self.initTextListInSegment(index, element_count, self.segment_id);
+            }
+
+            /// Initialize a nested `List(Text)` in `target_segment_id`.
+            pub fn initTextListInSegment(
+                self: PointerListBuilder,
+                index: u32,
+                element_count: u32,
+                target_segment_id: u32,
+            ) !TextListBuilderType {
+                const info = try self.initListInSegment(index, 6, element_count, target_segment_id);
+                return .{
+                    .builder = self.builder,
+                    .segment_id = info.segment_id,
+                    .elements_offset = info.offset,
+                    .element_count = element_count,
+                };
+            }
+
+            /// Initialize a nested pointer list at `index`.
+            pub fn initPointerList(self: PointerListBuilder, index: u32, element_count: u32) !PointerListBuilder {
+                return self.initPointerListInSegment(index, element_count, self.segment_id);
+            }
+
+            /// Initialize a nested pointer list in `target_segment_id`.
+            pub fn initPointerListInSegment(
+                self: PointerListBuilder,
+                index: u32,
+                element_count: u32,
+                target_segment_id: u32,
+            ) !PointerListBuilder {
+                const info = try self.initListInSegment(index, 6, element_count, target_segment_id);
+                return .{
+                    .builder = self.builder,
+                    .segment_id = info.segment_id,
+                    .elements_offset = info.offset,
+                    .element_count = element_count,
+                };
+            }
+
+            /// Initialize a nested inline-composite struct list at `index`.
+            pub fn initStructList(
+                self: PointerListBuilder,
+                index: u32,
+                element_count: u32,
+                data_words: u16,
+                pointer_words: u16,
+            ) !StructListBuilderType {
+                return self.initStructListInSegment(
+                    index,
+                    element_count,
+                    data_words,
+                    pointer_words,
+                    self.segment_id,
+                );
+            }
+
+            /// Initialize a nested inline-composite struct list in
+            /// `target_segment_id`.
+            pub fn initStructListInSegment(
+                self: PointerListBuilder,
+                index: u32,
+                element_count: u32,
+                data_words: u16,
+                pointer_words: u16,
+                target_segment_id: u32,
+            ) !StructListBuilderType {
+                if (index >= self.element_count) return error.IndexOutOfBounds;
+                const pointer_pos = self.elements_offset + @as(usize, index) * 8;
+                return self.builder.writeStructListPointer(
+                    self.segment_id,
+                    pointer_pos,
+                    element_count,
+                    data_words,
+                    pointer_words,
+                    target_segment_id,
+                    target_segment_id,
+                );
+            }
+
             /// Initialize a `u8` list at the given element index and return its builder.
             pub fn initU8List(self: PointerListBuilder, index: u32, element_count: u32) !U8ListBuilderType {
                 return self.initU8ListInSegment(index, element_count, self.segment_id);
@@ -1065,7 +1163,7 @@ pub fn define(
 
             /// Allocate a pointer list at the given pointer index and return its builder.
             /// Each element is a single pointer (text, data, struct, or capability).
-            pub fn writePointerList(self: @This(), pointer_index: usize, element_count: u32) !PointerListBuilder {
+            pub fn writePointerList(self: @This(), pointer_index: usize, element_count: u32) anyerror!PointerListBuilder {
                 return self.writePointerListInSegment(pointer_index, element_count, self.segment_id);
             }
 
@@ -1075,10 +1173,8 @@ pub fn define(
                 pointer_index: usize,
                 element_count: u32,
                 target_segment_id: u32,
-            ) !PointerListBuilder {
+            ) anyerror!PointerListBuilder {
                 if (pointer_index >= self.pointer_count) return error.PointerIndexOutOfBounds;
-
-                const total_bytes = @as(usize, element_count) * 8;
 
                 while (self.builder.segments.items.len <= target_segment_id) {
                     _ = try self.builder.createSegment();
@@ -1088,28 +1184,17 @@ pub fn define(
                 const pointer_pos = self.offset + @as(usize, self.data_size) * 8 + pointer_index * 8;
                 try bounds.checkBoundsMut(source_segment.items, pointer_pos, 8);
 
-                const target_segment = &self.builder.segments.items[target_segment_id];
-                const landing_pad_pos = if (self.segment_id == target_segment_id) null else target_segment.items.len;
-                if (landing_pad_pos) |_| {
-                    try target_segment.appendNTimes(self.builder.allocator, 0, 8);
-                }
-
-                const elements_offset = target_segment.items.len;
-                try target_segment.appendNTimes(self.builder.allocator, 0, total_bytes);
-
-                if (self.segment_id == target_segment_id) {
-                    const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(elements_offset)) - @as(isize, @intCast(pointer_pos)) - 8, 8)));
-                    const list_ptr = try make_list_pointer(rel_offset, 6, element_count);
-                    std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], list_ptr, .little);
-                } else {
-                    const landing_pos = landing_pad_pos.?;
-                    const rel_offset = @as(i32, @intCast(@divTrunc(@as(isize, @intCast(elements_offset)) - @as(isize, @intCast(landing_pos)) - 8, 8)));
-                    const list_ptr = try make_list_pointer(rel_offset, 6, element_count);
-                    std.mem.writeInt(u64, target_segment.items[landing_pos..][0..8], list_ptr, .little);
-
-                    const far_ptr = try make_far_pointer(false, @as(u32, @intCast(landing_pos / 8)), target_segment_id);
-                    std.mem.writeInt(u64, source_segment.items[pointer_pos..][0..8], far_ptr, .little);
-                }
+                // Keep pointer-list allocation on the same checked path as every
+                // other primitive list. In particular, writeListPointer rejects
+                // counts that do not fit the wire's 29-bit D field and checks the
+                // byte-size arithmetic before reserving any content.
+                const elements_offset = try self.builder.writeListPointer(
+                    self.segment_id,
+                    pointer_pos,
+                    6,
+                    element_count,
+                    target_segment_id,
+                );
 
                 return PointerListBuilder{
                     .builder = self.builder,
