@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 # Rapid pushes to a branch (or PR) supersede in-flight runs: cancel the older
-# run so the 11-job matrix does not pile up and starve runners.
+# run so the multi-platform matrix does not pile up and starve runners.
 #
 # KNOWN FAILURE MODE (2026-07-30): a run cancelled here can still execute
 # setup-zig's post step and save a PARTIAL `.zig-cache`. Because restores are
@@ -184,8 +184,12 @@ jobs:
         run: zig build -Dio-backend=evented check --summary all
 
   quic-transport:
-    name: QUIC baseline/native transport
-    runs-on: ubuntu-latest
+    name: QUIC targeted transport (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -209,6 +213,7 @@ jobs:
       - name: Prefetch dependency tree
         # Retries transient upstream failures (googlesource.com 503s) so the
         # QUIC lane only fails on real regressions.
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             if zig build --fetch=all; then
@@ -222,14 +227,29 @@ jobs:
           echo "dependency fetch failed after 3 attempts"
           exit 1
 
+      # This is the platform gate: all three real QUIC test binaries must
+      # execute natively, in both Debug and ReleaseSafe, with a source inventory
+      # floor and an explicit ban on SkipZigTest. A compile-only package
+      # consumer is not transport evidence.
+      - name: Run native QUIC transport evidence (Debug, no skips)
+        shell: bash
+        run: just test-rpc-quic-evidence Debug
+
+      - name: Run native QUIC transport evidence (ReleaseSafe, no skips)
+        shell: bash
+        run: just test-rpc-quic-evidence ReleaseSafe
+
+      # The remaining steps validate the complete QUIC package root, rather
+      # than the focused transport. Keep them on Linux to avoid tripling the
+      # expensive full-tree gate now that transport execution itself is
+      # cross-platform.
       - name: Build QUIC-enabled targets
+        if: runner.os == 'Linux'
         run: zig build -Dquic=true --summary all
 
       - name: Check QUIC-enabled build graph
+        if: runner.os == 'Linux'
         run: zig build -Dquic=true check --summary all
-
-      - name: Run QUIC baseline/native transport tests
-        run: zig build -Dquic=true test-rpc-quic --summary all
 
       # The FULL suite under -Dquic=true, because `-Dquic` swaps the library
       # ROOT (src/lib_quic.zig) and the targeted lanes above never compile the
@@ -239,16 +259,8 @@ jobs:
       # nothing in between ever built e.g. the serialization tests against the
       # root a QUIC consumer actually gets.
       - name: Run the full suite against the QUIC library root
+        if: runner.os == 'Linux'
         run: zig build -Dquic=true test --summary all
-
-      # Proves the lanes above did real work rather than passing vacuously.
-      # build.zig resolves quic-zig with `try b.dependencyLazy(...)`, so an
-      # unresolved dependency now propagates out of `build`; before that, a null
-      # module silently dropped every QUIC step and the lane exited 0 having
-      # compiled nothing. Asserts on the step COUNT, which is the only signal
-      # that distinguishes the two.
-      - name: The QUIC lane must not be a silent no-op
-        run: just check-quic-not-noop
 
       # The default `check-api` job runs WITHOUT -Dquic=true, so it sees
       # `rpc.transport.quic` as the disabled stub and the real ServerOptions
@@ -257,6 +269,7 @@ jobs:
       # invariant that matters: enabling an Experimental transport must leave
       # docs/api-snapshot.txt (the FROZEN contract) byte-identical.
       - name: QUIC-enabled API snapshot
+        if: runner.os == 'Linux'
         run: zig build -Dquic=true check-api-quic
 
       # NO staleness check on docs/api-snapshot-experimental-quic.txt, and that
@@ -272,6 +285,7 @@ jobs:
       # byte-identical with QUIC enabled, and that holds on every platform.
 
       - name: Compile QUIC documentation snippet fixtures
+        if: runner.os == 'Linux'
         run: zig build -Dquic=true test-docs-snippets-quic --summary all
 
   docs-smoke:

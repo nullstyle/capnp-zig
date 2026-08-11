@@ -127,6 +127,70 @@ test-rpc-integration:
 test-rpc-quic:
     zig build -Dquic=true test-rpc-quic --summary all
 
+# Run the native QUIC suites and prove the lane is neither vacuous nor hiding
+# platform skips. The source-count floor remains useful on a warm local cache,
+# where Zig reports `run test cached` instead of repeating pass totals.
+test-rpc-quic-evidence optimize="Debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    files=(
+      tests/rpc/transport/quic/rpc_quic_transport_test.zig
+      tests/rpc/transport/quic/rpc_quic_public_api_test.zig
+      tests/rpc/transport/quic/rpc_quic_connection_internal_test.zig
+    )
+    declared=0
+    for file in "${files[@]}"; do
+      while IFS= read -r source_line || [ -n "$source_line" ]; do
+        case "$source_line" in
+          *SkipZigTest*)
+            echo "ERROR: ${file} contains a skip path: ${source_line}" >&2
+            exit 1
+            ;;
+          'test "'*) declared=$((declared + 1)) ;;
+        esac
+      done < "$file"
+    done
+    if [ "$declared" -lt 44 ]; then
+      echo "ERROR: QUIC test inventory fell to ${declared}; expected at least 44" >&2
+      exit 1
+    fi
+
+    set +e
+    out="$(zig build -Dquic=true -Doptimize={{ optimize }} test-rpc-quic --summary all 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$out"
+    if [ "$rc" -ne 0 ]; then
+      exit "$rc"
+    fi
+    run_steps=0
+    total=0
+    while IFS= read -r output_line || [ -n "$output_line" ]; do
+      if [[ "$output_line" =~ (^|[[:space:]])[0-9]+[[:space:]]+skip(ped)?([[:space:]]|$) ]]; then
+        echo "ERROR: QUIC transport evidence reported a skipped test" >&2
+        exit 1
+      fi
+      if [[ "$output_line" == *"run test"* ]]; then
+        run_steps=$((run_steps + 1))
+      fi
+      if [[ "$output_line" =~ Build[[:space:]]Summary:[[:space:]][0-9]+/([0-9]+)[[:space:]]steps[[:space:]]succeeded ]]; then
+        total="${BASH_REMATCH[1]}"
+      fi
+    done <<< "$out"
+    if [ "$run_steps" -lt 3 ]; then
+      echo "ERROR: QUIC lane exposed only ${run_steps} test run steps; expected all three suites" >&2
+      exit 1
+    fi
+    if [ "$total" -eq 0 ]; then
+      echo "ERROR: no Build Summary line; cannot prove the QUIC lane did any work" >&2
+      exit 1
+    fi
+    if [ "$total" -lt 13 ]; then
+      echo "ERROR: QUIC lane built only ${total} steps; expected at least 13" >&2
+      exit 1
+    fi
+    echo "QUIC {{ optimize }} evidence: ${declared} declared tests, ${run_steps} run steps, no skips"
+
 # Run benchmark regression checks
 bench-check:
     zig build -Doptimize=ReleaseFast bench-check
@@ -180,10 +244,10 @@ e2e-scaffold:
 ci-quic:
     just build-quic
     just check-quic
-    just test-rpc-quic
+    just test-rpc-quic-evidence Debug
+    just test-rpc-quic-evidence ReleaseSafe
     just test-docs-snippets-quic
     just test-quic-full
-    just check-quic-not-noop
     zig build -Dquic=true check-api-quic
 
 # The FULL suite against the QUIC library ROOT. `-Dquic=true` swaps the root to
@@ -193,38 +257,10 @@ ci-quic:
 test-quic-full:
     zig build -Dquic=true test --summary all
 
-# Assert the QUIC lane actually BUILT something, rather than trusting its exit
-# code.
-#
-# build.zig now resolves quic-zig with `try b.dependencyLazy(...)`, so an
-# unresolved dependency propagates out of `build` instead of yielding a null
-# module -- which makes "quic enabled but no quic steps" unrepresentable. This
-# recipe is the belt-and-braces for the day someone reintroduces an
-# `orelse null`: back when the module could be null, every QUIC step vanished
-# from the graph and `-Dquic=true test-rpc-quic` exited 0 having compiled
-# nothing. The distinguishing signal is the STEP COUNT, not the status:
-# healthy is 13 steps, the silent no-op was 1.
-#
-# Deliberately a floor, not an equality -- adding QUIC tests raises the count,
-# and only a collapse toward 1 is the failure being detected.
+# Compatibility alias for the older non-vacuity recipe name. The evidence gate
+# now also asserts the three-suite inventory and bans skipped tests.
 check-quic-not-noop:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    out="$(zig build -Dquic=true test-rpc-quic --summary all 2>&1)"
-    line="$(printf '%s\n' "$out" | grep -oE 'Build Summary: [0-9]+/[0-9]+ steps succeeded' | tail -1)"
-    if [ -z "$line" ]; then
-      printf '%s\n' "$out" | tail -20
-      echo "ERROR: no Build Summary line; cannot prove the QUIC lane did any work" >&2
-      exit 1
-    fi
-    total="$(printf '%s' "$line" | sed -E 's|.*/([0-9]+) steps succeeded|\1|')"
-    if [ "$total" -lt 5 ]; then
-      echo "ERROR: QUIC lane built only ${total} steps ($line)." >&2
-      echo "       That is the silent no-op shape: quic-zig did not resolve, so every" >&2
-      echo "       QUIC step was omitted and the lane passed while compiling nothing." >&2
-      exit 1
-    fi
-    echo "QUIC lane did real work: ${line}"
+    just test-rpc-quic-evidence Debug
 
 # CI gate (format, compile, docs, tests, QUIC, and interop e2e)
 ci:
