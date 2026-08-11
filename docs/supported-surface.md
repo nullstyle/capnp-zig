@@ -251,9 +251,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
   change a vat whose `Provide` and `Accept` arrive on **different peers** can
   serve the handoff (Experimental). The pieces: a vat-wide
   `rpc.vat.provisions.ProvisionIndex` (refcounted, connection-independent
-  provision objects; the index is consulted only at Provide registration,
-  Accept lookup, and parking — release/Finish/teardown never touch it, so
-  index-first death cannot wedge a matched handoff), `Peer.attachProvisionIndex`
+  provision objects; matched handoffs remain independent of later index
+  teardown, while parked holder records are centrally detached on adoption,
+  Finish, expiry, transport close, and peer/index teardown), `Peer.attachProvisionIndex`
   / `detachProvisionIndex`, the `rpc.peer.Vat` facade (owns the index + the
   accept-embargo CSPRNG; `enroll` one peer per connection), a Release-immune
   `handoff_ref_count` export ref class pinning provided/proxied targets, the
@@ -288,15 +288,11 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      which the generated param accessors already do) is the whole application
      obligation.
   2. The vat (index/`Vat` + all enrolled peers) is **single-threaded**;
-     `WorkerPool`-hosted multi-peer vats are unsupported, and pool peers keep
-     the legacy counter embargo ids. To be precise about the cause, because an
-     earlier revision of this list stated it wrongly: the pool does not share a
-     CSPRNG between workers, it installs **no** entropy source at all
-     (`src/rpc/integration/worker_pool.zig` never calls `setEntropySource`), so
-     a pool peer falls back to counter ids. The genuinely unsynchronised
-     sharing is `Vat.enroll` handing every enrolled peer a pointer to the one
-     `&self.rng` (`src/rpc/vat/host.zig:62`), which is sound only because a vat
-     is single-threaded.
+     `WorkerPool`-hosted multi-peer vats remain unsupported. WorkerPool peers
+     do receive per-worker OS-seeded CSPRNG entropy and fail closed if seeding
+     is unavailable; entropy is no longer the limitation. The constraint is
+     shared vat state: `Vat.enroll` gives every enrolled peer the same index
+     and `&self.rng`, neither synchronized across worker threads.
   3. **Cross-implementation hosting is PROVEN against the C++ reference, and
      only against it.** `just e2e-l3-vatc` runs the vendored Cap'n Proto 2.0
      reference as vats A (recipient) and B (introducer) over real TCP against
@@ -304,9 +300,9 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      `thirdPartyHosted` resolve, the Accept, and the spec-form forwarded
      accept-Disembargo; the Zig host registers the provision on one peer,
      serves the Accept cross-peer from the sibling, releases the embargoed
-     Accept on the Disembargo, and drains leak-free. Eight scenarios (happy,
+     Accept on the Disembargo, and drains leak-free. Nine scenarios (happy,
      embargo, unknown-token, disconnect, park-expiry, park-adopt,
-     pipelined-provide, pipelined-provide-chain) assert on both sides — the last two are the
+     park-fairness, pipelined-provide, pipelined-provide-chain) assert on both sides — the last two are the
      `receiverHosted` lift proven against the reference: C++ introduces a
      still-pipelined cap that re-resolves to C++'s own local capability, and
      the accepted cap must reach it (both stored forms, site 1 and site 2).
@@ -318,14 +314,18 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      `park-adopt` proves the other half of the order-independent rendezvous
      (rpc.h:483-492): an Accept naming a provision that does not exist YET
      parks, and is ADOPTED and served when the Provide naming that token
-     arrives. Together with `unknown-token` (parks forever) that covers both
+     arrives. Together with `unknown-token` (remains parked throughout its
+     live observation window) that covers both
      directions of "the two calls can happen in any order".
+     `park-fairness` gives one recipient a one-entry test quota, proves its
+     second unmatched Accept is refused while a sibling completes a real
+     reverse-direction handoff with the first park still live, then drives
+     expiry from ordinary traffic and
+     verifies close/teardown refunds the reservations.
      **Still unproven:** every other implementation (go-capnp's 3PH is `TODO`,
      Rust/Python adapters are two-party only), and — even for C++ —
-     redirected returns / `ThirdPartyAnswer` (absent from the vendored C++),
-     and Accept-before-Provide *parking under a real Provide* (the C++ driver
-     cannot deterministically force that ordering; parking keeps its Zig↔Zig
-     coverage). First contact found and fixed one genuine host defect —
+     redirected returns / `ThirdPartyAnswer` (absent from the vendored C++).
+     First contact found and fixed one genuine host defect —
      reflected-loopback question ids collided with the remote's inbound answer
      ids — which no Zig↔Zig test had exposed.
   4. A promisedAnswer **provided target** whose answer cap is settled resolves
@@ -336,22 +336,22 @@ Beyond Level 1 (all **Experimental**, outside the frozen contract):
      handoff over a promisedAnswer target whose answer is still open
      (`sendCall` auto-Finishes; a suppress-auto-finish call variant is future
      DX work).
-  5. Parked accepts (Accept-before-Provide) are **unauthenticated**: the
-     recipient token is arbitrary bytes and needs no prior `Provide`, no
-     bootstrap, and no handshake. The count/byte budgets
-     (`max_parked_accepts`, `max_parked_accept_bytes`) are vat-wide, and a
-     parked entry's only unconditional release point is `Peer.deinit` — NOT
-     connection close, which does not touch parked accepts — so one stranger
-     connection can squat every park slot in the vat for the peer's entire
-     lifetime and starve unrelated legitimate tokens on sibling peers.
-     `ProvisionIndexLimits.park_ttl_ms` (with `ProvisionIndex.setClock` /
-     `Vat.Options.clock`) bounds this: a parked accept older than the TTL is
-     evicted with an exception `Return` at the next inbound `Accept`. It is
-     **opt-in and off by default**, and the clock is index-owned — never taken
-     from a peer or a frame, so the connection being timed out cannot steer
-     its own expiry. The sweep is deliberately lazy (driven by the Accept
-     path) rather than tick-driven: `on_tick` fires only when the transport
-     poll times out, so a busy attacker suppresses its own ticks.
+  5. Parked accepts (Accept-before-Provide) remain **unauthenticated**: the
+     recipient token is arbitrary bytes and needs no prior `Provide`, bootstrap,
+     or handshake. Admission is therefore containment, not identity. In
+     addition to the vat-wide ceilings, each peer defaults to 64 parks and
+     16 KiB of attributable bytes (normalized token plus embargo bytes, charged
+     per Accept even for a shared token). Transport close detaches that peer's
+     parked and embargo-queued holder records; active provider-owned provisions
+     deliberately remain valid. The high-level `Vat` defaults to a 30-second
+     TTL, requires a custom clock or value-stored `Options.io`, checks the O(1)
+     next deadline at every inbound-frame boundary and from deadline
+     maintenance, and exposes an explicit best-effort sweep. The raw
+     `ProvisionIndex` keeps `park_ttl_ms = null` for compatibility. Explicit
+     null is also the `Vat` opt-out. `ProvisionIndex.stats()` / `Vat.stats()`,
+     per-peer park gauges, redacted pressure/rejection resources, and
+     `TimeoutKind.parked_accept` provide Experimental operability without
+     exposing token or frame contents.
 - **Level 4 (Join):** a guarded Zig↔Zig runtime pilot is present and
   documented in [`rpc-l4-join-readiness.md`](rpc-l4-join-readiness.md).
   `Peer.sendJoinExperimental` can originate raw Join parts, and inbound `Join`
