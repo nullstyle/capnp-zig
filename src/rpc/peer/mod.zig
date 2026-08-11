@@ -47,6 +47,8 @@ const vat_network = @import("../vat/network.zig");
 const peer_transport_callbacks = peer_transport.callbacks;
 const peer_transport_state = peer_transport.state;
 const peer_question_state = @import("./peer_question_state.zig");
+const retained_question_state = @import("./retained_questions.zig");
+const provide_forward_target = @import("./provide/forward_target.zig");
 const peer_cleanup = @import("./peer_cleanup.zig");
 const peer_return_frames = @import("./return/peer_return_frames.zig");
 const join_network = @import("../vat/join.zig");
@@ -203,6 +205,8 @@ const ResolvedImport = state.ResolvedImport;
 
 pub const PeerLimits = state.PeerLimits;
 pub const PeerTimeouts = state.PeerTimeouts;
+pub const ResultLifetime = retained_question_state.ResultLifetime;
+pub const CallOptions = retained_question_state.CallOptions;
 
 const QuestionDeinitCtxFn = state.QuestionDeinitCtxFn;
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;
@@ -258,7 +262,7 @@ const ForwardVineCallContext = struct {
     /// The peer that received VatA's original pipelined call (B↔A). Its
     /// `recipient_answer_id` active-inbound question is completed with VatC's
     /// result.
-    recipient_peer: *Peer,
+    recipient_peer: ?*Peer,
     /// VatA's original pipelined question id on `recipient_peer` (B↔A).
     recipient_answer_id: u32,
     /// VatA's parked call params, cloned into the forwarded call sent to VatC.
@@ -275,7 +279,15 @@ const ForwardVineCallContext = struct {
     source_inbound_caps: *cap_table.InboundCapTable,
     created_param_proxy_ids: std.ArrayList(u32) = .empty,
     param_proxies_committed: bool = false,
-    /// One-shot back-signal to `forwardVineCallToProvidedCap`, set true by
+    /// Back-link registration on `recipient_peer`. It lets recipient teardown
+    /// null this borrowed pointer before the async forwarding peer can invoke
+    /// the Return callback.
+    recipient_link_registered: bool = false,
+    /// True only after the async forwarded question owns this context. If its
+    /// peer tears down without invoking the Return callback, `deinit` fails the
+    /// still-live upstream answer exactly once.
+    recipient_answer_pending: bool = false,
+    /// One-shot back-signal to `forwardVineCallToProvidedTarget`, set true by
     /// `forwardVineReturn` the instant the return callback runs (before it frees
     /// this ctx). It points at a stack-local `bool` in that caller and is valid
     /// ONLY while the callback runs SYNCHRONOUSLY nested inside `sendCall` (the
@@ -297,6 +309,25 @@ const ForwardVineCallContext = struct {
 
     fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *ForwardVineCallContext = @ptrCast(@alignCast(ctx_ptr));
+        if (ctx.recipient_peer) |recipient| {
+            if (ctx.recipient_link_registered) {
+                recipient.deregisterForwardVineRelay(ctx);
+                ctx.recipient_link_registered = false;
+            }
+            ctx.recipient_peer = null;
+            if (ctx.recipient_answer_pending) {
+                ctx.recipient_answer_pending = false;
+                recipient.sendReturnException(
+                    ctx.recipient_answer_id,
+                    "forwarded handoff connection closed",
+                ) catch |err| {
+                    log.debug("forwarded handoff teardown: failed to settle question {}: {}", .{
+                        ctx.recipient_answer_id,
+                        err,
+                    });
+                };
+            }
+        }
         ctx.rollbackParamProxies();
         ctx.created_param_proxy_ids.deinit(allocator);
         allocator.destroy(ctx);
@@ -1255,30 +1286,24 @@ const OutboundProvide = struct {
     provide_peer: ?*Peer,
     /// The Provide question id to Finish when the vine is released.
     provide_question_id: u32,
+    /// Caller-owned answer whose lifetime transferred into this handoff. The
+    /// source answer and the Provide question are distinct wire questions; a
+    /// completed coupling must Finish both. Null for ordinary `sendProvide`.
+    retained_source_question_id: ?u32 = null,
     /// When the handoff was originated by resolving a promise EXPORT to the
     /// third party (`resolvePromiseExportToThirdParty`), this is that promise
     /// export id on THIS peer, and it resolved locally to the vine (so replayed
-    /// pipelined calls dispatch to the vine — where, with `provided_import_id`
-    /// set, they are FORWARDED to VatC per issue #56 rather than rejected). The
+    /// pipelined calls dispatch to the vine — where the owned forwarding target
+    /// sends them to VatC per issue #56 rather than rejecting them). The
     /// vine's destruction on Release invalidates that resolution target, so the
     /// vine teardown in `handleRelease` nulls the promise export's `resolved` link
     /// to avoid a dangling target. Null for a bare `sendProvide` handoff (no
     /// promise export involved, e.g. the P0–P2 return-a-vine path).
     resolved_promise_export_id: ?u32 = null,
-    /// L3 parked-call FORWARDING (issue #56): the import id, on `provide_peer`
-    /// (B↔C), of the capability that was provided to VatC — i.e. the
-    /// `provided_target.imported_cap` VatB passed to `sendProvide`. When a
-    /// caller (VatA) pipelined calls on the handed-off promise and they were
-    /// parked at VatB, resolving the promise replays them onto the VINE export
-    /// (the Level-1/2 fallback). Rather than reject them at the vine, VatB
-    /// FORWARDS each replayed call to VatC over `provide_peer`, targeting this
-    /// import, and relays VatC's result back to complete VatA's original
-    /// pipelined question (see `forwardVineCallToProvidedCap`). Null when the
-    /// provided target is not a simple imported cap (e.g. a `promisedAnswer`
-    /// target, or the P0–P2 return-a-vine path with no pipelined caller): in
-    /// that case the vine keeps its rejecting behavior, since there is no
-    /// unambiguous single import on `provide_peer` to forward to.
-    provided_import_id: ?u32 = null,
+    /// Owned call target for Level-1/2 vine fallback. Imported targets retain
+    /// the original id; promised-answer targets own their transform operations
+    /// so fallback can forward without borrowing the Provide frame.
+    forward_target: provide_forward_target.ForwardTarget,
     /// E-ORDER (rpc.capnp:898-903): true once `replayResolvedPromiseExport` has
     /// forwarded this coupling's parked pre-resolution calls (or the resolve
     /// path is past the point where any could exist). Until then a
@@ -1306,10 +1331,62 @@ const OutboundProvide = struct {
         op.stashed_accept_disembargo = try allocator.dupe(u8, embargo);
     }
 
-    /// Free the stash slot (coupling teardown). Idempotent.
+    /// Free the stash slot without dropping the forwarding target. Used while
+    /// a live coupling remains in the map.
     fn deinitStash(op: *OutboundProvide, allocator: std.mem.Allocator) void {
         if (op.stashed_accept_disembargo) |stash| allocator.free(stash);
         op.stashed_accept_disembargo = null;
+    }
+
+    fn deinit(op: *OutboundProvide, allocator: std.mem.Allocator) void {
+        op.deinitStash(allocator);
+        op.forward_target.deinit(allocator);
+    }
+};
+
+const ProvideOriginationTarget = union(enum) {
+    message_target: protocol.MessageTarget,
+    retained_answer: struct {
+        question_id: u32,
+        ops: []const protocol.PromisedAnswerOp,
+    },
+
+    fn cloneForwardTarget(
+        target: ProvideOriginationTarget,
+        allocator: std.mem.Allocator,
+    ) !provide_forward_target.ForwardTarget {
+        return switch (target) {
+            .message_target => |message_target| provide_forward_target.ForwardTarget.fromMessageTarget(
+                allocator,
+                message_target,
+            ),
+            .retained_answer => |retained| provide_forward_target.ForwardTarget.fromQuestionAndOps(
+                allocator,
+                retained.question_id,
+                retained.ops,
+            ),
+        };
+    }
+
+    fn buildProvide(
+        target: ProvideOriginationTarget,
+        builder: *protocol.MessageBuilder,
+        provide_question_id: u32,
+        recipient: message.AnyPointerReader,
+    ) !void {
+        switch (target) {
+            .message_target => |message_target| try builder.buildProvide(
+                provide_question_id,
+                message_target,
+                recipient,
+            ),
+            .retained_answer => |retained| try builder.buildProvidePromisedAnswerWithOps(
+                provide_question_id,
+                retained.question_id,
+                retained.ops,
+                recipient,
+            ),
+        }
     }
 };
 
@@ -1414,6 +1491,10 @@ pub const Peer = struct {
 
     /// Outstanding outbound calls (question ID -> callback).
     questions: std.AutoHashMap(u32, Question),
+    /// Outbound calls whose remote answers are caller-owned after Return.
+    /// Registration happens with question allocation, before a synchronous
+    /// transport can deliver the Return callback.
+    retained_questions: retained_question_state.Registry,
     /// Wire refs an outstanding outbound Call's params took on local exports
     /// (question ID -> export ids, one per senderHosted/senderPromise
     /// descriptor emitted; duplicates meaningful — each occurrence is one
@@ -1527,6 +1608,13 @@ pub const Peer = struct {
     /// Entries are removed as soon as their coupling drains (vine Release, or the
     /// recipient peer's own deinit). Empty for a peer that originated no handoffs.
     coupled_vines: std.ArrayList(CoupledVine),
+    /// Async forwarded-vine contexts that borrow this peer as the recipient.
+    /// Recipient close/deinit nulls every borrow before this peer can die; the
+    /// forwarding peer's question owns and eventually frees each context.
+    forward_vine_relay_links: std.ArrayList(*ForwardVineCallContext),
+    /// Auto-pickup contexts owned by Accept questions on third-vat peers that
+    /// borrow this peer for the promise/vine side of the handoff.
+    handoff_pickup_links: std.ArrayList(*HandoffPickupContext),
     /// Back-links from proxy exports on other peers that borrow this peer as
     /// their source. Walked at deinit to null those borrowed pointers before this
     /// peer's memory is freed.
@@ -1695,6 +1783,9 @@ pub const Peer = struct {
     /// deinit itself IS the completion, and the transport may already be
     /// gone.
     in_deinit: bool = false,
+    /// Prevent nested transport delivery from recursively retrying the same
+    /// deferred Finish batch.
+    finish_maintenance_in_progress: bool = false,
     /// Optional callback fired once all outstanding questions have been
     /// answered and the shutdown sequence completes.
     shutdown_callback: ?*const fn (peer: *Peer) void = null,
@@ -1789,6 +1880,7 @@ pub const Peer = struct {
             .caps = cap_table.CapTable.init(allocator),
             .exports = std.AutoHashMap(u32, ExportEntry).init(allocator),
             .questions = std.AutoHashMap(u32, Question).init(allocator),
+            .retained_questions = retained_question_state.Registry.init(allocator),
             .question_param_export_refs = std.AutoHashMap(u32, std.ArrayList(u32)).init(allocator),
             .resolved_answers = std.AutoHashMap(u32, ResolvedAnswer).init(allocator),
             .active_inbound_questions = std.AutoHashMap(u32, bool).init(allocator),
@@ -1805,6 +1897,8 @@ pub const Peer = struct {
             .cross_peer_pending_accepts = std.AutoHashMap(u32, CrossPeerAcceptRecord).init(allocator),
             .outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator),
             .coupled_vines = .empty,
+            .forward_vine_relay_links = .empty,
+            .handoff_pickup_links = .empty,
             .cross_peer_proxy_links = .empty,
             .cross_peer_join_relay_links = .empty,
             .pending_joins = std.AutoHashMap(u32, JoinState).init(allocator),
@@ -1878,7 +1972,15 @@ pub const Peer = struct {
     pub fn setQuestionDeadline(self: *Peer, question_id: u32, timeout_ms: u64) !void {
         self.assertThreadAffinity();
         const now = self.clockNow() orelse return error.NoClockConfigured;
-        const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
+        const logical_question_id = if (self.retained_questions.contains(question_id))
+            question_id
+        else
+            self.retained_questions.logicalQuestionIdForWire(question_id) orelse question_id;
+        const wire_answer_id = if (self.retained_questions.get(logical_question_id)) |retained|
+            retained.wire_answer_id
+        else
+            question_id;
+        const entry = self.questions.getPtr(wire_answer_id) orelse return error.UnknownQuestion;
         if (entry.cancelled) return error.QuestionCancelled;
         entry.deadline_ns = now + msToNs(timeout_ms);
     }
@@ -1886,7 +1988,11 @@ pub const Peer = struct {
     /// Remove the deadline from an outstanding question.
     pub fn clearQuestionDeadline(self: *Peer, question_id: u32) !void {
         self.assertThreadAffinity();
-        const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
+        const wire_answer_id = if (self.retained_questions.get(question_id)) |retained|
+            retained.wire_answer_id
+        else
+            question_id;
+        const entry = self.questions.getPtr(wire_answer_id) orelse return error.UnknownQuestion;
         entry.deadline_ns = null;
     }
 
@@ -2109,7 +2215,9 @@ pub const Peer = struct {
     /// is a no-op: `onConnectionClose` already delivered the terminals.
     pub fn deinit(self: *Peer) void {
         self.assertThreadAffinity();
+        if (self.in_deinit) return;
         self.in_deinit = true;
+        self.is_shutting_down = true;
         // LIVENESS (BUG #55): this peer may host held-open Provide questions that
         // recipient peers' `outbound_provides` entries borrow a `provide_peer`
         // pointer back to. `forceCancelAllQuestions` below removes and Finishes
@@ -2123,8 +2231,11 @@ pub const Peer = struct {
         // out, mark provisions closed, clear holder records) BEFORE
         // forceCancelAllQuestions; the send-bearing drain AFTER it.
         self.detachCrossPeerAcceptsOnHolderPeer();
+        self.drainOutboundProvidesOnRecipientPeer();
         var provision_teardown = self.neutralizeProvisionsOnOwnerPeer();
         self.neutralizeCoupledVinesOnProvidePeer();
+        self.neutralizeForwardVineRelaysOnRecipientPeer();
+        self.neutralizeHandoffPickupsOnPromisePeer();
         self.neutralizeCrossPeerProxiesOnSourcePeer();
         self.neutralizeCrossPeerJoinRelaysOnSourcePeer();
         self.neutralizeJoinAcceptHostLinks();
@@ -2168,6 +2279,7 @@ pub const Peer = struct {
             }
         }
         self.questions.deinit();
+        self.retained_questions.deinit();
         // forceCancelAllQuestions above already freed the param-export record
         // of every question still in the map; sweep any stragglers (there
         // should be none — records never outlive their question) so a
@@ -2211,26 +2323,15 @@ pub const Peer = struct {
         // out and drained above; only the backing stores remain.
         self.provisions_by_question.deinit();
         self.cross_peer_pending_accepts.deinit();
-        // OutboundProvide entries own no heap memory (borrowed peer pointer +
-        // plain ids). A live entry at teardown means a handoff was still in
-        // flight — the paired Provide question is torn down with its own peer's
-        // `provides_by_question`. Before dropping the map, deregister each still
-        // live coupling's back-link from its provide_peer (if that peer is still
-        // alive), so a provider peer that outlives THIS recipient never walks a
-        // back-link into freed recipient memory.
-        {
-            var op_it = self.outbound_provides.iterator();
-            while (op_it.next()) |entry| {
-                if (entry.value_ptr.provide_peer) |pp| {
-                    pp.deregisterCoupledVine(self, entry.key_ptr.*);
-                }
-                entry.value_ptr.deinitStash(self.allocator);
-            }
-        }
+        // Recipient-side couplings were moved out and converted to durable
+        // provider Finish requests before any callback-bearing teardown.
+        std.debug.assert(self.outbound_provides.count() == 0);
         self.outbound_provides.deinit();
         // Symmetric back-link list (this peer as a provide_peer). Any residual
         // entries were neutralized at the top of deinit; free the backing store.
         self.coupled_vines.deinit(self.allocator);
+        self.forward_vine_relay_links.deinit(self.allocator);
+        self.handoff_pickup_links.deinit(self.allocator);
         self.cross_peer_proxy_links.deinit(self.allocator);
         self.cross_peer_join_relay_links.deinit(self.allocator);
 
@@ -2407,6 +2508,13 @@ pub const Peer = struct {
         /// Outstanding outbound calls, including cancelled entries that
         /// are still absorbing their late Return.
         outbound_questions: u32,
+        /// Caller-owned retained answers, including retained calls still
+        /// awaiting their terminal Return. Excludes answers whose ownership
+        /// has transferred into another protocol lifecycle.
+        retained_questions: usize,
+        /// Retained source answers currently owned by a coupled protocol
+        /// lifecycle and awaiting its exactly-once Finish.
+        transferred_retained_questions: usize,
         /// Subset of `outbound_questions` that were cancelled locally.
         cancelled_questions: u32,
         /// Inbound calls accepted and not yet returned/finished.
@@ -2445,6 +2553,8 @@ pub const Peer = struct {
         const queued = self.pendingQueuedCallStats();
         return .{
             .outbound_questions = self.questions.count(),
+            .retained_questions = self.retained_questions.countCallerOwned(),
+            .transferred_retained_questions = self.retained_questions.countTransferred(),
             .cancelled_questions = cancelled,
             .active_inbound_questions = self.active_inbound_questions.count(),
             .exports = self.exports.count(),
@@ -2816,15 +2926,102 @@ pub const Peer = struct {
         host_of_recipient: *Peer,
         contact_payload: []const u8,
     ) !ProvideHandle {
+        return self.sendProvideInternal(
+            .{ .message_target = provided_target },
+            recipient,
+            host_of_recipient,
+            contact_payload,
+            null,
+        );
+    }
+
+    /// Originate a Provide whose target is an explicitly retained outbound
+    /// answer on this peer. The answer must have returned and remain
+    /// caller-owned. A successful send transfers that answer into the
+    /// vine/Provide coupling; manual Finish then rejects it, and coupling
+    /// completion Finishes both the Provide and source questions.
+    pub fn sendProvideFromRetainedAnswer(
+        self: *Peer,
+        retained_question_id: u32,
+        ops: []const protocol.PromisedAnswerOp,
+        recipient: message.AnyPointerReader,
+        host_of_recipient: *Peer,
+        contact_payload: []const u8,
+    ) !ProvideHandle {
+        self.assertThreadAffinity();
+        host_of_recipient.assertThreadAffinity();
+        const wire_answer_id = try self.claimRetainedQuestionForTransfer(retained_question_id);
+        var transfer_claimed = true;
+        errdefer if (transfer_claimed) self.rollbackRetainedQuestionTransfer(retained_question_id);
+
+        const handle = try self.sendProvideInternal(
+            .{ .retained_answer = .{
+                .question_id = wire_answer_id,
+                .ops = ops,
+            } },
+            recipient,
+            host_of_recipient,
+            contact_payload,
+            retained_question_id,
+        );
+        // `sendBuilder` may synchronously drive recipient teardown. A terminal
+        // close drains the coupling before this frame resumes; in that case the
+        // transfer never commits and caller ownership is restored by errdefer.
+        if (!host_of_recipient.outbound_provides.contains(handle.vine_id)) {
+            return error.HandoffClosedDuringTransfer;
+        }
+        self.commitRetainedQuestionTransfer(retained_question_id) catch |err| {
+            // The Provide and vine are already published, so a failed commit
+            // must explicitly unwind them rather than returning an ownerless
+            // handle. Finish publication is durable even if its wire send fails.
+            if (host_of_recipient.outbound_provides.fetchRemove(handle.vine_id)) |removed| {
+                var op = removed.value;
+                op.deinit(host_of_recipient.allocator);
+            }
+            host_of_recipient.caps.clearThirdPartyHosted(handle.vine_id);
+            host_of_recipient.releaseVineExport(handle.vine_id);
+            self.deregisterCoupledVine(host_of_recipient, handle.vine_id);
+            host_of_recipient.finishOriginatedProvide(
+                self,
+                handle.question_id,
+                retained_question_id,
+            );
+            return err;
+        };
+        transfer_claimed = false;
+        return handle;
+    }
+
+    fn sendProvideInternal(
+        self: *Peer,
+        provided_target: ProvideOriginationTarget,
+        recipient: message.AnyPointerReader,
+        host_of_recipient: *Peer,
+        contact_payload: []const u8,
+        retained_source_question_id: ?u32,
+    ) !ProvideHandle {
         self.assertThreadAffinity();
         host_of_recipient.assertThreadAffinity();
         if (self.is_shutting_down or host_of_recipient.is_shutting_down) return error.PeerShuttingDown;
+        if (self.transport_close_notified or host_of_recipient.transport_close_notified) {
+            return error.TransportClosed;
+        }
+
+        var forward_target = try provided_target.cloneForwardTarget(host_of_recipient.allocator);
+        var forward_target_owned = true;
+        defer if (forward_target_owned) forward_target.deinit(host_of_recipient.allocator);
 
         // (1) Held-open Provide question on the host-of-provided-cap connection.
         //     ctx is unused by onProvideNoReturn; pass a valid pointer (self)
         //     rather than undefined so no dispatch path ever reads garbage.
         const question_id = try self.allocateQuestion(self, onProvideNoReturn);
         errdefer self.removeQuestion(question_id);
+        // A Provide is deliberately held open until the recipient drops its
+        // vine; it never receives a Return. The ordinary outbound-call timeout
+        // therefore must not cancel it while a valid handoff is in flight.
+        if (self.questions.getPtr(question_id)) |question| {
+            question.deadline_ns = null;
+        }
 
         // (2) Vine export on the host-of-recipient connection. ctx is unused by
         //     vineRejectingCall; pass host_of_recipient rather than undefined.
@@ -2843,20 +3040,17 @@ pub const Peer = struct {
             host_of_recipient.outbound_provides.count(),
             host_of_recipient.limits.max_active_provides,
         );
-        // Remember how to reach the provided cap on `provide_peer` (B↔C) so a
-        // parked pipelined call replayed on the vine can be FORWARDED to VatC
-        // (issue #56) instead of hitting the rejecting vine. Only a simple
-        // `importedCap` target has an unambiguous single import to forward to;
-        // for any other target shape the vine keeps rejecting (documented on
-        // OutboundProvide.provided_import_id).
-        const provided_import_id: ?u32 =
-            if (provided_target.tag == .importedCap) provided_target.imported_cap else null;
         try host_of_recipient.outbound_provides.put(vine_id, .{
             .provide_peer = self,
             .provide_question_id = question_id,
-            .provided_import_id = provided_import_id,
+            .retained_source_question_id = retained_source_question_id,
+            .forward_target = forward_target,
         });
-        errdefer _ = host_of_recipient.outbound_provides.remove(vine_id);
+        forward_target_owned = false;
+        errdefer if (host_of_recipient.outbound_provides.fetchRemove(vine_id)) |removed| {
+            var op = removed.value;
+            op.deinit(host_of_recipient.allocator);
+        };
 
         // (3b) LIVENESS (BUG #55): register the reverse back-link on `self` (the
         //      host-of-provided-cap peer). If `self` deinits before the vine is
@@ -2869,7 +3063,7 @@ pub const Peer = struct {
         // (4) Send the Provide to the host of the provided cap (VatC).
         var builder = protocol.MessageBuilder.init(self.allocator);
         defer builder.deinit();
-        try builder.buildProvide(question_id, provided_target, recipient);
+        try provided_target.buildProvide(&builder, question_id, recipient);
         try self.sendBuilder(&builder);
 
         log.debug("sent provide question_id={} vine_id={}", .{ question_id, vine_id });
@@ -3105,8 +3299,8 @@ pub const Peer = struct {
     /// pipelined calls on the handed-off promise, those calls are replayed onto
     /// this vine and are FORWARDED to VatC by `maybeForwardVineCall` (issue #56)
     /// BEFORE dispatch ever reaches this handler — so this handler only runs for
-    /// a call on a vine with NO forwarding coupling (`provided_import_id` unset,
-    /// or `provide_peer` already torn down). That is genuine non-handoff misuse
+    /// a call on a vine with no live forwarding coupling (`provide_peer` already
+    /// torn down). That is genuine non-handoff misuse
     /// or a raced teardown; answer it with a clean exception rather than
     /// silently dropping it.
     fn vineRejectingCall(
@@ -3122,11 +3316,11 @@ pub const Peer = struct {
     /// call replayed onto an export. Returns `true` (call consumed) only when
     /// `export_id` is a handoff VINE with a live forwarding coupling — a
     /// `provide_peer` still attached (BUG #55 nulls it on provided-cap-peer
-    /// teardown) and a known `provided_import_id`. In that case the call is
-    /// forwarded cross-peer to VatC and its result is relayed back to complete
-    /// VatA's original pipelined question. Returns `false` for any non-vine
-    /// export and for a vine whose coupling cannot forward (no import target, or
-    /// a torn-down provide_peer), letting normal export dispatch — and thus
+    /// teardown). The owned target may be either an import or a promised answer;
+    /// in both cases the call is forwarded cross-peer to VatC and its result is
+    /// relayed back to complete VatA's original pipelined question. Returns
+    /// `false` for any non-vine export or a torn-down provide peer, letting
+    /// normal export dispatch — and thus
     /// `vineRejectingCall` for the vine — run.
     fn maybeForwardVineCall(
         self: *Peer,
@@ -3136,10 +3330,9 @@ pub const Peer = struct {
     ) anyerror!bool {
         const coupling = self.outbound_provides.get(export_id) orelse return false;
         const provide_peer = coupling.provide_peer orelse return false;
-        const provided_import_id = coupling.provided_import_id orelse return false;
         if (provide_peer.is_shutting_down) return false;
 
-        try self.forwardVineCallToProvidedCap(call, inbound_caps, provide_peer, provided_import_id);
+        try self.forwardVineCallToProvidedTarget(call, inbound_caps, provide_peer, coupling.forward_target);
         return true;
     }
 
@@ -3167,17 +3360,20 @@ pub const Peer = struct {
     /// proxies retain the source-side inbound import ref until the destination
     /// releases the proxy, so callbacks can flow through the forwarded handoff
     /// without dangling the original call/return cap table.
-    fn forwardVineCallToProvidedCap(
+    fn forwardVineCallToProvidedTarget(
         self: *Peer,
         call: protocol.Call,
         inbound_caps: *const cap_table.InboundCapTable,
         provide_peer: *Peer,
-        provided_import_id: u32,
+        provided_target: provide_forward_target.ForwardTarget,
     ) !void {
         // One heap ctx serves BOTH callbacks `sendCall` drives with a single
         // ctx: `forwardVineParams` (synchronous build, reads `source_params`)
         // and `forwardVineReturn` (later, reads `recipient_*`).
-        const relay = try self.allocator.create(ForwardVineCallContext);
+        // Async ownership transfers into a question on `provide_peer`; allocate
+        // the context and its proxy-id list from that same peer so Return and
+        // question-teardown callbacks always free with the matching allocator.
+        const relay = try provide_peer.allocator.create(ForwardVineCallContext);
         relay.* = .{
             .forward_peer = provide_peer,
             .recipient_peer = self,
@@ -3186,7 +3382,8 @@ pub const Peer = struct {
             .source_inbound_caps = @constCast(inbound_caps),
         };
         var relay_owned = true;
-        errdefer if (relay_owned) ForwardVineCallContext.deinit(self.allocator, relay);
+        errdefer if (relay_owned) ForwardVineCallContext.deinit(provide_peer.allocator, relay);
+        try self.registerForwardVineRelay(relay);
 
         // Set true by `forwardVineReturn` iff it runs SYNCHRONOUSLY nested inside
         // the `sendCall` below (the loopback case) — meaning the return callback
@@ -3209,8 +3406,8 @@ pub const Peer = struct {
         // ctx `forwardVineReturn` already freed — critical in synchronous loopback
         // where the return is processed inside this send, before any post-send
         // code could clear that flag.
-        const forwarded_question_id = provide_peer.sendForwardedVineCall(
-            provided_import_id,
+        const forwarded_question_id = provide_peer.sendForwardedVineCallTarget(
+            provided_target,
             call.interface_id,
             call.method_id,
             relay,
@@ -3231,7 +3428,8 @@ pub const Peer = struct {
             // best-effort (logged, not propagated): VatA's own connection settles
             // the question on teardown if this last resort also fails.
             relay_owned = false;
-            ForwardVineCallContext.deinit(self.allocator, relay);
+            relay.recipient_answer_pending = false;
+            ForwardVineCallContext.deinit(provide_peer.allocator, relay);
             self.sendReturnException(call.question_id, @errorName(err)) catch |send_err| {
                 log.debug("forwarded pipelined call: failed to fail question {}: {}", .{ call.question_id, send_err });
             };
@@ -3254,7 +3452,18 @@ pub const Peer = struct {
         relay.param_proxies_committed = true;
         relay.settled_flag = null;
         if (provide_peer.questions.getPtr(forwarded_question_id)) |q| {
+            relay.recipient_answer_pending = true;
             q.deinit_ctx = ForwardVineCallContext.deinit;
+        } else {
+            relay_owned = false;
+            ForwardVineCallContext.deinit(provide_peer.allocator, relay);
+            self.sendReturnException(call.question_id, "forwarded handoff question disappeared") catch |send_err| {
+                log.debug("forwarded pipelined call: failed to settle vanished question {}: {}", .{
+                    call.question_id,
+                    send_err,
+                });
+            };
+            return;
         }
         relay_owned = false;
     }
@@ -3264,12 +3473,13 @@ pub const Peer = struct {
     /// proxy exports. Runs synchronously inside `sendCall`.
     fn forwardVineParams(ctx_ptr: *anyopaque, call_builder: *protocol.CallBuilder) anyerror!void {
         const ctx: *ForwardVineCallContext = castCtx(*ForwardVineCallContext, ctx_ptr);
+        const recipient = ctx.recipient_peer orelse return error.ForwardVineRecipientClosed;
         const payload_builder = try call_builder.payloadTyped();
         try ctx.forward_peer.clonePayloadAcrossPeers(
             call_builder.call.builder,
             payload_builder,
             ctx.source_params,
-            ctx.recipient_peer,
+            recipient,
             ctx.source_inbound_caps,
             &ctx.created_param_proxy_ids,
         );
@@ -3307,9 +3517,15 @@ pub const Peer = struct {
         // if set, still points at that caller's live stack frame. On the async
         // hand-off path the caller has already nulled it, so this is a no-op.
         if (ctx.settled_flag) |flag| flag.* = true;
+        if (recipient) |live_recipient| {
+            live_recipient.deregisterForwardVineRelay(ctx);
+        }
+        ctx.recipient_peer = null;
+        ctx.recipient_answer_pending = false;
         defer ForwardVineCallContext.deinit(peer.allocator, ctx);
 
-        relayForwardedVineReturn(recipient, answer_id, peer, ret, inbound_caps, release_param_caps) catch |err| {
+        const live_recipient = recipient orelse return;
+        relayForwardedVineReturn(live_recipient, answer_id, peer, ret, inbound_caps, release_param_caps) catch |err| {
             log.debug("forwarded pipelined return relay failed for question {}: {}", .{ answer_id, err });
         };
     }
@@ -3732,6 +3948,75 @@ pub const Peer = struct {
         }
     }
 
+    /// Finish a completed caller-owned retained answer. The entry is removed
+    /// only after the Finish frame is accepted by the transport; a send failure
+    /// restores it to the returned state so the caller can retry. A retained
+    /// loopback result has no remote answer table and retires locally.
+    pub fn finishRetainedQuestion(
+        self: *Peer,
+        question_id: u32,
+        release_result_caps: bool,
+    ) !void {
+        self.assertThreadAffinity();
+        const target = try self.retained_questions.beginCallerFinish(question_id);
+        errdefer self.retained_questions.rollbackCallerFinish(question_id);
+        if (!target.is_loopback) {
+            try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+                Peer,
+                self,
+                target.wire_answer_id,
+                release_result_caps,
+                false,
+                Peer.sendFrameControl,
+            );
+        }
+        _ = self.retained_questions.completeFinish(question_id);
+    }
+
+    /// Internal ownership seam for Level-3 handoff integration. Claim is
+    /// allocation-free and is valid only after the terminal Return became
+    /// callback-visible. Commit keeps the entry tracked as transferred until
+    /// that lifecycle successfully Finishes the source answer.
+    fn claimRetainedQuestionForTransfer(self: *Peer, question_id: u32) !u32 {
+        self.assertThreadAffinity();
+        return try self.retained_questions.beginTransfer(question_id);
+    }
+
+    fn rollbackRetainedQuestionTransfer(self: *Peer, question_id: u32) void {
+        self.assertThreadAffinity();
+        self.retained_questions.rollbackTransfer(question_id);
+    }
+
+    fn commitRetainedQuestionTransfer(self: *Peer, question_id: u32) !void {
+        self.assertThreadAffinity();
+        if (!self.retained_questions.commitTransfer(question_id)) {
+            return error.RetainedQuestionTransferNotInProgress;
+        }
+    }
+
+    /// Internal transfer-owner Finish. On failure the transferred answer stays
+    /// live and retryable; on success it leaves all retained gauges exactly once.
+    fn finishTransferredRetainedQuestion(
+        self: *Peer,
+        question_id: u32,
+        release_result_caps: bool,
+    ) !void {
+        self.assertThreadAffinity();
+        const target = try self.retained_questions.beginTransferredFinish(question_id);
+        errdefer self.retained_questions.rollbackTransferredFinish(question_id);
+        if (!target.is_loopback) {
+            try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+                Peer,
+                self,
+                target.wire_answer_id,
+                release_result_caps,
+                false,
+                Peer.sendFrameControl,
+            );
+        }
+        _ = self.retained_questions.completeFinish(question_id);
+    }
+
     /// Cancel an outstanding outbound question.
     ///
     /// The local callback is delivered an exception Return carrying
@@ -3754,14 +4039,27 @@ pub const Peer = struct {
         ex_type: protocol.ExceptionType,
     ) !void {
         self.assertThreadAffinity();
-        const entry = self.questions.getPtr(question_id) orelse return error.UnknownQuestion;
+        const logical_question_id = if (self.retained_questions.contains(question_id))
+            question_id
+        else
+            self.retained_questions.logicalQuestionIdForWire(question_id) orelse question_id;
+        const wire_answer_id = if (self.retained_questions.get(logical_question_id)) |retained|
+            retained.wire_answer_id
+        else
+            question_id;
+        const entry = self.questions.getPtr(wire_answer_id) orelse return error.UnknownQuestion;
         if (entry.cancelled) return;
         const question = entry.*;
 
+        // Cancellation owns the answer lifetime from this point onward: it
+        // emits Finish itself and absorbs the mandatory late Return, so no
+        // caller-owned retained record remains.
+        _ = self.retained_questions.retire(logical_question_id);
+
         if (question.is_loopback) {
-            _ = self.loopback_questions.remove(question_id);
-            self.removeQuestion(question_id);
-            try self.deliverLocalException(question, question_id, reason, ex_type);
+            _ = self.loopback_questions.remove(wire_answer_id);
+            self.removeQuestion(wire_answer_id);
+            try self.deliverLocalException(question, logical_question_id, reason, ex_type);
             return;
         }
 
@@ -3777,15 +4075,15 @@ pub const Peer = struct {
         peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
             self,
-            question_id,
+            wire_answer_id,
             true,
             false,
             Peer.sendFrameControl,
         ) catch |err| {
-            log.debug("cancel finish send failed for question {}: {}", .{ question_id, err });
+            log.debug("cancel finish send failed for question {}: {}", .{ wire_answer_id, err });
         };
 
-        try self.deliverLocalException(question, question_id, reason, ex_type);
+        try self.deliverLocalException(question, logical_question_id, reason, ex_type);
     }
 
     /// Cancel every question whose deadline has passed, and enforce the
@@ -3803,13 +4101,19 @@ pub const Peer = struct {
         // documented outbound-question cancellation count.
         if (self.provision_index) |idx| _ = idx.sweepExpiredParkedAccepts();
 
+        // A failed Finish send must not orphan a completed Provide or its
+        // transferred source answer. Retry those locally-ended lifetimes on
+        // the normal maintenance path, without changing this method's return
+        // value (which remains the count of cancelled questions).
+        self.retryDeferredFinishes();
+
         const now = self.clockNow() orelse return 0;
 
         var expired: std.ArrayList(u32) = .empty;
         defer expired.deinit(self.allocator);
         var it = self.questions.iterator();
         while (it.next()) |kv| {
-            if (kv.value_ptr.cancelled) continue;
+            if (kv.value_ptr.cancelled or kv.value_ptr.finish_on_maintenance) continue;
             const deadline = kv.value_ptr.deadline_ns orelse continue;
             if (now >= deadline) expired.append(self.allocator, kv.key_ptr.*) catch break;
         }
@@ -3896,6 +4200,8 @@ pub const Peer = struct {
         for (ids.items) |question_id| {
             const removed = self.questions.fetchRemove(question_id) orelse continue;
             const question = removed.value;
+            const logical_question_id = self.retained_questions.logicalQuestionIdForWire(question_id) orelse question_id;
+            _ = self.retained_questions.retire(logical_question_id);
             _ = self.loopback_questions.remove(question_id);
             // No wire Return will consume this question's param-export
             // record; free it without spending the refs (transport teardown
@@ -3914,8 +4220,8 @@ pub const Peer = struct {
                     log.debug("drain finish send failed for question {}: {}", .{ question_id, err });
                 };
             }
-            self.deliverLocalException(question, question_id, reason, ex_type) catch |err| {
-                log.debug("drain exception delivery failed for question {}: {}", .{ question_id, err });
+            self.deliverLocalException(question, logical_question_id, reason, ex_type) catch |err| {
+                log.debug("drain exception delivery failed for question {}: {}", .{ logical_question_id, err });
             };
             cancelled += 1;
         }
@@ -3953,6 +4259,7 @@ pub const Peer = struct {
         var swept: usize = 0;
         for (keys.items) |key| {
             const removed = self.pending_third_party_awaits.fetchRemove(key) orelse continue;
+            _ = self.retained_questions.retire(removed.value.question_id);
             if (removed.value.question.deinit_ctx) |deinit_ctx| {
                 deinit_ctx(self.allocator, removed.value.question.ctx);
             }
@@ -4120,6 +4427,49 @@ pub const Peer = struct {
         recipient: message.AnyPointerReader,
         contact_payload: []const u8,
     ) !ProvideHandle {
+        return self.resolvePromiseExportToThirdPartyInternal(
+            promise_id,
+            provide_peer,
+            .{ .message_target = provided_target },
+            recipient,
+            contact_payload,
+        );
+    }
+
+    /// Resolve an exported promise through a Level-3 handoff whose provided
+    /// target is an open, explicitly retained answer on `provide_peer`.
+    /// `ops` selects the capability within that answer. A successful Provide
+    /// transfers the answer lifetime into the vine coupling; callers must not
+    /// subsequently Finish it directly.
+    pub fn resolvePromiseExportToThirdPartyFromRetainedAnswer(
+        self: *Peer,
+        promise_id: u32,
+        provide_peer: *Peer,
+        retained_question_id: u32,
+        ops: []const protocol.PromisedAnswerOp,
+        recipient: message.AnyPointerReader,
+        contact_payload: []const u8,
+    ) !ProvideHandle {
+        return self.resolvePromiseExportToThirdPartyInternal(
+            promise_id,
+            provide_peer,
+            .{ .retained_answer = .{
+                .question_id = retained_question_id,
+                .ops = ops,
+            } },
+            recipient,
+            contact_payload,
+        );
+    }
+
+    fn resolvePromiseExportToThirdPartyInternal(
+        self: *Peer,
+        promise_id: u32,
+        provide_peer: *Peer,
+        provided_target: ProvideOriginationTarget,
+        recipient: message.AnyPointerReader,
+        contact_payload: []const u8,
+    ) !ProvideHandle {
         self.assertThreadAffinity();
         provide_peer.assertThreadAffinity();
         if (self.is_shutting_down or provide_peer.is_shutting_down) return error.PeerShuttingDown;
@@ -4138,20 +4488,35 @@ pub const Peer = struct {
         // third-party-hosted with the contact, couple vine → held-open Provide
         // on `provide_peer`, and send the Provide to VatC. `sendProvide` rolls
         // back all of that on any failure before it returns.
-        const handle = try provide_peer.sendProvide(provided_target, recipient, self, contact_payload);
+        const retained_source_question_id: ?u32 = switch (provided_target) {
+            .message_target => null,
+            .retained_answer => |retained| retained.question_id,
+        };
+        const handle = switch (provided_target) {
+            .message_target => |target| try provide_peer.sendProvide(target, recipient, self, contact_payload),
+            .retained_answer => |retained| try provide_peer.sendProvideFromRetainedAnswer(
+                retained.question_id,
+                retained.ops,
+                recipient,
+                self,
+                contact_payload,
+            ),
+        };
         // Undo the whole origination if the Resolve emission below fails: destroy
         // the vine export + its handoff mark, drop the coupling, and Finish the
         // Provide we just sent so VatC does not leak the provision.
         var origination_owned = true;
         errdefer if (origination_owned) {
-            if (self.outbound_provides.getPtr(handle.vine_id)) |op| op.deinitStash(self.allocator);
-            _ = self.outbound_provides.remove(handle.vine_id);
+            if (self.outbound_provides.fetchRemove(handle.vine_id)) |removed| {
+                var op = removed.value;
+                op.deinit(self.allocator);
+            }
             self.caps.clearThirdPartyHosted(handle.vine_id);
             self.releaseVineExport(handle.vine_id);
             // Drop the liveness back-link `sendProvide` registered on the
             // provide_peer (BUG #55) so unwinding leaves no stale coupling.
             provide_peer.deregisterCoupledVine(self, handle.vine_id);
-            self.finishOriginatedProvide(provide_peer, handle.question_id);
+            self.finishOriginatedProvide(provide_peer, handle.question_id, retained_source_question_id);
         };
 
         // Build the Resolve's resolved descriptor: thirdPartyHosted{ id, vineId }.
@@ -4214,12 +4579,30 @@ pub const Peer = struct {
         // `self.exports`, invalidating the pointer captured during validation.
         var promise_entry = self.exports.getEntry(promise_id) orelse return error.UnknownExport;
 
+        // With no in-flight promise call, direct auto-pickup can synchronously
+        // Accept and Release the vine inside the Resolve send above. In that
+        // case `handleRelease` has already drained the coupling and destroyed
+        // the vine; never publish a resolved export pointing at that dead id.
+        // The remote recipient already owns the direct cap, so locally settle
+        // the obsolete promise export to none and fail any impossible late
+        // parked calls cleanly.
+        if (!self.outbound_provides.contains(handle.vine_id) or
+            !self.exports.contains(handle.vine_id))
+        {
+            promise_entry.value_ptr.resolved = .none;
+            self.caps.clearExportPromise(promise_id);
+            try self.replayResolvedPromiseExport(promise_id, .none);
+            self.flushStashedAcceptDisembargo(handle.vine_id);
+            log.debug("resolved promise export {} completed during synchronous third-party pickup", .{promise_id});
+            return handle;
+        }
+
         // Route pipelined calls that arrive on the promise export through the
-        // vine. With `provided_import_id` recorded on the coupling (an importedCap
-        // provided target), the replay FORWARDS each parked call to VatC over the
-        // B↔C connection (issue #56, `maybeForwardVineCall`); only a coupling that
-        // cannot forward (no import target, or a torn-down provide_peer) falls
-        // back to the vine's rejecting handler. NO promise-held pin is taken on
+        // vine. The coupling owns either the imported or promised-answer target,
+        // so replay FORWARDS each parked call to VatC over the B↔C connection
+        // (issue #56, `maybeForwardVineCall`); only a coupling whose provide peer
+        // has torn down falls back to the vine's rejecting handler. NO
+        // promise-held pin is taken on
         // the vine: its lifetime is driven solely by VatA's wire Release (the
         // handoff-completion signal), which must destroy it to Finish the Provide.
         // A pin would keep the vine alive past that Release and stall the Finish.
@@ -4291,14 +4674,93 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        return self.sendCallWithOptions(target_id, interface_id, method_id, ctx, build, on_return, .{});
+    }
+
+    /// Send a call with an explicit result-lifetime policy. `.automatic`
+    /// preserves `sendCall` exactly; `.retained` withholds Finish after Return
+    /// until `finishRetainedQuestion` or an ownership transfer completes.
+    pub fn sendCallWithOptions(
+        self: *Peer,
+        target_id: u32,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return self.sendCallWithOptionsRestore(
+            target_id,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            options,
+            true,
+        );
+    }
+
+    /// Generator plumbing for heap-owned typed call contexts. Unlike the raw
+    /// callback API, generated callbacks own and free their context, so a
+    /// synchronous callback error must never restore a question that points at
+    /// freed memory.
+    pub fn sendCallGeneratedWithOptions(
+        self: *Peer,
+        target_id: u32,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return self.sendCallWithOptionsRestore(
+            target_id,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            options,
+            false,
+        );
+    }
+
+    fn sendCallWithOptionsRestore(
+        self: *Peer,
+        target_id: u32,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+        restore_on_return_error: bool,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
         log.debug("sendCall target_id={} interface_id=0x{x} method_id={}", .{ target_id, interface_id, method_id });
         if (self.resolved_imports.get(target_id)) |entry| {
             if (!entry.embargoed and entry.cap != null) {
-                return self.sendCallResolved(entry.cap.?, interface_id, method_id, ctx, build, on_return);
+                return self.sendCallResolvedWithOptionsRestore(
+                    entry.cap.?,
+                    interface_id,
+                    method_id,
+                    ctx,
+                    build,
+                    on_return,
+                    options,
+                    restore_on_return_error,
+                );
             }
         }
+
+        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
+            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
+            .retained => Peer.allocateRetainedQuestion,
+        };
 
         const question_id = try peer_call_sender.sendCallToImport(
             Peer,
@@ -4316,7 +4778,7 @@ pub const Peer = struct {
             ctx,
             build,
             on_return,
-            Peer.allocateQuestion,
+            allocate_question,
             Peer.removeQuestion,
             Peer.recordQuestionParamExports,
             Peer.sendBuilder,
@@ -4376,6 +4838,55 @@ pub const Peer = struct {
         );
     }
 
+    /// Forward a fallback call to the exact target named by the original
+    /// Provide. The promised-answer branch deliberately uses the no-restore
+    /// allocator for the same callback-owns-context invariant as the imported
+    /// branch above.
+    fn sendForwardedVineCallTarget(
+        self: *Peer,
+        target: provide_forward_target.ForwardTarget,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+    ) !u32 {
+        self.assertThreadAffinity();
+        if (self.is_shutting_down) return error.PeerShuttingDown;
+        return switch (target) {
+            .imported => |target_id| self.sendForwardedVineCall(
+                target_id,
+                interface_id,
+                method_id,
+                ctx,
+                build,
+                on_return,
+            ),
+            .promised => |promised| peer_call_sender.sendCallPromisedWithOps(
+                Peer,
+                CallBuildFn,
+                QuestionCallback,
+                self.allocator,
+                &self.caps,
+                self,
+                onOutboundCap,
+                rollbackOutboundCap,
+                self,
+                promised.question_id,
+                promised.ops,
+                interface_id,
+                method_id,
+                ctx,
+                build,
+                on_return,
+                Peer.allocateQuestionNoRestore,
+                Peer.removeQuestion,
+                Peer.recordQuestionParamExports,
+                Peer.sendBuilder,
+            ),
+        };
+    }
+
     /// Send a call to a resolved (non-promise) capability. Dispatches to the
     /// appropriate path based on the resolved cap type (imported, exported, or promised).
     pub fn sendCallResolved(
@@ -4387,8 +4898,48 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        return self.sendCallResolvedWithOptions(target, interface_id, method_id, ctx, build, on_return, .{});
+    }
+
+    pub fn sendCallResolvedWithOptions(
+        self: *Peer,
+        target: cap_table.ResolvedCap,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return self.sendCallResolvedWithOptionsRestore(
+            target,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            options,
+            true,
+        );
+    }
+
+    fn sendCallResolvedWithOptionsRestore(
+        self: *Peer,
+        target: cap_table.ResolvedCap,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+        restore_on_return_error: bool,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
+        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
+            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
+            .retained => Peer.allocateRetainedQuestion,
+        };
         return switch (target) {
             .imported => |cap| peer_call_sender.sendCallToImport(
                 Peer,
@@ -4406,14 +4957,27 @@ pub const Peer = struct {
                 ctx,
                 build,
                 on_return,
-                Peer.allocateQuestion,
+                allocate_question,
                 Peer.removeQuestion,
                 Peer.recordQuestionParamExports,
                 Peer.sendBuilder,
             ),
-            .promised => |promised| self.sendCallPromised(promised, interface_id, method_id, ctx, build, on_return),
+            .promised => |promised| self.sendCallPromisedWithOptionsRestore(
+                promised,
+                interface_id,
+                method_id,
+                ctx,
+                build,
+                on_return,
+                options,
+                restore_on_return_error,
+            ),
             .exported => |cap| blk: {
                 try ensureCountLimit(false, self.loopback_questions.count(), self.limits.max_loopback_questions);
+                const allocate_loopback_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
+                    .automatic => if (restore_on_return_error) Peer.allocateLoopbackQuestion else Peer.allocateLoopbackQuestionNoRestore,
+                    .retained => Peer.allocateRetainedLoopbackQuestion,
+                };
                 break :blk peer_call_sender.sendCallToExport(
                     Peer,
                     Question,
@@ -4433,7 +4997,8 @@ pub const Peer = struct {
                     ctx,
                     build,
                     on_return,
-                    Peer.allocateLoopbackQuestion,
+                    allocate_loopback_question,
+                    Peer.removeQuestion,
                     Peer.handleLoopbackFrame,
                 );
             },
@@ -4450,8 +5015,48 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        return self.sendCallPromisedWithOptions(promised, interface_id, method_id, ctx, build, on_return, .{});
+    }
+
+    pub fn sendCallPromisedWithOptions(
+        self: *Peer,
+        promised: protocol.PromisedAnswer,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return self.sendCallPromisedWithOptionsRestore(
+            promised,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            options,
+            true,
+        );
+    }
+
+    fn sendCallPromisedWithOptionsRestore(
+        self: *Peer,
+        promised: protocol.PromisedAnswer,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+        restore_on_return_error: bool,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
+        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
+            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
+            .retained => Peer.allocateRetainedQuestion,
+        };
         return peer_call_sender.sendCallPromised(
             Peer,
             CallBuildFn,
@@ -4468,7 +5073,7 @@ pub const Peer = struct {
             ctx,
             build,
             on_return,
-            Peer.allocateQuestion,
+            allocate_question,
             Peer.removeQuestion,
             Peer.recordQuestionParamExports,
             Peer.sendBuilder,
@@ -4488,8 +5093,86 @@ pub const Peer = struct {
         build: ?CallBuildFn,
         on_return: QuestionCallback,
     ) !u32 {
+        return self.sendCallPromisedWithOpsWithOptions(
+            question_id_target,
+            ops,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            .{},
+        );
+    }
+
+    pub fn sendCallPromisedWithOpsWithOptions(
+        self: *Peer,
+        question_id_target: u32,
+        ops: []const protocol.PromisedAnswerOp,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return self.sendCallPromisedWithOpsWithOptionsRestore(
+            question_id_target,
+            ops,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            options,
+            true,
+        );
+    }
+
+    /// Generator plumbing for pipelined typed calls with heap-owned contexts;
+    /// see `sendCallGeneratedWithOptions`.
+    pub fn sendCallPromisedWithOpsGeneratedWithOptions(
+        self: *Peer,
+        question_id_target: u32,
+        ops: []const protocol.PromisedAnswerOp,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+    ) !u32 {
+        return self.sendCallPromisedWithOpsWithOptionsRestore(
+            question_id_target,
+            ops,
+            interface_id,
+            method_id,
+            ctx,
+            build,
+            on_return,
+            options,
+            false,
+        );
+    }
+
+    fn sendCallPromisedWithOpsWithOptionsRestore(
+        self: *Peer,
+        question_id_target: u32,
+        ops: []const protocol.PromisedAnswerOp,
+        interface_id: u64,
+        method_id: u16,
+        ctx: *anyopaque,
+        build: ?CallBuildFn,
+        on_return: QuestionCallback,
+        options: CallOptions,
+        restore_on_return_error: bool,
+    ) !u32 {
         self.assertThreadAffinity();
         if (self.is_shutting_down) return error.PeerShuttingDown;
+        const allocate_question: *const fn (*Peer, *anyopaque, QuestionCallback) anyerror!u32 = switch (options.result_lifetime) {
+            .automatic => if (restore_on_return_error) Peer.allocateQuestion else Peer.allocateQuestionNoRestore,
+            .retained => Peer.allocateRetainedQuestion,
+        };
         return peer_call_sender.sendCallPromisedWithOps(
             Peer,
             CallBuildFn,
@@ -4507,7 +5190,7 @@ pub const Peer = struct {
             ctx,
             build,
             on_return,
-            Peer.allocateQuestion,
+            allocate_question,
             Peer.removeQuestion,
             Peer.recordQuestionParamExports,
             Peer.sendBuilder,
@@ -7882,6 +8565,56 @@ pub const Peer = struct {
         return self.allocateQuestionWithRestore(ctx, on_return, true);
     }
 
+    /// Allocate and register a retained question as one atomic pre-send step.
+    /// The outbound-question allocator can synchronously notify observers, so
+    /// retained admission is checked both before allocation and immediately
+    /// before registration. No Call is emitted until registration completes.
+    fn allocateRetainedQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        try self.checkRetainedQuestionAdmission();
+
+        // A retained callback is delivered at most once. If it reports an
+        // error after observing the Return, the answer remains explicitly
+        // finishable, but the question callback is not restored and replayed.
+        const question_id = try self.allocateQuestionWithRestore(ctx, on_return, false);
+        errdefer self.removeQuestion(question_id);
+        try self.registerRetainedQuestion(question_id);
+        return question_id;
+    }
+
+    fn checkRetainedQuestionAdmission(self: *Peer) !void {
+        const retained_count = self.retained_questions.count();
+        if (retained_count >= self.limits.max_retained_questions) {
+            events.emitResourceRejection(
+                self.observer,
+                .peer,
+                .unknown,
+                .retained_questions,
+                retained_count +| 1,
+                self.limits.max_retained_questions,
+                error.PeerLimitExceeded,
+            );
+            return error.PeerLimitExceeded;
+        }
+    }
+
+    fn registerRetainedQuestion(self: *Peer, question_id: u32) !void {
+        try self.checkRetainedQuestionAdmission();
+        const retained_before = self.retained_questions.count();
+        const question = self.questions.getPtr(question_id) orelse return error.QuestionClosed;
+        question.suppress_auto_finish = true;
+        question.restore_on_return_error = false;
+        try self.retained_questions.register(question_id);
+        events.emitPressureCrossing(
+            self.observer,
+            .peer,
+            .unknown,
+            .retained_questions,
+            retained_before,
+            self.retained_questions.count(),
+            self.limits.max_retained_questions,
+        );
+    }
+
     /// Allocate an outbound question whose `on_return` callback OWNS and FREES
     /// the ctx (so the question must NOT be restored on a post-callback error —
     /// a restored copy would reference a ctx the callback already freed, a UAF at
@@ -7912,8 +8645,22 @@ pub const Peer = struct {
     /// ever written to a socket, and every implementation (this one included)
     /// hands out wire question ids ascending from 0, so the two stay apart.
     fn allocateLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        return self.allocateLoopbackQuestionWithRestore(ctx, on_return, true);
+    }
+
+    fn allocateLoopbackQuestionNoRestore(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        return self.allocateLoopbackQuestionWithRestore(ctx, on_return, false);
+    }
+
+    fn allocateLoopbackQuestionWithRestore(
+        self: *Peer,
+        ctx: *anyopaque,
+        on_return: QuestionCallback,
+        restore_on_return_error: bool,
+    ) !u32 {
         const scan_start = self.next_loopback_question_id;
         while (self.questions.contains(self.next_loopback_question_id) or
+            self.retained_questions.containsLogicalOrWire(self.next_loopback_question_id) or
             (try self.inboundQuestionIdInUse(self.next_loopback_question_id)))
         {
             self.next_loopback_question_id -%= 1;
@@ -7923,11 +8670,19 @@ pub const Peer = struct {
             &self.next_loopback_question_id,
             ctx,
             on_return,
-            true,
+            restore_on_return_error,
         );
         // The shared allocator advances its cursor upward; walk it back down so
         // loopback ids keep descending from the top of the space.
         self.next_loopback_question_id = question_id -% 1;
+        return question_id;
+    }
+
+    fn allocateRetainedLoopbackQuestion(self: *Peer, ctx: *anyopaque, on_return: QuestionCallback) !u32 {
+        try self.checkRetainedQuestionAdmission();
+        const question_id = try self.allocateLoopbackQuestion(ctx, on_return);
+        errdefer self.removeQuestion(question_id);
+        try self.registerRetainedQuestion(question_id);
         return question_id;
     }
 
@@ -7957,9 +8712,12 @@ pub const Peer = struct {
                 deadline_ns = now + msToNs(ms);
             }
         }
-        const question_id = try peer_question_state.allocateQuestion(
+        const question_id = try peer_question_state.allocateQuestionExcluding(
             Question,
+            retained_question_state.Registry,
             &self.questions,
+            &self.retained_questions,
+            retained_question_state.Registry.containsLogicalOrWire,
             cursor,
             .{
                 .ctx = ctx,
@@ -7983,11 +8741,13 @@ pub const Peer = struct {
     }
 
     fn removeQuestion(self: *Peer, question_id: u32) void {
-        _ = self.questions.remove(question_id);
-        // The question is being discarded without a wire Return (send
-        // rollback, loopback cancel, test drain): free any param-export
-        // record without spending the refs.
-        self.freeQuestionParamExports(question_id);
+        if (self.questions.remove(question_id)) {
+            _ = self.retained_questions.retireLogicalOrWire(question_id);
+            // The question is being discarded without a wire Return (send
+            // rollback, loopback cancel, test drain): free any param-export
+            // record without spending the refs.
+            self.freeQuestionParamExports(question_id);
+        }
         if (self.is_shutting_down and !self.in_deinit and self.questions.count() == 0) {
             self.completeShutdown();
         }
@@ -7999,6 +8759,7 @@ pub const Peer = struct {
                 deinit_ctx(self.allocator, removed.value.ctx);
             }
             self.freeQuestionParamExports(question_id);
+            _ = self.retained_questions.retireLogicalOrWire(question_id);
         }
         if (self.is_shutting_down and !self.in_deinit and self.questions.count() == 0) {
             self.completeShutdown();
@@ -8124,6 +8885,9 @@ pub const Peer = struct {
 
         log.debug("connection closed", .{});
         self.detachCrossPeerAcceptsOnHolderPeer();
+        self.drainOutboundProvidesOnRecipientPeer();
+        self.neutralizeForwardVineRelaysOnRecipientPeer();
+        self.neutralizeHandoffPickupsOnPromisePeer();
         events.emitClose(self.observer, .peer, .unknown, null);
         events.emitConnection(self.observer, .peer, .unknown, .closed);
         // Resolve every still-outstanding question with a synthetic
@@ -8135,6 +8899,10 @@ pub const Peer = struct {
         // safe; the synthetic Return is delivered only to the question's
         // callback and is never cached as an answer or replayed to pipelining.
         _ = self.forceCancelAllQuestions(disconnected_reason, .disconnected);
+        // Completed/transferred retained answers are no longer reachable once
+        // the transport is gone. Drop their local ownership records before the
+        // user close callback; repeated close and later deinit remain no-ops.
+        self.retained_questions.clearRetainingCapacity();
         if (self.on_close) |cb| cb(self.callback_ctx, self);
     }
 
@@ -8586,8 +9354,10 @@ pub const Peer = struct {
                 // Free the stash from the LIVE entry (not the pre-release
                 // snapshot): nested delivery during the release may have
                 // stashed or flushed since the snapshot was taken.
-                if (self.outbound_provides.getPtr(release.id)) |op| op.deinitStash(self.allocator);
-                _ = self.outbound_provides.remove(release.id);
+                if (self.outbound_provides.fetchRemove(release.id)) |removed| {
+                    var op = removed.value;
+                    op.deinit(self.allocator);
+                }
                 self.caps.clearThirdPartyHosted(release.id);
                 // If this vine anchored a promise-export resolution
                 // (`resolvePromiseExportToThirdParty`), that promise resolved
@@ -8610,7 +9380,11 @@ pub const Peer = struct {
                 // Finish the question and drop the reverse back-link on that peer.
                 if (entry.provide_peer) |provide_peer| {
                     provide_peer.deregisterCoupledVine(self, release.id);
-                    self.finishOriginatedProvide(provide_peer, entry.provide_question_id);
+                    self.finishOriginatedProvide(
+                        provide_peer,
+                        entry.provide_question_id,
+                        entry.retained_source_question_id,
+                    );
                 }
             }
         }
@@ -8618,14 +9392,138 @@ pub const Peer = struct {
 
     /// Finish a Provide question this peer originated, on the peer that owns it
     /// (the host-of-provided-cap connection). Removes the held-open question and
-    /// sends the wire `Finish` so the host unregisters the provision. Best
-    /// effort: a failed Finish is logged, not propagated — the vine is already
-    /// gone and the handoff is over on our side.
-    fn finishOriginatedProvide(_: *Peer, provide_peer: *Peer, provide_question_id: u32) void {
-        provide_peer.removeQuestion(provide_question_id);
-        provide_peer.sendFinishForHost(provide_question_id, false, false) catch |err| {
-            log.debug("provide finish send failed for question {}: {}", .{ provide_question_id, err });
-        };
+    /// sends the wire `Finish` so the host unregisters the provision. Both the
+    /// Provide and a transferred retained source answer publish durable finish
+    /// requests before either frame is sent; transport failures stay queued for
+    /// `retryDeferredFinishes` rather than losing the lifetime owner when the
+    /// vine coupling disappears.
+    fn requestOriginatedProvideFinish(
+        provide_peer: *Peer,
+        provide_question_id: u32,
+        retained_source_question_id: ?u32,
+    ) void {
+        if (provide_peer.questions.getPtr(provide_question_id)) |question| {
+            question.finish_on_maintenance = true;
+            question.finish_release_result_caps = false;
+        }
+        if (retained_source_question_id) |source_question_id| {
+            provide_peer.retained_questions.requestTransferredFinish(source_question_id) catch |err| {
+                log.debug("retained source cleanup request failed for question {}: {}", .{ source_question_id, err });
+            };
+        }
+    }
+
+    fn finishOriginatedProvide(
+        _: *Peer,
+        provide_peer: *Peer,
+        provide_question_id: u32,
+        retained_source_question_id: ?u32,
+    ) void {
+        requestOriginatedProvideFinish(
+            provide_peer,
+            provide_question_id,
+            retained_source_question_id,
+        );
+        provide_peer.retryDeferredFinishes();
+    }
+
+    /// Recipient-side terminal cleanup for vine couplings. Move the entire map
+    /// out first, publish every Provide/source-answer Finish request without
+    /// callbacks, then retry each distinct provider only after this peer owns no
+    /// borrowed coupling state. Thus a synchronous send callback can close or
+    /// deinit the recipient without stranding a later entry.
+    fn drainOutboundProvidesOnRecipientPeer(self: *Peer) void {
+        if (self.outbound_provides.count() == 0) return;
+
+        const allocator = self.allocator;
+        var moved = self.outbound_provides;
+        self.outbound_provides = std.AutoHashMap(u32, OutboundProvide).init(allocator);
+        defer moved.deinit();
+
+        var retry_peers: std.ArrayList(*Peer) = .empty;
+        defer retry_peers.deinit(allocator);
+
+        var it = moved.iterator();
+        while (it.next()) |entry| {
+            const vine_id = entry.key_ptr.*;
+            const op = entry.value_ptr;
+            if (op.provide_peer) |provide_peer| {
+                provide_peer.deregisterCoupledVine(self, vine_id);
+                requestOriginatedProvideFinish(
+                    provide_peer,
+                    op.provide_question_id,
+                    op.retained_source_question_id,
+                );
+                if (provide_peer != self and
+                    std.mem.indexOfScalar(*Peer, retry_peers.items, provide_peer) == null)
+                {
+                    retry_peers.append(allocator, provide_peer) catch {};
+                }
+            }
+            if (op.resolved_promise_export_id) |promise_id| {
+                if (self.exports.getEntry(promise_id)) |promise_entry| {
+                    if (promise_entry.value_ptr.resolved) |resolved| {
+                        if (resolved == .exported and resolved.exported.id == vine_id) {
+                            promise_entry.value_ptr.resolved = null;
+                        }
+                    }
+                }
+            }
+            self.caps.clearThirdPartyHosted(vine_id);
+            self.releaseVineExport(vine_id);
+            op.deinit(allocator);
+        }
+
+        for (retry_peers.items) |provide_peer| {
+            provide_peer.retryDeferredFinishes();
+        }
+    }
+
+    /// Retry protocol lifetimes which have ended locally but whose Finish
+    /// frame was rejected by the transport. State is published before any
+    /// send, and the guard makes synchronous nested delivery observe a single
+    /// owner rather than recursively finishing the same question.
+    fn retryDeferredFinishes(self: *Peer) void {
+        if (self.finish_maintenance_in_progress) return;
+        self.finish_maintenance_in_progress = true;
+        defer self.finish_maintenance_in_progress = false;
+
+        var provide_ids: std.ArrayList(u32) = .empty;
+        defer provide_ids.deinit(self.allocator);
+        var question_it = self.questions.iterator();
+        while (question_it.next()) |entry| {
+            if (!entry.value_ptr.finish_on_maintenance) continue;
+            provide_ids.append(self.allocator, entry.key_ptr.*) catch break;
+        }
+        for (provide_ids.items) |question_id| {
+            const question = self.questions.get(question_id) orelse continue;
+            if (!question.finish_on_maintenance) continue;
+            peer_outbound_control.sendFinishWithFlagsViaSendFrame(
+                Peer,
+                self,
+                question_id,
+                question.finish_release_result_caps,
+                false,
+                Peer.sendFrameControl,
+            ) catch |err| {
+                log.debug("deferred provide finish failed for question {}: {}", .{ question_id, err });
+                continue;
+            };
+            self.removeQuestion(question_id);
+        }
+
+        var retained_ids: std.ArrayList(u32) = .empty;
+        defer retained_ids.deinit(self.allocator);
+        var retained_it = self.retained_questions.entries.iterator();
+        while (retained_it.next()) |entry| {
+            if (!entry.value_ptr.finish_requested or entry.value_ptr.state != .transferred) continue;
+            retained_ids.append(self.allocator, entry.key_ptr.*) catch break;
+        }
+        for (retained_ids.items) |question_id| {
+            self.finishTransferredRetainedQuestion(question_id, false) catch |err| {
+                log.debug("deferred retained source finish failed for question {}: {}", .{ question_id, err });
+            };
+        }
     }
 
     /// LIVENESS (BUG #55). Record a back-link on the host-of-provided-cap peer
@@ -8681,6 +9579,72 @@ pub const Peer = struct {
             }
         }
         self.coupled_vines.clearRetainingCapacity();
+    }
+
+    fn registerForwardVineRelay(self: *Peer, relay: *ForwardVineCallContext) !void {
+        try self.forward_vine_relay_links.append(self.allocator, relay);
+        relay.recipient_link_registered = true;
+    }
+
+    fn deregisterForwardVineRelay(self: *Peer, relay: *ForwardVineCallContext) void {
+        if (!relay.recipient_link_registered) return;
+        var i: usize = 0;
+        while (i < self.forward_vine_relay_links.items.len) : (i += 1) {
+            if (self.forward_vine_relay_links.items[i] == relay) {
+                _ = self.forward_vine_relay_links.swapRemove(i);
+                relay.recipient_link_registered = false;
+                return;
+            }
+        }
+        relay.recipient_link_registered = false;
+    }
+
+    /// Null every async forwarded-vine context that borrows this recipient
+    /// before transport-close callbacks or peer teardown can free it. The
+    /// forwarding question still owns the context and will free it later, but
+    /// its Return/deinit path can no longer dereference this peer.
+    fn neutralizeForwardVineRelaysOnRecipientPeer(self: *Peer) void {
+        for (self.forward_vine_relay_links.items) |relay| {
+            if (relay.recipient_peer == self) {
+                relay.recipient_peer = null;
+                relay.recipient_link_registered = false;
+                relay.recipient_answer_pending = false;
+            }
+        }
+        self.forward_vine_relay_links.clearRetainingCapacity();
+    }
+
+    fn registerHandoffPickup(self: *Peer, ctx: *HandoffPickupContext) !void {
+        try self.handoff_pickup_links.append(self.allocator, ctx);
+        ctx.promise_link_registered = true;
+    }
+
+    fn deregisterHandoffPickup(self: *Peer, ctx: *HandoffPickupContext) void {
+        if (!ctx.promise_link_registered) return;
+        var i: usize = 0;
+        while (i < self.handoff_pickup_links.items.len) : (i += 1) {
+            if (self.handoff_pickup_links.items[i] == ctx) {
+                _ = self.handoff_pickup_links.swapRemove(i);
+                ctx.promise_link_registered = false;
+                return;
+            }
+        }
+        ctx.promise_link_registered = false;
+    }
+
+    /// The Accept question on the third-vat peer owns each context. Promise
+    /// peer teardown abandons its local vine ref (the cap table is dying) and
+    /// nulls the callback borrow; the eventual Accept Return/teardown then only
+    /// finishes and frees its own side.
+    fn neutralizeHandoffPickupsOnPromisePeer(self: *Peer) void {
+        for (self.handoff_pickup_links.items) |ctx| {
+            if (ctx.promise_peer == self) {
+                ctx.promise_peer = null;
+                ctx.promise_link_registered = false;
+                ctx.vine_owned = false;
+            }
+        }
+        self.handoff_pickup_links.clearRetainingCapacity();
     }
 
     fn registerCrossPeerProxy(self: *Peer, owner_peer: *Peer, proxy_export_id: u32) !void {
@@ -8853,8 +9817,9 @@ pub const Peer = struct {
     /// accept peer tears down first.
     const HandoffPickupContext = struct {
         allocator: std.mem.Allocator,
-        /// The peer holding the promise import (VatA↔VatB). Borrowed.
-        promise_peer: *Peer,
+        /// The peer holding the promise import (VatA↔VatB). Borrowed while the
+        /// symmetric `handoff_pickup_links` registration is live.
+        promise_peer: ?*Peer,
         /// The promise import id being fulfilled by this handoff.
         promise_id: u32,
         /// The vine import id on `promise_peer`, released after pickup to drive
@@ -8877,6 +9842,8 @@ pub const Peer = struct {
         /// host has committed the Return's export refs; in async delivery, the
         /// callback releases them before freeing this ctx.
         deferred_failed_imports: std.ArrayList(u32) = .empty,
+        promise_link_registered: bool = false,
+        vine_owned: bool = false,
 
         fn deinitCtx(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
             _ = allocator;
@@ -8885,6 +9852,22 @@ pub const Peer = struct {
         }
 
         fn deinitSelf(ctx: *HandoffPickupContext) void {
+            if (ctx.promise_peer) |promise_peer| {
+                if (ctx.promise_link_registered) {
+                    promise_peer.deregisterHandoffPickup(ctx);
+                    ctx.promise_link_registered = false;
+                }
+                ctx.promise_peer = null;
+                if (ctx.vine_owned) {
+                    ctx.vine_owned = false;
+                    promise_peer.releaseImport(ctx.vine_id, 1) catch |err| {
+                        log.debug("auto-pickup teardown vine release failed for promise {}: {}", .{
+                            ctx.promise_id,
+                            err,
+                        });
+                    };
+                }
+            }
             ctx.deferred_failed_imports.deinit(ctx.allocator);
             ctx.allocator.destroy(ctx);
         }
@@ -8995,6 +9978,9 @@ pub const Peer = struct {
         };
         var heap_owned = true;
         errdefer if (heap_owned) heap.deinitSelf();
+        try self.registerHandoffPickup(heap);
+        heap.vine_owned = true;
+        vine_owned = false;
         var pickup_settled = false;
         heap.settled_flag = &pickup_settled;
 
@@ -9030,7 +10016,6 @@ pub const Peer = struct {
         const question_id = accept_peer.sendAcceptNoRestore(provision, embargo, heap, onHandoffAcceptReturn, true) catch |err| {
             if (pickup_settled) {
                 heap_owned = false;
-                vine_owned = false;
                 log.debug("auto-pickup Accept settled before send returned trailing error: {}", .{err});
                 if (heap.accept_answer_id) |answer_id| {
                     heap.finishAcceptAnswer(accept_peer, answer_id, heap.accept_no_finish_needed);
@@ -9043,7 +10028,6 @@ pub const Peer = struct {
         };
         if (pickup_settled) {
             heap_owned = false;
-            vine_owned = false;
             heap.finishAcceptAnswer(accept_peer, question_id, heap.accept_no_finish_needed);
             heap.releaseDeferredFailedImports(accept_peer);
             heap.deinitSelf();
@@ -9051,7 +10035,6 @@ pub const Peer = struct {
         }
         heap.settled_flag = null;
         heap_owned = false;
-        vine_owned = false; // ownership transferred to the Accept flow.
         accept_peer.setQuestionDeinitCtx(question_id, HandoffPickupContext.deinitCtx);
 
         // (3) Emit the paired `context.accept` Disembargo on the promise path to
@@ -9146,7 +10129,10 @@ pub const Peer = struct {
         ctx.accept_no_finish_needed = ret.no_finish_needed;
         defer if (!defer_to_sender) ctx.deinitSelf();
         defer if (!defer_to_sender) ctx.finishAcceptAnswer(accept_peer, ret.answer_id, ret.no_finish_needed);
-        const promise_peer = ctx.promise_peer;
+        const promise_peer = ctx.promise_peer orelse {
+            if (ctx.settled_flag) |flag| flag.* = true;
+            return;
+        };
 
         // Deliver the direct cap to the app FIRST (so it retains the accepted
         // import on `accept_peer` before we touch the vine), then release the
@@ -9159,9 +10145,18 @@ pub const Peer = struct {
             log.debug("auto-pickup handler failed for promise {}: {}", .{ ctx.promise_id, err });
         };
 
-        promise_peer.releaseImport(ctx.vine_id, 1) catch |err| {
-            log.debug("auto-pickup vine release failed for promise {}: {}", .{ ctx.promise_id, err });
-        };
+        // The user callback is unrestricted and may close/deinit the promise
+        // peer. Re-check the registered borrow before touching it again.
+        if (ctx.promise_peer) |live_promise_peer| {
+            live_promise_peer.deregisterHandoffPickup(ctx);
+            ctx.promise_peer = null;
+            if (ctx.vine_owned) {
+                ctx.vine_owned = false;
+                live_promise_peer.releaseImport(ctx.vine_id, 1) catch |err| {
+                    log.debug("auto-pickup vine release failed for promise {}: {}", .{ ctx.promise_id, err });
+                };
+            }
+        }
 
         if (ctx.settled_flag) |flag| flag.* = true;
         if (handler_err) |err| {
@@ -10443,6 +11438,25 @@ pub const Peer = struct {
         adopted_answer_id: u32,
         question: Question,
     ) anyerror!void {
+        // A retained call is addressed publicly by its original caller-chosen
+        // question id, but after awaitFromThirdParty the open remote answer is
+        // the callee-chosen adopted id. Publish that wire identity before the
+        // adoption helper can replay an already-buffered terminal Return: its
+        // callback may synchronously Finish or transfer the retained answer.
+        var previous_retained_answer_id: ?u32 = null;
+        if (self.retained_questions.contains(question_id)) {
+            previous_retained_answer_id = try self.retained_questions.adoptWireAnswer(
+                question_id,
+                adopted_answer_id,
+            );
+        }
+        errdefer if (previous_retained_answer_id) |previous| {
+            self.retained_questions.rollbackWireAnswer(
+                question_id,
+                adopted_answer_id,
+                previous,
+            );
+        };
         try peer_third_party_adoption.adoptThirdPartyAnswer(
             Peer,
             Question,
@@ -10494,6 +11508,7 @@ pub const Peer = struct {
         }
 
         var latency_started_ns: ?i64 = null;
+        var retained_return_id: ?u32 = null;
         if (self.questions.get(ret.answer_id)) |question| {
             if (question.cancelled) {
                 // Cancelled locally: the caller already saw an exception and
@@ -10507,7 +11522,18 @@ pub const Peer = struct {
             }
             // awaitFromThirdParty is not call completion; results arrive
             // later through the third party, so no latency sample.
-            if (ret.tag != .awaitFromThirdParty) latency_started_ns = question.started_ns;
+            if (ret.tag != .awaitFromThirdParty) {
+                latency_started_ns = question.started_ns;
+                const original_id = self.adopted_third_party_answers.get(ret.answer_id) orelse ret.answer_id;
+                if (self.retained_questions.contains(original_id)) {
+                    self.retained_questions.noteReturn(
+                        original_id,
+                        ret.no_finish_needed,
+                        question.is_loopback,
+                    );
+                    retained_return_id = original_id;
+                }
+            }
         }
         defer if (latency_started_ns) |started| {
             if (self.clockNow()) |now| {
@@ -10517,7 +11543,7 @@ pub const Peer = struct {
                 }
             }
         };
-        try peer_return_orchestration.handleReturn(
+        peer_return_orchestration.handleReturn(
             Peer,
             Question,
             cap_table.InboundCapTable,
@@ -10554,7 +11580,25 @@ pub const Peer = struct {
                 Peer.releaseInboundCaps,
                 peer_outbound_control.sendFinishViaSendFrameForPeerFn(Peer, Peer.sendFrameControl),
             ),
-        );
+        ) catch |err| {
+            if (retained_return_id) |question_id| {
+                // Failure before question removal (notably inbound-cap-table
+                // OOM) means the Return was not callback-visible; restore the
+                // pending state. Once removed, retained callbacks are at-most
+                // once and the answer remains explicitly finishable.
+                if (self.questions.contains(ret.answer_id)) {
+                    self.retained_questions.rollbackReturn(question_id);
+                } else if (ret.no_finish_needed) {
+                    _ = self.retained_questions.completeNoFinishNeeded(question_id);
+                }
+            }
+            return err;
+        };
+        if (retained_return_id) |question_id| {
+            if (ret.no_finish_needed) {
+                _ = self.retained_questions.completeNoFinishNeeded(question_id);
+            }
+        }
     }
 
     /// Exposed for integration tests that exercise internal Peer methods.

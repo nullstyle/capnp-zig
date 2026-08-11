@@ -303,6 +303,14 @@ pub fn define(
                 return self.element_count;
             }
 
+            /// Return whether the pointer at `index` is null without resolving
+            /// its target. A malformed non-null pointer therefore remains
+            /// distinguishable from an absent nested list; resolving it through
+            /// a typed getter still reports the underlying pointer error.
+            pub fn isNull(self: PointerListReader, index: u32) !bool {
+                return (try self.readPointer(index)).word == 0;
+            }
+
             fn readPointer(self: PointerListReader, index: u32) !struct { pos: usize, word: u64 } {
                 if (index >= self.element_count) return error.IndexOutOfBounds;
                 const pointer_pos = self.elements_offset + @as(usize, index) * elementStride(self.stride_bytes, 8);
@@ -455,6 +463,24 @@ pub fn define(
                     .elements_offset = list.content_offset,
                     .element_count = list.element_count,
                 };
+            }
+
+            /// Read a nested `List(Void)`. Inline-composite lists are accepted
+            /// for the inverse list-upgrade rule, matching
+            /// `StructReader.readVoidList`.
+            pub fn getVoidList(self: PointerListReader, index: u32) !VoidListReader {
+                const ptr = try self.readPointer(index);
+                return .{ .element_count = try element_list.resolveVoidElementCount(
+                    self.message,
+                    self.segment_id,
+                    ptr.pos,
+                    ptr.word,
+                ) };
+            }
+
+            /// Read a nested `List(Text)`.
+            pub fn getTextList(self: PointerListReader, index: u32) !TextListReader {
+                return self.readElementList(TextListReader, index, 6);
             }
 
             pub fn getStructList(self: PointerListReader, index: u32) !StructListReader {

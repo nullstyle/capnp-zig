@@ -190,3 +190,29 @@ pub fn resolve(
         .stride_bytes = 0,
     };
 }
+
+/// Resolve any well-formed list pointer as `List(Void)`, returning its logical
+/// element count. For C = 7 the pointer's D field is a word count and the
+/// element count lives in the struct tag, so a malformed inline-composite tag
+/// must be terminal rather than falling back to the ordinary-list view.
+///
+/// Resolve the ordinary shape first because it also classifies direct,
+/// single-far, and layout-B double-far pointers. Layout-A double-far struct
+/// lists resolve to a tag word (pointer type 0) through that path, so only that
+/// shape needs the failure path into the inline-composite decoder.
+pub fn resolveVoidElementCount(
+    message: anytype,
+    segment_id: u32,
+    pointer_pos: usize,
+    pointer_word: u64,
+) !u32 {
+    if (pointer_word == 0) return error.InvalidPointer;
+
+    const list = message.resolveListPointer(segment_id, pointer_pos, pointer_word) catch {
+        return (try message.resolveInlineCompositeList(segment_id, pointer_pos, pointer_word)).element_count;
+    };
+    if (list.element_size == 7) {
+        return (try message.resolveInlineCompositeList(segment_id, pointer_pos, pointer_word)).element_count;
+    }
+    return list.element_count;
+}

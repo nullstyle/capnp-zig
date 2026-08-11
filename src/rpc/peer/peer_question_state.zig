@@ -31,6 +31,34 @@ pub fn allocateQuestion(
     return allocateQuestionId(u32, QuestionType, questions, next_question_id, question);
 }
 
+/// Allocate from the outbound question-id namespace while excluding ids held
+/// by a second lifecycle table (for example, completed retained answers). The
+/// two tables share one monotonic namespace even though only in-flight calls
+/// remain in `questions` after Return dispatch.
+pub fn allocateQuestionExcluding(
+    comptime QuestionType: type,
+    comptime ExcludedContext: type,
+    questions: *std.AutoHashMap(u32, QuestionType),
+    excluded_context: *const ExcludedContext,
+    comptime is_excluded: fn (*const ExcludedContext, u32) bool,
+    next_question_id: *u32,
+    question: QuestionType,
+) !u32 {
+    const start_id = next_question_id.*;
+
+    while (true) {
+        const id = next_question_id.*;
+        next_question_id.* +%= 1;
+
+        if (!questions.contains(id) and !is_excluded(excluded_context, id)) {
+            try questions.put(id, question);
+            return id;
+        }
+
+        if (next_question_id.* == start_id) return error.QuestionIdExhausted;
+    }
+}
+
 test "question allocation probes across wrap-around and then exhausts when ID space is full" {
     var questions = std.AutoHashMap(u8, u8).init(std.testing.allocator);
     defer questions.deinit();
@@ -52,4 +80,32 @@ test "question allocation probes across wrap-around and then exhausts when ID sp
         error.QuestionIdExhausted,
         allocateQuestionId(u8, u8, &questions, &next_question_id, 7),
     );
+}
+
+test "question allocation excludes completed retained ids" {
+    var questions = std.AutoHashMap(u32, u8).init(std.testing.allocator);
+    defer questions.deinit();
+    try questions.put(40, 1);
+
+    var retained = std.AutoHashMap(u32, void).init(std.testing.allocator);
+    defer retained.deinit();
+    try retained.put(41, {});
+
+    var next_question_id: u32 = 40;
+    const Exclusion = struct {
+        fn contains(map: *const std.AutoHashMap(u32, void), id_value: u32) bool {
+            return map.contains(id_value);
+        }
+    };
+    const allocated = try allocateQuestionExcluding(
+        u8,
+        std.AutoHashMap(u32, void),
+        &questions,
+        &retained,
+        Exclusion.contains,
+        &next_question_id,
+        9,
+    );
+    try std.testing.expectEqual(@as(u32, 42), allocated);
+    try std.testing.expectEqual(@as(u32, 43), next_question_id);
 }

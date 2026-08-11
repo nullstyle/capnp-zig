@@ -1077,6 +1077,8 @@ test "Codegen: unresolved enum uses u16 setter value path" {
     const Generator = @import("capnpc-zig").codegen.Generator;
 
     const unresolved_enum_type = schema.Type{ .@"enum" = .{ .type_id = 999 } };
+    const list_enum_type = schema.Type{ .list = .{ .element_type = @constCast(&unresolved_enum_type) } };
+    const nested_list_enum_type = schema.Type{ .list = .{ .element_type = @constCast(&list_enum_type) } };
     var fields = [_]schema.Field{
         .{
             .name = "status",
@@ -1086,6 +1088,18 @@ test "Codegen: unresolved enum uses u16 setter value path" {
             .slot = .{
                 .offset = 0,
                 .type = unresolved_enum_type,
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "statusRows",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 0,
+                .type = nested_list_enum_type,
                 .default_value = null,
             },
             .group = null,
@@ -1102,7 +1116,7 @@ test "Codegen: unresolved enum uses u16 setter value path" {
         .kind = .@"struct",
         .struct_node = .{
             .data_word_count = 1,
-            .pointer_count = 0,
+            .pointer_count = 1,
             .preferred_list_encoding = .inline_composite,
             .is_group = false,
             .discriminant_count = 1,
@@ -1157,6 +1171,9 @@ test "Codegen: unresolved enum uses u16 setter value path" {
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "self._builder.writeU16(2, 0);"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn enumOrdinals(self: @This()) EnumOrdinals"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn whichOrdinal(self: Reader) u16"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 2, "message.typed_list_helpers.ScalarListCodec(.uint16)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getStatusRows(self: @This()) !message.typed_list_helpers.NestedListReader"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initStatusRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder"));
 }
 
 test "Codegen: unresolved struct getter falls back to StructReader" {
@@ -1247,6 +1264,7 @@ test "Codegen: unresolved struct list builder accepts explicit layout" {
 
     const unresolved_child_type = schema.Type{ .@"struct" = .{ .type_id = 999 } };
     const list_child_type = schema.Type{ .list = .{ .element_type = @constCast(&unresolved_child_type) } };
+    const nested_list_child_type = schema.Type{ .list = .{ .element_type = @constCast(&list_child_type) } };
     var fields = [_]schema.Field{
         .{
             .name = "children",
@@ -1256,6 +1274,18 @@ test "Codegen: unresolved struct list builder accepts explicit layout" {
             .slot = .{
                 .offset = 0,
                 .type = list_child_type,
+                .default_value = null,
+            },
+            .group = null,
+        },
+        .{
+            .name = "nestedChildren",
+            .code_order = 1,
+            .annotations = &[_]schema.AnnotationUse{},
+            .discriminant_value = 0xFFFF,
+            .slot = .{
+                .offset = 1,
+                .type = nested_list_child_type,
                 .default_value = null,
             },
             .group = null,
@@ -1272,7 +1302,7 @@ test "Codegen: unresolved struct list builder accepts explicit layout" {
         .kind = .@"struct",
         .struct_node = .{
             .data_word_count = 0,
-            .pointer_count = 1,
+            .pointer_count = 2,
             .preferred_list_encoding = .inline_composite,
             .is_group = false,
             .discriminant_count = 0,
@@ -1319,6 +1349,9 @@ test "Codegen: unresolved struct list builder accepts explicit layout" {
 
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initChildren(self: *Builder, element_count: u32, data_words: u16, pointer_words: u16) !message.StructListBuilder"));
     try testing.expect(std.mem.containsAtLeast(u8, output, 1, "return try self._builder.writeStructList(0, element_count, data_words, pointer_words);"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn getNestedChildren(self: @This()) !message.typed_list_helpers.NestedListReader(message.typed_list_helpers.RawStructListReaderCodec)"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 1, "pub fn initNestedChildren(self: @This(), element_count: u32) !message.typed_list_helpers.RawStructNestedListBuilder"));
+    try testing.expect(std.mem.containsAtLeast(u8, output, 2, "pub fn nestedLists(self: @This()) NestedLists"));
     try testing.expect(!std.mem.containsAtLeast(u8, output, 1, "UnsupportedType"));
 }
 

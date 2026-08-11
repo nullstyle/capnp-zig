@@ -61,7 +61,13 @@ pub fn expectOutboundProvideCoupled(
     const outbound = recipient_peer.outbound_provides.get(vine_id) orelse return error.MissingOutboundProvide;
     try std.testing.expectEqual(provide_peer, outbound.provide_peer orelse return error.MissingProvidePeer);
     try std.testing.expectEqual(provide_question_id, outbound.provide_question_id);
-    try std.testing.expectEqual(provided_import_id, outbound.provided_import_id);
+    switch (outbound.forward_target) {
+        .imported => |import_id| try std.testing.expectEqual(
+            provided_import_id orelse return error.MissingProvidedImport,
+            import_id,
+        ),
+        .promised => return error.UnexpectedPromisedAnswerTarget,
+    }
 
     for (provide_peer.coupled_vines.items) |link| {
         if (link.recipient_peer == recipient_peer and link.vine_id == vine_id) return;

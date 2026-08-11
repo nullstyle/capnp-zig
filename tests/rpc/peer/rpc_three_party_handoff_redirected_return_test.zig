@@ -378,3 +378,238 @@ test "three-party handoff redirected return: sendResultsTo=thirdParty delivers r
     try std.testing.expectEqual(@as(usize, 0), a_to_c.adopted_third_party_answers.count());
     try std.testing.expectEqual(@as(usize, 0), a_to_c.pending_third_party_returns.count());
 }
+
+test "retained awaitFromThirdParty finishes the intermediate and adopted wire answers" {
+    const allocator = std.testing.allocator;
+
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8) = .empty,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            try self.frames.append(self.allocator, try self.allocator.dupe(u8, frame));
+        }
+
+        fn deinit(self: *@This()) void {
+            for (self.frames.items) |frame| self.allocator.free(frame);
+            self.frames.deinit(self.allocator);
+        }
+    };
+    const Result = struct {
+        returned: bool = false,
+        answer_id: ?u32 = null,
+
+        fn onReturn(
+            ctx_ptr: *anyopaque,
+            _: *Peer,
+            ret: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
+            self.returned = true;
+            self.answer_id = ret.answer_id;
+        }
+    };
+
+    var capture = Capture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var result = Result{};
+    const logical_question_id = try peer.sendCallWithOptions(
+        7,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &result,
+        null,
+        Result.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    const adopted_answer_id: u32 = 0x4000_0077;
+
+    var completion_builder = message.MessageBuilder.init(allocator);
+    defer completion_builder.deinit();
+    const completion_root = try completion_builder.initRootAnyPointer();
+    try completion_root.setText("retained-redirect-completion");
+    const completion_bytes = try completion_builder.toBytes();
+    defer allocator.free(completion_bytes);
+    var completion_message = try message.Message.init(allocator, completion_bytes, .{});
+    defer completion_message.deinit();
+    const completion = try completion_message.getRootAnyPointer();
+
+    var await_builder = protocol.MessageBuilder.init(allocator);
+    defer await_builder.deinit();
+    var await_ret = try await_builder.beginReturn(logical_question_id, .awaitFromThirdParty);
+    try await_ret.setAcceptFromThirdParty(completion);
+    const await_frame = try await_builder.finish();
+    defer allocator.free(await_frame);
+    try peer.handleFrame(await_frame);
+
+    // Retention applies to the adopted answer, not the forwarding-only answer
+    // named by the original Call. The latter is Finished immediately.
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+    var intermediate_finish = try protocol.DecodedMessage.init(allocator, capture.frames.items[1]);
+    defer intermediate_finish.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.finish, intermediate_finish.tag);
+    try std.testing.expectEqual(logical_question_id, (try intermediate_finish.asFinish()).question_id);
+
+    var answer_builder = protocol.MessageBuilder.init(allocator);
+    defer answer_builder.deinit();
+    try answer_builder.buildThirdPartyAnswer(adopted_answer_id, completion);
+    const answer_frame = try answer_builder.finish();
+    defer allocator.free(answer_frame);
+    try peer.handleFrame(answer_frame);
+
+    var final_builder = protocol.MessageBuilder.init(allocator);
+    defer final_builder.deinit();
+    var final_ret = try final_builder.beginReturn(adopted_answer_id, .exception);
+    try final_ret.setException("redirect complete");
+    const final_frame = try final_builder.finish();
+    defer allocator.free(final_frame);
+    try peer.handleFrame(final_frame);
+
+    try std.testing.expect(result.returned);
+    try std.testing.expectEqual(@as(?u32, logical_question_id), result.answer_id);
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 2), capture.frames.items.len);
+
+    // Force the allocator directly onto the adopted wire id while that answer
+    // is retained but no longer present in `questions`. It must reserve both
+    // the logical and adopted identities and choose the next free id.
+    peer.next_question_id = adopted_answer_id;
+    var other_result = Result{};
+    const other_question_id = try peer.sendCall(
+        8,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &other_result,
+        null,
+        Result.onReturn,
+    );
+    try std.testing.expectEqual(adopted_answer_id + 1, other_question_id);
+    try std.testing.expect(other_question_id != logical_question_id);
+
+    var other_return_builder = protocol.MessageBuilder.init(allocator);
+    defer other_return_builder.deinit();
+    var other_return = try other_return_builder.beginReturn(other_question_id, .exception);
+    other_return.setNoFinishNeeded(true);
+    try other_return.setException("unrelated call complete");
+    const other_return_frame = try other_return_builder.finish();
+    defer allocator.free(other_return_frame);
+    try peer.handleFrame(other_return_frame);
+    try std.testing.expect(other_result.returned);
+
+    try peer.finishRetainedQuestion(logical_question_id, false);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 4), capture.frames.items.len);
+    var adopted_finish = try protocol.DecodedMessage.init(allocator, capture.frames.items[3]);
+    defer adopted_finish.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.finish, adopted_finish.tag);
+    try std.testing.expectEqual(adopted_answer_id, (try adopted_finish.asFinish()).question_id);
+}
+
+test "retained redirected callback error consumes adopted alias and remains explicitly finishable" {
+    const allocator = std.testing.allocator;
+
+    const Capture = struct {
+        allocator: std.mem.Allocator,
+        frames: std.ArrayList([]u8) = .empty,
+
+        fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            try self.frames.append(self.allocator, try self.allocator.dupe(u8, frame));
+        }
+
+        fn deinit(self: *@This()) void {
+            for (self.frames.items) |frame| self.allocator.free(frame);
+            self.frames.deinit(self.allocator);
+        }
+    };
+    const FailingResult = struct {
+        calls: usize = 0,
+        logical_answer_id: ?u32 = null,
+
+        fn onReturn(
+            ctx_ptr: *anyopaque,
+            _: *Peer,
+            ret: protocol.Return,
+            _: *const cap_table.InboundCapTable,
+        ) anyerror!void {
+            const self: *@This() = castCtx(*@This(), ctx_ptr);
+            self.calls += 1;
+            self.logical_answer_id = ret.answer_id;
+            return error.IntentionalRetainedCallbackFailure;
+        }
+    };
+
+    var capture = Capture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, Capture.onFrame);
+
+    var result = FailingResult{};
+    const logical_question_id = try peer.sendCallWithOptions(
+        9,
+        NUMBER_INTERFACE_ID,
+        GET_NUMBER_METHOD_ID,
+        &result,
+        null,
+        FailingResult.onReturn,
+        .{ .result_lifetime = .retained },
+    );
+    const adopted_answer_id: u32 = 0x4000_0079;
+
+    var completion_builder = message.MessageBuilder.init(allocator);
+    defer completion_builder.deinit();
+    const completion_root = try completion_builder.initRootAnyPointer();
+    try completion_root.setText("retained-redirect-error");
+    const completion_bytes = try completion_builder.toBytes();
+    defer allocator.free(completion_bytes);
+    var completion_message = try message.Message.init(allocator, completion_bytes, .{});
+    defer completion_message.deinit();
+    const completion = try completion_message.getRootAnyPointer();
+
+    var await_builder = protocol.MessageBuilder.init(allocator);
+    defer await_builder.deinit();
+    var await_ret = try await_builder.beginReturn(logical_question_id, .awaitFromThirdParty);
+    try await_ret.setAcceptFromThirdParty(completion);
+    const await_frame = try await_builder.finish();
+    defer allocator.free(await_frame);
+    try peer.handleFrame(await_frame);
+
+    var answer_builder = protocol.MessageBuilder.init(allocator);
+    defer answer_builder.deinit();
+    try answer_builder.buildThirdPartyAnswer(adopted_answer_id, completion);
+    const answer_frame = try answer_builder.finish();
+    defer allocator.free(answer_frame);
+    try peer.handleFrame(answer_frame);
+
+    var final_builder = protocol.MessageBuilder.init(allocator);
+    defer final_builder.deinit();
+    var final_ret = try final_builder.beginReturn(adopted_answer_id, .exception);
+    try final_ret.setException("callback rejects result");
+    const final_frame = try final_builder.finish();
+    defer allocator.free(final_frame);
+    // Public frame dispatch reports callback failures through the peer's
+    // non-fatal error path; the wire handler itself remains usable.
+    try peer.handleFrame(final_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), result.calls);
+    try std.testing.expectEqual(@as(?u32, logical_question_id), result.logical_answer_id);
+    try std.testing.expect(!peer.questions.contains(adopted_answer_id));
+    try std.testing.expectEqual(@as(usize, 0), peer.adopted_third_party_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+
+    try peer.finishRetainedQuestion(logical_question_id, false);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+    try std.testing.expectEqual(@as(usize, 3), capture.frames.items.len);
+    var adopted_finish = try protocol.DecodedMessage.init(allocator, capture.frames.items[2]);
+    defer adopted_finish.deinit();
+    try std.testing.expectEqual(protocol.MessageTag.finish, adopted_finish.tag);
+    try std.testing.expectEqual(adopted_answer_id, (try adopted_finish.asFinish()).question_id);
+}

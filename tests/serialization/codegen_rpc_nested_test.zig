@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
+const capnp_cli = @import("support/capnp_cli.zig");
 
 fn expectContains(haystack: []const u8, needle: []const u8) !void {
     if (std.mem.indexOf(u8, haystack, needle) == null) {
@@ -12,18 +13,12 @@ test "Codegen emits nested param/result structs with sanitized names" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/rpc_nested.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -53,18 +48,12 @@ test "Codegen emits nested interface definitions" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/nested_interfaces.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -89,7 +78,9 @@ test "Codegen emits nested interface definitions" {
     try expectContains(output, "pub const GetInnerResults");
     try expectContains(output, "pub const PingParams");
     try expectContains(output, "pub fn callGetInner");
+    try expectContains(output, "pub fn callGetInnerWithOptions");
     try expectContains(output, "pub fn callPing");
+    try expectContains(output, "sendCallGeneratedWithOptions");
 
     // Parent-qualified nested interface: `Inner` is now emitted INSIDE `Outer`'s
     // body (self-qualified), not flat at file scope. So `pub const Inner = struct`
@@ -141,8 +132,10 @@ test "Codegen emits nested interface definitions" {
     // GAP-1: Promise pipelining
     try expectContains(output, "pub const PipelinedClient");
     try expectContains(output, "sendCallPromisedWithOps");
+    try expectContains(output, "sendCallPromisedWithOpsGeneratedWithOptions");
     try expectContains(output, "GetInnerPipeline");
     try expectContains(output, "callGetInnerPipelined");
+    try expectContains(output, "callGetInnerPipelinedWithOptions");
 }
 
 // BUG 1: enum values and method ordinals must come from the element's ordinal
@@ -153,18 +146,12 @@ test "Codegen enum values and method ordinals use ordinal, not declaration order
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/ordinal_ordering.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -228,18 +215,12 @@ test "Codegen rejects inherited method-name collisions with a clean error" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/inherited_method_collision.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 

@@ -91,6 +91,11 @@ fn e(path: []const u8) Rule {
 // "thirdPartyHosted emission") as L3, so its whole get/set/clear trio is held
 // out of the frozen contract.
 const experimental_overrides = [_]Rule{
+    // Retained-answer handoff is Experimental even where its implementation
+    // necessarily adds a convenience entry under otherwise-Stable containers.
+    // Keep these exact additions out of the frozen two-party/wire contract.
+    e("capnpc-zig.rpc.peer.PeerLimits.max_retained_questions"),
+    e("capnpc-zig.rpc.wire.protocol.MessageBuilder.buildProvidePromisedAnswerWithOps"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.markThirdPartyHosted"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.getThirdPartyHosted"),
     e("capnpc-zig.rpc.caps.table.lifecycle.CapTable.clearThirdPartyHosted"),

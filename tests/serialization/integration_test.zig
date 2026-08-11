@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
+const capnp_cli = @import("support/capnp_cli.zig");
 
 fn findNode(nodes: []const capnpc.schema.Node, id: capnpc.schema.Id) ?capnpc.schema.Node {
     for (nodes) |node| {
@@ -55,18 +56,12 @@ test "CodeGeneratorRequest parsing from capnp compile" {
     const allocator = std.testing.allocator;
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         "tests/test_schemas/example.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
@@ -119,20 +114,13 @@ test "CodeGeneratorRequest parsing preserves rpc union discriminants" {
     try requirePath("vendor/ext/capnproto/c++/src");
 
     const argv = &[_][]const u8{
-        "capnp",
         "compile",
-        "-Ivendor/ext/capnproto/c++/src",
         "--src-prefix=src/rpc",
         "-o-",
         "src/rpc/capnp/rpc.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 

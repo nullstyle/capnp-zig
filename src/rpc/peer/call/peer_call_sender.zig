@@ -77,10 +77,11 @@ pub fn sendCallToExport(
     build: ?CallBuildFnType,
     on_return: QuestionCallbackType,
     allocate_question: *const fn (*PeerType, *anyopaque, QuestionCallbackType) anyerror!u32,
+    remove_question: *const fn (*PeerType, u32) void,
     handle_frame: *const fn (*PeerType, []const u8) anyerror!void,
 ) !u32 {
     const question_id = try allocate_question(peer, ctx, on_return);
-    errdefer _ = questions.remove(question_id);
+    errdefer remove_question(peer, question_id);
     if (questions.getEntry(question_id)) |question| {
         question.value_ptr.is_loopback = true;
     }
@@ -343,6 +344,10 @@ test "peer_call_sender sendCallToExport marks loopback question and dispatches f
         }
 
         fn onReturn(_: *anyopaque, _: *State, _: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {}
+
+        fn removeQuestion(state: *State, question_id: u32) void {
+            _ = state.questions.remove(question_id);
+        }
     };
 
     var state = State.init(std.testing.allocator);
@@ -368,6 +373,7 @@ test "peer_call_sender sendCallToExport marks loopback question and dispatches f
         null,
         Hooks.onReturn,
         Hooks.allocateQuestion,
+        Hooks.removeQuestion,
         Hooks.handleFrame,
     );
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const request_reader = capnpc.request;
+const capnp_cli = @import("support/capnp_cli.zig");
 
 fn writeFile(dir: std.Io.Dir, name: []const u8, data: []const u8) !void {
     const io = std.testing.io;
@@ -14,20 +15,23 @@ fn runGeneratedHarness(
     schema_path: []const u8,
     harness_source: []const u8,
 ) !void {
+    return runGeneratedHarnessProfile(allocator, schema_path, harness_source, .full);
+}
+
+fn runGeneratedHarnessProfile(
+    allocator: std.mem.Allocator,
+    schema_path: []const u8,
+    harness_source: []const u8,
+    profile: capnpc.codegen.Generator.ApiProfile,
+) !void {
     const io = std.testing.io;
 
     const capnp_argv = &[_][]const u8{
-        "capnp",
         "compile",
         "-o-",
         schema_path,
     };
-    const capnp_result = std.process.run(allocator, io, .{
-        .argv = capnp_argv,
-    }) catch |err| switch (err) {
-        error.FileNotFound => return error.SkipZigTest,
-        else => return err,
-    };
+    const capnp_result = try capnp_cli.run(allocator, io, capnp_argv, .{});
     defer allocator.free(capnp_result.stdout);
     defer allocator.free(capnp_result.stderr);
     try std.testing.expect(capnp_result.term == .exited and capnp_result.term.exited == 0);
@@ -38,6 +42,7 @@ fn runGeneratedHarness(
 
     var generator = try capnpc.codegen.Generator.init(allocator, request.nodes);
     defer generator.deinit();
+    generator.setApiProfile(profile);
     const generated = try generator.generateFile(request.requested_files[0]);
     defer allocator.free(generated);
 
@@ -267,6 +272,196 @@ test "Codegen generated list wrappers compile and run" {
     );
 }
 
+test "Codegen generated recursive nested-list views compile and run" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/nested_lists_runtime.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "generated recursive nested-list views" {
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\
+        \\    var root = try generated.NestedListDemo.Builder.init(&builder);
+        \\    var numbers = try root.nestedLists().initNumbersInSegment(3, 1);
+        \\    var first = try numbers.initInSegment(0, 3, 2);
+        \\    try first.set(0, 11);
+        \\    try first.set(1, 22);
+        \\    try first.set(2, 33);
+        \\    try numbers.setNull(1);
+        \\    _ = try numbers.init(2, 0);
+        \\
+        \\    var deep = try root.nestedLists().initDeepText(1);
+        \\    var middle = try deep.init(0, 1);
+        \\    var texts = try middle.init(0, 2);
+        \\    try texts.set(0, "alpha");
+        \\    try texts.set(1, "beta");
+        \\
+        \\    var records = try root.nestedLists().initRecords(1);
+        \\    var record_row = try records.init(0, 2);
+        \\    var child0 = try record_row.get(0);
+        \\    var child1 = try record_row.get(1);
+        \\    try child0.setValue(7);
+        \\    try child1.setValue(9);
+        \\
+        \\    var data_rows = try root.nestedLists().initDataRows(1);
+        \\    var data_row = try data_rows.init(0, 2);
+        \\    try data_row.set(0, "left");
+        \\    try data_row.set(1, "right");
+        \\
+        \\    var enum_rows = try root.nestedLists().initEnumRows(1);
+        \\    var enum_row = try enum_rows.init(0, 2);
+        \\    try enum_row.set(0, .Red);
+        \\    try enum_row.setOrdinal(1, 77);
+        \\
+        \\    var services = try root.nestedLists().initServiceRows(1);
+        \\    var service_row = try services.init(0, 1);
+        \\    try service_row.set(0, .{ .id = 41 });
+        \\
+        \\    var void_rows = try root.nestedLists().initVoidRows(1);
+        \\    const void_row = try void_rows.init(0, 4);
+        \\    try std.testing.expectEqual(@as(u32, 4), void_row.len());
+        \\
+        \\    var grouped = root.getGrouped();
+        \\    var bool_rows = try grouped.nestedLists().initGroupRows(1);
+        \\    var bool_row = try bool_rows.init(0, 2);
+        \\    try bool_row.set(0, true);
+        \\    try bool_row.set(1, false);
+        \\
+        \\    var choice_rows = try root.nestedLists().initChoiceRows(1);
+        \\    var choice_row = try choice_rows.init(0, 1);
+        \\    try choice_row.set(0, 1234);
+        \\
+        \\    var i8_row = try (try root.nestedLists().initI8Rows(1)).init(0, 1);
+        \\    try i8_row.set(0, -8);
+        \\    var u8_row = try (try root.nestedLists().initU8Rows(1)).init(0, 1);
+        \\    try u8_row.set(0, 8);
+        \\    var i16_row = try (try root.nestedLists().initI16Rows(1)).init(0, 1);
+        \\    try i16_row.set(0, -16);
+        \\    var i32_row = try (try root.nestedLists().initI32Rows(1)).init(0, 1);
+        \\    try i32_row.set(0, -32);
+        \\    var i64_row = try (try root.nestedLists().initI64Rows(1)).init(0, 1);
+        \\    try i64_row.set(0, -64);
+        \\    var u64_row = try (try root.nestedLists().initU64Rows(1)).init(0, 1);
+        \\    try u64_row.set(0, 64);
+        \\    var f32_row = try (try root.nestedLists().initF32Rows(1)).init(0, 1);
+        \\    try f32_row.set(0, 3.25);
+        \\    var f64_row = try (try root.nestedLists().initF64Rows(1)).init(0, 1);
+        \\    try f64_row.set(0, 6.5);
+        \\
+        \\    const raw_numbers: message.PointerListBuilder = try root.initNumbers(0);
+        \\    _ = raw_numbers;
+        \\    numbers = try root.nestedLists().initNumbersInSegment(3, 1);
+        \\    first = try numbers.initInSegment(0, 3, 2);
+        \\    try first.set(0, 11);
+        \\    try first.set(1, 22);
+        \\    try first.set(2, 33);
+        \\    try numbers.setNull(1);
+        \\    _ = try numbers.init(2, 0);
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+        \\    defer msg.deinit();
+        \\
+        \\    const reader = try generated.NestedListDemo.Reader.init(&msg);
+        \\    const raw_reader: message.PointerListReader = try reader.getNumbers();
+        \\    _ = raw_reader;
+        \\    const read_numbers = try reader.nestedLists().getNumbers();
+        \\    try std.testing.expectEqual(@as(u32, 3), read_numbers.len());
+        \\    try std.testing.expect(!try read_numbers.isNull(0));
+        \\    try std.testing.expect(try read_numbers.isNull(1));
+        \\    try std.testing.expect(!try read_numbers.isNull(2));
+        \\    const read_first = try read_numbers.get(0);
+        \\    try std.testing.expectEqual(@as(u16, 22), try read_first.get(1));
+        \\    try std.testing.expectEqual(@as(u32, 0), (try read_numbers.get(1)).len());
+        \\    try std.testing.expectEqual(@as(u32, 0), (try read_numbers.get(2)).len());
+        \\
+        \\    const read_deep = try reader.nestedLists().getDeepText();
+        \\    const read_middle = try read_deep.get(0);
+        \\    const read_texts = try read_middle.get(0);
+        \\    try std.testing.expectEqualStrings("beta", try read_texts.get(1));
+        \\
+        \\    const read_records = try reader.nestedLists().getRecords();
+        \\    const read_record_row = try read_records.get(0);
+        \\    try std.testing.expectEqual(@as(u16, 9), try (try read_record_row.get(1)).getValue());
+        \\
+        \\    const read_data = try (try reader.nestedLists().getDataRows()).get(0);
+        \\    try std.testing.expectEqualStrings("right", try read_data.get(1));
+        \\
+        \\    const read_enum = try (try reader.nestedLists().getEnumRows()).get(0);
+        \\    try std.testing.expectEqual(generated.Shade.Red, try read_enum.get(0));
+        \\    try std.testing.expectEqual(@as(u16, 77), try read_enum.getOrdinal(1));
+        \\    try std.testing.expectError(error.InvalidEnumValue, read_enum.get(1));
+        \\
+        \\    const read_services = try (try reader.nestedLists().getServiceRows()).get(0);
+        \\    try std.testing.expectEqual(@as(u32, 41), (try read_services.get(0)).id);
+        \\    try std.testing.expectEqual(@as(u32, 4), (try (try reader.nestedLists().getVoidRows()).get(0)).len());
+        \\    const read_bool_rows = try reader.getGrouped().nestedLists().getGroupRows();
+        \\    const read_bool_row = try read_bool_rows.get(0);
+        \\    try std.testing.expect(try read_bool_row.get(0));
+        \\    try std.testing.expect(!try read_bool_row.get(1));
+        \\    try std.testing.expectEqual(@as(u32, 1234), try (try (try reader.nestedLists().getChoiceRows()).get(0)).get(0));
+        \\    const defaults = try reader.nestedLists().getDefaultRows();
+        \\    try std.testing.expectEqual(@as(u32, 2), defaults.len());
+        \\    try std.testing.expectEqual(@as(u16, 5), try (try defaults.get(0)).get(1));
+        \\    try std.testing.expectEqual(@as(u32, 0), (try defaults.get(1)).len());
+        \\    try std.testing.expectEqual(@as(i8, -8), try (try (try reader.nestedLists().getI8Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(u8, 8), try (try (try reader.nestedLists().getU8Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(i16, -16), try (try (try reader.nestedLists().getI16Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(i32, -32), try (try (try reader.nestedLists().getI32Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(i64, -64), try (try (try reader.nestedLists().getI64Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(u64, 64), try (try (try reader.nestedLists().getU64Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(f32, 3.25), try (try (try reader.nestedLists().getF32Rows()).get(0)).get(0));
+        \\    try std.testing.expectEqual(@as(f64, 6.5), try (try (try reader.nestedLists().getF64Rows()).get(0)).get(0));
+        \\}
+        \\
+    );
+}
+
+test "Codegen generated recursive nested-list views work in compact profile" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarnessProfile(allocator, "tests/test_schemas/nested_lists_runtime.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const message = capnpc.message;
+        \\const generated = @import("generated.zig");
+        \\
+        \\test "compact recursive nested-list views" {
+        \\    var builder = message.MessageBuilder.init(std.testing.allocator);
+        \\    defer builder.deinit();
+        \\    const raw_root = try builder.allocateStruct(1, 9);
+        \\    var root = generated.NestedListDemo.Builder.wrap(raw_root);
+        \\    var rows = try root.nestedLists().initNumbers(1);
+        \\    var row = try rows.init(0, 2);
+        \\    try row.set(0, 5);
+        \\    try row.set(1, 8);
+        \\    const raw_rows: message.PointerListBuilder = try root.initNumbers(1);
+        \\    _ = raw_rows;
+        \\    rows = try root.nestedLists().initNumbers(1);
+        \\    row = try rows.init(0, 1);
+        \\    try row.set(0, 13);
+        \\
+        \\    const bytes = try builder.toBytes();
+        \\    defer std.testing.allocator.free(bytes);
+        \\    var msg = try message.Message.initUnvalidated(std.testing.allocator, bytes);
+        \\    defer msg.deinit();
+        \\    const reader = generated.NestedListDemo.Reader.wrap(try msg.getRootStruct());
+        \\    const raw_reader: message.PointerListReader = try reader.getNumbers();
+        \\    _ = raw_reader;
+        \\    const out = try reader.nestedLists().getNumbers();
+        \\    try std.testing.expectEqual(@as(u16, 13), try (try out.get(0)).get(0));
+        \\    const defaults = try reader.nestedLists().getDefaultRows();
+        \\    try std.testing.expectEqual(@as(u16, 4), try (try defaults.get(0)).get(0));
+        \\}
+        \\
+    , .compact);
+}
+
 test "Codegen generated complex constants compile and run" {
     const allocator = std.testing.allocator;
 
@@ -484,11 +679,187 @@ test "Codegen pipelined client method compiles when referenced" {
         \\    // type (Outer.GetInnerPipeline). Before the fix this referenced
         \\    // Outer.GetInner.Pipeline, which does not exist.
         \\    _ = &generated.Outer.Client.callGetInnerPipelined;
+        \\    _ = &generated.Outer.Client.callGetInnerWithOptions;
+        \\    _ = &generated.Outer.Client.callGetInnerPipelinedWithOptions;
+        \\    _ = &generated.Outer.Inner.PipelinedClient.callPingWithOptions;
         \\    _ = generated.Outer.GetInnerPipeline;
         \\    const info = @typeInfo(@TypeOf(generated.Outer.Client.callGetInnerPipelined));
         \\    const ret = info.@"fn".return_type.?;
         \\    const payload = @typeInfo(ret).error_union.payload;
         \\    try std.testing.expect(payload == generated.Outer.GetInnerPipeline);
+        \\}
+        \\
+    );
+}
+
+test "Codegen generated retained call context survives synchronous Return reentrancy" {
+    const allocator = std.testing.allocator;
+
+    try runGeneratedHarness(allocator, "tests/test_schemas/enum_evolution_v1.capnp",
+        \\const std = @import("std");
+        \\const capnpc = @import("capnpc-zig");
+        \\const generated = @import("generated.zig");
+        \\const rpc = capnpc.rpc;
+        \\const protocol = rpc.wire.protocol;
+        \\const Peer = rpc.peer.Peer;
+        \\
+        \\const CallbackMode = enum { succeed, fail_nonfatal, fail_oom };
+        \\
+        \\const CallbackState = struct {
+        \\    mode: CallbackMode = .succeed,
+        \\    calls: usize = 0,
+        \\    error_calls: usize = 0,
+        \\    last_error: ?anyerror = null,
+        \\
+        \\    fn onReturn(
+        \\        ctx_ptr: *anyopaque,
+        \\        peer: *Peer,
+        \\        response: generated.Service.Ping.Response,
+        \\        caps: *const rpc.caps.table.InboundCapTable,
+        \\    ) anyerror!void {
+        \\        _ = peer;
+        \\        _ = caps;
+        \\        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        \\        self.calls += 1;
+        \\        switch (response) {
+        \\            .exception => |ex| try std.testing.expectEqualStrings("synchronous return", ex.reason),
+        \\            else => return error.UnexpectedResponse,
+        \\        }
+        \\        return switch (self.mode) {
+        \\            .succeed => {},
+        \\            .fail_nonfatal => error.TestCallbackError,
+        \\            .fail_oom => error.OutOfMemory,
+        \\        };
+        \\    }
+        \\
+        \\    fn onError(ctx_ptr: ?*anyopaque, peer: *Peer, err: anyerror) void {
+        \\        _ = peer;
+        \\        const self: *@This() = @ptrCast(@alignCast(ctx_ptr.?));
+        \\        self.error_calls += 1;
+        \\        self.last_error = err;
+        \\    }
+        \\};
+        \\
+        \\const SyncTransport = struct {
+        \\    allocator: std.mem.Allocator,
+        \\    peer: *Peer = undefined,
+        \\    trailing_error: bool = false,
+        \\    question_id: ?u32 = null,
+        \\    finish_count: usize = 0,
+        \\
+        \\    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        \\        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        \\        var decoded = try protocol.DecodedMessage.init(self.allocator, frame);
+        \\        defer decoded.deinit();
+        \\        switch (decoded.tag) {
+        \\            .call => {
+        \\                const call = try decoded.asCall();
+        \\                self.question_id = call.question_id;
+        \\                var builder = protocol.MessageBuilder.init(self.allocator);
+        \\                defer builder.deinit();
+        \\                var ret = try builder.beginReturn(call.question_id, .exception);
+        \\                try ret.setException("synchronous return");
+        \\                const bytes = try builder.finish();
+        \\                defer self.allocator.free(bytes);
+        \\                try self.peer.handleFrame(bytes);
+        \\                if (self.trailing_error) return error.TestTrailingSendError;
+        \\            },
+        \\            .finish => self.finish_count += 1,
+        \\            else => {},
+        \\        }
+        \\    }
+        \\};
+        \\
+        \\fn finishRetained(peer: *Peer, transport: *SyncTransport) !void {
+        \\    const question_id = transport.question_id orelse return error.MissingQuestionId;
+        \\    transport.trailing_error = false;
+        \\    try peer.finishRetainedQuestion(question_id, false);
+        \\    try std.testing.expectEqual(@as(usize, 1), transport.finish_count);
+        \\    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+        \\}
+        \\
+        \\test "retained generated call handles synchronous Return then trailing send error" {
+        \\    var peer = Peer.initDetached(std.testing.allocator);
+        \\    defer peer.deinit();
+        \\    var transport = SyncTransport{ .allocator = std.testing.allocator, .trailing_error = true };
+        \\    transport.peer = &peer;
+        \\    peer.setSendFrameOverride(&transport, SyncTransport.onFrame);
+        \\    var callback = CallbackState{};
+        \\    const client = generated.Service.PipelinedClient{
+        \\        .peer = &peer,
+        \\        .question_id = 91,
+        \\        .pointer_index = 0,
+        \\    };
+        \\    try std.testing.expectError(
+        \\        error.TestTrailingSendError,
+        \\        client.callPingWithOptions(&callback, null, CallbackState.onReturn, .{ .result_lifetime = .retained }),
+        \\    );
+        \\    try std.testing.expectEqual(@as(usize, 1), callback.calls);
+        \\    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+        \\    try finishRetained(&peer, &transport);
+        \\}
+        \\
+        \\test "retained generated call handles synchronous nonfatal callback error" {
+        \\    var peer = Peer.initDetached(std.testing.allocator);
+        \\    defer peer.deinit();
+        \\    var transport = SyncTransport{ .allocator = std.testing.allocator };
+        \\    transport.peer = &peer;
+        \\    peer.setSendFrameOverride(&transport, SyncTransport.onFrame);
+        \\    var callback = CallbackState{ .mode = .fail_nonfatal };
+        \\    peer.start(&callback, CallbackState.onError, null);
+        \\    const client = generated.Service.Client.init(&peer, 7);
+        \\    const question_id = try client.callPingWithOptions(
+        \\        &callback,
+        \\        null,
+        \\        CallbackState.onReturn,
+        \\        .{ .result_lifetime = .retained },
+        \\    );
+        \\    try std.testing.expectEqual(transport.question_id.?, question_id);
+        \\    try std.testing.expectEqual(@as(usize, 1), callback.calls);
+        \\    try std.testing.expectEqual(@as(usize, 1), callback.error_calls);
+        \\    try std.testing.expectEqual(error.TestCallbackError, callback.last_error.?);
+        \\    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+        \\    try finishRetained(&peer, &transport);
+        \\}
+        \\
+        \\test "retained generated call reports synchronous OOM and remains finishable" {
+        \\    var peer = Peer.initDetached(std.testing.allocator);
+        \\    defer peer.deinit();
+        \\    var transport = SyncTransport{ .allocator = std.testing.allocator };
+        \\    transport.peer = &peer;
+        \\    peer.setSendFrameOverride(&transport, SyncTransport.onFrame);
+        \\    var callback = CallbackState{ .mode = .fail_oom };
+        \\    peer.start(&callback, CallbackState.onError, null);
+        \\    const client = generated.Service.Client.init(&peer, 7);
+        \\    const question_id = try client.callPingWithOptions(
+        \\        &callback,
+        \\        null,
+        \\        CallbackState.onReturn,
+        \\        .{ .result_lifetime = .retained },
+        \\    );
+        \\    try std.testing.expectEqual(transport.question_id.?, question_id);
+        \\    try std.testing.expectEqual(@as(usize, 1), callback.calls);
+        \\    try std.testing.expectEqual(@as(usize, 1), callback.error_calls);
+        \\    try std.testing.expectEqual(error.OutOfMemory, callback.last_error.?);
+        \\    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+        \\    try finishRetained(&peer, &transport);
+        \\}
+        \\
+        \\test "automatic generated call never restores context after synchronous OOM callback" {
+        \\    var peer = Peer.initDetached(std.testing.allocator);
+        \\    defer peer.deinit();
+        \\    var transport = SyncTransport{ .allocator = std.testing.allocator };
+        \\    transport.peer = &peer;
+        \\    peer.setSendFrameOverride(&transport, SyncTransport.onFrame);
+        \\    var callback = CallbackState{ .mode = .fail_oom };
+        \\    const client = generated.Service.Client.init(&peer, 7);
+        \\    try std.testing.expectError(
+        \\        error.OutOfMemory,
+        \\        client.callPingWithOptions(&callback, null, CallbackState.onReturn, .{}),
+        \\    );
+        \\    try std.testing.expectEqual(@as(usize, 1), callback.calls);
+        \\    try std.testing.expectEqual(@as(u32, 0), peer.stats().outbound_questions);
+        \\    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
         \\}
         \\
     );

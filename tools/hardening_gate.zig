@@ -28,7 +28,6 @@ const Allow = struct {
 /// line is copied elsewhere, the copy fails until it gets its own review note.
 const allowlist = [_]Allow{
     .{ .path = "src/serialization/message/struct_builder.zig", .kind = .optional_unwrap, .needle = "const landing_pos = landing_pad_pos.?;", .reason = "guarded by earlier landing-pad presence check" },
-    .{ .path = "src/serialization/message/struct_builder.zig", .kind = .optional_unwrap, .needle = "const landing_pos = landing_pad_pos.?;", .reason = "guarded by earlier landing-pad presence check" },
     .{ .path = "src/serialization/message.zig", .kind = .catch_unreachable, .needle = "framedHeaderBytes(segment_count_limit) catch unreachable", .reason = "compile-time default limit arithmetic is bounded by construction" },
     .{ .path = "src/serialization/message.zig", .kind = .catch_unreachable, .needle = "std.math.mul(usize, total_words_limit, 8) catch unreachable", .reason = "compile-time default limit arithmetic is bounded by construction" },
     .{ .path = "src/serialization/message.zig", .kind = .catch_unreachable, .needle = "std.math.add(usize, header_bytes, payload_bytes) catch unreachable", .reason = "compile-time default limit arithmetic is bounded by construction" },

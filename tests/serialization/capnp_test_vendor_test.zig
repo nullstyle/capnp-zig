@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const compare = @import("support/capnp_compare.zig");
+const capnp_cli = @import("support/capnp_cli.zig");
 
 const message = capnpc.message;
 const schema = capnpc.schema;
@@ -15,14 +16,7 @@ fn requirePath(path: []const u8) !void {
 }
 
 fn runCapnp(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = argv,
-    }) catch |err| {
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, argv, .{});
     defer allocator.free(result.stderr);
 
     switch (result.term) {
@@ -45,7 +39,6 @@ fn runCapnp(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
 
 fn capnpEvalJsonStruct(allocator: std.mem.Allocator, name: []const u8) !json.Parsed(json.Value) {
     const argv = [_][]const u8{
-        "capnp",
         "eval",
         "--output=json",
         "--short",
@@ -59,7 +52,6 @@ fn capnpEvalJsonStruct(allocator: std.mem.Allocator, name: []const u8) !json.Par
 
 fn capnpEvalTextAsJson(allocator: std.mem.Allocator, name: []const u8) !json.Parsed(json.Value) {
     const argv = [_][]const u8{
-        "capnp",
         "eval",
         "--output=text",
         "--short",
@@ -73,7 +65,6 @@ fn capnpEvalTextAsJson(allocator: std.mem.Allocator, name: []const u8) !json.Par
 
 fn capnpEvalBinary(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     const argv = [_][]const u8{
-        "capnp",
         "eval",
         "-obinary",
         "vendor/ext/capnp_test/test.capnp",
@@ -84,21 +75,13 @@ fn capnpEvalBinary(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
 
 fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorRequest {
     const argv = [_][]const u8{
-        "capnp",
         "compile",
         "-Ivendor/ext/capnp_test",
         "-o-",
         "vendor/ext/capnp_test/test.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = &argv,
-    }) catch |err| {
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, &argv, .{});
     defer allocator.free(result.stderr);
 
     switch (result.term) {

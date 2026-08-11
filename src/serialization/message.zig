@@ -3175,3 +3175,23 @@ test "StructReader.readBoolStrict enforces bounds" {
     try std.testing.expect(try reader.readBoolStrict(0, 0));
     try std.testing.expectError(error.OutOfBounds, reader.readBoolStrict(8, 0));
 }
+
+test "PointerListReader.isNull is structural for malformed non-null targets" {
+    var builder = MessageBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    var root = try builder.allocateStruct(0, 1);
+    var outer = try root.writePointerList(0, 2);
+    try outer.setNull(0);
+    try outer.setCapability(1, .{ .id = 17 });
+
+    const bytes = try builder.toBytes();
+    defer std.testing.allocator.free(bytes);
+    var msg = try Message.initUnvalidated(std.testing.allocator, bytes);
+    defer msg.deinit();
+
+    const reader = try (try msg.getRootStruct()).readPointerList(0);
+    try std.testing.expect(try reader.isNull(0));
+    try std.testing.expect(!try reader.isNull(1));
+    try std.testing.expectError(error.InvalidPointer, reader.getU16List(1));
+    try std.testing.expectError(error.IndexOutOfBounds, reader.isNull(2));
+}

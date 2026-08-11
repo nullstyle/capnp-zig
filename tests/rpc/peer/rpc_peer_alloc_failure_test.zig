@@ -240,6 +240,32 @@ fn sendCallWithParamCapOomImpl(allocator: std.mem.Allocator) !void {
     peer_test_hooks.removeQuestion(&peer, qid);
 }
 
+// Retained-call allocation is a two-table transaction: the question must be
+// removed if registering its retained-answer ownership fails, and the retained
+// entry must be removed if any later Call build/send allocation fails.
+fn sendRetainedCallOomImpl(allocator: std.mem.Allocator) !void {
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+
+    var sink: u8 = 0;
+    peer.setSendFrameOverride(&sink, noopSend);
+
+    var ctx: u8 = 0;
+    const qid = try peer.sendCallWithOptions(
+        7,
+        0xABCD,
+        0,
+        &ctx,
+        null,
+        noopReturn,
+        .{ .result_lifetime = .retained },
+    );
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().retained_questions);
+    peer_test_hooks.removeQuestion(&peer, qid);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().retained_questions);
+}
+
 // Note: sendCall / caps.noteImport tolerate a best-effort (non-fatal)
 // allocation on the outbound path, so they are not all-or-nothing
 // checkAllAllocationFailures targets (the harness would flag the recovered
@@ -270,6 +296,10 @@ test "sendBootstrap rolls back cleanly under OOM injection" {
 
 test "sendCall with param caps rolls back the export record under OOM injection" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendCallWithParamCapOomImpl, .{});
+}
+
+test "retained call registration and send roll back atomically under OOM injection" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendRetainedCallOomImpl, .{});
 }
 
 test "InboundCapTable.init rolls back noted imports under OOM injection" {

@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const compare = @import("support/capnp_compare.zig");
+const capnp_cli = @import("support/capnp_cli.zig");
 
 const message = capnpc.message;
 const schema = capnpc.schema;
@@ -16,7 +17,6 @@ fn loadCodeGeneratorRequestForSchema(
     schema_path: []const u8,
 ) !schema.CodeGeneratorRequest {
     const argv = [_][]const u8{
-        "capnp",
         "compile",
         "--no-standard-import",
         "-Itests/capnp_testdata",
@@ -24,14 +24,7 @@ fn loadCodeGeneratorRequestForSchema(
         schema_path,
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = &argv,
-    }) catch |err| {
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, &argv, .{});
     defer allocator.free(result.stderr);
 
     switch (result.term) {
@@ -99,7 +92,6 @@ fn capnpConvert(
 ) ![]u8 {
     const io = std.testing.io;
     const argv = [_][]const u8{
-        "capnp",
         "convert",
         conversion,
         "--no-standard-import",
@@ -108,17 +100,11 @@ fn capnpConvert(
         type_name,
     };
 
-    var child = std.process.spawn(io, .{
-        .argv = &argv,
+    var child = try capnp_cli.spawn(allocator, io, &argv, .{
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .pipe,
-    }) catch |err| {
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
+    });
 
     try child.stdin.?.writeStreamingAll(io, input);
     child.stdin.?.close(io);

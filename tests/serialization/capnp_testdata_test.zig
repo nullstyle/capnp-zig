@@ -1,6 +1,7 @@
 const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const compare = @import("support/capnp_compare.zig");
+const capnp_cli = @import("support/capnp_cli.zig");
 
 const message = capnpc.message;
 const schema = capnpc.schema;
@@ -13,7 +14,6 @@ const Fixture = struct {
 
 fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorRequest {
     const argv = [_][]const u8{
-        "capnp",
         "compile",
         "--no-standard-import",
         "-Itests/capnp_testdata",
@@ -21,14 +21,7 @@ fn loadCodeGeneratorRequest(allocator: std.mem.Allocator) !schema.CodeGeneratorR
         "tests/capnp_testdata/test.capnp",
     };
 
-    const result = std.process.run(allocator, std.testing.io, .{
-        .argv = &argv,
-    }) catch |err| {
-        return switch (err) {
-            error.FileNotFound => error.SkipZigTest,
-            else => err,
-        };
-    };
+    const result = try capnp_cli.run(allocator, std.testing.io, &argv, .{});
     defer allocator.free(result.stderr);
 
     switch (result.term) {

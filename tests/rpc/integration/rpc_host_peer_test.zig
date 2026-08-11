@@ -520,6 +520,7 @@ test "host peer host-call bridge enforces queued call count limit" {
     const ClientCtx = struct {
         bootstrap_import_id: ?u32 = null,
         limit_returned: bool = false,
+        call_return_count: usize = 0,
     };
     const Handlers = struct {
         fn onBootstrapReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, caps: *const cap_table.InboundCapTable) anyerror!void {
@@ -536,6 +537,7 @@ test "host peer host-call bridge enforces queued call count limit" {
         fn onCallReturn(ctx: *anyopaque, _: *Peer, ret: protocol.Return, _: *const cap_table.InboundCapTable) anyerror!void {
             const state: *ClientCtx = @ptrCast(@alignCast(ctx));
             state.limit_returned = true;
+            state.call_return_count += 1;
             try std.testing.expectEqual(protocol.ReturnTag.exception, ret.tag);
             const ex = ret.exception orelse return error.MissingException;
             try std.testing.expectEqualStrings(default_host_error_reason, ex.reason);
@@ -587,11 +589,14 @@ test "host peer host-call bridge enforces queued call count limit" {
     try std.testing.expectEqual(@as(usize, 1), server.pendingHostCallCount());
     try pumpAll(&server, &client);
     try std.testing.expect(client_ctx.limit_returned);
+    try std.testing.expectEqual(@as(usize, 1), client_ctx.call_return_count);
 
     const call = server.popHostCall() orelse return error.MissingHostCall;
     defer server.freeHostCallFrame(call.frame);
     try std.testing.expectEqual(@as(usize, 0), server.pendingHostCallBytes());
     try server.respondHostCallException(call.question_id, "dropped");
+    try pumpAll(&server, &client);
+    try std.testing.expectEqual(@as(usize, 2), client_ctx.call_return_count);
 }
 
 test "host peer host-call bridge enforces queued call byte limit before copy" {
