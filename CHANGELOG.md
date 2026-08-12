@@ -119,39 +119,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other cases, so the experimental surface is now platform-stable by
   construction rather than by assumption.
 
-- **The ThreadSanitizer lane had never once finished.** It carried
-  `timeout-minutes: 20` and was killed at exactly 20 minutes on every run since
-  it was added, so it reported no result while looking configured. Its cap is
-  now 45 minutes, and `docs/stability.md` no longer claims TSan coverage that
-  had not yet been earned.
+- **The ThreadSanitizer lane had never once finished, and the reason was the
+  hang above, not the timeout.** It carried `timeout-minutes: 20` and was
+  killed at exactly 20 minutes on every run since it was added, then at 45
+  once raised — so it reported no result while looking configured. It runs the
+  cross-thread transport suites, which is exactly where the wake-drain loop
+  lived. With that fixed it completes in about four minutes: 11/11 steps,
+  26/26 tests, **no races reported**. `docs/stability.md` now states that as
+  measured coverage instead of a configured job.
 
-### Known issues
+### Fixed
 
-- **The Linux full-suite CI legs hang, and the release is blocked on it.**
-  `Test (ubuntu-latest)` was green through `bf70eae` and has not passed since.
-
-  Proven for that job: the signature is a hang, not slowness. It emits its last
-  line, then goes completely silent until the step cap kills it — 16.7 minutes
-  of silence at a 20-minute cap, 32 minutes at a 35-minute cap — leaving
+- **A Linux-only infinite loop made four CI legs hang; `std.posix.system`
+  changes its return type between platforms.** `Test (ubuntu-latest)` was green
+  through `bf70eae` and had not passed since. The signature was a hang, not
+  slowness: last line printed, then total silence until the step cap — 16.7
+  minutes of silence at a 20-minute cap, 32 at a 35-minute cap — leaving
   orphaned `maker` (the build process) and `test` (a test binary) behind. Two
-  runs with two different `--seed` values stall identically, so it is
-  deterministic rather than seed- or timing-flaky. macOS reaches `159/159 steps
-  succeeded; 1862/1862 tests passed` past the same point, and Windows passes
-  too.
+  runs with two different `--seed` values stalled identically. macOS and
+  Windows passed the same suites.
 
-  Strongly indicated but not yet proven to be the same fault: the three other
-  Linux legs that run threaded suites never completed either. `ThreadSanitizer`
-  hit its (raised) 45-minute cap; `QUIC targeted transport (ubuntu-latest)` and
-  `ReleaseSafe hardening tests (ubuntu-latest)` were still running at 75+
-  minutes when the run ended, against 11m and 28m for the same jobs on Windows.
-  Those three were cancelled rather than observed to their conclusion, so they
-  are evidence, not proof.
+  `std.posix.system` is the *platform's* syscall layer, and the halves disagree
+  about the return type:
 
-  Recorded here rather than papered over: raising the `Test` job's caps
-  (30→45 job, 20→35 step) was committed on the theory that the leg needed more
-  time, which the silence disproves — it hung longer. `just release-tag`
-  requires a fully green CI run for `HEAD`, so this blocks tagging, which is
-  the correct outcome.
+      linux  std.os.linux.read -> usize   raw syscall; failure is -errno
+                                          reinterpreted as a huge POSITIVE
+      macOS  std.c.read        -> isize   libc shim; failure is -1
+
+  The wake-pipe `drain()` classified on the sign before consulting errno, so on
+  Linux every error read as "bytes received". `EAGAIN` is the ordinary way a
+  non-blocking drain finishes — the pipe is empty — so the loop never
+  terminated and the errno switch was unreachable. Measured in a Linux
+  container: **795,914 `read()` calls in 3 seconds, every one an error**,
+  confirmed by strace plus a stack trace showing `Handle.drain` → `read` with
+  four waker threads spinning.
+
+  All three instances in the file are fixed, because the same ordering appeared
+  three times with three different consequences: `drain()` looped forever,
+  `writeByte()` returned on the `rc > 0` arm and so reported every failed wake
+  as delivered, and `waitForSocket()` classified a *failed* `poll()` as
+  "descriptors ready" and read `revents` the kernel never populated. The fix is
+  the idiom `tcp.connection.pollRetryIntr` already used — its comment says
+  "classified via errno rather than the sign of the return value".
+
+  Also corrects the record: raising the `Test` job's caps (30→45 job, 20→35
+  step) was committed on the theory that the leg needed more time. The silence
+  disproves that — it hung longer.
+
+- **Windows QUIC runtime acceptance is earned.** `QUIC targeted transport
+  (windows-latest)` now runs both native evidence roots, Debug and ReleaseSafe,
+  with `SkipZigTest` rejected, and passes — see the transport entry above for
+  the defect that was blocking it. Scope is the job's own step list: only the
+  evidence roots run on Windows; the full QUIC-root suite, build-graph check,
+  strict QUIC snapshot and doc-snippet fixtures remain Linux-only.
 
 ### Changed
 
