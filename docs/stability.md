@@ -24,7 +24,7 @@ updated as phases land.
 | Cross-implementation e2e (docker reference impls) | full | full | local only (Docker Desktop/WSL2); hosted runners cannot run Linux containers |
 | Deterministic fuzz smoke | full | full | full |
 | Structural fuzz: L3/L4 peer frames, QUIC framers, persistence restore | full | full | full |
-| ThreadSanitizer lane (`test-tsan`, threaded transport suites) | full (CI job) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
+| ThreadSanitizer lane (`test-tsan`, threaded transport suites) | CI job configured; compile-verified via `check-tsan`, first full run pending (the lane hit its job timeout on every run since it was added) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
 | QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 61/61 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |

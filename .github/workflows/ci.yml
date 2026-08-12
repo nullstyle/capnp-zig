@@ -29,8 +29,13 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # A hung test binary must fail the job, not burn a runner for the
-    # 6-hour default.
-    timeout-minutes: 30
+    # 6-hour default. Sized against measured runs rather than a guess: on
+    # 2026-08-12 the legs took 14m40s (macOS), ~20m (Windows) and 20m50s
+    # (ubuntu) — the last one blowing a 20-minute step cap and failing a run
+    # in which every test passed. The suite grew over the risk-surface sprint
+    # (cross-thread stress reps, structural fuzz targets), so the caps now
+    # bound a hang with headroom instead of clipping a healthy run.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +59,8 @@ jobs:
       - uses: ./.github/actions/setup-capnp
 
       - name: Run tests
-        timeout-minutes: 20
+        # See the job timeout above: 20 minutes clipped a passing ubuntu run.
+        timeout-minutes: 35
         run: zig build test --summary all
 
       - name: Check compilation
@@ -354,7 +360,14 @@ jobs:
   tsan:
     name: ThreadSanitizer lane
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ThreadSanitizer instrumentation is 5-20x slower than a normal build, and
+    # nothing caches .zig-cache across runs (deliberately — see setup-zig), so
+    # every run recompiles the lib module and six suites instrumented from
+    # scratch. The original 20 minutes was too tight: the lane was killed at
+    # exactly 20m on every run since it was added and therefore never once
+    # reported a result. Raised to bound a slow-but-real lane rather than a
+    # gate that always dies before it can fail.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
