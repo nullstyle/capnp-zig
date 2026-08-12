@@ -63,6 +63,7 @@ const EventRecorder = struct {
     shutdown_drain_timeouts: usize = 0,
     idle_timeouts: usize = 0,
     parked_accept_timeouts: usize = 0,
+    join_timeouts: usize = 0,
     backpressure_events: usize = 0,
     last_timeout_question_id: ?u32 = null,
 
@@ -78,6 +79,7 @@ const EventRecorder = struct {
                     .shutdown_drain => self.shutdown_drain_timeouts += 1,
                     .idle_connection => self.idle_timeouts += 1,
                     .parked_accept => self.parked_accept_timeouts += 1,
+                    .join => self.join_timeouts += 1,
                 }
             },
             .backpressure => self.backpressure_events += 1,

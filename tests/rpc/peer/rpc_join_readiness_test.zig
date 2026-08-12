@@ -3,8 +3,10 @@ const capnpc = @import("capnpc-zig");
 
 const protocol = capnpc.rpc.wire.protocol;
 const cap_table = capnpc.rpc.caps.table;
+const events = capnpc.rpc.events;
 const message = capnpc.message;
 const Peer = capnpc.rpc.peer.Peer;
+const rpc_time = capnpc.rpc.time;
 const peer_test_hooks = Peer.test_hooks;
 const join_state = capnpc.rpc.testing.peer_provide_accept_join.join_state;
 const vat_join = capnpc.rpc.vat.join;
@@ -246,6 +248,398 @@ const StaticAddressConnector = struct {
     }
 };
 
+const JoinEventRecorder = struct {
+    owner: ?*Peer = null,
+    accept_host: ?*Peer = null,
+    relay_source: ?*Peer = null,
+    join_timeouts: usize = 0,
+    last_timeout_answer_id: ?u32 = null,
+    timeout_saw_detached_state: bool = false,
+    join_record_rejections: usize = 0,
+    join_part_rejections: usize = 0,
+    join_byte_rejections: usize = 0,
+    last_attempted: ?usize = null,
+    last_limit: ?usize = null,
+    last_error: ?anyerror = null,
+
+    fn onEvent(ctx_ptr: *anyopaque, event: events.Event) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        switch (event) {
+            .timeout => |timeout| {
+                if (timeout.kind != .join) return;
+                self.join_timeouts += 1;
+                self.last_timeout_answer_id = timeout.answer_id;
+                const owner_detached = if (self.owner) |owner|
+                    owner.stats().join_records == 0 and owner.stats().join_accept_bytes == 0
+                else
+                    true;
+                const accept_detached = if (self.accept_host) |accept_host|
+                    accept_host.stats().join_records == 0
+                else
+                    true;
+                const relay_detached = if (self.relay_source) |source|
+                    source.cross_peer_join_relay_links.items.len == 0
+                else
+                    true;
+                self.timeout_saw_detached_state = owner_detached and accept_detached and relay_detached;
+            },
+            .resource_rejection => |rejection| {
+                switch (rejection.resource) {
+                    .join_records => self.join_record_rejections += 1,
+                    .join_parts => self.join_part_rejections += 1,
+                    .join_accept_bytes => self.join_byte_rejections += 1,
+                    else => return,
+                }
+                self.last_attempted = rejection.attempted;
+                self.last_limit = rejection.limit;
+                self.last_error = rejection.err;
+            },
+            else => {},
+        }
+    }
+
+    fn observer(self: *@This()) events.Observer {
+        return events.Observer.init(self, onEvent);
+    }
+};
+
+const JoinCloseProbe = struct {
+    accept_host: *Peer,
+    accept_frame: ?[]const u8 = null,
+    calls: usize = 0,
+    saw_result_records_detached: bool = false,
+    saw_committed_hosted_lease: bool = false,
+    accepted_in_callback: bool = false,
+    accept_error: ?anyerror = null,
+
+    fn onClose(ctx: ?*anyopaque, peer: *Peer) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.calls += 1;
+        self.saw_result_records_detached = peer.pending_join_result_answers.count() == 0;
+        if (peer.hosted_joins.count() == 1 and self.accept_host.pending_join_accepts.count() == 1) {
+            var it = peer.hosted_joins.keyIterator();
+            const hosted = (it.next() orelse return).*;
+            self.saw_committed_hosted_lease = hosted.published_results != 0 and
+                hosted.result_refs == 0 and
+                hosted.accept_peer == self.accept_host and
+                peer.stats().join_accept_bytes == hosted.provision.len;
+        }
+        if (self.accept_frame) |frame| {
+            if (self.accept_host.handleFrame(frame)) |_| {
+                self.accepted_in_callback = true;
+            } else |err| {
+                self.accept_error = err;
+            }
+        }
+    }
+};
+
+const JoinAcceptCloseProbe = struct {
+    owner: *Peer,
+    calls: usize = 0,
+    saw_detached_state: bool = false,
+
+    fn onClose(ctx: ?*anyopaque, accept_host: *Peer) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx.?));
+        self.calls += 1;
+        self.saw_detached_state = self.owner.stats().join_records == 0 and
+            self.owner.stats().join_accept_bytes == 0 and
+            accept_host.stats().join_records == 0;
+    }
+};
+
+const ReentrantJoinClock = struct {
+    peer: *Peer,
+    frame: []const u8,
+    now_ns: i64 = 0,
+    fired: bool = false,
+    nested_completed: bool = false,
+    nested_error: ?anyerror = null,
+
+    fn now(ctx: *anyopaque) i64 {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        if (!self.fired) {
+            self.fired = true;
+            if (self.peer.handleFrame(self.frame)) |_| {
+                self.nested_completed = true;
+            } else |err| {
+                self.nested_error = err;
+            }
+        }
+        return self.now_ns;
+    }
+
+    fn clock(self: *@This()) rpc_time.Clock {
+        return .{ .ctx = self, .now_fn = now };
+    }
+};
+
+const ClosingJoinClock = struct {
+    peer: *Peer,
+    fired: bool = false,
+
+    fn now(ctx: *anyopaque) i64 {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        if (!self.fired) {
+            self.fired = true;
+            self.peer.notifyTransportClosed();
+        }
+        return 0;
+    }
+
+    fn clock(self: *@This()) rpc_time.Clock {
+        return .{ .ctx = self, .now_fn = now };
+    }
+};
+
+const ReentrantCancelJoinNetwork = struct {
+    base: capnpc.rpc.peer.JoinNetwork,
+    owner: *Peer,
+    accept_peer: *Peer,
+    cancel_calls: usize = 0,
+    saw_detached_state: bool = false,
+
+    fn network(self: *@This()) capnpc.rpc.peer.JoinNetwork {
+        return .init(self, hostJoinResult, connectJoined, cancelHostJoinResult);
+    }
+
+    fn hostJoinResult(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        host_peer: *Peer,
+        join_id: u32,
+    ) anyerror!vat_join.HostJoinResult(Peer) {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        return self.base.hostJoinResult(allocator, host_peer, join_id);
+    }
+
+    fn connectJoined(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        result: message.AnyPointerReader,
+    ) anyerror!vat_join.Joined(Peer) {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        return self.base.connectJoined(allocator, result);
+    }
+
+    fn cancelHostJoinResult(ctx: *anyopaque, provision: []const u8) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.cancel_calls += 1;
+        self.base.cancelHostJoinResult(provision);
+        self.saw_detached_state = self.owner.stats().join_records == 0 and
+            self.owner.stats().join_accept_bytes == 0 and
+            self.accept_peer.stats().join_records == 0;
+        // This deinit is deferred by the canonical owner+Accept operation
+        // guards until the callback and both cleanup stacks stop borrowing the
+        // distinct Accept peer.
+        self.accept_peer.deinit();
+    }
+};
+
+const ReentrantHostJoinNetwork = struct {
+    base: capnpc.rpc.peer.JoinNetwork,
+    replacement: capnpc.rpc.peer.JoinNetwork,
+    finish_answer_id: u32,
+    duplicate_call_frame: []const u8,
+    nested_join_frame: []const u8,
+    callback_calls: usize = 0,
+    saw_counted_transition: bool = false,
+    detach_refused: bool = false,
+    replace_refused: bool = false,
+    identical_reattach_ok: bool = false,
+    duplicate_rejected: bool = false,
+    nested_join_refused_generically: bool = false,
+
+    fn network(self: *@This()) capnpc.rpc.peer.JoinNetwork {
+        return .init(self, hostJoinResult, connectJoined, cancelHostJoinResult);
+    }
+
+    fn hostJoinResult(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        host_peer: *Peer,
+        join_id: u32,
+    ) anyerror!vat_join.HostJoinResult(Peer) {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.callback_calls += 1;
+        self.saw_counted_transition = host_peer.stats().join_records == 3;
+        self.detach_refused = if (host_peer.detachJoinNetwork()) |_| false else |err| err == error.JoinNetworkInUse;
+        self.replace_refused = if (host_peer.attachJoinNetwork(self.replacement)) |_| false else |err| err == error.JoinNetworkInUse;
+        host_peer.attachJoinNetwork(self.network()) catch return error.TestExpectedEqual;
+        self.identical_reattach_ok = true;
+
+        try peer_test_hooks.handleFinish(host_peer, .{
+            .question_id = self.finish_answer_id,
+            .release_result_caps = false,
+            .require_early_cancellation = false,
+        });
+        self.duplicate_rejected = if (host_peer.handleFrame(self.duplicate_call_frame)) |_| false else |err| err == error.DuplicateQuestionId;
+        const before_exceptions = host_peer.failed_answers.count();
+        try host_peer.handleFrame(self.nested_join_frame);
+        self.nested_join_refused_generically = host_peer.failed_answers.count() == before_exceptions + 1;
+
+        return self.base.hostJoinResult(allocator, host_peer, join_id);
+    }
+
+    fn connectJoined(
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        result: message.AnyPointerReader,
+    ) anyerror!vat_join.Joined(Peer) {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        return self.base.connectJoined(allocator, result);
+    }
+
+    fn cancelHostJoinResult(ctx: *anyopaque, provision: []const u8) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx));
+        self.base.cancelHostJoinResult(provision);
+    }
+};
+
+const FinishOnExceptionCapture = struct {
+    capture: ReturnCapture,
+    peer: *Peer,
+    answer_id: u32,
+    finished: bool = false,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(self.capture.allocator, frame) catch {
+            return ReturnCapture.onFrame(&self.capture, frame);
+        };
+        defer decoded.deinit();
+        if (!self.finished and decoded.tag == .@"return") {
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == self.answer_id and ret.tag == .exception) {
+                self.finished = true;
+                try peer_test_hooks.handleFinish(self.peer, .{
+                    .question_id = self.answer_id,
+                    .release_result_caps = false,
+                    .require_early_cancellation = false,
+                });
+            }
+        }
+        try ReturnCapture.onFrame(&self.capture, frame);
+    }
+
+    fn deinit(self: *@This()) void {
+        self.capture.deinit();
+    }
+};
+
+const FinishFirstJoinResultCapture = struct {
+    capture: ReturnCapture,
+    owner: *Peer,
+    first_answer_id: u32,
+    finished: bool = false,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(self.capture.allocator, frame) catch {
+            return ReturnCapture.onFrame(&self.capture, frame);
+        };
+        defer decoded.deinit();
+        if (!self.finished and decoded.tag == .@"return") {
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == self.first_answer_id and ret.tag == .results) {
+                self.finished = true;
+                try peer_test_hooks.handleFinish(self.owner, .{
+                    .question_id = self.first_answer_id,
+                    .release_result_caps = false,
+                    .require_early_cancellation = false,
+                });
+            }
+        }
+        try ReturnCapture.onFrame(&self.capture, frame);
+    }
+
+    fn deinit(self: *@This()) void {
+        self.capture.deinit();
+    }
+};
+
+const ExpireAcceptOnFirstResultCapture = struct {
+    capture: ReturnCapture,
+    accept_host: *Peer,
+    accept_clock: *rpc_time.TestClock,
+    first_answer_id: u32,
+    expired: bool = false,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(self.capture.allocator, frame) catch {
+            return ReturnCapture.onFrame(&self.capture, frame);
+        };
+        defer decoded.deinit();
+        if (!self.expired and decoded.tag == .@"return") {
+            const ret = try decoded.asReturn();
+            if (ret.answer_id == self.first_answer_id and ret.tag == .results) {
+                self.expired = true;
+                self.accept_clock.advanceMs(1);
+                _ = self.accept_host.sweepExpiredJoins();
+            }
+        }
+        try ReturnCapture.onFrame(&self.capture, frame);
+    }
+
+    fn deinit(self: *@This()) void {
+        self.capture.deinit();
+    }
+};
+
+const TimeoutReuseProbe = struct {
+    peer: *Peer,
+    frame: []const u8,
+    calls: usize = 0,
+    saw_detached_gauges: bool = false,
+    reuse_error: ?anyerror = null,
+
+    fn onEvent(ctx_ptr: *anyopaque, event: events.Event) void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        const timeout = switch (event) {
+            .timeout => |timeout| timeout,
+            else => return,
+        };
+        if (timeout.kind != .join) return;
+        self.calls += 1;
+        self.saw_detached_gauges = self.peer.stats().join_records == 0;
+        if (self.peer.handleFrame(self.frame)) |_| {
+            self.reuse_error = null;
+        } else |err| {
+            self.reuse_error = err;
+        }
+    }
+
+    fn observer(self: *@This()) events.Observer {
+        return events.Observer.init(self, onEvent);
+    }
+};
+
+const DeinitPeerOnSend = struct {
+    peer: *Peer,
+    calls: usize = 0,
+
+    fn onFrame(ctx_ptr: *anyopaque, _: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        self.calls += 1;
+        self.peer.deinit();
+    }
+};
+
+const DeinitOwnerOnReturn = struct {
+    owner: *Peer,
+    terminal_calls: usize = 0,
+
+    fn onFrame(ctx_ptr: *anyopaque, frame: []const u8) anyerror!void {
+        const self: *@This() = @ptrCast(@alignCast(ctx_ptr));
+        var decoded = protocol.DecodedMessage.init(std.testing.allocator, frame) catch return;
+        defer decoded.deinit();
+        if (decoded.tag != .@"return") return;
+        self.terminal_calls += 1;
+        self.owner.deinit();
+    }
+};
+
 fn noopCall(_: *anyopaque, peer: *Peer, call: protocol.Call, _: *const cap_table.InboundCapTable) anyerror!void {
     try peer.sendReturnEmptyStruct(call.question_id);
 }
@@ -323,6 +717,15 @@ fn buildJoinFrame(
     return builder.finish();
 }
 
+fn buildCallFrame(allocator: std.mem.Allocator, question_id: u32, target_export_id: u32) ![]const u8 {
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    var call = try builder.beginCall(question_id, 0xdead_beef, 0);
+    try call.setTargetImportedCap(target_export_id);
+    _ = try call.initCapTableTyped(0);
+    return builder.finish();
+}
+
 fn buildJoinPromisedFrame(
     allocator: std.mem.Allocator,
     question_id: u32,
@@ -383,6 +786,21 @@ fn buildFinishFrame(allocator: std.mem.Allocator, question_id: u32, release_resu
     var builder = protocol.MessageBuilder.init(allocator);
     defer builder.deinit();
     try builder.buildFinish(question_id, release_result_caps, false);
+    return builder.finish();
+}
+
+fn buildAcceptFrame(
+    allocator: std.mem.Allocator,
+    question_id: u32,
+    token: []const u8,
+) ![]const u8 {
+    var token_msg = try message.Message.initUnvalidated(allocator, token);
+    defer token_msg.deinit();
+    const provision = try token_msg.getRootAnyPointer();
+
+    var builder = protocol.MessageBuilder.init(allocator);
+    defer builder.deinit();
+    try builder.buildAccept(question_id, provision, null);
     return builder.finish();
 }
 
@@ -922,7 +1340,7 @@ test "L4 JoinResult runtime resolves direct Accept and invokes joined cap" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 9001 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -989,7 +1407,7 @@ test "JoinCoordinator drives JoinResult Accept and finishes remote lifetime" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 6102 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -1062,7 +1480,7 @@ test "JoinCoordinator accepts cap when synchronous Accept auto-Finish initially 
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 6204 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -1131,7 +1549,7 @@ test "JoinCoordinator retries repeatedly failed Accept Finish during release cle
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 6205 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -1196,7 +1614,7 @@ test "JoinCoordinator releaseAccepted failure leaves Accept Finish retryable" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 6207 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -1255,7 +1673,7 @@ test "JoinCoordinator takeAccepted transfers cap while Accept Finish remains ret
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 6208 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -1328,7 +1746,7 @@ test "JoinCoordinator accepted cap is neutralized when direct peer deinits first
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 6206 };
     const export_id = try server.setBootstrap(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -1380,7 +1798,7 @@ test "JoinCoordinator cancel after JoinResults drains pending direct Accept" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&server);
     var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b06, 2);
@@ -1628,7 +2046,7 @@ test "JoinCoordinator cancel drains pending Accept question after lost Return" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&server);
     var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b08, 2);
@@ -1681,7 +2099,7 @@ test "JoinCoordinator Accept exception still finishes JoinResults" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&server);
     var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b0c, 2);
@@ -1728,7 +2146,7 @@ test "JoinCoordinator malformed Accept Return still finishes JoinResults" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&server);
     var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &client, join_net.network(), 0x4b12, 2);
@@ -1816,7 +2234,7 @@ test "JoinCoordinator deinit cancels pending Accept question after lost Return" 
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&server);
     var accept_question_id: u32 = undefined;
@@ -2017,7 +2435,7 @@ test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeerWithAcceptHost(&d_to_b, &a_to_d, &d_to_a);
-    d_to_b.attachJoinNetwork(join_net.network());
+    try d_to_b.attachJoinNetwork(join_net.network());
 
     var number = NumberService{ .value = 0x4444 };
     const d_via_b_export = try d_to_b.addExport(.{ .ctx = &number, .on_call = NumberService.onCall });
@@ -2054,7 +2472,8 @@ test "L4 Join relays through transparent proxy exports and accepts direct cap" {
     try std.testing.expectEqual(@as(usize, 0), d_to_b.pending_joins.count());
     try std.testing.expectEqual(@as(usize, 2), d_to_b.pending_join_result_answers.count());
     try std.testing.expectEqual(@as(usize, 1), d_to_a.pending_join_accepts.count());
-    try std.testing.expectEqual(@as(usize, 2), d_to_a.join_accept_host_links.items.len);
+    // One canonical HostedJoin backlink, shared by both result answers.
+    try std.testing.expectEqual(@as(usize, 1), d_to_a.join_accept_host_links.items.len);
     try std.testing.expectEqual(@as(usize, 2), coordinator.joined.items.len);
     try std.testing.expectEqual(@as(usize, 2), coordinator.question_peers.items.len);
     try std.testing.expect(coordinator.question_peers.items[0] == &a_to_b);
@@ -2881,7 +3300,7 @@ test "L4 JoinResult send failure drains pending direct Accept state" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&peer, &peer);
-    peer.attachJoinNetwork(join_net.network());
+    try peer.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&peer);
 
@@ -2916,7 +3335,7 @@ test "L4 JoinResult fallback exception send failure drains pending direct Accept
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&peer, &peer);
-    peer.attachJoinNetwork(join_net.network());
+    try peer.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&peer);
 
@@ -2956,7 +3375,7 @@ test "L4 JoinResult Finish before direct Accept drains pending provision" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeer(&server, &client);
-    server.attachJoinNetwork(join_net.network());
+    try server.attachJoinNetwork(join_net.network());
 
     const export_id = try addNoopExport(&server);
     var coordinator = TestL4RuntimeCoordinator.init(allocator, join_net.network(), 0x4b03, 2);
@@ -2982,6 +3401,135 @@ test "L4 JoinResult Finish before direct Accept drains pending provision" {
     try std.testing.expectEqual(@as(usize, 0), client.questions.count());
 }
 
+test "L4 first synchronous JoinResult Finish cannot cancel later fanout members" {
+    const allocator = std.testing.allocator;
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    var capture = FinishFirstJoinResultCapture{
+        .capture = .{ .allocator = allocator },
+        .owner = &owner,
+        .first_answer_id = 154,
+    };
+    defer capture.deinit();
+    owner.setSendFrameOverride(&capture, FinishFirstJoinResultCapture.onFrame);
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&owner, &owner);
+    try owner.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&owner);
+    const first = try buildJoinFrame(allocator, 154, export_id, 0x4b13, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 155, export_id, 0x4b13, 2, 1);
+    defer allocator.free(second);
+    try owner.handleFrame(first);
+    try owner.handleFrame(second);
+
+    try std.testing.expect(capture.finished);
+    try std.testing.expectEqual(@as(usize, 1), capture.capture.countReturns(154, .results));
+    try std.testing.expectEqual(@as(usize, 1), capture.capture.countReturns(155, .results));
+    try std.testing.expect(!owner.pending_join_result_answers.contains(154));
+    try std.testing.expect(owner.pending_join_result_answers.contains(155));
+    try std.testing.expectEqual(@as(usize, 1), owner.pending_join_accepts.count());
+    try peer_test_hooks.handleFinish(&owner, .{
+        .question_id = 155,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try harness.expectNoJoinState(&owner);
+}
+
+test "L4 Accept expiry during first Return makes later fanout generic" {
+    const allocator = std.testing.allocator;
+
+    var accept_clock = rpc_time.TestClock{};
+    var accept_host = Peer.initDetached(allocator);
+    accept_host.disableThreadAffinity();
+    defer accept_host.deinit();
+    accept_host.setClock(accept_clock.clock());
+    accept_host.setTimeouts(.{ .join_timeout_ms = 1 });
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    var capture = ExpireAcceptOnFirstResultCapture{
+        .capture = .{ .allocator = allocator },
+        .accept_host = &accept_host,
+        .accept_clock = &accept_clock,
+        .first_answer_id = 156,
+    };
+    defer capture.deinit();
+    owner.setSendFrameOverride(&capture, ExpireAcceptOnFirstResultCapture.onFrame);
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeerWithAcceptHost(&owner, &accept_host, &accept_host);
+    try owner.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&owner);
+    _ = try addNoopExport(&accept_host);
+    const first = try buildJoinFrame(allocator, 156, export_id, 0x4b14, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 157, export_id, 0x4b14, 2, 1);
+    defer allocator.free(second);
+    try owner.handleFrame(first);
+    try owner.handleFrame(second);
+
+    try std.testing.expect(capture.expired);
+    try std.testing.expectEqual(@as(usize, 1), capture.capture.countReturns(156, .results));
+    try std.testing.expectEqual(@as(usize, 0), capture.capture.countReturns(157, .results));
+    try capture.capture.expectException(157, "join unavailable");
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&accept_host);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+}
+
+test "L4 final JoinResult Finish guards a distinct Accept peer across cancellation" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var accept_peer = Peer.initDetached(allocator);
+    accept_peer.disableThreadAffinity();
+    defer accept_peer.deinit();
+
+    var base = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer base.deinit();
+    try base.registerDirectPeerWithAcceptHost(&owner, &accept_peer, &accept_peer);
+    var reentrant = ReentrantCancelJoinNetwork{
+        .base = base.network(),
+        .owner = &owner,
+        .accept_peer = &accept_peer,
+    };
+    try owner.attachJoinNetwork(reentrant.network());
+
+    const export_id = try addNoopExport(&owner);
+    const first = try buildJoinFrame(allocator, 154, export_id, 0x4b13, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 155, export_id, 0x4b13, 2, 1);
+    defer allocator.free(second);
+    try owner.handleFrame(first);
+    try owner.handleFrame(second);
+
+    try peer_test_hooks.handleFinish(&owner, .{
+        .question_id = 154,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try peer_test_hooks.handleFinish(&owner, .{
+        .question_id = 155,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), reentrant.cancel_calls);
+    try std.testing.expect(reentrant.saw_detached_state);
+    try harness.expectNoJoinState(&owner);
+    try std.testing.expectEqual(@as(usize, 0), base.registry.count());
+}
+
 test "L4 JoinResult pending Accept target uses accept peer allocator" {
     const allocator = std.testing.allocator;
 
@@ -3005,7 +3553,7 @@ test "L4 JoinResult pending Accept target uses accept peer allocator" {
     var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
     defer join_net.deinit();
     try join_net.registerDirectPeerWithAcceptHost(&join_host, &accept_host, &accept_host);
-    join_host.attachJoinNetwork(join_net.network());
+    try join_host.attachJoinNetwork(join_net.network());
 
     const resolved_answer_id: u32 = 0x4b20;
     const receiver_answer_id: u32 = 0x4b21;
@@ -3027,7 +3575,7 @@ test "L4 JoinResult pending Accept target uses accept peer allocator" {
     {
         var it = accept_host.pending_join_accepts.valueIterator();
         const target = it.next() orelse return error.MissingPendingJoinAccept;
-        switch (target.*) {
+        switch (target.target) {
             .promised => |promised| try std.testing.expectEqual(receiver_answer_id, promised.question_id),
             else => return error.ExpectedPromisedJoinTarget,
         }
@@ -3061,7 +3609,7 @@ test "L4 JoinResult peer deinit cancels pending direct Accept provision" {
     var peer = Peer.initDetached(allocator);
     peer.disableThreadAffinity();
     peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
-    peer.attachJoinNetwork(join_net.network());
+    try peer.attachJoinNetwork(join_net.network());
     try join_net.registerDirectPeer(&peer, &peer);
 
     const export_id = try addNoopExport(&peer);
@@ -3181,13 +3729,13 @@ fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
         try std.testing.expectEqual(@as(usize, 1), coordinator.question_peers.items.len);
         try std.testing.expectEqual(@as(usize, 1), coordinator.question_finished.items.len);
         try std.testing.expect(peer.questions.contains(question_id));
+        // Exercise the real coordinator cleanup path so the result-peer
+        // backlink is retired along with the coordinator slot.  Clearing the
+        // public arrays by hand would deliberately violate that ownership
+        // invariant and leave Peer.deinit pointing at dead coordinator state.
+        try coordinator.cancelPending("test cleanup");
         peer_test_hooks.removeQuestion(&peer, question_id);
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
-        coordinator.question_ids.clearRetainingCapacity();
-        coordinator.question_peers.clearRetainingCapacity();
-        coordinator.question_finished.clearRetainingCapacity();
-        coordinator.sent_parts.clearRetainingCapacity();
-        coordinator.join_results_finished = true;
     } else |err| {
         try std.testing.expectEqual(@as(usize, 0), peer.questions.count());
         try std.testing.expectEqual(@as(usize, 0), coordinator.question_ids.items.len);
@@ -3199,6 +3747,67 @@ fn joinCoordinatorSendPartOomImpl(allocator: std.mem.Allocator) !void {
 
 test "JoinCoordinator sendPart rolls back local state under OOM injection" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, joinCoordinatorSendPartOomImpl, .{});
+}
+
+test "JoinCoordinator publishes result-peer backlink before synchronous peer deinit" {
+    const allocator = std.testing.allocator;
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    var deinit_send = DeinitPeerOnSend{ .peer = &peer };
+    peer.setSendFrameOverride(&deinit_send, DeinitPeerOnSend.onFrame);
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &peer, join_net.network(), 0x4a15, 1);
+    defer coordinator.deinit();
+
+    _ = try coordinator.sendImportedCapPart(&peer, 7, 1, 0);
+    try std.testing.expect(deinit_send.calls >= 1);
+    try std.testing.expect(peer.in_deinit);
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try std.testing.expect(coordinator.question_peers.items[0] == null);
+
+    // Must not dereference the destroyed result peer during coordinator drain.
+    try coordinator.cancelPending("result peer closed during send");
+}
+
+test "JoinCoordinator neutralizes retained result peer before later cancel" {
+    const allocator = std.testing.allocator;
+
+    var first_capture = ReturnCapture{ .allocator = allocator };
+    defer first_capture.deinit();
+    var second_capture = ReturnCapture{ .allocator = allocator };
+    defer second_capture.deinit();
+    var first = Peer.initDetached(allocator);
+    first.disableThreadAffinity();
+    first.setSendFrameOverride(&first_capture, ReturnCapture.onFrame);
+    var second = Peer.initDetached(allocator);
+    second.disableThreadAffinity();
+    defer second.deinit();
+    second.setSendFrameOverride(&second_capture, ReturnCapture.onFrame);
+
+    var addressed = vat_join.AddressedJoinNetwork(Peer).init(allocator);
+    defer addressed.deinit();
+    var connector = StaticAddressConnector{ .peer = &second };
+    addressed.setAddressConnector(&connector, StaticAddressConnector.connect);
+    var coordinator = capnpc.rpc.peer.JoinCoordinator.init(allocator, &second, addressed.network(), 0x4a16, 2);
+    defer coordinator.deinit();
+
+    const first_qid = try coordinator.sendImportedCapPart(&first, 7, 2, 0);
+    _ = try coordinator.sendImportedCapPart(&second, 8, 2, 1);
+    const result_payload = try buildAddressedJoinResult(allocator, 0x4a16, "result-peer-close", 1);
+    defer allocator.free(result_payload);
+    const result_frame = try buildReturnJoinResultFrame(allocator, first_qid, result_payload);
+    defer allocator.free(result_frame);
+    try first.handleFrame(result_frame);
+    try std.testing.expect(coordinator.question_peers.items[0] == &first);
+
+    first.deinit();
+    try std.testing.expect(coordinator.question_peers.items[0] == null);
+    try std.testing.expect(coordinator.question_finished.items[0]);
+    try coordinator.cancelPending("remaining result canceled");
+    try std.testing.expect(coordinator.join_results_finished);
 }
 
 test "test-local JoinCoordinator selects a callable cap and releases retained imports" {
@@ -3577,4 +4186,866 @@ fn insertJoinPartOomImpl(allocator: std.mem.Allocator) !void {
 
 test "Join part insertion rolls back a fresh join bucket under OOM injection" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, insertJoinPartOomImpl, .{});
+}
+
+fn completionTransitionOomImpl(allocator: std.mem.Allocator) !void {
+    var send = DiscardSend{};
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    var peer = Peer.initDetachedWithLimits(allocator, .{ .max_pending_join_records = 4 });
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&send, DiscardSend.onFrame);
+    try join_net.registerDirectPeer(&peer, &peer);
+    try peer.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&peer);
+
+    const first = try buildJoinFrame(std.testing.allocator, 0x6100, export_id, 0x6100, 2, 0);
+    defer std.testing.allocator.free(first);
+    const second = try buildJoinFrame(std.testing.allocator, 0x6101, export_id, 0x6100, 2, 1);
+    defer std.testing.allocator.free(second);
+    try peer.handleFrame(first);
+    peer.handleFrame(second) catch |err| {
+        var it = peer.pending_joins.valueIterator();
+        while (it.next()) |state| {
+            // The pre-publication capacity reservation may leave an ordinary
+            // incomplete bucket retryable, but never a complete bucket whose
+            // final part can no longer retrigger settlement.
+            try std.testing.expect(state.parts.count() < state.part_count);
+        }
+        return err;
+    };
+}
+
+test "L4 completion transition never strands a complete bucket under OOM" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, completionTransitionOomImpl, .{});
+}
+
+test "L4 Join lease defaults and aggregate admission fail generically and recover" {
+    const allocator = std.testing.allocator;
+
+    const defaults = capnpc.rpc.peer.PeerLimits{};
+    try std.testing.expectEqual(@as(usize, 64), defaults.max_join_parts_per_join);
+    try std.testing.expectEqual(@as(usize, 4096), defaults.max_pending_join_records);
+    try std.testing.expectEqual(@as(?u64, null), (capnpc.rpc.peer.PeerTimeouts{}).join_timeout_ms);
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var event_recorder = JoinEventRecorder{};
+    var peer = Peer.initDetachedWithLimits(allocator, .{
+        .max_join_parts_per_join = 1,
+        .max_pending_join_records = 2,
+    });
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.setObserver(event_recorder.observer());
+    const export_id = try addNoopExport(&peer);
+
+    const too_many_parts = try buildJoinFrame(allocator, 400, export_id, 0x5a00, 2, 0);
+    defer allocator.free(too_many_parts);
+    try peer.handleFrame(too_many_parts);
+    try capture.expectException(400, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_part_rejections);
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().join_records);
+
+    // A one-part Join completes immediately in legacy mode, so use a larger
+    // per-Join limit for the aggregate bucket/recovery half.
+    peer.limits.max_join_parts_per_join = 2;
+    const partial = try buildJoinFrame(allocator, 402, export_id, 0x5a02, 2, 0);
+    defer allocator.free(partial);
+    try peer.handleFrame(partial);
+    try std.testing.expectEqual(@as(usize, 2), peer.stats().join_records);
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().join_parts);
+
+    const sibling = try buildJoinFrame(allocator, 403, export_id, 0x5a03, 2, 0);
+    defer allocator.free(sibling);
+    try peer.handleFrame(sibling);
+    try capture.expectException(403, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_record_rejections);
+    try std.testing.expectEqual(@as(usize, 2), peer.stats().join_records);
+
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 402,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().join_records);
+    const recovered_sibling = try buildJoinFrame(allocator, 404, export_id, 0x5a03, 2, 0);
+    defer allocator.free(recovered_sibling);
+    try peer.handleFrame(recovered_sibling);
+    try std.testing.expectEqual(@as(usize, 2), peer.stats().join_records);
+    try std.testing.expectEqual(@as(usize, 1), peer.stats().join_parts);
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 404,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try harness.expectNoJoinState(&peer);
+}
+
+test "L4 completed same-peer Join reserves hosted result and Accept records atomically" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var event_recorder = JoinEventRecorder{};
+    var peer = Peer.initDetachedWithLimits(allocator, .{
+        // The two-part partial phase fits exactly (bucket + two parts), but
+        // the committed phase needs four records: HostedJoin, two result
+        // answers, and the same-peer direct Accept.
+        .max_pending_join_records = 3,
+    });
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.setObserver(event_recorder.observer());
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&peer, &peer);
+    try peer.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&peer);
+    const first = try buildJoinFrame(allocator, 405, export_id, 0x5a05, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 406, export_id, 0x5a05, 2, 1);
+    defer allocator.free(second);
+
+    try peer.handleFrame(first);
+    try peer.handleFrame(second);
+
+    try capture.expectException(405, "join unavailable");
+    try capture.expectException(406, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_record_rejections);
+    try harness.expectNoJoinState(&peer);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+}
+
+test "L4 completion succeeds at exact same-peer and distinct-peer record limits" {
+    const allocator = std.testing.allocator;
+
+    // Same-peer final footprint: HostedJoin + two result answers + Accept.
+    var same_capture = ReturnCapture{ .allocator = allocator };
+    defer same_capture.deinit();
+    var same = Peer.initDetachedWithLimits(allocator, .{ .max_pending_join_records = 4 });
+    same.disableThreadAffinity();
+    defer same.deinit();
+    same.setSendFrameOverride(&same_capture, ReturnCapture.onFrame);
+    var same_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer same_net.deinit();
+    try same_net.registerDirectPeer(&same, &same);
+    try same.attachJoinNetwork(same_net.network());
+    const same_export = try addNoopExport(&same);
+    const same_first = try buildJoinFrame(allocator, 407, same_export, 0x5a07, 2, 0);
+    defer allocator.free(same_first);
+    const same_second = try buildJoinFrame(allocator, 408, same_export, 0x5a07, 2, 1);
+    defer allocator.free(same_second);
+    try same.handleFrame(same_first);
+    try same.handleFrame(same_second);
+    try std.testing.expectEqual(@as(usize, 4), same.stats().join_records);
+    try std.testing.expectEqual(@as(usize, 2), same.pending_join_result_answers.count());
+
+    var same_key_it = same.pending_join_accepts.keyIterator();
+    const same_provision = try allocator.dupe(u8, (same_key_it.next() orelse return error.MissingPendingJoinAccept).*);
+    defer allocator.free(same_provision);
+    // Colliding with a live JoinResult answer must leave the canonical
+    // provision pickable by a fresh answer ID.
+    const colliding_accept = try buildAcceptFrame(allocator, 407, same_provision);
+    defer allocator.free(colliding_accept);
+    try std.testing.expectError(error.DuplicateQuestionId, same.handleFrame(colliding_accept));
+    try std.testing.expectEqual(@as(usize, 1), same.pending_join_accepts.count());
+    const fresh_accept = try buildAcceptFrame(allocator, 409, same_provision);
+    defer allocator.free(fresh_accept);
+    try same.handleFrame(fresh_accept);
+    try std.testing.expectEqual(@as(usize, 1), same_capture.countReturns(409, .results));
+    try peer_test_hooks.handleFinish(&same, .{ .question_id = 407, .release_result_caps = false, .require_early_cancellation = false });
+    try peer_test_hooks.handleFinish(&same, .{ .question_id = 408, .release_result_caps = false, .require_early_cancellation = false });
+    try harness.expectNoJoinState(&same);
+
+    // Distinct host: owner keeps exactly three records; the sibling owns only
+    // its one-record Accept phase and can run with a quota of one.
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+    var accept_capture = ReturnCapture{ .allocator = allocator };
+    defer accept_capture.deinit();
+    var owner = Peer.initDetachedWithLimits(allocator, .{ .max_pending_join_records = 3 });
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+    var accept_host = Peer.initDetachedWithLimits(allocator, .{ .max_pending_join_records = 1 });
+    accept_host.disableThreadAffinity();
+    defer accept_host.deinit();
+    accept_host.setSendFrameOverride(&accept_capture, ReturnCapture.onFrame);
+    var distinct_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer distinct_net.deinit();
+    try distinct_net.registerDirectPeerWithAcceptHost(&owner, &accept_host, &accept_host);
+    try owner.attachJoinNetwork(distinct_net.network());
+    const owner_export = try addNoopExport(&owner);
+    const accept_export = try addNoopExport(&accept_host);
+    try std.testing.expectEqual(owner_export, accept_export);
+    const distinct_first = try buildJoinFrame(allocator, 412, owner_export, 0x5a08, 2, 0);
+    defer allocator.free(distinct_first);
+    const distinct_second = try buildJoinFrame(allocator, 413, owner_export, 0x5a08, 2, 1);
+    defer allocator.free(distinct_second);
+    try owner.handleFrame(distinct_first);
+    try owner.handleFrame(distinct_second);
+    try std.testing.expectEqual(@as(usize, 3), owner.stats().join_records);
+    try std.testing.expectEqual(@as(usize, 1), accept_host.stats().join_records);
+    var distinct_key_it = accept_host.pending_join_accepts.keyIterator();
+    const distinct_provision = try allocator.dupe(u8, (distinct_key_it.next() orelse return error.MissingPendingJoinAccept).*);
+    defer allocator.free(distinct_provision);
+    const distinct_accept = try buildAcceptFrame(allocator, 414, distinct_provision);
+    defer allocator.free(distinct_accept);
+    try accept_host.handleFrame(distinct_accept);
+    try peer_test_hooks.handleFinish(&owner, .{ .question_id = 412, .release_result_caps = false, .require_early_cancellation = false });
+    try peer_test_hooks.handleFinish(&owner, .{ .question_id = 413, .release_result_caps = false, .require_early_cancellation = false });
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&accept_host);
+}
+
+test "L4 host callback cannot replace network or reuse completing answer IDs" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetachedWithLimits(allocator, .{ .max_pending_join_records = 4 });
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var base = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer base.deinit();
+    var replacement = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer replacement.deinit();
+    try base.registerDirectPeer(&peer, &peer);
+    const export_id = try addNoopExport(&peer);
+    const duplicate_call = try buildCallFrame(allocator, 415, export_id);
+    defer allocator.free(duplicate_call);
+    const nested_join = try buildJoinFrame(allocator, 417, export_id, 0x5a0a, 1, 0);
+    defer allocator.free(nested_join);
+    var reentrant = ReentrantHostJoinNetwork{
+        .base = base.network(),
+        .replacement = replacement.network(),
+        .finish_answer_id = 415,
+        .duplicate_call_frame = duplicate_call,
+        .nested_join_frame = nested_join,
+    };
+    try peer.attachJoinNetwork(reentrant.network());
+    const first = try buildJoinFrame(allocator, 415, export_id, 0x5a09, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 416, export_id, 0x5a09, 2, 1);
+    defer allocator.free(second);
+    try peer.handleFrame(first);
+    try peer.handleFrame(second);
+
+    try std.testing.expectEqual(@as(usize, 1), reentrant.callback_calls);
+    try std.testing.expect(reentrant.saw_counted_transition);
+    try std.testing.expect(reentrant.detach_refused);
+    try std.testing.expect(reentrant.replace_refused);
+    try std.testing.expect(reentrant.identical_reattach_ok);
+    try std.testing.expect(reentrant.duplicate_rejected);
+    try std.testing.expect(reentrant.nested_join_refused_generically);
+    try std.testing.expectEqual(@as(usize, 0), capture.countReturns(415, .results));
+    try std.testing.expectEqual(@as(usize, 1), capture.countReturns(416, .results));
+    try capture.expectException(417, "join unavailable");
+
+    var key_it = peer.pending_join_accepts.keyIterator();
+    const provision = try allocator.dupe(u8, (key_it.next() orelse return error.MissingPendingJoinAccept).*);
+    defer allocator.free(provision);
+    const accept = try buildAcceptFrame(allocator, 418, provision);
+    defer allocator.free(accept);
+    try peer.handleFrame(accept);
+    try peer_test_hooks.handleFinish(&peer, .{ .question_id = 416, .release_result_caps = false, .require_early_cancellation = false });
+    try peer_test_hooks.handleFinish(&peer, .{ .question_id = 417, .release_result_caps = false, .require_early_cancellation = false });
+    try harness.expectNoJoinState(&peer);
+    try peer.detachJoinNetwork();
+}
+
+test "L4 Join network attachment rejects only state that depends on that handle" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var net_a = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer net_a.deinit();
+    var net_b = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer net_b.deinit();
+
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    try peer.attachJoinNetwork(net_a.network());
+    try peer.attachJoinNetwork(net_a.network()); // identical reattach is a no-op
+    const export_id = try addNoopExport(&peer);
+    const partial = try buildJoinFrame(allocator, 410, export_id, 0x5a10, 2, 0);
+    defer allocator.free(partial);
+    try peer.handleFrame(partial);
+    try std.testing.expectError(error.JoinNetworkInUse, peer.detachJoinNetwork());
+    try std.testing.expectError(error.JoinNetworkInUse, peer.attachJoinNetwork(net_b.network()));
+    try peer.attachJoinNetwork(net_a.network());
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 410,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try peer.detachJoinNetwork();
+
+    var legacy = Peer.initDetached(allocator);
+    legacy.disableThreadAffinity();
+    defer legacy.deinit();
+    legacy.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    const legacy_export = try addNoopExport(&legacy);
+    const legacy_partial = try buildJoinFrame(allocator, 411, legacy_export, 0x5a11, 2, 0);
+    defer allocator.free(legacy_partial);
+    try legacy.handleFrame(legacy_partial);
+    try std.testing.expectError(error.JoinNetworkInUse, legacy.attachJoinNetwork(net_a.network()));
+}
+
+test "L4 partial Join lease keeps its first deadline and sweeps on maintenance and traffic" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var clock = rpc_time.TestClock{};
+    var event_recorder = JoinEventRecorder{};
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    event_recorder.owner = &peer;
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.setObserver(event_recorder.observer());
+    peer.setClock(clock.clock());
+    peer.setTimeouts(.{ .join_timeout_ms = 10 });
+    const export_id = try addNoopExport(&peer);
+
+    const first = try buildJoinFrame(allocator, 420, export_id, 0x5a20, 3, 0);
+    defer allocator.free(first);
+    try peer.handleFrame(first);
+    clock.advanceMs(9);
+    const second = try buildJoinFrame(allocator, 421, export_id, 0x5a20, 3, 1);
+    defer allocator.free(second);
+    try peer.handleFrame(second);
+    try std.testing.expectEqual(@as(usize, 0), peer.sweepExpiredJoins());
+    clock.advanceMs(1);
+    // Join expiry is maintained by checkDeadlines but does not change that
+    // method's outbound-question cancellation count.
+    try std.testing.expectEqual(@as(usize, 0), peer.checkDeadlines());
+    try harness.expectNoJoinState(&peer);
+    try capture.expectException(420, "join unavailable");
+    try capture.expectException(421, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 2), event_recorder.join_timeouts);
+    try std.testing.expect(event_recorder.timeout_saw_detached_state);
+
+    const third = try buildJoinFrame(allocator, 422, export_id, 0x5a21, 2, 0);
+    defer allocator.free(third);
+    try peer.handleFrame(third);
+    clock.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), peer.sweepExpiredJoins());
+    try std.testing.expectEqual(@as(usize, 0), peer.sweepExpiredJoins());
+
+    const fourth = try buildJoinFrame(allocator, 423, export_id, 0x5a22, 2, 0);
+    defer allocator.free(fourth);
+    try peer.handleFrame(fourth);
+    clock.advanceMs(10);
+    // Even malformed traffic drives the due sweep before decode fails.
+    _ = peer.handleFrame(&.{0}) catch {};
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().join_records);
+    try capture.expectException(423, "join unavailable");
+}
+
+test "L4 expiry reserves detached IDs across observer reuse and synchronous Finish" {
+    const allocator = std.testing.allocator;
+
+    var clock = rpc_time.TestClock{};
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setClock(clock.clock());
+    peer.setTimeouts(.{ .join_timeout_ms = 10 });
+    const export_id = try addNoopExport(&peer);
+    const original = try buildJoinFrame(allocator, 424, export_id, 0x5a23, 2, 0);
+    defer allocator.free(original);
+    const reuse = try buildJoinFrame(allocator, 424, export_id, 0x5a24, 2, 0);
+    defer allocator.free(reuse);
+    var capture = FinishOnExceptionCapture{
+        .capture = .{ .allocator = allocator },
+        .peer = &peer,
+        .answer_id = 424,
+    };
+    defer capture.deinit();
+    peer.setSendFrameOverride(&capture, FinishOnExceptionCapture.onFrame);
+    var timeout_probe = TimeoutReuseProbe{ .peer = &peer, .frame = reuse };
+    peer.setObserver(timeout_probe.observer());
+
+    try peer.handleFrame(original);
+    clock.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), peer.sweepExpiredJoins());
+    try std.testing.expectEqual(@as(usize, 1), timeout_probe.calls);
+    try std.testing.expect(timeout_probe.saw_detached_gauges);
+    try std.testing.expectEqual(error.DuplicateQuestionId, timeout_probe.reuse_error orelse return error.MissingReuseError);
+    try std.testing.expect(capture.finished);
+    try std.testing.expect(!peer.failed_answers.contains(424));
+    try std.testing.expect(!peer.resolved_answers.contains(424));
+
+    // Once the terminal phase has completely unwound, the same wire ID is
+    // reusable and owns a fresh partial bucket rather than stale failed state.
+    try peer.handleFrame(reuse);
+    try std.testing.expect(peer.pending_join_questions.contains(424));
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 424,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try harness.expectNoJoinState(&peer);
+}
+
+test "L4 result-path close detaches answers but preserves distinct-host direct pickup" {
+    const allocator = std.testing.allocator;
+
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+    var accept_capture = ReturnCapture{ .allocator = allocator };
+    defer accept_capture.deinit();
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+    var accept_host = Peer.initDetached(allocator);
+    accept_host.disableThreadAffinity();
+    defer accept_host.deinit();
+    accept_host.setSendFrameOverride(&accept_capture, ReturnCapture.onFrame);
+
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    var unrelated_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer unrelated_net.deinit();
+    try join_net.registerDirectPeerWithAcceptHost(&owner, &accept_host, &accept_host);
+    try owner.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&owner);
+    const accept_export_id = try addNoopExport(&accept_host);
+    try std.testing.expectEqual(export_id, accept_export_id);
+    const first = try buildJoinFrame(allocator, 430, export_id, 0x5a30, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 431, export_id, 0x5a30, 2, 1);
+    defer allocator.free(second);
+    try owner.handleFrame(first);
+    try owner.handleFrame(second);
+
+    // A published JoinResult answer owns the shared inbound question id until
+    // Finish or transport-close cleanup; another message cannot reuse it while
+    // the direct-Accept lease is pending.
+    const duplicate = try buildJoinFrame(allocator, 430, export_id, 0x5a31, 1, 0);
+    defer allocator.free(duplicate);
+    try std.testing.expectError(error.DuplicateQuestionId, owner.handleFrame(duplicate));
+
+    var key_it = accept_host.pending_join_accepts.keyIterator();
+    const provision = try allocator.dupe(u8, (key_it.next() orelse return error.MissingPendingJoinAccept).*);
+    defer allocator.free(provision);
+    try std.testing.expectEqual(@as(usize, 2), owner.pending_join_result_answers.count());
+    try std.testing.expect(owner.stats().join_accept_bytes != 0);
+
+    // The distinct Accept host's own attachment is unrelated to the captured
+    // origin network and must remain independently manageable.
+    try accept_host.attachJoinNetwork(unrelated_net.network());
+    try accept_host.detachJoinNetwork();
+    try std.testing.expectError(error.JoinNetworkInUse, owner.detachJoinNetwork());
+
+    const accept = try buildAcceptFrame(allocator, 432, provision);
+    defer allocator.free(accept);
+    var close_probe = JoinCloseProbe{
+        .accept_host = &accept_host,
+        .accept_frame = accept,
+    };
+    owner.start(&close_probe, null, JoinCloseProbe.onClose);
+    owner.notifyTransportClosed();
+    owner.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 1), close_probe.calls);
+    try std.testing.expect(close_probe.saw_result_records_detached);
+    try std.testing.expect(close_probe.saw_committed_hosted_lease);
+    try std.testing.expect(close_probe.accepted_in_callback);
+    try std.testing.expectEqual(@as(?anyerror, null), close_probe.accept_error);
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), accept_capture.countReturns(432, .results));
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&accept_host);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try owner.detachJoinNetwork();
+}
+
+test "L4 hosted Accept expiry after result close retains only a redacted answer id" {
+    const allocator = std.testing.allocator;
+
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+    var accept_host = Peer.initDetached(allocator);
+    accept_host.disableThreadAffinity();
+    defer accept_host.deinit();
+    var accept_clock = rpc_time.TestClock{};
+    accept_host.setClock(accept_clock.clock());
+    accept_host.setTimeouts(.{ .join_timeout_ms = 10 });
+
+    var event_recorder = JoinEventRecorder{ .owner = &owner, .accept_host = &accept_host };
+    owner.setObserver(event_recorder.observer());
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeerWithAcceptHost(&owner, &accept_host, &accept_host);
+    try owner.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&owner);
+    const first = try buildJoinFrame(allocator, 440, export_id, 0x5a40, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 441, export_id, 0x5a40, 2, 1);
+    defer allocator.free(second);
+    try owner.handleFrame(first);
+    try owner.handleFrame(second);
+    owner.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 1), accept_host.pending_join_accepts.count());
+
+    accept_clock.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), accept_host.sweepExpiredJoins());
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_timeouts);
+    const timeout_id = event_recorder.last_timeout_answer_id orelse return error.MissingJoinTimeoutAnswerId;
+    try std.testing.expect(timeout_id == 440 or timeout_id == 441);
+    try std.testing.expect(event_recorder.timeout_saw_detached_state);
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&accept_host);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+}
+
+test "L4 Accept-host close cancels canonical owner state before its user callback" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    var accept_host = Peer.initDetached(allocator);
+    accept_host.disableThreadAffinity();
+    defer accept_host.deinit();
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeerWithAcceptHost(&owner, &accept_host, &accept_host);
+    try owner.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&owner);
+    const first = try buildJoinFrame(allocator, 450, export_id, 0x5a50, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 451, export_id, 0x5a50, 2, 1);
+    defer allocator.free(second);
+    try owner.handleFrame(first);
+    try owner.handleFrame(second);
+
+    var close_probe = JoinAcceptCloseProbe{ .owner = &owner };
+    accept_host.start(&close_probe, null, JoinAcceptCloseProbe.onClose);
+    accept_host.notifyTransportClosed();
+    accept_host.notifyTransportClosed();
+    try std.testing.expectEqual(@as(usize, 1), close_probe.calls);
+    try std.testing.expect(close_probe.saw_detached_state);
+    try harness.expectNoJoinState(&owner);
+    try harness.expectNoJoinState(&accept_host);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+}
+
+test "L4 consumed Accept stays byte-charged until unfinished JoinResults Finish" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var event_recorder = JoinEventRecorder{};
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.setObserver(event_recorder.observer());
+    try join_net.registerDirectPeer(&peer, &peer);
+    try peer.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&peer);
+
+    const first = try buildJoinFrame(allocator, 460, export_id, 0x5a60, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 461, export_id, 0x5a60, 2, 1);
+    defer allocator.free(second);
+    try peer.handleFrame(first);
+    try peer.handleFrame(second);
+
+    const charged_bytes = peer.stats().join_accept_bytes;
+    try std.testing.expect(charged_bytes > 0);
+    peer.limits.max_pending_join_accept_bytes = charged_bytes;
+    var provision_it = peer.pending_join_accepts.keyIterator();
+    const provision = try allocator.dupe(u8, (provision_it.next() orelse return error.MissingPendingJoinAccept).*);
+    defer allocator.free(provision);
+    const accept = try buildAcceptFrame(allocator, 462, provision);
+    defer allocator.free(accept);
+    try peer.handleFrame(accept);
+
+    // Direct pickup retires the network token and owner record, but the two
+    // unfinished JoinResult answers still retain the canonical allocation and
+    // therefore its full byte charge.
+    try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.hosted_joins.count());
+    try std.testing.expectEqual(charged_bytes, peer.stats().join_accept_bytes);
+
+    const rejected_first = try buildJoinFrame(allocator, 463, export_id, 0x5a61, 2, 0);
+    defer allocator.free(rejected_first);
+    const rejected_second = try buildJoinFrame(allocator, 464, export_id, 0x5a61, 2, 1);
+    defer allocator.free(rejected_second);
+    try peer.handleFrame(rejected_first);
+    try peer.handleFrame(rejected_second);
+    try capture.expectException(463, "join unavailable");
+    try capture.expectException(464, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_byte_rejections);
+    try std.testing.expectEqual(@as(?usize, charged_bytes), event_recorder.last_limit);
+    try std.testing.expectEqual(charged_bytes, peer.stats().join_accept_bytes);
+
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 460,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try std.testing.expectEqual(charged_bytes, peer.stats().join_accept_bytes);
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 461,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try std.testing.expectEqual(@as(usize, 0), peer.stats().join_accept_bytes);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+    try harness.expectNoJoinState(&peer);
+}
+
+test "L4 Join Accept byte rejection is redacted and refunds all state" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var event_recorder = JoinEventRecorder{};
+    var peer = Peer.initDetachedWithLimits(allocator, .{ .max_pending_join_accept_bytes = 0 });
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    peer.setObserver(event_recorder.observer());
+    var join_net = vat_join.LoopbackJoinNetwork(Peer).init(allocator);
+    defer join_net.deinit();
+    try join_net.registerDirectPeer(&peer, &peer);
+    try peer.attachJoinNetwork(join_net.network());
+    const export_id = try addNoopExport(&peer);
+    const first = try buildJoinFrame(allocator, 470, export_id, 0x5a70, 2, 0);
+    defer allocator.free(first);
+    const second = try buildJoinFrame(allocator, 471, export_id, 0x5a70, 2, 1);
+    defer allocator.free(second);
+    try peer.handleFrame(first);
+    try peer.handleFrame(second);
+
+    try capture.expectException(470, "join unavailable");
+    try capture.expectException(471, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_byte_rejections);
+    try std.testing.expectEqual(@as(?usize, 0), event_recorder.last_limit);
+    try std.testing.expect((event_recorder.last_attempted orelse 0) > 0);
+    try std.testing.expectEqual(error.PeerLimitExceeded, event_recorder.last_error orelse return error.MissingRejectionError);
+    try harness.expectNoJoinState(&peer);
+    try std.testing.expectEqual(@as(usize, 0), join_net.registry.count());
+}
+
+test "L4 relay expiry detaches both peers before observers and survives Finish failure" {
+    const allocator = std.testing.allocator;
+
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+    var source_capture = FinishFailOnceCapture{
+        .capture = .{ .allocator = allocator },
+        .fail_question_id = std.math.maxInt(u32),
+    };
+    defer source_capture.deinit();
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_capture, FinishFailOnceCapture.onFrame);
+
+    var clock = rpc_time.TestClock{};
+    owner.setClock(clock.clock());
+    owner.setTimeouts(.{ .join_timeout_ms = 10 });
+    var event_recorder = JoinEventRecorder{ .owner = &owner, .relay_source = &source };
+    owner.setObserver(event_recorder.observer());
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 0x5a90 } },
+        null,
+        null,
+    );
+    const join_frame = try buildJoinFrame(allocator, 490, proxy_export, 0x5a90, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+    const relay = owner.pending_join_relays.get(490) orelse return error.MissingJoinRelay;
+    const downstream_qid = relay.source_question_id;
+    source_capture.fail_question_id = downstream_qid;
+    try std.testing.expectEqual(@as(usize, 1), source.cross_peer_join_relay_links.items.len);
+
+    clock.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), owner.sweepExpiredJoins());
+    try std.testing.expect(source_capture.failed);
+    try owner_capture.expectException(490, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), event_recorder.join_timeouts);
+    try std.testing.expectEqual(@as(?u32, 490), event_recorder.last_timeout_answer_id);
+    try std.testing.expect(event_recorder.timeout_saw_detached_state);
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    const question = source.questions.get(downstream_qid) orelse return error.MissingRelayQuestion;
+    try std.testing.expect(question.cancelled);
+    try std.testing.expectEqual(@as(usize, 0), owner.sweepExpiredJoins());
+}
+
+test "L4 delivered relay expiry cleans up without a second upstream Return" {
+    const allocator = std.testing.allocator;
+
+    var owner_capture = ReturnCapture{ .allocator = allocator };
+    defer owner_capture.deinit();
+    var source_capture = ReturnCapture{ .allocator = allocator };
+    defer source_capture.deinit();
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    defer owner.deinit();
+    owner.setSendFrameOverride(&owner_capture, ReturnCapture.onFrame);
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_capture, ReturnCapture.onFrame);
+    var clock = rpc_time.TestClock{};
+    owner.setClock(clock.clock());
+    owner.setTimeouts(.{ .join_timeout_ms = 10 });
+
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 0x5a91 } },
+        null,
+        null,
+    );
+    const join_frame = try buildJoinFrame(allocator, 491, proxy_export, 0x5a91, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+    const relay = owner.pending_join_relays.get(491) orelse return error.MissingJoinRelay;
+    const downstream_qid = relay.source_question_id;
+    const downstream_return = try buildReturnResultsFrame(allocator, downstream_qid);
+    defer allocator.free(downstream_return);
+    try source.handleFrame(downstream_return);
+    try std.testing.expectEqual(@as(usize, 1), owner_capture.countReturns(491, .results));
+    try std.testing.expectEqual(@as(usize, 1), owner.pending_join_relays.count());
+
+    clock.advanceMs(10);
+    try std.testing.expectEqual(@as(usize, 1), owner.sweepExpiredJoins());
+    try std.testing.expectEqual(@as(usize, 1), owner_capture.countReturns(491, .results));
+    try std.testing.expectEqual(@as(usize, 0), owner_capture.countReturns(491, .exception));
+    try std.testing.expectEqual(@as(usize, 1), source_capture.countFinish(downstream_qid));
+    try std.testing.expectEqual(@as(usize, 0), owner.pending_join_relays.count());
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+}
+
+test "L4 relay Return callback may deinit owner without stale cross-peer borrows" {
+    const allocator = std.testing.allocator;
+
+    var owner = Peer.initDetached(allocator);
+    owner.disableThreadAffinity();
+    var owner_send = DeinitOwnerOnReturn{ .owner = &owner };
+    owner.setSendFrameOverride(&owner_send, DeinitOwnerOnReturn.onFrame);
+    var source_capture = ReturnCapture{ .allocator = allocator };
+    defer source_capture.deinit();
+    var source = Peer.initDetached(allocator);
+    source.disableThreadAffinity();
+    defer source.deinit();
+    source.setSendFrameOverride(&source_capture, ReturnCapture.onFrame);
+    const proxy_export = try peer_test_hooks.addCrossPeerProxyExport(
+        &owner,
+        &source,
+        .{ .imported = .{ .id = 0x5a92 } },
+        null,
+        null,
+    );
+    const join_frame = try buildJoinFrame(allocator, 492, proxy_export, 0x5a92, 1, 0);
+    defer allocator.free(join_frame);
+    try owner.handleFrame(join_frame);
+    const relay = owner.pending_join_relays.get(492) orelse return error.MissingJoinRelay;
+    const downstream_qid = relay.source_question_id;
+    const downstream_return = try buildReturnResultsFrame(allocator, downstream_qid);
+    defer allocator.free(downstream_return);
+    try source.handleFrame(downstream_return);
+
+    try std.testing.expectEqual(@as(usize, 1), owner_send.terminal_calls);
+    try std.testing.expect(owner.in_deinit);
+    try std.testing.expectEqual(@as(usize, 0), source.cross_peer_join_relay_links.items.len);
+    try source_capture.expectFinish(downstream_qid, false);
+    owner.deinit();
+}
+
+test "L4 Join clock reentry cannot create a deadline-free nested bucket" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    // Ensure the first Clock.now call is the Join lease sample, not the
+    // independent validation-work token bucket.
+    peer.limits.max_validation_words_per_second = 0;
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    const export_id = try addNoopExport(&peer);
+    const nested = try buildJoinFrame(allocator, 471, export_id, 0x5a71, 2, 0);
+    defer allocator.free(nested);
+    const outer = try buildJoinFrame(allocator, 470, export_id, 0x5a70, 2, 0);
+    defer allocator.free(outer);
+    var clock = ReentrantJoinClock{ .peer = &peer, .frame = nested };
+    peer.setClock(clock.clock());
+    peer.setTimeouts(.{ .join_timeout_ms = 10 });
+
+    try peer.handleFrame(outer);
+    try std.testing.expect(clock.fired);
+    try std.testing.expect(clock.nested_completed);
+    try std.testing.expectEqual(@as(?anyerror, null), clock.nested_error);
+    try capture.expectException(471, "join unavailable");
+    try std.testing.expectEqual(@as(usize, 1), peer.pending_joins.count());
+    try std.testing.expect(peer.pending_joins.contains(0x5a70));
+    try std.testing.expect(!peer.pending_joins.contains(0x5a71));
+    try peer_test_hooks.handleFinish(&peer, .{
+        .question_id = 470,
+        .release_result_caps = false,
+        .require_early_cancellation = false,
+    });
+    try harness.expectNoJoinState(&peer);
+}
+
+test "L4 Join clock callback close is deferred until admission unwinds" {
+    const allocator = std.testing.allocator;
+
+    var capture = ReturnCapture{ .allocator = allocator };
+    defer capture.deinit();
+    var peer = Peer.initDetached(allocator);
+    peer.disableThreadAffinity();
+    defer peer.deinit();
+    peer.limits.max_validation_words_per_second = 0;
+    peer.setSendFrameOverride(&capture, ReturnCapture.onFrame);
+    const export_id = try addNoopExport(&peer);
+    const frame = try buildJoinFrame(allocator, 480, export_id, 0x5a80, 2, 0);
+    defer allocator.free(frame);
+    var clock = ClosingJoinClock{ .peer = &peer };
+    peer.setClock(clock.clock());
+    peer.setTimeouts(.{ .join_timeout_ms = 10 });
+
+    try peer.handleFrame(frame);
+    try std.testing.expect(clock.fired);
+    try std.testing.expect(peer.transport_close_notified);
+    try harness.expectNoJoinState(&peer);
+    peer.notifyTransportClosed();
 }

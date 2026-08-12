@@ -81,6 +81,12 @@ pub const Resource = enum {
     parked_accepts,
     /// Attributable recipient-token and embargo bytes held by parked Accepts.
     parked_accept_bytes,
+    /// Aggregate live L4 Join lifecycle records on one peer.
+    join_records,
+    /// Inbound Join key parts retained by incomplete Join buckets.
+    join_parts,
+    /// Canonically-owned direct-Accept provision bytes for hosted JoinResult.
+    join_accept_bytes,
 };
 
 pub const Event = union(enum) {
@@ -149,6 +155,8 @@ pub const TimeoutKind = enum {
     shutdown_drain,
     /// An inbound Accept waited past the vat's parked-Accept deadline.
     parked_accept,
+    /// An inbound L4 Join phase exceeded its local lease.
+    join,
 };
 
 pub const TimeoutEvent = struct {
@@ -157,7 +165,8 @@ pub const TimeoutEvent = struct {
     kind: TimeoutKind,
     /// Outbound question ID for `call_deadline`; null for every other kind.
     question_id: ?u32 = null,
-    /// Inbound answer ID for `parked_accept`; null for every other kind.
+    /// Inbound answer ID for `parked_accept` and `join`; null for every other
+    /// kind. No Join key, target, provision, or address enters this event.
     answer_id: ?u32 = null,
 };
 
@@ -305,6 +314,18 @@ pub inline fn emitParkedAcceptTimeout(
         .source = .peer,
         .role = .unknown,
         .kind = .parked_accept,
+        .answer_id = answer_id,
+    } });
+}
+
+/// Emit a redacted L4 Join expiry. The inbound answer id is the only protocol
+/// value exposed; key parts, capabilities, provisions, and addresses stay out
+/// of the operability surface.
+pub inline fn emitJoinTimeout(observer: ?Observer, answer_id: u32) void {
+    emit(observer, .{ .timeout = .{
+        .source = .peer,
+        .role = .unknown,
+        .kind = .join,
         .answer_id = answer_id,
     } });
 }

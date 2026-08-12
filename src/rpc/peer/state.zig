@@ -46,6 +46,14 @@ pub const PeerLimits = struct {
     max_pending_join_questions: usize = 4096,
     max_pending_join_accepts: usize = 4096,
     max_pending_join_accept_bytes: usize = 1024 * 1024,
+    /// Maximum number of key parts declared by one inbound Join. This is
+    /// checked before resolving the target or allocating a part record.
+    max_join_parts_per_join: usize = 64,
+    /// Aggregate bound across partial Join buckets, their parts, cross-peer
+    /// relays, hosted JoinResult provisions, result-answer references, and
+    /// direct-Accept records. The older per-table limits remain compatibility
+    /// sub-bounds; this is the final peer-wide admission ceiling.
+    max_pending_join_records: usize = 4096,
     max_pending_third_party_awaits: usize = 4096,
     max_pending_third_party_answers: usize = 4096,
     max_pending_third_party_completion_bytes: usize = 1024 * 1024,
@@ -77,6 +85,10 @@ pub const PeerTimeouts = struct {
     /// remaining in-flight questions are force-cancelled and the shutdown
     /// completes.
     shutdown_drain_timeout_ms: ?u64 = null,
+    /// Lease applied to inbound Join phases. A partial bucket is stamped by
+    /// its first part; later parts never extend it. Cross-peer relays and
+    /// hosted direct-Accept provisions receive fresh phase-local deadlines.
+    join_timeout_ms: ?u64 = null,
 };
 
 const ExportDeinitCtxFn = *const fn (std.mem.Allocator, *anyopaque) void;

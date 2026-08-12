@@ -41,6 +41,12 @@ pub const JoinPartEntry = struct {
 pub const JoinState = struct {
     part_count: u16,
     parts: std.AutoHashMap(u16, JoinPartEntry),
+    /// Absolute deadline in the owning peer's monotonic clock domain. Null
+    /// keeps raw Peer compatibility when Join expiry is not configured.
+    deadline_ns: ?i64 = null,
+    /// Distinguishes a first-part null deadline from a bucket that has not yet
+    /// committed its pre-publication clock sample.
+    deadline_initialized: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, part_count: u16) JoinState {
         return .{

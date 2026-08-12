@@ -22,6 +22,8 @@ pub fn expectNoJoinState(peer: *const Peer) !void {
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_relays.count());
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_accepts.count());
     try std.testing.expectEqual(@as(usize, 0), peer.pending_join_result_answers.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.hosted_joins.count());
+    try std.testing.expectEqual(@as(usize, 0), peer.join_accept_bytes);
     try std.testing.expectEqual(@as(usize, 0), peer.cross_peer_join_relay_links.items.len);
     try std.testing.expectEqual(@as(usize, 0), peer.join_accept_host_links.items.len);
 }

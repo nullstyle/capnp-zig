@@ -22,6 +22,15 @@ fn onPeerClose(_: ?*anyopaque, peer: *Peer) void {
     _ = peer;
 }
 
+test "WorkerPool: Join leases default secure and explicit null opts out" {
+    const defaults = WorkerPool.Config{};
+    try std.testing.expectEqual(@as(?u64, 30_000), defaults.join_timeout_ms);
+    try std.testing.expectEqual(@as(?u32, null), defaults.connection_options.tick_interval_ms);
+
+    const compatibility = WorkerPool.Config{ .join_timeout_ms = null };
+    try std.testing.expectEqual(@as(?u64, null), compatibility.join_timeout_ms);
+}
+
 test "WorkerPool: init and deinit with concurrency=1" {
     const allocator = std.testing.allocator;
     var dummy_ctx: u8 = 0;
@@ -33,6 +42,8 @@ test "WorkerPool: init and deinit with concurrency=1" {
         onAcceptNoop,
         .{ .concurrency = 1 },
     );
+    try std.testing.expectEqual(@as(?u64, 30_000), pool.join_timeout_ms);
+    try std.testing.expectEqual(@as(?u32, 100), pool.conn_options.tick_interval_ms);
     pool.deinit();
 }
 
