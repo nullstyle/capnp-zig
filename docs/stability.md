@@ -27,7 +27,7 @@ updated as phases land.
 | ThreadSanitizer lane (`test-tsan`, threaded transport suites) | CI job configured; compile-verified via `check-tsan`, first full run pending (the lane hit its job timeout on every run since it was added) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
-| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 63/63 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |
+| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 64/64 on macOS) | experimental (native Debug + ReleaseSafe no-skip evidence **executes and passes** on `windows-latest`; the full QUIC-root suite is not run there) |
 
 The targeted QUIC evidence gate is intentionally different from testing the
 entire repository through the QUIC-enabled library root. The three-OS native
@@ -36,9 +36,24 @@ scanner rejects `SkipZigTest`, enforces per-root floors 26 + 1 + 17 + 8 = 52,
 and makes the four runnable artifacts direct build dependencies; it does not
 parse output or rely on a CI-only shell. Linux alone also runs the full
 build/check/test/API/docs surface against the QUIC root. At this sprint's local
-handoff, macOS has run all 63 tests in both modes. Windows full-tree test
-cross-compilation passes 113/113, but native Windows runtime acceptance remains
-pending a hosted run after capnp-zig is pushed.
+handoff, macOS has run all 64 tests in both modes. Windows full-tree test
+cross-compilation passes 113/113, and native Windows runtime acceptance is no
+longer pending: the `QUIC targeted transport (windows-latest)` job runs both
+evidence roots natively, in Debug and ReleaseSafe with skips rejected, and
+passes. Scope, because the job's own step list is the honest limit — only the
+evidence roots run on Windows; "Build QUIC-enabled targets", "Check
+QUIC-enabled build graph", "Run the full suite against the QUIC library root",
+the strict QUIC API snapshot, and the QUIC doc-snippet fixtures are all
+skipped there and remain Linux-only.
+
+Getting that leg green required fixing a real defect rather than adjusting an
+expectation: Windows AFD reports an oversized datagram as a failed receive
+(`STATUS_BUFFER_OVERFLOW` -> `error.MessageOversize`, payload and sender
+address discarded, `flags.trunc` never set), where POSIX reports it as a
+successful receive with `MSG_TRUNC`. That error propagated out of the
+connection step, so one spoofed oversized UDP datagram could kill a Windows
+QUIC connection. The bridge now normalizes both spellings into one
+`truncated` outcome.
 
 That pending claim also rests on a layer below us, so it is worth stating
 precisely what the dependency does and does not prove. In quic-zig v0.10.1
