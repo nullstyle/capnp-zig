@@ -356,20 +356,20 @@ pub const Persistent = struct {
         pub const Reader = struct {
             _reader: message.StructReader,
 
-            pub fn init(msg: *const message.Message) !Reader {
+            pub fn init(msg: *const message.Message) !@This() {
                 const root = try msg.getRootStruct();
                 return .{ ._reader = root };
             }
 
-            pub fn wrap(reader: message.StructReader) Reader {
+            pub fn wrap(reader: message.StructReader) @This() {
                 return .{ ._reader = reader };
             }
 
-            pub fn hasSealFor(self: Reader) bool {
+            pub fn hasSealFor(self: @This()) bool {
                 return !self._reader.isPointerNull(0);
             }
 
-            pub fn getSealFor(self: Reader) !message.AnyPointerReader {
+            pub fn getSealFor(self: @This()) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(0);
             }
 
@@ -378,39 +378,39 @@ pub const Persistent = struct {
         pub const Builder = struct {
             _builder: message.StructBuilder,
 
-            pub fn init(msg: *message.MessageBuilder) !Builder {
+            pub fn init(msg: *message.MessageBuilder) !@This() {
                 const builder = try msg.allocateStruct(0, 1);
                 return .{ ._builder = builder };
             }
 
-            pub fn wrap(builder: message.StructBuilder) Builder {
+            pub fn wrap(builder: message.StructBuilder) @This() {
                 return .{ ._builder = builder };
             }
 
-            pub fn hasSealFor(self: Builder) bool {
+            pub fn hasSealFor(self: @This()) bool {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSealFor(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initSealFor(self: *@This()) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn setSealForNull(self: *Builder) !void {
+            pub fn setSealForNull(self: *@This()) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setNull();
             }
 
-            pub fn setSealForText(self: *Builder, value: []const u8) !void {
+            pub fn setSealForText(self: *@This(), value: []const u8) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setText(value);
             }
 
-            pub fn setSealForData(self: *Builder, value: []const u8) !void {
+            pub fn setSealForData(self: *@This(), value: []const u8) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setData(value);
             }
 
-            pub fn setSealForCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setSealForCapability(self: *@This(), cap: message.Capability) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(cap);
             }
@@ -422,20 +422,20 @@ pub const Persistent = struct {
         pub const Reader = struct {
             _reader: message.StructReader,
 
-            pub fn init(msg: *const message.Message) !Reader {
+            pub fn init(msg: *const message.Message) !@This() {
                 const root = try msg.getRootStruct();
                 return .{ ._reader = root };
             }
 
-            pub fn wrap(reader: message.StructReader) Reader {
+            pub fn wrap(reader: message.StructReader) @This() {
                 return .{ ._reader = reader };
             }
 
-            pub fn hasSturdyRef(self: Reader) bool {
+            pub fn hasSturdyRef(self: @This()) bool {
                 return !self._reader.isPointerNull(0);
             }
 
-            pub fn getSturdyRef(self: Reader) !message.AnyPointerReader {
+            pub fn getSturdyRef(self: @This()) !message.AnyPointerReader {
                 return try self._reader.readAnyPointer(0);
             }
 
@@ -444,39 +444,39 @@ pub const Persistent = struct {
         pub const Builder = struct {
             _builder: message.StructBuilder,
 
-            pub fn init(msg: *message.MessageBuilder) !Builder {
+            pub fn init(msg: *message.MessageBuilder) !@This() {
                 const builder = try msg.allocateStruct(0, 1);
                 return .{ ._builder = builder };
             }
 
-            pub fn wrap(builder: message.StructBuilder) Builder {
+            pub fn wrap(builder: message.StructBuilder) @This() {
                 return .{ ._builder = builder };
             }
 
-            pub fn hasSturdyRef(self: Builder) bool {
+            pub fn hasSturdyRef(self: @This()) bool {
                 return !self._builder.isPointerNull(0);
             }
 
-            pub fn initSturdyRef(self: *Builder) !message.AnyPointerBuilder {
+            pub fn initSturdyRef(self: *@This()) !message.AnyPointerBuilder {
                 return try self._builder.getAnyPointer(0);
             }
 
-            pub fn setSturdyRefNull(self: *Builder) !void {
+            pub fn setSturdyRefNull(self: *@This()) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setNull();
             }
 
-            pub fn setSturdyRefText(self: *Builder, value: []const u8) !void {
+            pub fn setSturdyRefText(self: *@This(), value: []const u8) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setText(value);
             }
 
-            pub fn setSturdyRefData(self: *Builder, value: []const u8) !void {
+            pub fn setSturdyRefData(self: *@This(), value: []const u8) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setData(value);
             }
 
-            pub fn setSturdyRefCapability(self: *Builder, cap: message.Capability) !void {
+            pub fn setSturdyRefCapability(self: *@This(), cap: message.Capability) !void {
                 var any = try self._builder.getAnyPointer(0);
                 try any.setCapability(cap);
             }

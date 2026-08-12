@@ -5,6 +5,7 @@ const std = @import("std");
 const capnpc = @import("capnpc-zig");
 const message = capnpc.message;
 const schema = capnpc.schema;
+const _capnp_file = @This();
 const rpc = capnpc.rpc;
 
 pub const CAPNP_SCHEMA_MANIFEST_JSON: []const u8 = "{\"schema\":\"tests/test_schemas/nested_lists_runtime.capnp\",\"module\":\"nested_lists_runtime\",\"serde\":[{\"id\":11697365807658773765,\"type_name\":\"Child\",\"to_json_export\":\"capnp_nested_lists_runtime_child_to_json\",\"from_json_export\":\"capnp_nested_lists_runtime_child_from_json\"},{\"id\":9464063677914234482,\"type_name\":\"NestedListDemo\",\"to_json_export\":\"capnp_nested_lists_runtime_nested_list_demo_to_json\",\"from_json_export\":\"capnp_nested_lists_runtime_nested_list_demo_from_json\"}]}";
@@ -19,7 +20,9 @@ pub const Shade = enum(u16) {
 
 pub const Service = struct {
     pub const interface_id: u64 = 0xbcb27b731b1fd2c6;
-    pub const Method = enum(u16) {};
+    pub const Method = enum(u16) {
+        _,
+    };
 
     pub const Client = struct {
         peer: *rpc.peer.Peer,
@@ -311,7 +314,7 @@ pub const NestedListDemo = struct {
                 return .{ ._list = raw };
             }
 
-            pub fn getRecords(self: @This()) !message.typed_list_helpers.NestedListReader(message.typed_list_helpers.StructListCodec(Child, 1, 0)) {
+            pub fn getRecords(self: @This()) !message.typed_list_helpers.NestedListReader(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
                 if (self._reader.isPointerNull(2)) return .{ ._list = self._reader.emptyList(message.PointerListReader) };
                 const raw = try self._reader.readPointerList(2);
                 return .{ ._list = raw };
@@ -323,7 +326,7 @@ pub const NestedListDemo = struct {
                 return .{ ._list = raw };
             }
 
-            pub fn getEnumRows(self: @This()) !message.typed_list_helpers.NestedListReader(message.typed_list_helpers.EnumListCodec(Shade)) {
+            pub fn getEnumRows(self: @This()) !message.typed_list_helpers.NestedListReader(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
                 if (self._reader.isPointerNull(4)) return .{ ._list = self._reader.emptyList(message.PointerListReader) };
                 const raw = try self._reader.readPointerList(4);
                 return .{ ._list = raw };
@@ -625,12 +628,12 @@ pub const NestedListDemo = struct {
                 return .{ ._list = raw };
             }
 
-            pub fn initRecords(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(Child, 1, 0)) {
+            pub fn initRecords(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
                 const raw = try self._builder.writePointerList(2, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initRecordsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(Child, 1, 0)) {
+            pub fn initRecordsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.StructListCodec(_capnp_file.Child, 1, 0)) {
                 const raw = try self._builder.writePointerListInSegment(2, element_count, target_segment_id);
                 return .{ ._list = raw };
             }
@@ -645,12 +648,12 @@ pub const NestedListDemo = struct {
                 return .{ ._list = raw };
             }
 
-            pub fn initEnumRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(Shade)) {
+            pub fn initEnumRows(self: @This(), element_count: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
                 const raw = try self._builder.writePointerList(4, element_count);
                 return .{ ._list = raw };
             }
 
-            pub fn initEnumRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(Shade)) {
+            pub fn initEnumRowsInSegment(self: @This(), element_count: u32, target_segment_id: u32) !message.typed_list_helpers.NestedListBuilder(message.typed_list_helpers.EnumListCodec(_capnp_file.Shade)) {
                 const raw = try self._builder.writePointerListInSegment(4, element_count, target_segment_id);
                 return .{ ._list = raw };
             }

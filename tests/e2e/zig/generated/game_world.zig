@@ -386,8 +386,8 @@ pub const AreaQuery = struct {
                 return self._reader.readUnionDiscriminant(4);
             }
 
-            pub fn which(self: @This()) error{InvalidEnumValue}!WhichTag {
-                return std.enums.fromInt(WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
+            pub fn which(self: @This()) error{InvalidEnumValue}!AreaQuery.Filter.WhichTag {
+                return std.enums.fromInt(AreaQuery.Filter.WhichTag, self.whichOrdinal()) orelse return error.InvalidEnumValue;
             }
 
             pub fn getAll(self: @This()) !void {
