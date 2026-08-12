@@ -843,7 +843,14 @@ test "listener concurrent close calls socket close once" {
     }
     for (threads) |thread| thread.join();
 
-    // Idempotent across concurrent close(): exactly one shutdown + one close.
-    try std.testing.expectEqual(@as(usize, 1), state.shutdown_count.load(.acquire));
+    // Idempotent across concurrent close(): exactly one close, plus exactly
+    // one shutdown on the platforms that issue one. Windows deliberately
+    // issues none — shutdown() on a LISTENING socket is invalid there and its
+    // failure diagnostic is what turned this suite red in CI (see
+    // `Listener.close`) — so the expected count mirrors the production guard
+    // rather than hardcoding POSIX behavior. The once-only invariant this test
+    // exists for is carried by close_count on every platform.
+    const expected_shutdowns: usize = if (builtin.target.os.tag == .windows) 0 else 1;
+    try std.testing.expectEqual(expected_shutdowns, state.shutdown_count.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), state.close_count.load(.acquire));
 }
