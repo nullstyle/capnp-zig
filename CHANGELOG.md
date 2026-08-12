@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One spoofed UDP datagram could take down a QUIC fanout server and every
+  session on it.** The single-connection receive loop already treated an
+  oversized (truncated) datagram as a per-datagram fault, and said why: "UDP
+  is unauthenticated and spoofable, so a single oversized datagram from any
+  host must not tear down the endpoint (and, for a fanout server, every
+  session on it)." The fanout paths did exactly that, on every platform.
+  `Server.receiveOneFor` and `Listener.receiveOne` both returned
+  `error.DatagramTooLarge`; it propagated out of `Server.stepOnce` through
+  `try`, and `Server.run` responds to a failed step by closing the server. Any
+  host able to reach the UDP port had a one-packet kill switch for the whole
+  endpoint. (The 64 KiB default `udp_rx_buffer_size` is above the 65507-byte
+  IPv4 UDP payload ceiling, so this only ever reached endpoints tuned closer
+  to their path MTU — a normal thing to do.)
+
+  All receive paths now share one policy in
+  `src/rpc/transport/quic/datagram_drop.zig`: drop the datagram, count it,
+  `warn`, and keep serving. The divergence existed because the policy was
+  written twice; it is now written once, so a future divergence has to be a
+  deliberate edit rather than an omission.
+
+  Because a dropped datagram is otherwise invisible to the application — and a
+  legitimate peer exceeding `udp_rx_buffer_size` is indistinguishable from an
+  attacker — the drop is also published as a redacted observer event:
+  `resource_rejection` with the new `events.Resource.udp_datagram_bytes`,
+  `limit` set to the rx buffer size, `attempted` deliberately `null` (neither
+  platform can report the true size), and `err = error.DatagramTooLarge`. New
+  `Server.droppedDatagramCount()` / `Listener.droppedDatagramCount()` expose
+  the tally per UDP endpoint, and `StepResult.dropped_datagram` reports it per
+  step — including on the single-connection path, which previously logged the
+  drop and told no one. `receiveOne` now returns `null` for a drop, the same
+  as a timeout or wake, since none of the three is actionable by the caller;
+  `DatagramTooLarge` is correspondingly gone from both `receiveOne` error sets
+  in the experimental API snapshot.
+
+  Two regressions cover it: a live fanout session that round-trips, absorbs a
+  spoofed oversized datagram from an unrelated socket, and round-trips again
+  with its session intact; and a bare `Listener` drop. Both were
+  ablation-checked — restoring `return error.DatagramTooLarge` in either
+  component fails its own test with exactly that error, and only that test.
+
 - **The cross-target compile matrix builds again, on every target.** Two
   independent breakages, both long-standing:
 

@@ -179,6 +179,43 @@ truncation, buffer retention, start failure, exactly-once cancellation, and
 repeated close/deinit are deterministic regressions. A compile-time tripwire
 keeps Windows QUIC from calling `Socket.receiveTimeout()`.
 
+## Oversized Inbound Datagrams
+
+A datagram larger than `udp_rx_buffer_size` is a **per-datagram fault, not an
+endpoint fault**, on every platform and on every receive path — the
+single-connection loop, `Server`, and the bare `Listener`. It is dropped and
+serving continues. UDP is unauthenticated, so failing the receive would let
+any host that can reach the port take down the endpoint — and, on a fanout
+server, every session on it — with one spoofed packet. Socket-fatal errors
+still propagate.
+
+The two platforms detect it differently and neither hands back anything
+usable: POSIX sets `MSG_TRUNC` and returns only the prefix that fit, while
+Windows fails the receive with `STATUS_BUFFER_OVERFLOW` and discards the
+payload *and* the sender address. The Windows receive bridge normalizes both
+into one `truncated` outcome, and every drop then routes through a single
+policy in `src/rpc/transport/quic/datagram_drop.zig`.
+
+Each drop is:
+
+- **counted** — `Server.droppedDatagramCount()` / `Listener.droppedDatagramCount()`,
+  per UDP endpoint, and `StepResult.dropped_datagram` for the step that saw it;
+- **logged** — one `warn` on the `rpc_quic` scope naming the buffer size;
+- **published** — a redacted `events.Observer` `resource_rejection` carrying
+  `Resource.udp_datagram_bytes`, `limit` = the rx buffer size, and
+  `err = error.DatagramTooLarge`. `attempted` is deliberately `null`: neither
+  platform can report the datagram's true size.
+
+`receiveOne` returns `null` for a drop, the same as a timeout or a wake, since
+none of the three is actionable by the caller.
+
+Watch the counter. A spoofed oversized datagram and a legitimate peer behind a
+path MTU this endpoint is not sized for look identical on the wire, and both
+are now silent to the application. The 64 KiB default `udp_rx_buffer_size` sits
+above the 65507-byte IPv4 UDP payload ceiling, so it cannot be exceeded over
+IPv4; if you tune it down toward the path MTU, a rising drop count with healthy
+sessions means the buffer is too small, not that you are under attack.
+
 ## Server Fanout And Session Boundary
 
 `rpc.transport.quic.Connection.initServer()` is the compatibility entry point for the

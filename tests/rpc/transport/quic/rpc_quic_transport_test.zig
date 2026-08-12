@@ -3,6 +3,7 @@ const capnpc = @import("capnpc-zig");
 const loopback = @import("loopback_test_support.zig");
 const raw_faults = @import("raw_fault_client.zig");
 
+const events = capnpc.rpc.events;
 const protocol = capnpc.rpc.wire.protocol;
 const quic = capnpc.rpc.transport.quic;
 
@@ -38,6 +39,86 @@ fn waitForFanoutSessions(server: *quic.Server, expected_sessions: usize) !void {
     while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
         _ = try server.stepOnce(.wait);
         if (server.sessionCount() >= expected_sessions) return;
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return error.QuicLoopbackTimedOut;
+}
+
+/// Records the observer side of a dropped oversized datagram, ignoring the
+/// session lifecycle events the same observer also receives.
+const DroppedDatagramObserver = struct {
+    rejections: usize = 0,
+    last_attempted: ?usize = null,
+    last_limit: ?usize = null,
+    last_err: ?anyerror = null,
+
+    fn observer(self: *DroppedDatagramObserver) events.Observer {
+        return events.Observer.init(self, onEvent);
+    }
+
+    fn onEvent(ctx: *anyopaque, event: events.Event) void {
+        const self: *DroppedDatagramObserver = @ptrCast(@alignCast(ctx));
+        switch (event) {
+            .resource_rejection => |rejection| {
+                if (rejection.resource != .udp_datagram_bytes) return;
+                self.rejections += 1;
+                self.last_attempted = rejection.attempted;
+                self.last_limit = rejection.limit;
+                self.last_err = rejection.err;
+            },
+            else => {},
+        }
+    }
+};
+
+/// Client-side message callback that keeps the connection open, so one client
+/// can complete several round trips within a single test.
+fn recordQuicClientFrame(conn: *quic.Connection, frame: []const u8) !void {
+    const state: *QuicEndpointState = @ptrCast(@alignCast(conn.context().?));
+    try state.recordMessage(frame);
+}
+
+/// Send one oversized UDP datagram from an unrelated socket — the spoofed
+/// packet any host on the network could send.
+fn sendSpoofedDatagram(dest: std.Io.net.IpAddress, payload_len: usize) !void {
+    const bind_addr = testListenAddr();
+    const socket = try std.Io.net.IpAddress.bind(&bind_addr, std.testing.io, .{
+        .mode = .dgram,
+        .protocol = .udp,
+    });
+    defer socket.close(std.testing.io);
+
+    const payload = try std.testing.allocator.alloc(u8, payload_len);
+    defer std.testing.allocator.free(payload);
+    @memset(payload, 0x5a);
+    try socket.send(std.testing.io, &dest, payload);
+}
+
+fn driveServerUntilClientMessages(
+    server: *quic.Server,
+    client_state: *const QuicEndpointState,
+    server_state: *const QuicEndpointState,
+    expected_messages: usize,
+) !void {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        _ = try server.stepOnce(.wait);
+        if (client_state.messages.load(.acquire) >= expected_messages) return;
+        if (client_state.errors.load(.acquire) > 0 or server_state.errors.load(.acquire) > 0) {
+            return error.QuicLoopbackUnexpectedError;
+        }
+        loopback.sleepMs(loopback.loopback_poll_ms);
+    }
+    return error.QuicLoopbackTimedOut;
+}
+
+fn driveServerUntilDroppedDatagrams(server: *quic.Server, expected_drops: u64) !void {
+    var waited_ms: u64 = 0;
+    while (waited_ms < loopback.loopback_timeout_ms) : (waited_ms += loopback.loopback_poll_ms) {
+        // The `try` is load-bearing: an oversized datagram must be a
+        // per-datagram fault, not a failed step.
+        _ = try server.stepOnce(.wait);
+        if (server.droppedDatagramCount() >= expected_drops) return;
         loopback.sleepMs(loopback.loopback_poll_ms);
     }
     return error.QuicLoopbackTimedOut;
@@ -191,6 +272,50 @@ test "quic listener owns server endpoint before session attachment" {
     try std.testing.expect(listener.firstAcceptedSession() == null);
     try std.testing.expect(listener.sessionAt(0) == null);
     try std.testing.expect(listener.acceptedSessionAt(0) == null);
+}
+
+test "quic listener drops an oversized datagram instead of failing the receive" {
+    // The bare `Listener` shares the fanout server's exposure and now shares
+    // its answer. `receiveOne` reports "nothing fed" the same way it reports a
+    // timeout; the drop surfaces through the observer and the counter instead
+    // of through an error the caller has no useful response to.
+    const rx_buffer_size: usize = 2048;
+
+    var drops = DroppedDatagramObserver{};
+    var listener = try quic.Listener.init(std.testing.allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(50),
+        // Matches the caller buffer below so the reported limit is the same on
+        // POSIX (which receives into `rx_buf`) and Windows (which receives into
+        // listener-owned storage of this size).
+        .udp_rx_buffer_size = rx_buffer_size,
+        .observer = drops.observer(),
+    });
+    defer listener.deinit();
+
+    try sendSpoofedDatagram(listener.getAddress(), rx_buffer_size * 2);
+
+    var rx_buf: [rx_buffer_size]u8 = undefined;
+    var attempts: usize = 0;
+    while (attempts < 20 and listener.droppedDatagramCount() == 0) : (attempts += 1) {
+        // `try` is the ablation: restoring `return error.DatagramTooLarge` in
+        // either arm fails here rather than spinning out the attempt budget.
+        try std.testing.expect((try listener.receiveOne(&rx_buf)) == null);
+    }
+
+    try std.testing.expectEqual(@as(u64, 1), listener.droppedDatagramCount());
+    try std.testing.expectEqual(@as(usize, 1), drops.rejections);
+    try std.testing.expectEqual(@as(?usize, rx_buffer_size), drops.last_limit);
+    try std.testing.expectEqual(@as(?usize, null), drops.last_attempted);
+    try std.testing.expectEqual(@as(?anyerror, error.DatagramTooLarge), drops.last_err);
+
+    // Still usable afterwards: the next receive is an ordinary empty poll, and
+    // the drop is not re-reported.
+    try std.testing.expect((try listener.receiveOne(&rx_buf)) == null);
+    try std.testing.expectEqual(@as(u64, 1), listener.droppedDatagramCount());
+    try std.testing.expectEqual(@as(usize, 1), drops.rejections);
 }
 
 test "quic listener retains owned Windows receive storage across caller buffers" {
@@ -880,6 +1005,110 @@ test "quic fanout server fires on_close for a live session on deinit" {
     server_deinited = true;
 
     try std.testing.expectEqual(@as(usize, 1), server_state.closes.load(.acquire));
+}
+
+test "quic fanout server survives a spoofed oversized datagram and keeps serving" {
+    // UDP is unauthenticated, so any host that can reach this port can send an
+    // oversized datagram. `Server.run` closes the server on a failed step, so
+    // failing the step here would hand that host a one-packet kill switch for
+    // every session on the endpoint.
+    //
+    // The server is driven on this thread with `try` on purpose: that `try` is
+    // the ablation. Restore `return error.DatagramTooLarge` in either arm of
+    // `Server.receiveOneFor` and the drop loop below fails with exactly that
+    // error instead of timing out on a missing counter.
+    const allocator = std.testing.allocator;
+
+    // Sized well above what the QUIC handshake needs (`udp_tx_buffer_size`
+    // defaults to 1500) but far below the 65507-byte IPv4 UDP payload ceiling,
+    // so a single spoofed datagram can actually exceed it. The 64 KiB default
+    // is unreachable over IPv4, which is why the exposure only shows up on
+    // endpoints tuned closer to their path MTU.
+    const rx_buffer_size: usize = 2048;
+
+    const frame_before = try buildBootstrapFrame(allocator, 0xBEF0);
+    defer allocator.free(frame_before);
+    const frame_after = try buildBootstrapFrame(allocator, 0xAF7E);
+    defer allocator.free(frame_after);
+
+    var drops = DroppedDatagramObserver{};
+
+    var server = try quic.Server.init(allocator, std.testing.io, .{
+        .listen_addr = testListenAddr(),
+        .tls_cert_pem = loopback_cert_pem,
+        .tls_key_pem = loopback_key_pem,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+        .max_concurrent_connections = 2,
+        .udp_rx_buffer_size = rx_buffer_size,
+        .observer = drops.observer(),
+    });
+    defer server.deinit();
+
+    const server_addr = server.getAddress();
+
+    var client = try quic.Connection.initClient(allocator, std.testing.io, .{
+        .remote_addr = server_addr,
+        .server_name = "localhost",
+        .insecure_skip_verify = true,
+        .receive_timeout = std.Io.Duration.fromMilliseconds(1),
+    });
+    defer client.deinit();
+
+    var client_state = QuicEndpointState{};
+    client.start(&client_state, recordQuicClientFrame, recordQuicError, recordQuicClose);
+
+    var client_thread = try std.Thread.spawn(.{}, runQuicConnection, .{&client});
+    var joined = false;
+    defer if (!joined) {
+        client.requestClose();
+        server.requestClose();
+        client_thread.join();
+    };
+
+    try waitForFanoutSessions(&server, 1);
+
+    var server_state = QuicEndpointState{};
+    server.sessionAt(0).?.start(&server_state, echoQuicServerMessage, recordQuicServerError, recordQuicServerClose);
+
+    // Establish that the session round-trips before the attack, so a later
+    // failure cannot be blamed on a session that never worked.
+    try client.sendFrame(frame_before);
+    try driveServerUntilClientMessages(&server, &client_state, &server_state, 1);
+    try std.testing.expectEqual(@as(u64, 0), server.droppedDatagramCount());
+
+    try sendSpoofedDatagram(server_addr, rx_buffer_size * 2);
+    try driveServerUntilDroppedDatagrams(&server, 1);
+
+    // The endpoint and its session are untouched by the drop.
+    try std.testing.expect(!server.isClosing());
+    try std.testing.expectEqual(@as(usize, 1), server.sessionCount());
+    try std.testing.expectEqual(@as(usize, 1), server.quicConnectionCount());
+    try std.testing.expectEqual(@as(usize, 0), server_state.closes.load(.acquire));
+
+    // Still serving, not merely still alive: the pre-existing session carries
+    // another full round trip after the attack.
+    try client.sendFrame(frame_after);
+    try driveServerUntilClientMessages(&server, &client_state, &server_state, 2);
+    try std.testing.expectEqualSlices(u8, frame_after, client_state.receivedSlice());
+
+    client.requestClose();
+    server.requestClose();
+    client_thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(usize, 0), client_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), server_state.errors.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 2), server_state.messages.load(.acquire));
+
+    // Exactly one datagram dropped, reported once, and attributed to the
+    // buffer that was actually exceeded rather than to a session.
+    try std.testing.expectEqual(@as(u64, 1), server.droppedDatagramCount());
+    try std.testing.expectEqual(@as(usize, 1), drops.rejections);
+    try std.testing.expectEqual(@as(?usize, rx_buffer_size), drops.last_limit);
+    // Neither platform can report the true datagram size, so `attempted` must
+    // stay null rather than carry the truncated length as if it were one.
+    try std.testing.expectEqual(@as(?usize, null), drops.last_attempted);
+    try std.testing.expectEqual(@as(?anyerror, error.DatagramTooLarge), drops.last_err);
 }
 
 test "quic native localhost streams large RPC data payload" {

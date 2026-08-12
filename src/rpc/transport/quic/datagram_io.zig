@@ -1,8 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const log = std.log.scoped(.rpc_quic);
 
+const datagram_drop = @import("datagram_drop.zig");
 const endpoint_mod = @import("endpoint.zig");
+const events = @import("../../events.zig");
 const non_windows_receive = @import("non_windows_receive.zig");
 const udp_receive_bridge = @import("udp_receive_bridge.zig");
 const wake_mod = @import("wake.zig");
@@ -23,6 +24,12 @@ pub const ReceiveInput = struct {
     rx_buf: []u8,
     now_us: u64,
     wait_duration: std.Io.Duration,
+    /// Reporting context for a dropped oversized datagram. Deliberately not
+    /// defaulted: a wrong `source`/`role` is worse than a compile error, and
+    /// the drop is otherwise invisible to the application.
+    observer: ?events.Observer,
+    source: events.Source,
+    role: events.Role,
 };
 
 pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
@@ -52,12 +59,10 @@ pub fn receiveOne(input: ReceiveInput) !ReceiveResult {
         else => return err,
     };
     if (msg.flags.trunc) {
-        // A datagram larger than rx_buf was truncated. UDP is unauthenticated
-        // and spoofable, so a single oversized datagram from any host must not
-        // tear down the endpoint (and, for a fanout server, every session on
-        // it). Treat it as a per-datagram fault: drop it and keep serving.
-        // Socket-fatal errors still propagate via the switch above.
-        log.warn("dropping truncated UDP datagram (exceeds {d}-byte rx buffer)", .{input.rx_buf.len});
+        // A datagram larger than rx_buf was truncated. Per-datagram fault:
+        // drop it and keep serving (see datagram_drop). Socket-fatal errors
+        // still propagate via the switch above.
+        datagram_drop.report(input.observer, input.source, input.role, input.rx_buf.len);
         result.dropped_datagram = true;
         return result;
     }
@@ -82,11 +87,9 @@ fn receiveOneWindows(input: ReceiveInput) !ReceiveResult {
             return result;
         },
         .truncated => {
-            // Same per-datagram fault the POSIX path treats as non-fatal: UDP
-            // is unauthenticated and spoofable, so one oversized datagram must
-            // not tear down the endpoint. Socket-fatal errors still propagate
-            // through the `try` above.
-            log.warn("dropping truncated UDP datagram (exceeds {d}-byte rx buffer)", .{input.rx_buf.len});
+            // Same per-datagram fault the POSIX path treats as non-fatal.
+            // Socket-fatal errors still propagate through the `try` above.
+            datagram_drop.report(input.observer, input.source, input.role, input.rx_buf.len);
             result.dropped_datagram = true;
             return result;
         },

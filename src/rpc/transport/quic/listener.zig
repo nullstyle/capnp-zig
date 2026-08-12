@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const quic_zig = @import("quic_zig");
 
+const datagram_drop = @import("datagram_drop.zig");
+const events = @import("../../events.zig");
 const quic_zig_adapter = @import("quic_zig_adapter.zig");
 const non_windows_receive = @import("non_windows_receive.zig");
 const quic_options = @import("options.zig");
@@ -38,6 +40,14 @@ pub const Listener = struct {
     receive_timeout: std.Io.Duration,
     max_concurrent_sessions: u32,
     udp_receive: udp_receive_bridge.Bridge = .{},
+    observer: ?events.Observer,
+    /// Configured transport mode, kept only to tag pre-session observer
+    /// events. A dropped datagram arrives before any session exists, so the
+    /// endpoint's configured mode is the most specific source available.
+    event_source: events.Source,
+    /// Oversized inbound datagrams dropped on this UDP endpoint. Mutated only
+    /// by the loop thread that drives the receive; see `droppedDatagramCount`.
+    dropped_datagrams: u64 = 0,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -67,6 +77,8 @@ pub const Listener = struct {
             .start_timestamp = std.Io.Timestamp.now(io, .awake),
             .receive_timeout = options.receive_timeout,
             .max_concurrent_sessions = options.max_concurrent_connections,
+            .observer = options.observer,
+            .event_source = datagram_drop.eventSource(options.mode),
         };
     }
 
@@ -123,6 +135,14 @@ pub const Listener = struct {
         return try self.server.feed(bytes, quic_zig_adapter.ipAddressToPathAddress(from), now_us);
     }
 
+    /// Receive and feed at most one datagram.
+    ///
+    /// `null` means nothing was fed to QUIC this call: a receive timeout, a
+    /// wake, or an oversized datagram dropped as a per-datagram fault. The
+    /// three are deliberately not distinguished in the return value — none of
+    /// them is a listener fault and none of them is actionable by the caller.
+    /// A drop is reported out-of-band instead, through the observer and
+    /// `droppedDatagramCount`, so it cannot silently look like an idle poll.
     pub fn receiveOne(
         self: *Listener,
         rx_buf: []u8,
@@ -131,8 +151,13 @@ pub const Listener = struct {
             const received = try self.receiveConcurrent(self.receive_timeout);
             return switch (received) {
                 .timeout, .wake => null,
-                // Matches the POSIX arm below; see the note in Server.
-                .truncated => error.DatagramTooLarge,
+                // The Windows receive always borrows Listener-owned storage,
+                // so the ceiling that was exceeded is this buffer's, not the
+                // caller's `rx_buf`.
+                .truncated => blk: {
+                    self.recordDroppedDatagram(self.udp_rx_buf.len);
+                    break :blk null;
+                },
                 .datagram => |msg| blk: {
                     const outcome = try self.feedDatagram(msg.data, msg.from, self.nowUs());
                     try self.drainStatelessResponses();
@@ -145,10 +170,30 @@ pub const Listener = struct {
             error.Timeout => return null,
             else => return err,
         };
-        if (msg.flags.trunc) return error.DatagramTooLarge;
+        if (msg.flags.trunc) {
+            self.recordDroppedDatagram(rx_buf.len);
+            return null;
+        }
         const outcome = try self.feedDatagram(msg.data, msg.from, self.nowUs());
         try self.drainStatelessResponses();
         return outcome;
+    }
+
+    /// Count and report one oversized datagram dropped on this endpoint.
+    ///
+    /// `Server` drives its own receive against this listener's socket and
+    /// routes its truncation arms here too, so the tally is per UDP endpoint
+    /// rather than per API entry point. `rx_buf_len` is the buffer the failed
+    /// receive actually used.
+    pub fn recordDroppedDatagram(self: *Listener, rx_buf_len: usize) void {
+        self.dropped_datagrams +|= 1;
+        datagram_drop.report(self.observer, self.event_source, .server, rx_buf_len);
+    }
+
+    /// Oversized datagrams dropped since `init`. Loop-thread only: the counter
+    /// is a plain field written by whichever thread drives the receive.
+    pub fn droppedDatagramCount(self: *const Listener) u64 {
+        return self.dropped_datagrams;
     }
 
     fn receiveConcurrent(

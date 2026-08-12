@@ -109,6 +109,11 @@ pub const Resource = enum {
     join_parts,
     /// Canonically-owned direct-Accept provision bytes for hosted JoinResult.
     join_accept_bytes,
+    /// One inbound UDP datagram measured against a QUIC endpoint's
+    /// `udp_rx_buffer_size`. Rejected per-datagram — dropped while the
+    /// endpoint and every session on it keep running — because UDP is
+    /// unauthenticated and any host can send one.
+    udp_datagram_bytes,
 };
 
 pub const Event = union(enum) {

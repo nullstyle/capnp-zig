@@ -27,7 +27,7 @@ updated as phases land.
 | ThreadSanitizer lane (`test-tsan`, threaded transport suites) | CI job configured; compile-verified via `check-tsan`, first full run pending (the lane hit its job timeout on every run since it was added) | not available (libtsan SIGSEGVs at startup on this Zig pin) | not available |
 | Coverage-guided fuzzing (`--fuzz`) | full | full | blocked upstream (zig fuzzer is ELF/Mach-O only) |
 | Evented `std.Io` backend | compile-checked only — no sockets (see below) | compile-checked only — no sockets (see below) | blocked upstream (`EventedBackendUnsupported`) |
-| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 61/61 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |
+| QUIC transport | experimental (`-Dquic=true`; four-root evidence runs in Debug + ReleaseSafe, and the full repository is also tested against the QUIC-enabled root) | experimental (four-root Debug + ReleaseSafe evidence; locally proven 63/63 on macOS) | experimental (native Debug + ReleaseSafe no-skip gate configured; local cross-compilation passes, but hosted runtime acceptance is pending the capnp-zig push) |
 
 The targeted QUIC evidence gate is intentionally different from testing the
 entire repository through the QUIC-enabled library root. The three-OS native
@@ -36,7 +36,7 @@ scanner rejects `SkipZigTest`, enforces per-root floors 26 + 1 + 17 + 8 = 52,
 and makes the four runnable artifacts direct build dependencies; it does not
 parse output or rely on a CI-only shell. Linux alone also runs the full
 build/check/test/API/docs surface against the QUIC root. At this sprint's local
-handoff, macOS has run all 61 tests in both modes. Windows full-tree test
+handoff, macOS has run all 63 tests in both modes. Windows full-tree test
 cross-compilation passes 113/113, but native Windows runtime acceptance remains
 pending a hosted run after capnp-zig is pushed.
 
@@ -58,31 +58,48 @@ socket layer is unproven on *both* sides of the boundary. Treat a Windows
 runtime run as genuine discovery work that may surface real defects, not as a
 formality expected to confirm a working path.
 
-**And it did. Known defect — oversized inbound datagrams on Windows.** The
-hosted `QUIC targeted transport (windows-latest)` leg runs the evidence gate
-natively and reports **60/61**, failing exactly one case: `QUIC UDP receive
-bridge reports truncation without processing partial bytes`. That test
-delivers a 9-byte datagram into a 2-byte buffer and expects a datagram
-carrying `flags.trunc`; on Windows the receive fails instead, and
-`udp_receive_bridge.zig` propagates the error to its caller. So an oversized
-inbound datagram surfaces as a connection error on Windows, where every other
-platform detects the truncation and drops the partial bytes without
-processing them.
+**And it did — and what it found was ours, not upstream's.** The hosted `QUIC
+targeted transport (windows-latest)` leg reported **60/61**, failing exactly
+one case: `QUIC UDP receive bridge reports truncation without processing
+partial bytes`. That test delivers a 9-byte datagram into a 2-byte buffer and
+expects truncation to be reported; on Windows the receive *failed* instead,
+and `udp_receive_bridge.zig` propagated the error to its caller. So an
+oversized inbound datagram tore down the endpoint on Windows, where every
+other platform dropped it and kept serving.
 
-The root is upstream rather than here: `std.Io`'s receive error set has no
-truncation variant, so the Windows implementation cannot report what the POSIX
-one signals via `MSG_TRUNC` — the `flags.trunc` field the API exposes is
-unreachable there. Working around it in our bridge would mean pattern-matching
-whatever generic error Windows happens to surface, which is guesswork we
-decline to encode in a security-relevant path.
+The platform difference is upstream: `std.Io`'s receive error set has no
+truncation variant, so Windows (where AFD returns `STATUS_BUFFER_OVERFLOW`)
+surfaces `error.MessageOversize` and leaves `flags.trunc` hardcoded false,
+while POSIX signals `MSG_TRUNC` and returns the prefix that fit. Deciding to
+tear the endpoint down over it was ours. The bridge now normalizes both into a
+single `truncated` outcome — the mapping is Windows-gated and matched
+exactly, not pattern-matched against whatever generic error appears, because
+`BUFFER_OVERFLOW` is the only source of `MessageOversize` on that path.
 
-This is not caused by the sprint that found it: it reproduces identically at
-the merge commit and predates the Zig `0.17.0-dev.1683` bump. The leg is
-deliberately left RED rather than skipped — the evidence gate rejects
-`SkipZigTest` by design, and making this one case pass would convert a real
-platform defect into a green check. Windows QUIC therefore stays
-**experimental with a known, specific gap**, which is a more honest claim than
-"acceptance pending".
+The same question then had to be answered for the fanout paths, which had
+kept the old semantics on *every* platform: `Server.receiveOneFor` and
+`Listener.receiveOne` both returned `error.DatagramTooLarge`, and
+`Server.run` closes the server on a failed step. One spoofed oversized UDP
+datagram from any host was therefore a kill switch for every session on the
+port. All receive paths now share one policy in
+`src/rpc/transport/quic/datagram_drop.zig`: drop the datagram, count it,
+`warn`, and emit a redacted `resource_rejection` observer event
+(`Resource.udp_datagram_bytes`). `Server.droppedDatagramCount()` and
+`StepResult.dropped_datagram` expose it; `receiveOne` reports it as `null`,
+the same as an idle poll, because there is nothing the caller can usefully do
+differently. Two tests cover it — one drives a live fanout session through a
+spoofed oversized datagram and back, one covers the bare `Listener` — and both
+were ablation-checked against a restored `return error.DatagramTooLarge`.
+
+The 64 KiB default `udp_rx_buffer_size` is above the 65507-byte IPv4 UDP
+payload ceiling, so the exposure only ever reached endpoints tuned closer to
+their path MTU. Note the flip side of dropping: a *legitimate* peer whose
+datagram exceeds `udp_rx_buffer_size` is now silently unserved. That is what
+the counter and the observer event are for — an rx buffer sized under the
+peers' path MTU is a misconfiguration, and this is how it becomes visible.
+
+Windows QUIC still stays **experimental**: the hosted leg remains the gate for
+the error arm, since the mapping is comptime-gated and unreachable off Windows.
 
 Note on **Windows codegen**: the upstream prebuilt Windows tools still contain
 the executables but not the standard schema tree. The repository now routes

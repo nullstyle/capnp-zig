@@ -11,6 +11,11 @@ pub const StepMode = enum {
 
 pub const StepResult = struct {
     received_datagram: bool = false,
+    /// A datagram arrived but was dropped as a per-datagram fault (oversized
+    /// for the rx buffer) instead of being fed to QUIC. The endpoint — and,
+    /// for a fanout server, every session on it — stays alive. Never set
+    /// together with `received_datagram`.
+    dropped_datagram: bool = false,
     wake_drained: bool = false,
     waited_for: std.Io.Duration = std.Io.Duration.zero,
     next_deadline_us: ?u64 = null,

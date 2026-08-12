@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const datagram_drop = @import("datagram_drop.zig");
 const datagram_io = @import("datagram_io.zig");
 const endpoint_mod = @import("endpoint.zig");
 const engine_owner = @import("engine_owner.zig");
@@ -87,8 +88,12 @@ pub fn stepOnce(owner: Owner, mode: StepMode) !StepResult {
         .rx_buf = owner.udp_rx_buf,
         .now_us = now_us,
         .wait_duration = waited_for,
+        .observer = owner.engine_owner(owner.ptr).observer,
+        .source = datagram_drop.eventSource(owner.selected_mode(owner.ptr).mode),
+        .role = datagram_drop.eventRole(owner.role),
     });
     result.received_datagram = receive_result.received_datagram;
+    result.dropped_datagram = receive_result.dropped_datagram;
     result.wake_drained = receive_result.wake_drained;
 
     now_us = driver.nowUs();

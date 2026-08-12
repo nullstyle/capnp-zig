@@ -135,6 +135,7 @@ capnpc-zig.rpc.events.Resource.queued_calls: enumerant = 15
 capnpc-zig.rpc.events.Resource.resolved_imports: enumerant = 17
 capnpc-zig.rpc.events.Resource.retained_questions: enumerant = 13
 capnpc-zig.rpc.events.Resource.sturdy_ref_bytes: enumerant = 19
+capnpc-zig.rpc.events.Resource.udp_datagram_bytes: enumerant = 25
 capnpc-zig.rpc.events.Resource.write_queue_bytes: enumerant = 2
 capnpc-zig.rpc.events.Resource.write_queue_items: enumerant = 1
 capnpc-zig.rpc.events.Resource: enum

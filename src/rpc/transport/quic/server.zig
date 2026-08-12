@@ -163,9 +163,27 @@ pub const Server = struct {
         return self.sessions.items[index];
     }
 
+    /// Receive and feed at most one datagram.
+    ///
+    /// `null` means nothing was fed to QUIC this call — a timeout, a wake, or
+    /// an oversized datagram dropped as a per-datagram fault. See
+    /// `droppedDatagramCount` for the drop tally; `stepOnce` reports the same
+    /// fact per step as `StepResult.dropped_datagram`.
     pub fn receiveOne(self: *Server) !?listener_mod.FeedOutcome {
         const result = try self.receiveOneFor(self.listener.receive_timeout);
         return result.outcome;
+    }
+
+    /// Oversized inbound datagrams dropped on this server's UDP endpoint.
+    ///
+    /// A non-zero, growing count with healthy sessions means some peer is
+    /// sending datagrams larger than `udp_rx_buffer_size` — either an attacker
+    /// (harmless, and the point of dropping rather than failing) or a
+    /// legitimate peer behind a path MTU this endpoint is not sized for, which
+    /// is a misconfiguration this counter is how you notice.
+    pub fn droppedDatagramCount(self: *const Server) u64 {
+        self.assertLoopThread();
+        return self.listener.droppedDatagramCount();
     }
 
     pub fn step(self: *Server) !void {
@@ -204,6 +222,7 @@ pub const Server = struct {
         } else {
             const receive_result = try self.receiveOneFor(waited_for);
             result.received_datagram = receive_result.received_datagram;
+            result.dropped_datagram = receive_result.dropped_datagram;
             result.wake_drained = receive_result.wake_drained;
         }
 
@@ -327,6 +346,15 @@ pub const Server = struct {
         }
     }
 
+    /// Receive one datagram for the whole endpoint.
+    ///
+    /// Truncation is a per-datagram fault on both platforms, matching the
+    /// single-connection loop: drop, count, keep serving. It matters more
+    /// here than there. Failing this call fails `stepOnce`, and `run` responds
+    /// to a failed step by closing the server — so returning an error for an
+    /// oversized datagram would let any host that can reach this UDP port kill
+    /// every session on it with one spoofed packet. Socket-fatal errors still
+    /// propagate.
     fn receiveOneFor(self: *Server, wait_duration: std.Io.Duration) !ReceiveResult {
         var result = ReceiveResult{};
         if (self.wake_state.consumeRequested()) {
@@ -350,13 +378,11 @@ pub const Server = struct {
                     result.wake_drained = self.wake_state.consumeRequested();
                     return result;
                 },
-                // Deliberately identical to the POSIX arm below, which also
-                // fails the step on an oversized datagram. Whether the fanout
-                // server *should* survive one instead of tearing down (as the
-                // single-connection path does) is a real question, but it is a
-                // cross-platform behavior change and not this fix's business:
-                // here Windows only stops being the odd one out.
-                .truncated => return error.DatagramTooLarge,
+                .truncated => {
+                    self.listener.recordDroppedDatagram(self.udp_rx_buf.len);
+                    result.dropped_datagram = true;
+                    return result;
+                },
                 .datagram => |msg| {
                     result.received_datagram = true;
                     result.outcome = try self.listener.feedDatagram(
@@ -382,7 +408,11 @@ pub const Server = struct {
             error.Timeout => return result,
             else => return err,
         };
-        if (msg.flags.trunc) return error.DatagramTooLarge;
+        if (msg.flags.trunc) {
+            self.listener.recordDroppedDatagram(self.udp_rx_buf.len);
+            result.dropped_datagram = true;
+            return result;
+        }
 
         result.received_datagram = true;
         result.outcome = try self.listener.feedDatagram(msg.data, msg.from, self.listener.nowUs());
@@ -545,6 +575,10 @@ pub const Server = struct {
 
 pub const ReceiveResult = struct {
     received_datagram: bool = false,
+    /// An oversized datagram arrived and was dropped instead of being fed to
+    /// QUIC. Never set together with `received_datagram`, and never a reason
+    /// to stop serving: see `receiveOneFor`.
+    dropped_datagram: bool = false,
     wake_drained: bool = false,
     outcome: ?listener_mod.FeedOutcome = null,
     accepted_sessions: usize = 0,
