@@ -166,6 +166,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step) was committed on the theory that the leg needed more time. The silence
   disproves that — it hung longer.
 
+- **A TCP wake-door deadlock hung the Linux CI legs.** Distinct from the
+  wake-drain infinite loop above: that one was QUIC and deterministic, this is
+  TCP and a race — which is why one Linux leg could hang while another ran the
+  identical suite clean on the same commit. Captured with all three threads
+  live:
+
+      TID 3626  state=S  sendmsg <- netWritePosix <- Connection.wake  [HOLDS wake_mu]
+      TID 2820  state=R  lockWake <- deinitNow <- Connection.deinit   [spins for it]
+      TID 3625  state=R  lockWake <- Connection.wake                  [spins for it]
+
+  `wake()` holds `wake_mu` across the write so teardown cannot close the
+  descriptor mid-write — but the write could BLOCK, and the only thread that
+  drains the channel is the one in `deinit`, waiting for that same lock. Once
+  the pipe filled, the writer slept holding the lock and the drainer spun
+  forever. Structural: the buffer size decides when, not whether.
+
+  QUIC never had this, because its wake door differed in TWO coupled ways —
+  non-blocking descriptors AND a raw `write` rather than `io.vtable.netWrite`.
+  Both had to move: `Io.Threaded.netWritePosix` treats `EAGAIN` as `errnoBug`
+  and panics on it, since it assumes a blocking descriptor. So TCP now does
+  what QUIC always did, and both doors share one `setNonBlocking` and one
+  `writeByte` — two implementations drifting apart being the whole defect.
+
+  Proven on Linux: the suite that deadlocked at 1x now passes, and passes at
+  20x reps.
+
+- **Receive faults a remote peer can provoke no longer tear down a QUIC
+  endpoint.** `PortUnreachable` and `ConnectionResetByPeer` are ICMP feedback —
+  std's own docs describe them as queued against the bound socket and reported
+  at the next receive — so they describe a datagram that did not arrive, not a
+  broken endpoint, and an off-path packet can provoke them. They were fatal.
+  Now they are per-datagram faults on both the POSIX and Windows arms. Local
+  faults (`SystemResources`, fd exhaustion, `SocketUnconnected`, `NetworkDown`,
+  `Unexpected`) deliberately still propagate; the test enumerates both halves,
+  because a classifier widened to swallow everything would turn a broken
+  endpoint into a spin.
+
+- **The source-module tests ran nowhere.** `test-lib` existed but nothing
+  depended on it — not `test`, not any domain step, and it appeared in no CI
+  job or Justfile recipe. That is 322 tests by default and 325 with
+  `-Dquic=true` that had never executed. Tests in `src/` are only collected
+  when `src/lib.zig` is the ROOT module, which is exactly what that step does;
+  the `tests/` roots import `capnpc-zig` as a separate module, and Zig does not
+  collect tests from non-root modules. Now wired into `test`. This does not
+  reach files past the `refAllRecursive` depth (verified by ablation), which is
+  tracked separately.
+
+- **`std.debug.panic` bypassed the hardening gate.** The scanner matched only
+  the literal `@panic`, leaving a second, unreviewed way to abort the process.
+  Both spellings are scanned now. Exactly one allowlist entry was required
+  repo-wide, so nothing had been slipping through historically.
+
 - **Windows QUIC runtime acceptance is earned.** `QUIC targeted transport
   (windows-latest)` now runs both native evidence roots, Debug and ReleaseSafe,
   with `SkipZigTest` rejected, and passes — see the transport entry above for
@@ -293,6 +345,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only found by a consumer build against a published tag.
 
 ### Added
+
+- **The wake doors are instrumented, so a stuck lock names itself.** Two hangs
+  this cycle each cost hours for one reason: a hang carries no information. A
+  failing test names itself; a spinning thread names nothing, so the failure
+  reaches CI as a job that prints its last line and dies at the step cap with
+  no test named and no stack.
+
+  `rpc.transport.wake_lock.Lock` replaces the bare
+  `while (!tryLock()) spinLoopHint()` that both transports had written
+  separately. Same fast path; in Debug (or release with the owner's
+  `runtime_thread_checks`) it records the holder and bounds the spin, panicking
+  with site, holder and waiter. It is bounded by iterations rather than a
+  deadline because no portable monotonic clock is reachable from there —
+  `std.time` carries only constants and `std.Io.Timestamp` needs the `Io` this
+  lock deliberately lacks.
+
+  Alongside it: `CAPNP_ZIG_STRESS_MULTIPLIER` scales the storm suites'
+  repetitions (thread counts stay comptime — they size arrays) so a race can be
+  soaked without slowing the default build; and `tools/stall_watchdog.sh`, wired
+  into the four jobs that run test binaries, dumps every live test binary's
+  threads, backtraces and embedded test names on output silence *before* the cap
+  kills the step. The lock diagnostics found the TCP deadlock above on their
+  first Linux run.
 
 - **A ThreadSanitizer lane.** Nothing exercised the runtime under a race
   detector, while recent work added threaded code (the Windows QUIC receive
