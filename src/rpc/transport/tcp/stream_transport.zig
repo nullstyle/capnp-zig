@@ -473,7 +473,9 @@ fn ioShutdown(io: std.Io, fd: net.Socket.Handle) void {
 
 /// Close a socket handle via Io.
 fn ioClose(io: std.Io, fd: net.Socket.Handle) void {
-    io.vtable.netClose(io.userdata, (&fd)[0..1]);
+    // See runtime.closeFd: netClose now takes `[]const net.Socket`.
+    const sockets = [_]net.Socket{.{ .handle = fd, .address = undefined }};
+    io.vtable.netClose(io.userdata, &sockets);
 }
 
 /// Create a connected loopback TCP pair for tests. Unlike socketpair(2), this

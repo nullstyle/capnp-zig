@@ -2,7 +2,7 @@
     .name = .capnp_zig_package_consumer,
     .version = "0.0.0",
     .fingerprint = 0x323eac9007414518,
-    .minimum_zig_version = "0.17.0-dev.1509",
+    .minimum_zig_version = "0.17.0-dev.1683",
     // `tools/package_preflight.zig` copies this fixture and uses
     // `zig fetch --save=capnpc_zig <filtered-archive>` to populate the entry.
     .dependencies = .{},

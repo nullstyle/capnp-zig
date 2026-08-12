@@ -1054,7 +1054,7 @@ capnpc-zig.rpc.transport.tcp.connection.Connection.run: fn (*rpc.transport.tcp.c
 capnpc-zig.rpc.transport.tcp.connection.Connection: struct
 capnpc-zig.rpc.transport.tcp.runtime.Listener.close: fn (*rpc.transport.tcp.runtime.Listener) void
 capnpc-zig.rpc.transport.tcp.runtime.Listener.getAddress: fn (*const rpc.transport.tcp.runtime.Listener) Io.net.IpAddress
-capnpc-zig.rpc.transport.tcp.runtime.Listener.init: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.connection.Connection.Options) error{AddressFamilyUnsupported,AddressInUse,AddressUnavailable,Canceled,NetworkDown,OptionUnsupported,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,SocketModeUnsupported,SystemFdQuotaExceeded,SystemResources,Unexpected}!rpc.transport.tcp.runtime.Listener
+capnpc-zig.rpc.transport.tcp.runtime.Listener.init: fn (mem.Allocator, Io, Io.net.IpAddress, rpc.transport.tcp.connection.Connection.Options) error{AccessDenied,AddressFamilyUnsupported,AddressInUse,AddressUnavailable,Canceled,NetworkDown,OptionUnsupported,ProcessFdQuotaExceeded,ProtocolUnsupportedByAddressFamily,ProtocolUnsupportedBySystem,SocketModeUnsupported,SystemFdQuotaExceeded,SystemResources,Unexpected}!rpc.transport.tcp.runtime.Listener
 capnpc-zig.rpc.transport.tcp.runtime.Listener: struct
 capnpc-zig.rpc.transport.tcp.runtime.SocketFd: struct
 capnpc-zig.rpc.transport.tcp.server.ServeOptions.conn: field rpc.transport.tcp.connection.Connection.Options = <default>

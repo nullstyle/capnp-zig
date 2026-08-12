@@ -534,7 +534,7 @@ test "transport enqueueWrite counts writer-owned bytes against byte budget" {
 
         fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
 
-        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {}
+        fn netClose(_: ?*anyopaque, _: []const net.Socket) void {}
     };
 
     var state = BlockingIo.State{};
@@ -764,7 +764,7 @@ test "transport concurrent close and shutdown call socket shutdown once" {
             _ = active_state.?.shutdown_count.fetchAdd(1, .acq_rel);
         }
 
-        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {
+        fn netClose(_: ?*anyopaque, _: []const net.Socket) void {
             _ = active_state.?.close_count.fetchAdd(1, .acq_rel);
         }
     };
@@ -810,7 +810,7 @@ test "listener concurrent close calls socket close once" {
 
         var active_state: ?*State = null;
 
-        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {
+        fn netClose(_: ?*anyopaque, _: []const net.Socket) void {
             _ = active_state.?.close_count.fetchAdd(1, .acq_rel);
         }
         fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {

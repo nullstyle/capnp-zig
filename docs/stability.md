@@ -70,7 +70,7 @@ developers without `capnp` retain the documented optional-test skips.
 
 Note on the **Evented `std.Io` backend**: "compile-checked only" is the whole
 claim, and the limit is upstream, not here. At the pinned toolchain
-(`0.17.0-dev.1509`) `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and
+(`0.17.0-dev.1683`) `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and
 `std.Io.Uring` on Linux, and neither carries a working socket vtable — Dispatch
 implements `netClose` alone, Uring only `netBindIp` / `netClose` /
 `netShutdown`, and everything else (`netListenIp`, `netAccept`, `netConnectIp`,

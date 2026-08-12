@@ -15,4 +15,4 @@ uv = "latest"
 #
 # NOTE for local dev: if you manage Zig with zvm, its PATH entry wins over mise's
 # shims. Either drop zvm from PATH or run `mise exec -- zig ...` to match CI.
-zig = "0.17.0-dev.1509+bb296ab9b"
+zig = "0.17.0-dev.1683+5ceec001b"

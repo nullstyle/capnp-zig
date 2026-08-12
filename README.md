@@ -343,7 +343,7 @@ compile gate for the Evented selector on targets where Zig exposes
 `std.Io.Evented`.
 
 **The Evented selector compiles, but it cannot yet carry RPC**, and the reason
-is upstream rather than here. At the pinned toolchain (`0.17.0-dev.1509`),
+is upstream rather than here. At the pinned toolchain (`0.17.0-dev.1683`),
 `std.Io.Evented` resolves to `std.Io.Dispatch` on macOS and `std.Io.Uring` on
 Linux, and neither has a working socket vtable: Dispatch implements only
 `netClose`, and Uring only `netBindIp` / `netClose` / `netShutdown` — every

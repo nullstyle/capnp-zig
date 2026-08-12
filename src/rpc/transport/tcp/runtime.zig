@@ -193,12 +193,17 @@ pub fn createListenSocket(io: std.Io, addr: net.IpAddress, backlog: u31, _: bool
 
 /// Close a socket via Io.
 pub fn closeFd(io: std.Io, socket: SocketFd) void {
-    io.vtable.netClose(io.userdata, (&socket.handle)[0..1]);
+    // `netClose` takes `[]const net.Socket`, not raw handles. `address` is
+    // never read on the close path, so an undefined one is correct here (the
+    // same shape the transport already uses for handle-only close/shutdown).
+    const sockets = [_]net.Socket{.{ .handle = socket.handle, .address = undefined }};
+    io.vtable.netClose(io.userdata, &sockets);
 }
 
 /// Shut down a socket for both directions via Io, ignoring errors. On POSIX a
 /// bare `close()` does not reliably unblock a thread parked in `accept()`/
-/// `read()` on the fd; a prior `shutdown()` does. Harmless on Windows.
+/// `read()` on the fd; a prior `shutdown()` does.
+/// Harmless on Windows.
 pub fn shutdownFd(io: std.Io, socket: SocketFd) void {
     io.vtable.netShutdown(io.userdata, socket.handle, .both) catch {};
 }

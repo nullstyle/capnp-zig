@@ -169,7 +169,7 @@ test "tcp observer reports frame send metadata without frame bytes" {
 
         fn netShutdown(_: ?*anyopaque, _: net.Socket.Handle, _: net.ShutdownHow) net.ShutdownError!void {}
 
-        fn netClose(_: ?*anyopaque, _: []const net.Socket.Handle) void {}
+        fn netClose(_: ?*anyopaque, _: []const net.Socket) void {}
     };
 
     var recorder = Recorder{};

@@ -50,7 +50,7 @@ const required_paths = [_][]const u8{
 const doc_forbidden = [_]Needle{
     .{ .needle = "capnpc.rpc.quic", .reason = "QUIC public API lives under capnpc.rpc.transport.quic" },
     // The error is spelled `EventedBackendUnsupported`. Note this forbids a
-    // wrong ERROR NAME, not a claim that the backend works: at dev.1509 the
+    // wrong ERROR NAME, not a claim that the backend works: at dev.1683 the
     // evented selector compiles but has no socket vtable upstream, which
     // docs/stability.md and README.md now say explicitly.
     .{ .needle = "EventedBackendNotImplemented", .reason = "the selector's error is spelled EventedBackendUnsupported" },
