@@ -44,6 +44,8 @@ const peer_return_send = @import("./return/peer_return_send.zig");
 const peer_export_release = @import("./peer_export_release.zig");
 const peer_call_send = @import("./call/peer_call_send.zig");
 const peer_call_inbound = @import("./call/peer_call_inbound.zig");
+const peer_join_accept = @import("./join/peer_join_accept.zig");
+const peer_join_relay = @import("./join/peer_join_relay.zig");
 const vat_host = @import("../vat/host.zig");
 const promises_promised_answer = @import("../promises/promised_answer.zig");
 
@@ -376,7 +378,7 @@ const CrossPeerProxyContext = struct {
         allocator.destroy(ctx);
     }
 
-    fn onCall(
+    pub fn onCall(
         ctx_ptr: *anyopaque,
         peer: *Peer,
         call: protocol.Call,
@@ -422,7 +424,7 @@ const CrossPeerJoinRelayContext = struct {
     owner_answer_id: u32,
     settled_flag: ?*bool = null,
 
-    fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
+    pub fn deinit(allocator: std.mem.Allocator, ctx_ptr: *anyopaque) void {
         const ctx: *CrossPeerJoinRelayContext = @ptrCast(@alignCast(ctx_ptr));
         allocator.destroy(ctx);
     }
@@ -1537,7 +1539,7 @@ pub const Peer = struct {
         self.timeouts = timeouts;
     }
 
-    fn newJoinDeadline(self: *Peer) !?i64 {
+    pub fn newJoinDeadline(self: *Peer) !?i64 {
         const ttl_ms = self.timeouts.join_timeout_ms orelse return null;
         // A nested Join must never turn a configured TTL into an implicit
         // opt-out merely because an application Clock callback re-entered the
@@ -1550,7 +1552,7 @@ pub const Peer = struct {
         return @intCast(std.math.clamp(sum, std.math.minInt(i64), std.math.maxInt(i64)));
     }
 
-    fn noteJoinDeadline(self: *Peer, deadline_ns: ?i64) void {
+    pub fn noteJoinDeadline(self: *Peer, deadline_ns: ?i64) void {
         const deadline = deadline_ns orelse return;
         if (self.next_join_deadline_ns) |next| {
             if (deadline >= next) return;
@@ -1558,7 +1560,7 @@ pub const Peer = struct {
         self.next_join_deadline_ns = deadline;
     }
 
-    fn refreshNextJoinDeadline(self: *Peer) void {
+    pub fn refreshNextJoinDeadline(self: *Peer) void {
         var next: ?i64 = null;
         var join_it = self.pending_joins.valueIterator();
         while (join_it.next()) |join_state| noteEarliestDeadline(&next, join_state.deadline_ns);
@@ -2368,11 +2370,11 @@ pub const Peer = struct {
         bytes: usize = 0,
     };
 
-    fn saturatingAdd(a: usize, b: usize) usize {
+    pub fn saturatingAdd(a: usize, b: usize) usize {
         return std.math.add(usize, a, b) catch std.math.maxInt(usize);
     }
 
-    fn joinRecordCount(self: *const Peer) usize {
+    pub fn joinRecordCount(self: *const Peer) usize {
         var total: usize = self.pending_joins.count();
         total = saturatingAdd(total, self.pending_join_questions.count());
         total = saturatingAdd(total, self.completing_join_answer_records);
@@ -2384,7 +2386,7 @@ pub const Peer = struct {
         return total;
     }
 
-    fn ensureJoinRecordCapacity(self: *const Peer, additional: usize) !void {
+    pub fn ensureJoinRecordCapacity(self: *const Peer, additional: usize) !void {
         const current = self.joinRecordCount();
         if (current > self.limits.max_pending_join_records) return error.JoinRecordLimitExceeded;
         if (additional > self.limits.max_pending_join_records - current) {
@@ -2401,7 +2403,7 @@ pub const Peer = struct {
         if (added_bytes > max_bytes - current_bytes) return error.PeerLimitExceeded;
     }
 
-    fn joinWireReason(err: anyerror) []const u8 {
+    pub fn joinWireReason(err: anyerror) []const u8 {
         return switch (err) {
             error.PeerLimitExceeded,
             error.JoinRecordLimitExceeded,
@@ -4809,7 +4811,7 @@ pub const Peer = struct {
         _ = self.forwarded_questions.remove(tail_question_id);
     }
 
-    fn neutralizeJoinRelayQuestion(self: *Peer, question_id: u32) void {
+    pub fn neutralizeJoinRelayQuestion(self: *Peer, question_id: u32) void {
         if (self.questions.getPtr(question_id)) |question| {
             if (question.deinit_ctx) |deinit_ctx| {
                 deinit_ctx(self.allocator, question.ctx);
@@ -4819,7 +4821,7 @@ pub const Peer = struct {
         }
     }
 
-    fn sendJoinRelayFinishAndNeutralize(self: *Peer, question_id: u32, release_result_caps: bool) !void {
+    pub fn sendJoinRelayFinishAndNeutralize(self: *Peer, question_id: u32, release_result_caps: bool) !void {
         try peer_outbound_control.sendFinishWithFlagsViaSendFrame(
             Peer,
             self,
@@ -5239,7 +5241,7 @@ pub const Peer = struct {
         };
     }
 
-    fn relayReturnAcrossPeers(
+    pub fn relayReturnAcrossPeers(
         recipient: *Peer,
         answer_id: u32,
         source_peer: *Peer,
@@ -5783,7 +5785,7 @@ pub const Peer = struct {
         peers: [3]*Peer = undefined,
         len: usize = 0,
 
-        fn add(self: *@This(), peer: *Peer) void {
+        pub fn add(self: *@This(), peer: *Peer) void {
             for (self.peers[0..self.len]) |existing| {
                 if (existing == peer) return;
             }
@@ -5806,11 +5808,11 @@ pub const Peer = struct {
         }
     };
 
-    const JoinOperationGuards = struct {
+    pub const JoinOperationGuards = struct {
         peers: [3]*Peer = undefined,
         len: usize = 0,
 
-        fn add(self: *@This(), peer: *Peer) void {
+        pub fn add(self: *@This(), peer: *Peer) void {
             for (self.peers[0..self.len]) |existing| {
                 if (existing == peer) return;
             }
@@ -5819,11 +5821,11 @@ pub const Peer = struct {
             self.len += 1;
         }
 
-        fn enter(self: *@This()) void {
+        pub fn enter(self: *@This()) void {
             for (self.peers[0..self.len]) |peer| peer.enterJoinOperation();
         }
 
-        fn leave(self: *@This()) void {
+        pub fn leave(self: *@This()) void {
             var i = self.len;
             while (i != 0) {
                 i -= 1;
@@ -6035,7 +6037,7 @@ pub const Peer = struct {
         }
     }
 
-    fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
+    pub fn provideTargetsEqual(a: *const ProvideTarget, b: *const ProvideTarget) bool {
         return switch (a.*) {
             .local => |local| switch (b.*) {
                 .local => |other_local| local.origin_code == other_local.origin_code and local.cap_id == other_local.cap_id,
@@ -6651,7 +6653,7 @@ pub const Peer = struct {
         }
     }
 
-    fn removeQuestionAndDeinit(self: *Peer, question_id: u32) void {
+    pub fn removeQuestionAndDeinit(self: *Peer, question_id: u32) void {
         if (self.questions.fetchRemove(question_id)) |removed| {
             if (removed.value.deinit_ctx) |deinit_ctx| {
                 deinit_ctx(self.allocator, removed.value.ctx);
@@ -7652,14 +7654,14 @@ pub const Peer = struct {
         self.cross_peer_proxy_links.clearRetainingCapacity();
     }
 
-    fn registerCrossPeerJoinRelay(self: *Peer, owner_peer: *Peer, owner_answer_id: u32) !void {
+    pub fn registerCrossPeerJoinRelay(self: *Peer, owner_peer: *Peer, owner_answer_id: u32) !void {
         try self.cross_peer_join_relay_links.append(self.allocator, .{
             .owner_peer = owner_peer,
             .owner_answer_id = owner_answer_id,
         });
     }
 
-    fn deregisterCrossPeerJoinRelay(self: *Peer, owner_peer: *Peer, owner_answer_id: u32) void {
+    pub fn deregisterCrossPeerJoinRelay(self: *Peer, owner_peer: *Peer, owner_answer_id: u32) void {
         var i: usize = 0;
         while (i < self.cross_peer_join_relay_links.items.len) {
             const link = self.cross_peer_join_relay_links.items[i];
@@ -7680,14 +7682,14 @@ pub const Peer = struct {
         self.cross_peer_join_relay_links.clearRetainingCapacity();
     }
 
-    fn registerJoinAcceptHost(self: *Peer, hosted: *HostedJoin) !void {
+    pub fn registerJoinAcceptHost(self: *Peer, hosted: *HostedJoin) !void {
         for (self.join_accept_host_links.items) |link| {
             if (link.hosted == hosted) return;
         }
         try self.join_accept_host_links.append(self.allocator, .{ .hosted = hosted });
     }
 
-    fn deregisterJoinAcceptHost(self: *Peer, hosted: *HostedJoin) void {
+    pub fn deregisterJoinAcceptHost(self: *Peer, hosted: *HostedJoin) void {
         var i: usize = 0;
         while (i < self.join_accept_host_links.items.len) {
             const link = self.join_accept_host_links.items[i];
@@ -8411,834 +8413,129 @@ pub const Peer = struct {
         };
     }
 
+    // ================= L4 hosted-Join accept/completion + cross-peer relay ==
+    //
+    // Bodies live in join/peer_join_accept.zig and join/peer_join_relay.zig,
+    // generic over Peer (the JoinCoordinator extraction contract).
+
+    const JoinAcceptImpl = peer_join_accept.JoinAccept(Peer);
+    const JoinRelayImpl = peer_join_relay.JoinRelay(Peer);
+
+    /// Type aliases consumed by the extracted join/relay (and later) sibling
+    /// namespaces: the underlying structs are file-level and
+    /// Peer-parameterized, so siblings reach them through Peer itself.
+    pub const HostedJoinRecord = HostedJoin;
+    pub const CompletingJoinAnswerRecord = CompletingJoinAnswer;
+    pub const CrossPeerJoinRelayRecord = CrossPeerJoinRelay;
+    pub const CrossPeerProxyCtx = CrossPeerProxyContext;
+    pub const CrossPeerJoinRelayCtx = CrossPeerJoinRelayContext;
+
+    /// Body in `join/peer_join_accept.zig`.
     fn putPendingJoinAcceptOwned(self: *Peer, hosted: *HostedJoin, target: ProvideTarget) !void {
-        // Sample application time before publishing either side of the
-        // cross-peer lease. The caller holds Join operation guards for both
-        // owner and Accept peers, so close/deinit requested by Clock.now is
-        // deferred until this admission finishes.
-        const deadline_ns = try self.newJoinDeadline();
-        try ensureCountLimit(
-            self.pending_join_accepts.contains(hosted.provision),
-            self.pending_join_accepts.count(),
-            self.limits.max_pending_join_accepts,
-        );
-        try self.ensureJoinRecordCapacity(1);
-        try self.registerJoinAcceptHost(hosted);
-        errdefer self.deregisterJoinAcceptHost(hosted);
-
-        const entry = try self.pending_join_accepts.getOrPut(hosted.provision);
-        if (entry.found_existing) return error.DuplicateJoinProvision;
-        entry.value_ptr.* = .{ .hosted = hosted, .target = target };
-        hosted.accept_peer = self;
-        hosted.accept_live = true;
-        hosted.deadline_ns = deadline_ns;
-        self.noteJoinDeadline(hosted.deadline_ns);
+        return JoinAcceptImpl.putPendingJoinAcceptOwned(self, hosted, target);
     }
 
+    /// Body in `join/peer_join_accept.zig`.
     fn takePendingJoinAccept(self: *Peer, provision: []const u8) ?ProvideTarget {
-        if (self.pending_join_accepts.fetchRemove(provision)) |removed| {
-            const hosted = removed.value.hosted;
-            const target = removed.value.target;
-            self.deregisterJoinAcceptHost(hosted);
-            hosted.accept_live = false;
-            hosted.accept_peer = null;
-            hosted.deadline_ns = null;
-            self.refreshNextJoinDeadline();
-            hosted.owner_peer.retireHostedJoinNetwork(hosted);
-            return target;
-        }
-        return null;
+        return JoinAcceptImpl.takePendingJoinAccept(self, provision);
     }
 
-    fn rememberPendingJoinResultAnswer(self: *Peer, answer_id: u32, hosted: *HostedJoin) !void {
-        try ensureCountLimit(
-            self.pending_join_result_answers.contains(answer_id),
-            self.pending_join_result_answers.count(),
-            self.limits.max_pending_join_questions,
-        );
-        try self.ensureJoinRecordCapacity(1);
-        const entry = try self.pending_join_result_answers.getOrPut(answer_id);
-        if (entry.found_existing) return error.DuplicateJoinQuestionId;
-        entry.value_ptr.* = .{ .hosted = hosted };
-        hosted.result_refs = std.math.add(usize, hosted.result_refs, 1) catch {
-            _ = self.pending_join_result_answers.remove(answer_id);
-            return error.PeerLimitExceeded;
-        };
-    }
-
+    /// Body in `join/peer_join_accept.zig`.
     fn clearPendingJoinResultAnswer(self: *Peer, answer_id: u32) void {
-        const removed = self.pending_join_result_answers.fetchRemove(answer_id) orelse return;
-        const hosted = removed.value.hosted;
-        std.debug.assert(hosted.result_refs > 0);
-        hosted.result_refs -= 1;
-        // Explicitly Finishing the final JoinResult answer cancels its direct
-        // pickup lease. Result-path transport close is intentionally different:
-        // it detaches these answer records without interpreting them as Finish,
-        // so a distinct live Accept host can still serve the committed
-        // provision until TTL or owner teardown.
-        if (hosted.result_refs == 0 and hosted.accept_live) {
-            // Canonical cancellation guards both the result owner and a
-            // distinct Accept host across the captured JoinNetwork callback.
-            // Calling through the Accept peer directly would let a reentrant
-            // callback deinit that peer while its cleanup frame still borrowed
-            // the peer allocator.
-            self.cancelHostedJoin(hosted);
-            return;
-        }
-        self.maybeDestroyHostedJoin(hosted);
+        return JoinAcceptImpl.clearPendingJoinResultAnswer(self, answer_id);
     }
 
-    /// Drop the canonical result reference held by a completing-answer
-    /// tombstone.  The tombstone itself remains published until the whole
-    /// fanout has finished, keeping the inbound answer ID unavailable to
-    /// callback-triggered reuse.
+    /// Body in `join/peer_join_accept.zig`.
     fn dropCompletingJoinResultRef(self: *Peer, completing: *CompletingJoinAnswer) void {
-        const hosted = completing.hosted orelse return;
-        completing.hosted = null;
-        std.debug.assert(hosted.owner_peer == self);
-        std.debug.assert(hosted.result_refs > 0);
-        hosted.result_refs -= 1;
-        if (hosted.result_refs == 0 and hosted.accept_live) {
-            self.cancelHostedJoin(hosted);
-            return;
-        }
-        self.maybeDestroyHostedJoin(hosted);
+        return JoinAcceptImpl.dropCompletingJoinResultRef(self, completing);
     }
 
-    fn putCompletingJoinAnswerAssumeCapacity(
+    /// Body in `join/peer_join_accept.zig`.
+    pub fn putCompletingJoinAnswerAssumeCapacity(
         self: *Peer,
         answer_id: u32,
         counts_as_join_record: bool,
     ) void {
-        std.debug.assert(!self.completing_join_answers.contains(answer_id));
-        self.completing_join_answers.putAssumeCapacity(answer_id, .{
-            .counts_as_join_record = counts_as_join_record,
-        });
-        if (counts_as_join_record) self.completing_join_answer_records += 1;
+        return JoinAcceptImpl.putCompletingJoinAnswerAssumeCapacity(self, answer_id, counts_as_join_record);
     }
 
-    fn retireCompletingJoinAnswerAccounting(self: *Peer, completing: *CompletingJoinAnswer) void {
-        if (!completing.counts_as_join_record) return;
-        completing.counts_as_join_record = false;
-        std.debug.assert(self.completing_join_answer_records > 0);
-        self.completing_join_answer_records -= 1;
+    /// Body in `join/peer_join_accept.zig`.
+    pub fn retireCompletingJoinAnswerAccounting(self: *Peer, completing: *CompletingJoinAnswer) void {
+        return JoinAcceptImpl.retireCompletingJoinAnswerAccounting(self, completing);
     }
 
-    fn removeCompletingJoinAnswer(self: *Peer, answer_id: u32) bool {
-        const removed = self.completing_join_answers.fetchRemove(answer_id) orelse return false;
-        if (removed.value.counts_as_join_record) {
-            std.debug.assert(self.completing_join_answer_records > 0);
-            self.completing_join_answer_records -= 1;
-        }
-        return true;
+    /// Body in `join/peer_join_accept.zig`.
+    pub fn removeCompletingJoinAnswer(self: *Peer, answer_id: u32) bool {
+        return JoinAcceptImpl.removeCompletingJoinAnswer(self, answer_id);
     }
 
-    /// Finish may arrive synchronously from an observer or Return transport
-    /// callback while a complete Join is still fanning out.  Marking rather
-    /// than removing preserves the answer reservation through later sends.
+    /// Body in `join/peer_join_accept.zig`.
     fn finishCompletingJoinAnswer(self: *Peer, answer_id: u32, release_result_caps: bool) bool {
-        const completing = self.completing_join_answers.getPtr(answer_id) orelse return false;
-        if (completing.finished) return true;
-        completing.finished = true;
-        completing.release_result_caps = release_result_caps;
-        // Finish makes this answer operationally retired immediately, even
-        // though its uncounted tombstone still reserves the wire ID until the
-        // surrounding fanout unwinds.
-        self.retireCompletingJoinAnswerAccounting(completing);
-        self.dropCompletingJoinResultRef(completing);
-        return true;
+        return JoinAcceptImpl.finishCompletingJoinAnswer(self, answer_id, release_result_caps);
     }
 
-    fn forgetPendingJoinResultAnswer(self: *Peer, answer_id: u32) void {
-        self.clearPendingJoinResultAnswer(answer_id);
-    }
-
+    /// Body in `join/peer_join_accept.zig`.
     fn retireCompletingJoinTransitionAccounting(
         self: *Peer,
         join_state: *JoinState,
         transition_live: *bool,
     ) void {
-        if (transition_live.*) {
-            std.debug.assert(self.completing_join_records > 0);
-            self.completing_join_records -= 1;
-            transition_live.* = false;
-        }
-        var it = join_state.parts.valueIterator();
-        while (it.next()) |part| {
-            if (self.completing_join_answers.getPtr(part.question_id)) |completing| {
-                self.retireCompletingJoinAnswerAccounting(completing);
-            }
-        }
+        return JoinAcceptImpl.retireCompletingJoinTransitionAccounting(self, join_state, transition_live);
     }
 
+    /// Body in `join/peer_join_accept.zig`.
     fn completeJoinLegacy(self: *Peer, join_id: u32) !void {
-        const pending = self.pending_joins.get(join_id) orelse return;
-        if (pending.parts.count() == 0) return;
-        // `ensureJoinBudget` reserved the completing map before the final part
-        // was published. Updating the scalar record first can therefore fail
-        // only on an impossible configured-state overflow, while the bucket is
-        // still wholly live and retryable.
-        const completing_records = try std.math.add(usize, self.completing_join_records, 1);
-        const removed = self.pending_joins.fetchRemove(join_id) orelse return;
-        var join_state = removed.value;
-        defer JoinState.deinit(&join_state, self.allocator);
-        self.refreshNextJoinDeadline();
-
-        self.completing_join_records = completing_records;
-        var transition_live = true;
-        defer if (transition_live) {
-            std.debug.assert(self.completing_join_records > 0);
-            self.completing_join_records -= 1;
-        };
-        var reserve_it = join_state.parts.valueIterator();
-        while (reserve_it.next()) |part| {
-            self.putCompletingJoinAnswerAssumeCapacity(part.question_id, true);
-        }
-        defer {
-            var cleanup_answers = join_state.parts.valueIterator();
-            while (cleanup_answers.next()) |part| {
-                _ = self.removeCompletingJoinAnswer(part.question_id);
-                _ = self.finished_early_answers.remove(part.question_id);
-            }
-        }
-        var detach_it = join_state.parts.valueIterator();
-        while (detach_it.next()) |part| _ = self.pending_join_questions.remove(part.question_id);
-
-        var first_target: ?*const ProvideTarget = null;
-        var all_equal = true;
-        var target_it = join_state.parts.valueIterator();
-        while (target_it.next()) |part| {
-            if (first_target) |target| {
-                if (!provideTargetsEqual(target, &part.target)) {
-                    all_equal = false;
-                    break;
-                }
-            } else first_target = &part.target;
-        }
-
-        // Legacy completion has no steady Join lease. Retire every gauge before
-        // the first Return while retaining uncounted answer tombstones across
-        // synchronous Finish/reuse callbacks.
-        std.debug.assert(self.completing_join_records > 0);
-        self.completing_join_records -= 1;
-        transition_live = false;
-        var retire_it = join_state.parts.valueIterator();
-        while (retire_it.next()) |part| {
-            if (self.completing_join_answers.getPtr(part.question_id)) |completing| {
-                self.retireCompletingJoinAnswerAccounting(completing);
-            }
-        }
-
-        var send_it = join_state.parts.valueIterator();
-        while (send_it.next()) |part| {
-            const completing = self.completing_join_answers.get(part.question_id) orelse continue;
-            if (completing.finished) continue;
-            if (all_equal) {
-                self.sendReturnProvidedTarget(part.question_id, first_target orelse &part.target) catch |err| {
-                    try self.sendReturnException(part.question_id, joinWireReason(err));
-                };
-            } else {
-                try self.sendReturnException(part.question_id, "join target mismatch");
-            }
-        }
+        return JoinAcceptImpl.completeJoinLegacy(self, join_id);
     }
 
-    const DetachedJoinAccept = struct {
-        allocator: std.mem.Allocator,
-        target: ProvideTarget,
-    };
-
-    /// Detach the Accept-host half without invoking the application-supplied
-    /// JoinNetwork callback. Callers can therefore remove every cross-peer
-    /// borrow before cancellation re-enters arbitrary host code.
-    fn detachHostedJoinAcceptNoCallback(self: *Peer, hosted: *HostedJoin) ?DetachedJoinAccept {
-        if (!hosted.accept_live or hosted.accept_peer != self) return null;
-        const removed = self.pending_join_accepts.fetchRemove(hosted.provision) orelse return null;
-        std.debug.assert(removed.value.hosted == hosted);
-        self.deregisterJoinAcceptHost(hosted);
-        hosted.accept_live = false;
-        hosted.accept_peer = null;
-        hosted.deadline_ns = null;
-        self.refreshNextJoinDeadline();
-        return .{ .allocator = self.allocator, .target = removed.value.target };
-    }
-
-    fn ownHostedJoin(self: *Peer, hosted: *HostedJoin) !void {
-        self.ensureJoinRecordCapacity(1) catch {
-            events.emitResourceRejection(
-                self.observer,
-                .peer,
-                .unknown,
-                .join_records,
-                saturatingAdd(self.joinRecordCount(), 1),
-                self.limits.max_pending_join_records,
-                error.PeerLimitExceeded,
-            );
-            return error.PeerLimitExceeded;
-        };
-        ensureByteLimit(
-            self.join_accept_bytes,
-            hosted.provision.len,
-            self.limits.max_pending_join_accept_bytes,
-        ) catch return error.PeerLimitExceeded;
-        try self.hosted_joins.putNoClobber(hosted, {});
-        hosted.owner_record_live = true;
-        self.join_accept_bytes += hosted.provision.len;
-        hosted.bytes_charged = true;
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .join_accept_bytes,
-            self.join_accept_bytes - hosted.provision.len,
-            self.join_accept_bytes,
-            self.limits.max_pending_join_accept_bytes,
-        );
-    }
-
-    /// Publish canonical ownership by consuming the one record reserved for a
-    /// detached complete bucket.  Capacity was checked before the JoinNetwork
-    /// callback; unlike `ownHostedJoin`, this is a record-for-record exchange,
-    /// not an additional admission.
+    /// Body in `join/peer_join_accept.zig`.
     fn ownHostedJoinFromCompletion(self: *Peer, hosted: *HostedJoin) !void {
-        ensureByteLimit(
-            self.join_accept_bytes,
-            hosted.provision.len,
-            self.limits.max_pending_join_accept_bytes,
-        ) catch return error.PeerLimitExceeded;
-        try self.hosted_joins.putNoClobber(hosted, {});
-        std.debug.assert(self.completing_join_records > 0);
-        self.completing_join_records -= 1;
-        hosted.owner_record_live = true;
-        self.join_accept_bytes += hosted.provision.len;
-        hosted.bytes_charged = true;
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .join_accept_bytes,
-            self.join_accept_bytes - hosted.provision.len,
-            self.join_accept_bytes,
-            self.limits.max_pending_join_accept_bytes,
-        );
+        return JoinAcceptImpl.ownHostedJoinFromCompletion(self, hosted);
     }
 
-    /// Cancel the captured network provision once. State that can re-enter this
-    /// owner is already detached; `operation_depth` prevents a nested cleanup
-    /// from destroying the canonical object while the callback borrows it.
-    fn retireHostedJoinNetwork(self: *Peer, hosted: *HostedJoin) void {
-        self.enterJoinOperation();
-        defer self.leaveJoinOperation();
-        if (!hosted.network_live) {
-            self.maybeDestroyHostedJoin(hosted);
-            return;
-        }
-        hosted.network_live = false;
-        self.detachHostedJoinOwnerRecordNoCallback(hosted);
-        hosted.operation_depth += 1;
-        hosted.network.cancelHostJoinResult(hosted.provision);
-        hosted.operation_depth -= 1;
-        self.maybeDestroyHostedJoin(hosted);
-    }
-
-    /// Remove the live owner provision record before an observer or captured
-    /// network callback can re-enter either peer. A successful Accept can
-    /// retire the network token while result answers still anchor the
-    /// provision allocation; keep those bytes charged until the final result
-    /// reference is Finished. Forced cancellation has already detached every
-    /// result reference, so its bytes are refunded before the callback.
-    fn detachHostedJoinOwnerRecordNoCallback(self: *Peer, hosted: *HostedJoin) void {
-        if (hosted.owner_record_live) {
-            std.debug.assert(self.hosted_joins.remove(hosted));
-            hosted.owner_record_live = false;
-        }
-        if (hosted.cancelled or hosted.result_refs == 0) self.refundHostedJoinBytes(hosted);
-    }
-
-    fn refundHostedJoinBytes(self: *Peer, hosted: *HostedJoin) void {
-        if (!hosted.bytes_charged) return;
-        std.debug.assert(self.join_accept_bytes >= hosted.provision.len);
-        self.join_accept_bytes -= hosted.provision.len;
-        hosted.bytes_charged = false;
-    }
-
+    /// Body in `join/peer_join_accept.zig`.
     fn maybeDestroyHostedJoin(self: *Peer, hosted: *HostedJoin) void {
-        if (hosted.owner_peer != self) return;
-        if (hosted.accept_live or hosted.result_refs != 0 or hosted.operation_depth != 0) return;
-        if (hosted.network_live) {
-            self.retireHostedJoinNetwork(hosted);
-            return;
-        }
-        self.detachHostedJoinOwnerRecordNoCallback(hosted);
-        self.refundHostedJoinBytes(hosted);
-        self.allocator.free(hosted.provision);
-        self.allocator.destroy(hosted);
+        return JoinAcceptImpl.maybeDestroyHostedJoin(self, hosted);
     }
 
-    /// Canonical forced retirement used by expiry, Accept-host close, and
-    /// owner teardown. Every map/backlink is detached before the network
-    /// callback, making repeated close/deinit and callback reentrancy no-ops.
+    /// Body in `join/peer_join_accept.zig`.
     fn cancelHostedJoin(self: *Peer, hosted: *HostedJoin) void {
-        if (hosted.owner_peer != self) return;
-
-        hosted.cancelled = true;
-
-        var guards = JoinOperationGuards{};
-        guards.add(self);
-        if (hosted.accept_peer) |accept_peer| guards.add(accept_peer);
-        guards.enter();
-        defer guards.leave();
-
-        var detached_accept: ?DetachedJoinAccept = null;
-        if (hosted.accept_peer) |accept_peer| {
-            detached_accept = accept_peer.detachHostedJoinAcceptNoCallback(hosted);
-        }
-
-        while (hosted.result_refs != 0) {
-            var answer_id: ?u32 = null;
-            var it = self.pending_join_result_answers.iterator();
-            while (it.next()) |entry| {
-                if (entry.value_ptr.hosted == hosted) {
-                    answer_id = entry.key_ptr.*;
-                    break;
-                }
-            }
-            if (answer_id) |id| {
-                _ = self.pending_join_result_answers.remove(id);
-                hosted.result_refs -= 1;
-                continue;
-            }
-
-            // A canonical may be canceled synchronously while its JoinResult
-            // fanout is still running. Neutralize those pre-reserved refs but
-            // keep their answer-ID tombstones live so the outer fanout emits
-            // one generic terminal per remaining answer without stale pickup.
-            var completing_it = self.completing_join_answers.valueIterator();
-            var detached_completing = false;
-            while (completing_it.next()) |completing| {
-                if (completing.hosted != hosted) continue;
-                self.retireCompletingJoinAnswerAccounting(completing);
-                completing.hosted = null;
-                hosted.result_refs -= 1;
-                detached_completing = true;
-                break;
-            }
-            if (!detached_completing) {
-                std.debug.assert(hosted.result_refs == 0);
-                break;
-            }
-        }
-
-        if (detached_accept) |*detached| detached.target.deinit(detached.allocator);
-        self.retireHostedJoinNetwork(hosted);
+        return JoinAcceptImpl.cancelHostedJoin(self, hosted);
     }
 
+    /// Body in `join/peer_join_accept.zig`.
     fn cancelAllHostedJoins(self: *Peer) void {
-        while (self.hosted_joins.count() != 0) {
-            var it = self.hosted_joins.keyIterator();
-            const hosted = (it.next() orelse break).*;
-            self.cancelHostedJoin(hosted);
-        }
-        // A successfully consumed Accept retires the hosted provision before
-        // its JoinResult answers are explicitly Finished. Those canonicals are
-        // anchored only by this answer table and still need owner teardown.
-        while (self.pending_join_result_answers.count() != 0) {
-            var it = self.pending_join_result_answers.valueIterator();
-            const hosted = (it.next() orelse break).hosted;
-            self.cancelHostedJoin(hosted);
-        }
+        return JoinAcceptImpl.cancelAllHostedJoins(self);
     }
 
+    /// Body in `join/peer_join_accept.zig`.
     fn sendReturnJoinResultPayload(self: *Peer, answer_id: u32, result_payload: []const u8) !void {
-        const BuildCtx = struct {
-            allocator: std.mem.Allocator,
-            result_payload: []const u8,
-
-            fn build(ctx_ptr: *anyopaque, ret: *protocol.ReturnBuilder) anyerror!void {
-                const ctx: *const @This() = castCtx(*const @This(), ctx_ptr);
-                var result_msg = try message.Message.initUnvalidated(ctx.allocator, ctx.result_payload);
-                defer result_msg.deinit();
-                const result = try result_msg.getRootAnyPointer();
-
-                var payload = try ret.payloadTyped();
-                const content = try payload.initContent();
-                try message.cloneAnyPointer(result, content);
-                _ = try ret.initCapTableTyped(0);
-            }
-        };
-
-        var ctx = BuildCtx{
-            .allocator = self.allocator,
-            .result_payload = result_payload,
-        };
-        try self.sendReturnResults(answer_id, &ctx, BuildCtx.build);
+        return JoinAcceptImpl.sendReturnJoinResultPayload(self, answer_id, result_payload);
     }
 
-    fn crossPeerProxyContextForExport(self: *Peer, export_id: u32) ?*CrossPeerProxyContext {
-        const entry = self.exports.getPtr(export_id) orelse return null;
-        const handler = entry.handler orelse return null;
-        if (handler.on_call != CrossPeerProxyContext.onCall) return null;
-        return castCtx(*CrossPeerProxyContext, handler.ctx);
-    }
-
-    fn crossPeerJoinTargetForResolved(target: cap_table.ResolvedCap) !protocol.MessageTarget {
-        return switch (target) {
-            .imported => |cap| .{
-                .tag = .importedCap,
-                .imported_cap = cap.id,
-                .promised_answer = null,
-            },
-            .exported, .promised, .none => error.UnsupportedCrossPeerJoinTarget,
-        };
-    }
-
-    fn putPendingJoinRelay(
-        self: *Peer,
-        owner_answer_id: u32,
-        source_peer: *Peer,
-        source_question_id: u32,
-    ) !void {
-        // Do not call an application clock while a map entry or reciprocal
-        // backlink is half-published.
-        const deadline_ns = try self.newJoinDeadline();
-        self.ensureJoinRecordCapacity(1) catch {
-            events.emitResourceRejection(
-                self.observer,
-                .peer,
-                .unknown,
-                .join_records,
-                saturatingAdd(self.joinRecordCount(), 1),
-                self.limits.max_pending_join_records,
-                error.PeerLimitExceeded,
-            );
-            return error.PeerLimitExceeded;
-        };
-        try ensureCountLimit(
-            self.pending_join_relays.contains(owner_answer_id),
-            self.pending_join_relays.count(),
-            self.limits.max_pending_join_questions,
-        );
-        const settlement_answers = std.math.add(
-            usize,
-            self.completing_join_answers.count(),
-            self.pending_join_questions.count(),
-        ) catch return error.PeerLimitExceeded;
-        const with_relays = std.math.add(
-            usize,
-            settlement_answers,
-            self.pending_join_relays.count(),
-        ) catch return error.PeerLimitExceeded;
-        const settlement_capacity_usize = std.math.add(usize, with_relays, 1) catch
-            return error.PeerLimitExceeded;
-        const settlement_capacity = std.math.cast(u32, settlement_capacity_usize) orelse
-            return error.PeerLimitExceeded;
-        try self.completing_join_answers.ensureTotalCapacity(settlement_capacity);
-        const entry = try self.pending_join_relays.getOrPut(owner_answer_id);
-        if (entry.found_existing) return error.DuplicateJoinQuestionId;
-        entry.value_ptr.* = .{
-            .source_peer = source_peer,
-            .source_question_id = source_question_id,
-            .deadline_ns = deadline_ns,
-        };
-        errdefer _ = self.pending_join_relays.remove(owner_answer_id);
-        try source_peer.registerCrossPeerJoinRelay(self, owner_answer_id);
-        self.noteJoinDeadline(entry.value_ptr.deadline_ns);
-        events.emitPressureCrossing(
-            self.observer,
-            .peer,
-            .unknown,
-            .join_records,
-            self.joinRecordCount() - 1,
-            self.joinRecordCount(),
-            self.limits.max_pending_join_records,
-        );
-    }
-
+    /// Body in `join/peer_join_relay.zig`.
     fn clearPendingJoinRelay(
         self: *Peer,
         owner_answer_id: u32,
         send_downstream_finish: bool,
         release_result_caps: bool,
     ) !void {
-        const pending = self.pending_join_relays.get(owner_answer_id) orelse return;
-        const source_peer = pending.source_peer;
-        var guards = JoinOperationGuards{};
-        guards.add(self);
-        if (source_peer) |peer| guards.add(peer);
-        guards.enter();
-        defer guards.leave();
-
-        const removed = self.detachPendingJoinRelay(owner_answer_id) orelse return;
-        if (source_peer) |peer| {
-            if (send_downstream_finish) {
-                peer.sendJoinRelayFinishAndNeutralize(
-                    removed.source_question_id,
-                    release_result_caps,
-                ) catch |err| {
-                    // Restore both halves only after the failed callback has
-                    // returned. During the send, observers see the relay and
-                    // reciprocal backlink wholly detached.
-                    if (!self.pending_join_relays.contains(owner_answer_id)) {
-                        self.pending_join_relays.putAssumeCapacity(owner_answer_id, removed);
-                        peer.registerCrossPeerJoinRelay(self, owner_answer_id) catch |restore_err| {
-                            _ = self.pending_join_relays.remove(owner_answer_id);
-                            peer.neutralizeJoinRelayQuestion(removed.source_question_id);
-                            self.refreshNextJoinDeadline();
-                            return restore_err;
-                        };
-                        self.noteJoinDeadline(removed.deadline_ns);
-                    }
-                    return err;
-                };
-            }
-        }
+        return JoinRelayImpl.clearPendingJoinRelay(self, owner_answer_id, send_downstream_finish, release_result_caps);
     }
 
-    /// Remove both halves of a relay without invoking sends or callbacks.
-    /// Callers guard `self` and the optional source peer before entering.
-    fn detachPendingJoinRelay(self: *Peer, owner_answer_id: u32) ?CrossPeerJoinRelay {
-        const removed = self.pending_join_relays.fetchRemove(owner_answer_id) orelse return null;
-        if (removed.value.source_peer) |source_peer| {
-            source_peer.deregisterCrossPeerJoinRelay(self, owner_answer_id);
-        }
-        self.refreshNextJoinDeadline();
-        return removed.value;
-    }
-
-    /// Terminal relay retirement for timeout/transport close. Unlike explicit
-    /// Finish retry, a failed best-effort downstream Finish cannot resurrect an
-    /// expired or disconnected record.
+    /// Body in `join/peer_join_relay.zig`.
     fn retirePendingJoinRelayTerminal(
         self: *Peer,
         owner_answer_id: u32,
         emit_timeout: bool,
         send_upstream_exception: bool,
     ) bool {
-        const pending = self.pending_join_relays.get(owner_answer_id) orelse return false;
-        const source_peer = pending.source_peer;
-        var guards = JoinOperationGuards{};
-        guards.add(self);
-        if (source_peer) |peer| guards.add(peer);
-        guards.enter();
-        defer guards.leave();
-
-        const detached = self.detachPendingJoinRelay(owner_answer_id) orelse return false;
-        self.putCompletingJoinAnswerAssumeCapacity(owner_answer_id, false);
-        defer {
-            _ = self.removeCompletingJoinAnswer(owner_answer_id);
-            _ = self.finished_early_answers.remove(owner_answer_id);
-        }
-        // From this point onward every local record and reciprocal backlink is
-        // gone. Observer, wire-send, and deinit callbacks may safely re-enter.
-        if (emit_timeout) events.emitJoinTimeout(self.observer, owner_answer_id);
-        if (source_peer) |peer| {
-            peer.sendJoinRelayFinishAndNeutralize(detached.source_question_id, false) catch |err| {
-                log.debug("terminal Join relay Finish failed for question {}: {}", .{ detached.source_question_id, err });
-                peer.neutralizeJoinRelayQuestion(detached.source_question_id);
-            };
-        }
-        if (send_upstream_exception and !detached.upstream_terminal_started) {
-            if (self.completing_join_answers.getPtr(owner_answer_id)) |completing| {
-                // Relay teardown state is already fully detached. Preserve only
-                // the uncounted answer-ID tombstone across the terminal send.
-                self.retireCompletingJoinAnswerAccounting(completing);
-            }
-            self.sendReturnException(owner_answer_id, "join unavailable") catch |err| {
-                log.debug("expired Join relay exception send failed for answer {}: {}", .{ owner_answer_id, err });
-            };
-        }
-        return true;
+        return JoinRelayImpl.retirePendingJoinRelayTerminal(self, owner_answer_id, emit_timeout, send_upstream_exception);
     }
 
+    /// Body in `join/peer_join_relay.zig`.
     fn tryHandleCrossPeerProxyJoin(self: *Peer, join: protocol.Join) !bool {
-        if (join.target.tag != .importedCap) return false;
-        const export_id = join.target.imported_cap orelse return false;
-        const proxy_ctx = self.crossPeerProxyContextForExport(export_id) orelse return false;
-        const source_peer = proxy_ctx.source_peer orelse {
-            try self.sendReturnException(join.question_id, "cross-peer proxy source disconnected");
-            return true;
-        };
-        if (source_peer.is_shutting_down) {
-            try self.sendReturnException(join.question_id, "cross-peer proxy source disconnected");
-            return true;
-        }
-        try self.forwardCrossPeerProxyJoin(join, source_peer, proxy_ctx.target);
-        return true;
-    }
-
-    fn forwardCrossPeerProxyJoin(
-        self: *Peer,
-        join: protocol.Join,
-        source_peer: *Peer,
-        source_target: cap_table.ResolvedCap,
-    ) !void {
-        var guards = JoinOperationGuards{};
-        guards.add(self);
-        guards.add(source_peer);
-        guards.enter();
-        defer guards.leave();
-
-        const downstream_target = crossPeerJoinTargetForResolved(source_target) catch |err| {
-            try self.sendReturnException(join.question_id, @errorName(err));
-            return;
-        };
-
-        const relay = try source_peer.allocator.create(CrossPeerJoinRelayContext);
-        relay.* = .{
-            .owner_peer = self,
-            .owner_answer_id = join.question_id,
-        };
-        var relay_owned = true;
-        errdefer if (relay_owned) source_peer.allocator.destroy(relay);
-
-        const source_question_id = source_peer.allocateQuestionNoRestore(relay, onCrossPeerJoinReturn) catch |err| {
-            try self.sendReturnException(join.question_id, joinWireReason(err));
-            return;
-        };
-        var question_owned = true;
-        errdefer if (question_owned) source_peer.removeQuestionAndDeinit(source_question_id);
-
-        const source_question = source_peer.questions.getPtr(source_question_id) orelse return error.MissingAllocatedQuestion;
-        source_question.suppress_auto_finish = true;
-        // The owner relay's Join-domain deadline is authoritative. A generic
-        // outbound-call deadline here would race it in the source peer's clock
-        // domain and leak "deadline exceeded" instead of the redacted Join
-        // terminal.
-        source_question.deadline_ns = null;
-        source_question.deinit_ctx = CrossPeerJoinRelayContext.deinit;
-        relay_owned = false;
-
-        self.putPendingJoinRelay(join.question_id, source_peer, source_question_id) catch |err| {
-            question_owned = false;
-            source_peer.removeQuestionAndDeinit(source_question_id);
-            const reason = joinWireReason(err);
-            try self.sendReturnException(join.question_id, reason);
-            return;
-        };
-        var relay_registered = true;
-        errdefer if (relay_registered) {
-            self.clearPendingJoinRelay(join.question_id, false, false) catch |err| {
-                log.debug("cross-peer join relay: failed to roll back relay {}: {}", .{ join.question_id, err });
-            };
-        };
-
-        var relay_settled = false;
-        relay.settled_flag = &relay_settled;
-
-        var builder = protocol.MessageBuilder.init(source_peer.allocator);
-        defer builder.deinit();
-        try builder.buildJoin(source_question_id, downstream_target, join.key_part);
-        source_peer.sendBuilder(&builder) catch |err| {
-            if (relay_settled) {
-                question_owned = false;
-                relay_registered = false;
-                return;
-            }
-            relay_registered = false;
-            self.clearPendingJoinRelay(join.question_id, false, false) catch |clear_err| {
-                log.debug("cross-peer join relay: failed to clear relay {} after send failure: {}", .{
-                    join.question_id,
-                    clear_err,
-                });
-            };
-            question_owned = false;
-            source_peer.removeQuestionAndDeinit(source_question_id);
-            try self.sendReturnException(join.question_id, joinWireReason(err));
-            return;
-        };
-
-        if (relay_settled) {
-            question_owned = false;
-            relay_registered = false;
-            return;
-        }
-        relay.settled_flag = null;
-        question_owned = false;
-        relay_registered = false;
-    }
-
-    fn onCrossPeerJoinReturn(
-        ctx_ptr: *anyopaque,
-        peer: *Peer,
-        ret: protocol.Return,
-        inbound_caps: *const cap_table.InboundCapTable,
-    ) anyerror!void {
-        const ctx: *CrossPeerJoinRelayContext = castCtx(*CrossPeerJoinRelayContext, ctx_ptr);
-        const owner_peer = ctx.owner_peer;
-        const owner_answer_id = ctx.owner_answer_id;
-        if (ctx.settled_flag) |flag| flag.* = true;
-        var guards = JoinOperationGuards{};
-        guards.add(owner_peer);
-        guards.add(peer);
-        guards.enter();
-        defer guards.leave();
-        // Registered after guards.leave so LIFO destroys the source-owned ctx
-        // while both peers are still protected from callback-triggered deinit.
-        defer CrossPeerJoinRelayContext.deinit(peer.allocator, ctx);
-
-        if (!owner_peer.pending_join_relays.contains(owner_answer_id)) return;
-
-        switch (ret.tag) {
-            .results => {
-                const relay = owner_peer.pending_join_relays.getPtr(owner_answer_id) orelse return;
-                relay.upstream_terminal_started = true;
-                relayReturnAcrossPeers(owner_peer, owner_answer_id, peer, ret, inbound_caps, true) catch |err| {
-                    const detached = owner_peer.detachPendingJoinRelay(owner_answer_id) orelse return;
-                    owner_peer.putCompletingJoinAnswerAssumeCapacity(owner_answer_id, false);
-                    defer {
-                        _ = owner_peer.removeCompletingJoinAnswer(owner_answer_id);
-                        _ = owner_peer.finished_early_answers.remove(owner_answer_id);
-                    }
-                    peer.sendJoinRelayFinishAndNeutralize(detached.source_question_id, false) catch |clear_err| {
-                        log.debug("cross-peer join relay: failed to finish downstream question after relay error: {}", .{clear_err});
-                        peer.neutralizeJoinRelayQuestion(detached.source_question_id);
-                    };
-                    owner_peer.sendReturnException(owner_answer_id, joinWireReason(err)) catch |send_err| {
-                        log.debug("cross-peer join relay: failed to fail upstream question {}: {}", .{
-                            owner_answer_id,
-                            send_err,
-                        });
-                    };
-                };
-            },
-            .exception => {
-                const detached = owner_peer.detachPendingJoinRelay(owner_answer_id) orelse return;
-                owner_peer.putCompletingJoinAnswerAssumeCapacity(owner_answer_id, false);
-                defer {
-                    _ = owner_peer.removeCompletingJoinAnswer(owner_answer_id);
-                    _ = owner_peer.finished_early_answers.remove(owner_answer_id);
-                }
-                const reason = if (ret.exception) |exception| exception.reason else "cross-peer join failed";
-                owner_peer.sendReturnException(owner_answer_id, reason) catch |send_err| {
-                    log.debug("cross-peer join relay: failed to relay exception for question {}: {}", .{
-                        owner_answer_id,
-                        send_err,
-                    });
-                };
-                peer.sendJoinRelayFinishAndNeutralize(detached.source_question_id, false) catch |clear_err| {
-                    log.debug("cross-peer join relay: failed to finish exception result {}: {}", .{ owner_answer_id, clear_err });
-                    peer.neutralizeJoinRelayQuestion(detached.source_question_id);
-                };
-            },
-            else => {
-                const detached = owner_peer.detachPendingJoinRelay(owner_answer_id) orelse return;
-                owner_peer.putCompletingJoinAnswerAssumeCapacity(owner_answer_id, false);
-                defer {
-                    _ = owner_peer.removeCompletingJoinAnswer(owner_answer_id);
-                    _ = owner_peer.finished_early_answers.remove(owner_answer_id);
-                }
-                owner_peer.sendReturnException(owner_answer_id, "cross-peer join relay: unexpected return") catch |send_err| {
-                    log.debug("cross-peer join relay: failed to fail unexpected return for question {}: {}", .{
-                        owner_answer_id,
-                        send_err,
-                    });
-                };
-                peer.sendJoinRelayFinishAndNeutralize(detached.source_question_id, false) catch |clear_err| {
-                    log.debug("cross-peer join relay: failed to finish unexpected result {}: {}", .{ owner_answer_id, clear_err });
-                    peer.neutralizeJoinRelayQuestion(detached.source_question_id);
-                };
-            },
-        }
+        return JoinRelayImpl.tryHandleCrossPeerProxyJoin(self, join);
     }
 
     fn queueEmbargoedAccept(
