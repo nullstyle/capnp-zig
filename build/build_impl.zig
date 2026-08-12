@@ -1269,6 +1269,20 @@ pub fn buildImpl(b: *std.Build) !void {
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(test_serialization_step);
     test_step.dependOn(test_rpc_step);
+    // `test-lib` existed but NOTHING depended on it -- not `test`, not any
+    // domain step, and it appears in no CI job or Justfile recipe. So the
+    // source-module tests it runs never ran anywhere: 322 of them by default,
+    // 325 with -Dquic=true. Tests in src/ are only ever collected when
+    // src/lib.zig is the ROOT module, which is exactly what this step does;
+    // the tests/ roots import capnpc-zig as a separate module, and Zig does
+    // not collect tests from non-root modules.
+    //
+    // This does NOT reach everything under src/. Ablation: inverting an
+    // assertion in src/rpc/transport/quic/{close,datagram_io}.zig still leaves
+    // `test`, `test-lib` and `test-rpc-quic` exiting 0, because those files sit
+    // past the refAllRecursive depth that forces their analysis. That gap is
+    // tracked separately; this step closes the part that is closeable here.
+    test_step.dependOn(test_lib_step);
     test_step.dependOn(test_wasm_host_step);
     test_step.dependOn(test_fuzz_smoke_step);
     test_step.dependOn(test_toolchain_gate_step);
