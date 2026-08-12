@@ -103,6 +103,10 @@ pub const Connection = struct {
         self.native.deinit(self.allocator);
         self.callback_lifecycle.clearCallbacks();
         self.udp_receive.cancel(self.endpoint.io);
+        // Mark the wake as already-requested so late cross-thread wakers
+        // short-circuit before touching the fds; the Handle's internal mutex
+        // is the actual close-vs-write correctness mechanism.
+        self.wake_state.requested.store(true, .release);
         self.wake_state.deinit();
         self.endpoint.deinit();
         self.allocator.free(self.udp_rx_buf);

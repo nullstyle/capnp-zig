@@ -1963,6 +1963,21 @@ capnpc-zig.rpc.transport.quic.native: struct
 capnpc-zig.rpc.transport.quic.requireEnabled: fn () void
 capnpc-zig.rpc.transport.quic.supported_max_concurrent_sessions: const u32
 capnpc-zig.rpc.transport.quic.unavailable_message: const *const [99:0]u8
+capnpc-zig.rpc.transport.quic.wake.Handle.consumeRequested: fn (*rpc.transport.quic.wake.Handle) bool
+capnpc-zig.rpc.transport.quic.wake.Handle.deinit: fn (*rpc.transport.quic.wake.Handle) void
+capnpc-zig.rpc.transport.quic.wake.Handle.fds: field ?[2]i32 = null
+capnpc-zig.rpc.transport.quic.wake.Handle.init: fn () rpc.transport.quic.wake.Handle
+capnpc-zig.rpc.transport.quic.wake.Handle.isRequested: fn (*const rpc.transport.quic.wake.Handle) bool
+capnpc-zig.rpc.transport.quic.wake.Handle.isSupported: fn (*const rpc.transport.quic.wake.Handle) bool
+capnpc-zig.rpc.transport.quic.wake.Handle.mu: field atomic.Mutex = .unlocked
+capnpc-zig.rpc.transport.quic.wake.Handle.request: fn (*rpc.transport.quic.wake.Handle) void
+capnpc-zig.rpc.transport.quic.wake.Handle.requested: field atomic.Value(bool) = <default>
+capnpc-zig.rpc.transport.quic.wake.Handle.waitForSocket: fn (*rpc.transport.quic.wake.Handle, i32, Io.Duration) error{BrokenPipe,PollFailed}!?rpc.transport.quic.wake.PollResult
+capnpc-zig.rpc.transport.quic.wake.Handle: struct
+capnpc-zig.rpc.transport.quic.wake.PollResult.socket_ready: field bool = false
+capnpc-zig.rpc.transport.quic.wake.PollResult.wake_drained: field bool = false
+capnpc-zig.rpc.transport.quic.wake.PollResult: struct
+capnpc-zig.rpc.transport.quic.wake: struct
 capnpc-zig.rpc.transport.quic: struct
 capnpc-zig.rpc.transport.stream_state.StreamState.DrainCallback: type = *const fn (*anyopaque, ?anyerror) void
 capnpc-zig.rpc.transport.stream_state.StreamState.handleReturn: fn (*rpc.transport.stream_state.StreamState, bool) void

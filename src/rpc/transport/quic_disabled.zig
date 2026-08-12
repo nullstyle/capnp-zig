@@ -20,6 +20,9 @@ pub const NativeControlFramer = native_framer.ControlFramer;
 pub const NativeControlFrame = native_framer.ControlFrame;
 pub const length_prefix_bytes = framer.length_prefix_bytes;
 pub const native = native_framer;
+/// Run-loop wake handle. std-only, so it is exported even when QUIC support
+/// is disabled (used by cross-thread stress suites under the default root).
+pub const wake = @import("./quic/wake.zig");
 pub const compatibility_max_concurrent_sessions: u32 = 1;
 pub const supported_max_concurrent_sessions: u32 = std.math.maxInt(u32);
 

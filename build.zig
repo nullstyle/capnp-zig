@@ -817,6 +817,7 @@ pub fn build(b: *std.Build) !void {
     const run_rpc_events_tests = addLibTest(b, "tests/rpc/transport/rpc_events_test.zig", target, optimize, lib_module);
     const run_rpc_tick_idle_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_tick_idle_test.zig", target, optimize, lib_module);
     const run_rpc_connection_teardown_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_connection_teardown_test.zig", target, optimize, lib_module);
+    const run_rpc_cross_thread_stress_tests = addLibTest(b, "tests/rpc/transport/rpc_cross_thread_stress_test.zig", target, optimize, lib_module);
     const run_rpc_client_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_client_session_test.zig", target, optimize, lib_module);
     const run_rpc_server_session_tests = addLibTest(b, "tests/rpc/transport/tcp/rpc_server_session_test.zig", target, optimize, lib_module);
     const run_rpc_quic_transport_tests: ?*std.Build.Step = if (quic_zig_module) |qm|
@@ -1106,6 +1107,7 @@ pub fn build(b: *std.Build) !void {
     test_rpc_transport_step.dependOn(run_rpc_events_tests);
     test_rpc_transport_step.dependOn(run_rpc_tick_idle_tests);
     test_rpc_transport_step.dependOn(run_rpc_connection_teardown_tests);
+    test_rpc_transport_step.dependOn(run_rpc_cross_thread_stress_tests);
     test_rpc_transport_step.dependOn(run_rpc_client_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_server_session_tests);
     test_rpc_transport_step.dependOn(run_rpc_raw_frame_security_tests);
