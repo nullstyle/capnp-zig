@@ -3,9 +3,15 @@
     .version = "0.9.0",
     .minimum_zig_version = "0.17.0-dev.1509",
     .dependencies = .{
+        // Pinned to a TAG, not a raw commit: tags are immutable release
+        // points, so the pin is auditable and reproducible. v0.10.1 is the
+        // previously-pinned commit e00d449 ("Merge boringssl Windows pin")
+        // plus one release commit that declares the version — no source
+        // change, which is why this swap needed no behavioral re-validation
+        // beyond re-running the QUIC gates.
         .quic_zig = .{
-            .url = "https://github.com/nullstyle/quic-zig/archive/e00d449278bb4fe74f8f72cb1ec8a56de0e31cd9.tar.gz",
-            .hash = "quic_zig-0.10.0-jMbGHQ3RJQB3btHgs1ZjtRmVdPBbIgFsDuncpYcWTqbL",
+            .url = "https://github.com/nullstyle/quic-zig/archive/refs/tags/v0.10.1.tar.gz",
+            .hash = "quic_zig-0.10.1-jMbGHbDUJQBuGJbmWaosSc4bmVg_uWMa_fOiPAQMmHLq",
             .lazy = true,
         },
     },
