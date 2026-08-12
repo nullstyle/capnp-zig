@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`rpc.peer` decomposed: `peer/mod.zig` shrank from 14,059 to 5,807 lines
+  (-59%) with zero behavior change.** The full P0-P12 ladder extracted every
+  major subsystem into comptime-generic sibling modules (the JoinCoordinator
+  extraction contract — `Namespace(comptime Peer)` files one directory level
+  deep): L3 provision hosting + the canonical drain/teardown procedure
+  (`provision/`), the outbound Return send family (`return/`), cap
+  refcount/release/frame-send, the sendCall family + inbound call path
+  (`call/`), L4 join accept/completion + cross-peer relay (`join/`), L3
+  origination + inbound Provide/Accept/Join arms (`provide/`), the
+  cross-peer proxy + automatic third-party routes (`third_party/`),
+  promise-export resolution + inbound Resolve, persistence hooks, question
+  allocation, the 26 Peer-parameterized context/record structs
+  (`peer_context_types.zig`), and — moved as one unit because its teardown
+  order is load-bearing — the deinit/shutdown/cancel/deadline lifecycle
+  (`peer_lifecycle.zig`). Every frozen Stable declaration
+  (`docs/api-snapshot.txt`, 1548 lines) stayed byte-identical throughout;
+  cold-cache `zig build test` totals are bit-equal before and after the
+  ladder (1862/1862). Consumers of Experimental internals will see many
+  previously-private `Peer` helpers now `pub` (they back the extracted
+  namespaces); the experimental snapshots track all of it.
+
+- **`build.zig` is now a 14-line driver; the build graph lives in
+  `build/build_impl.zig`.** Step names, registration order, and option
+  handling are unchanged (`zig build -l`, with and without `-Dquic=true`, is
+  byte-identical). `build/` joined the `build.zig.zon` `.paths` whitelist and
+  `package-preflight`'s REQUIRED package roots — without it a consumer's
+  `zig build` cannot parse the graph — and the docs-smoke documented-step
+  check now scans the real registration site.
+
 - **The `.closing` observer event now always fires on the connection's
   owner/run-loop thread (Experimental events surface).** Cross-thread
   `requestClose()` — TCP and QUIC, including QUIC server sessions — no longer
