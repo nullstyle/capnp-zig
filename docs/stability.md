@@ -58,6 +58,32 @@ socket layer is unproven on *both* sides of the boundary. Treat a Windows
 runtime run as genuine discovery work that may surface real defects, not as a
 formality expected to confirm a working path.
 
+**And it did. Known defect — oversized inbound datagrams on Windows.** The
+hosted `QUIC targeted transport (windows-latest)` leg runs the evidence gate
+natively and reports **60/61**, failing exactly one case: `QUIC UDP receive
+bridge reports truncation without processing partial bytes`. That test
+delivers a 9-byte datagram into a 2-byte buffer and expects a datagram
+carrying `flags.trunc`; on Windows the receive fails instead, and
+`udp_receive_bridge.zig` propagates the error to its caller. So an oversized
+inbound datagram surfaces as a connection error on Windows, where every other
+platform detects the truncation and drops the partial bytes without
+processing them.
+
+The root is upstream rather than here: `std.Io`'s receive error set has no
+truncation variant, so the Windows implementation cannot report what the POSIX
+one signals via `MSG_TRUNC` — the `flags.trunc` field the API exposes is
+unreachable there. Working around it in our bridge would mean pattern-matching
+whatever generic error Windows happens to surface, which is guesswork we
+decline to encode in a security-relevant path.
+
+This is not caused by the sprint that found it: it reproduces identically at
+the merge commit and predates the Zig `0.17.0-dev.1683` bump. The leg is
+deliberately left RED rather than skipped — the evidence gate rejects
+`SkipZigTest` by design, and making this one case pass would convert a real
+platform defect into a green check. Windows QUIC therefore stays
+**experimental with a known, specific gap**, which is a more honest claim than
+"acceptance pending".
+
 Note on **Windows codegen**: the upstream prebuilt Windows tools still contain
 the executables but not the standard schema tree. The repository now routes
 every `capnp`-driven serialization/codegen invocation through one helper that
